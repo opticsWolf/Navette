@@ -398,8 +398,8 @@ kernel first) would touch every arm twice.
   Original P3 list (kept for reference): sRGB / Luv /
   XYZ-raw / DIN99-coords (all kernels in-tree); whiteness/yellowness
   (~20-line kernels first); dominant-wavelength+purity (2-vector ref +
-  purple-line branch rule); opacity (two-spectrum demand — architecture
-  decision first, §D10).
+  purple-line branch rule); opacity (§D11 normative spec — decision
+  locked 2026-09-07).
 
 Each patch: implement → gates (R0) → twin batch → commit/push dev →
 ff to main. Parser prerequisite shipped 0.4.22 (all 97 files bitwise).
@@ -416,3 +416,95 @@ ff to main. Parser prerequisite shipped 0.4.22 (all 97 files bitwise).
 | Oklab under non-D65 | Bradford-adapt to D65 (in-tree `func_08`), identity-tested |
 | Scalar-vs-triple ref confusion | untagged enum + quantity-gated validation, both directions tested |
 | Scope creep (sRGB/Luv/whiteness/opacity/boxes) | refused-with-message at compile; P3 per-item with own twin |
+
+## D11. Opacity — two-spectrum demand (DEFERRED 2026-09-07, spec locked)
+
+STATUS: deferred by user decision — do NOT implement until recalled.
+When recalled: version 0.4.31, implement D11.1–D11.5 as written, then
+resolve the one open question below (one-line spec change either way).
+
+OPEN QUESTION (flagged back by the designer, awaiting user call on
+recall): the reframing rule (D11.1 — ONE alternate backing, compare vs
+primary substrate) halves the per-eval solve count (2 solves, not 3) at
+the cost of a documentation burden (to compare A vs B, set the primary
+substrate to A). Alternative: TWO explicit backings (compare any pair
+regardless of primary substrate) at 3 solves per eval. Recommendation
+stands at one backing (solve cost dominates everything in this feature:
+LM re-solves both stacks per step, needle scans both per cycle — a third
+stack would tax every eval for a case the reframing covers at zero cost).
+Change costs one line in D11.1 plus twin updates if the user picks two.
+
+--- spec follows (locked, implement as-is on recall) ---
+
+Hiding power: the same film stack over two backings (black vs white).
+Residual = distance between the two STATES (self-comparison toward zero),
+not against a fixed reference. The current `MeritSpec` evaluates one
+`SimCurves`; opacity needs two solves (substrate differs — no way around
+it, only the exit medium changes but the boundary does).
+
+### D11.1 Demand shape (one alternate backing, not two)
+States = primary-substrate state vs companion-backing state. JSON:
+`{curve (front R/T), angle, backing: {wavelengths, values} (explicit nk
+table — the explicit-table rule, no registry), illuminant, observer,
+quantity (any triple quantity + Y; White/DomWl allowed — the pair
+machinery is generic), distance (Channels, or DeltaE for Lab/LCh —
+same matrix, applied state-vs-state), weight}`. NO reference field
+(refuse if present — self-comparison has no fixed point).
+Reframing rule (documented): to compare two non-primary backings A vs B,
+set the primary substrate to A and demand backing B. Zero extra solves.
+
+### D11.2 Storage + residual concat (fully additive, R0-safe by construction)
+- `MeritSpec.opacity: Vec<OpacityDemand>` (`{key_idx (primary curve),
+  backing nk, color tables, quantity, distance, weight}` — compiled from
+  JSON exactly like color demands, same refusal family + no-reference
+  gate). `residuals()` / `n_residuals()` / `merit(sim)` UNTOUCHED
+  (primary-only, backward compatible).
+- New methods only: `n_opacity_residuals()` (+1/demand),
+  `opacity_residuals(sim_a, sim_b, out)` (pair residuals in demand order),
+  `merit2(sim_a, sim_b, penalty)` (joint). LM consumes the driver-level
+  concat `[residuals(sim_a), opacity_residuals(sim_a, sim_b)]` — fixed
+  length (missing curve on either side fails its demand's group like a
+  missing curve; companion sims are driver-built WITH the curve, so the
+  companion-missing arm is defensive-only).
+- Single-backing identity: backing == primary substrate (same sim) with
+  Channels gives EXACTLY 0.0 (diff of identicals) — pinned by twin.
+
+### D11.3 Pair kernel (eval-owned, like everything since DomWl)
+`eval_color_pair(d_a, d_b, row_a, row_b, wl) -> (resid, grad_a, grad_b)`:
+each side integrates to its quantity (existing arms), F = w·dist²(cA, cB)
+(Channels: tol-scaled; hue-wrap / white / adapt rules apply per side),
+analytic dXYZ/dR per side × CENTRAL FD OVER THE PAIR (12 tiny map evals:
+perturb A-side XYZ and B-side XYZ independently). `eval_color` and the
+fold/hot-pass stay untouched — they never see pairs.
+
+### D11.4 Paired-stack driver (the actual architecture change)
+The pipeline owns TWO DesignStacks (same film list, ambient shared,
+substrate differs) and keeps films in sync by replaying every structural
+edit (insert/remove/thickness) on both — identical geometry, so scan
+sites and z-grids coincide bit-for-bit.
+- LM: every eval re-solves BOTH stacks (2x cost, documented; no memo —
+  films move every step, memo would never hit).
+- Needle: fold per state (`grad_a` into the primary fold, `grad_b` into
+  a companion fold via the pair kernel), scan BOTH stacks
+  (`needle_pass_scan` twice, unchanged), SUM the P profiles (same sites).
+  TRUE dM/dd for a primary insertion = A-part (primary fields) + B-part
+  (companion fields at the same z — the films are shared, so the
+  insertion perturbs both states; replay the seed into the companion
+  before its scan). U-half and branch rules apply per side unchanged.
+- Gain/convergence bookkeeping reads the joint merit. Thin-removal/merge
+  decide on the primary, replay on the companion.
+
+### D11.5 Surface + twins
+- Python: `OpacityTarget` (frozen, `_dump` resolves backing names to
+  arrays like illuminant/observer, native `__post_init__` check),
+  `TargetCollection.opacity_targets`, `build_merit_spec` section; NO new
+  PyO3 fn except an additive `merit_opacity(sim_a, sim_b, penalty)` probe
+  (`run_needle` carries the feature — the probe is for tests).
+- Twins: (1) pair residual == hand ΔE of two synthetic sims; (2) FD per
+  side (bump A → g_A·δ, bump B → g_B·δ, central 1e-6); (3) CRITICAL —
+  paired-insertion FD (seed into BOTH stacks at one site, merit delta ≈
+  −(P_A+P_B)·s); (4) single-backing identity exactly 0.0 (Channels);
+  (5) Python end-to-end `run_needle` with an opacity demand (runs, joint
+  merit finite + improves, residual length = primary + opacity).
+- Version 0.4.31. Exposure: no new free `pub fn` (methods + `pub(crate)`
+  kernel + one bound probe method).
