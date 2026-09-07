@@ -388,8 +388,14 @@ kernel first) would touch every arm twice.
   own white, XYZ identity; Channels-only. Twins: sRGB/Luv vs bound
   pipeline 1e-12, XYZ HEX hand oracle, per-quantity needle FD extended to
   8, compile gates, surface constructions. 332+22+15 Rust, exposure
-  207/93, 350 green. Still open: DIN99-coords + whiteness/yellowness /
-  opacity. Original P3 list (kept for reference): sRGB / Luv /
+  207/93, 350 green. Still open after this patch: opacity only (DIN99 +
+  whiteness + yellowness DONE 0.4.30 (dev): `lab_to_din99` wrapper
+  (allowlisted), CIE [W,Tw] pair + E313 scalar with explicit cx/cz schema
+  fields (D65/10-deg defaults, never silently reused); Channels-only.
+  Twins: din99 vs numpy closed form, whiteness hand oracle, yellowness
+  E313 hand, gates incl. coeff ride-through, needle FD extended to 11,
+  surface builds. 335+22+15 Rust, exposure 208/94, 353 green).
+  Original P3 list (kept for reference): sRGB / Luv /
   XYZ-raw / DIN99-coords (all kernels in-tree); whiteness/yellowness
   (~20-line kernels first); dominant-wavelength+purity (2-vector ref +
   purple-line branch rule); opacity (two-spectrum demand — architecture

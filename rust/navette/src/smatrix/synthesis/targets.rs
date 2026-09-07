@@ -149,6 +149,12 @@ pub struct ColorTargetJson {
   pub distance: String,
   #[serde(default = "d_weight")]
   pub weight: f64,
+  /// E313 yellowness coefficients (Yellow only; defaults: D65/10 deg
+  /// table — pass explicitly for other geometries, never reuse silently).
+  #[serde(default)]
+  pub yi_cx: Option<f64>,
+  #[serde(default)]
+  pub yi_cz: Option<f64>,
   /// v1: Exact only (other kinds refused at compile).
   #[serde(default = "d_color_kind")]
   pub kind: String,
@@ -466,9 +472,12 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
       "sRGB" => ColorQuantity::Srgb,
       "Luv" => ColorQuantity::Luv,
       "XYZ" => ColorQuantity::Xyz,
+      "Din99" => ColorQuantity::Din99,
+      "White" => ColorQuantity::White,
+      "Yellow" => ColorQuantity::Yellow,
       q => {
         return Err(format!(
-          "color: unknown quantity {q:?} (one of 'Lab'|'XyY'|'LCh'|'Oklab'|'Y'|'DomWl'|'sRGB'|'Luv'|'XYZ')."
+          "color: unknown quantity {q:?} (one of 'Lab'|'XyY'|'LCh'|'Oklab'|'Y'|'DomWl'|'sRGB'|'Luv'|'XYZ'|'Din99'|'White'|'Yellow')."
         ))
       }
     };
@@ -515,7 +524,17 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
       CmfJson::Table(tab) => (tab.wavelengths.clone(), tab.xyz.clone()),
     };
     ColorDemand::new(
-      u32::MAX, cmf, cmf_wl, illum, illum_wl, quantity, reference, distance, t.weight,
+      u32::MAX,
+      cmf,
+      cmf_wl,
+      illum,
+      illum_wl,
+      quantity,
+      reference,
+      distance,
+      t.weight,
+      t.yi_cx.unwrap_or(crate::smatrix::synthesis::color_merit::E313_CX_D65_10),
+      t.yi_cz.unwrap_or(crate::smatrix::synthesis::color_merit::E313_CZ_D65_10),
     )
 }
 
@@ -779,6 +798,8 @@ mod tests {
       reference: ReferenceJson::Valid(ColorReference::Triple([60.0, 10.0, -20.0])),
       distance: "DeltaE2000".to_string(),
       weight: 1.0,
+      yi_cx: None,
+      yi_cz: None,
       kind: "Exact".to_string(),
       transform: "linear".to_string(),
       integral: false,
@@ -877,6 +898,48 @@ mod tests {
         "{q}"
       );
     }
+  }
+
+  #[test]
+  fn index_quantities_compile_channels_only() {
+    use crate::smatrix::synthesis::color_merit::ColorReference as CR;
+    let ok = |q: &str, r: ReferenceJson| {
+      let mut set = color_set();
+      set.color[0].quantity = q.to_string();
+      set.color[0].reference = r;
+      set.color[0].distance = "Channels".to_string();
+      compile_merit_spec(&set)
+    };
+    let t3 = ReferenceJson::Valid(CR::Triple([50.0, 5.0, 5.0]));
+    assert!(ok("Din99", t3.clone()).is_ok());
+    assert!(ok("White", ReferenceJson::Valid(CR::Pair([90.0, 2.0]))).is_ok());
+    assert!(ok("Yellow", ReferenceJson::Valid(CR::Scalar(5.0))).is_ok());
+    // Compat fires ahead of evaluation: shape-matched refs, DeltaE refused.
+    let triple = ReferenceJson::Valid(CR::Triple([50.0, 5.0, 5.0]));
+    let pair = ReferenceJson::Valid(CR::Pair([90.0, 2.0]));
+    let scalar = ReferenceJson::Valid(CR::Scalar(5.0));
+    for (q, r) in [("Din99", triple), ("White", pair), ("Yellow", scalar)] {
+      let mut set = color_set();
+      set.color[0].quantity = q.to_string();
+      set.color[0].reference = r;
+      set.color[0].distance = "DeltaE76".to_string();
+      assert!(
+        compile_merit_spec(&set).unwrap_err().contains("Channels"),
+        "{q}"
+      );
+    }
+    // Explicit E313 coefficients ride through the schema.
+    let mut set = color_set();
+    set.color[0].quantity = "Yellow".to_string();
+    set.color[0].reference = ReferenceJson::Valid(CR::Scalar(5.0));
+    set.color[0].distance = "Channels".to_string();
+    set.color[0].yi_cx = Some(1.2769);
+    set.color[0].yi_cz = Some(1.0592);
+    let spec = compile_merit_spec(&set).unwrap();
+    assert_eq!(
+      (spec.color_demands()[0].yi_cx, spec.color_demands()[0].yi_cz),
+      (1.2769, 1.0592)
+    );
   }
 
   #[test]

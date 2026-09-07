@@ -318,3 +318,17 @@ else must be an explicit table (no registry to drift).
   never vanish outside the gamut.
 - **`Luv`:** under the demand illuminant's own white (like Lab).
 - **`XYZ`:** raw tristimulus, linear sensor-space matching.
+
+### Index quantities (P3: `Din99` | `White` | `Yellow`)
+
+- **`Din99`:** graphics DIN99 coordinates (ke = kch = 1) of Lab under the
+  demand white; Channels compare. DIN99 is already euclidean — DeltaE
+  refused (equal-tol Channels *is* unweighted Euclidean).
+- **`White`:** CIE whiteness `[W, Tw]` pair ref (W on 0-100; Y here is
+  0-1, hence x100). The formula needs only XYZ + demand white —
+  illuminant-agnostic by construction. Perfect diffuser hits exactly
+  (100, 0). No CIE validity-box enforcement (documented scope).
+- **`Yellow`:** ASTM E313 scalar `100*(Cx*X - Cz*Z)/Y` off `tol[0]`.
+  Coefficients ride the demand (`yi_cx`/`yi_cz`, defaulting to the E313
+  D65/10-deg table 1.3013/1.1498) — other geometries pass their own
+  table values explicitly, never silently reuse D65/10-deg.

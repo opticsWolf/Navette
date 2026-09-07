@@ -52,6 +52,18 @@ fn din99_coords(lab: &[f64; 3], ke: f64, kch: f64, cos16: f64, sin16: f64) -> (f
     (l99, a99, b99)
 }
 
+/// Batch CIELAB to DIN99 coordinates (graphics `ke = kch = 1` unless the
+/// caller says otherwise). Thin over the private `din99_coords` kernel.
+pub fn lab_to_din99(lab: &[[f64; 3]], ke: f64, kch: f64, out: &mut [[f64; 3]]) {
+    assert_eq!(lab.len(), out.len(), "input and output length mismatch");
+    let cos16 = (16.0f64).to_radians().cos();
+    let sin16 = (16.0f64).to_radians().sin();
+    for (lab, o) in lab.iter().zip(out.iter_mut()) {
+        let (l99, a99, b99) = din99_coords(lab, ke, kch, cos16, sin16);
+        *o = [l99, a99, b99];
+    }
+}
+
 /// Single‑pixel DIN99 colour difference.
 ///
 /// Both colours are transformed into DIN99 space and then Euclidean distance

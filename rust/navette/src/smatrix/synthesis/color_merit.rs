@@ -14,6 +14,7 @@ use crate::color::common::{xyz_to_lab, REF_WHITE_D65};
 use crate::color::common::xyz_to_srgb;
 use crate::color::func_02::{lab_to_lch, lch_to_lab};
 use crate::color::func_03::xyz_to_luv;
+use crate::color::func_12::lab_to_din99;
 use crate::color::func_04::xyz_to_oklab;
 use crate::color::func_08::adapt;
 use crate::color::func_01::xyz_to_xyy;
@@ -39,7 +40,20 @@ pub enum ColorQuantity {
   Luv,
   /// Raw tristimulus XYZ (P3): linear sensor-space matching.
   Xyz,
+  /// DIN99 coordinates (P3, graphics ke = kch = 1): euclideanised Lab.
+  Din99,
+  /// CIE whiteness [W, Tw] pair (P3): W on the 0-100 scale
+  /// (Y is 0-1 here, hence the x100).
+  White,
+  /// ASTM E313 yellowness index, scalar (P3).
+  Yellow,
 }
+
+/// E313 YI coefficients for D65/10 deg (ASTM E313): the schema default.
+/// Other illuminant/observer geometries need their own table values —
+/// pass them explicitly (cx, cz), never silently reuse these.
+pub(crate) const E313_CX_D65_10: f64 = 1.3013;
+pub(crate) const E313_CZ_D65_10: f64 = 1.1498;
 
 /// P1: all three live; XyY×ΔE and Oklab×ΔE are refused (see matrix).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +95,9 @@ pub struct ColorDemand {
   /// in `new` (monochromatic chromaticities — illuminant-independent).
   /// Empty for other quantities.
   pub locus: Vec<([f64; 2], f64)>,
+  /// E313 coefficients for `Yellow` (defaults: D65/10 deg table).
+  pub yi_cx: f64,
+  pub yi_cz: f64,
   pub quantity: ColorQuantity,
   pub reference: ColorReference,
   pub distance: ColorDistance,
@@ -114,13 +131,15 @@ impl ColorDemand {
     reference: ColorReference,
     distance: ColorDistance,
     weight: f64,
+    yi_cx: f64,
+    yi_cz: f64,
   ) -> Result<Self, String> {
     // Reference shape gates on quantity (all three shapes, both directions).
     match (&quantity, &reference) {
-      (ColorQuantity::DomWl, ColorReference::Pair(_)) => {}
-      (ColorQuantity::Y, ColorReference::Scalar(_)) => {}
+      (ColorQuantity::DomWl | ColorQuantity::White, ColorReference::Pair(_)) => {}
+      (ColorQuantity::Y | ColorQuantity::Yellow, ColorReference::Scalar(_)) => {}
       (_, ColorReference::Triple(_))
-        if quantity != ColorQuantity::DomWl && quantity != ColorQuantity::Y => {}
+        if !matches!(quantity, ColorQuantity::DomWl | ColorQuantity::White | ColorQuantity::Y | ColorQuantity::Yellow) => {}
       (ColorQuantity::DomWl, _) => {
         return Err(
           "color: quantity 'DomWl' needs a [2] [wavelength_nm, purity] reference.".to_string(),
@@ -129,8 +148,14 @@ impl ColorDemand {
       (ColorQuantity::Y, _) => {
         return Err("color: quantity 'Y' needs a scalar reference.".to_string())
       }
+      (ColorQuantity::White, _) => {
+        return Err("color: quantity 'White' needs a [2] [whiteness, tint] reference.".to_string())
+      }
+      (ColorQuantity::Yellow, _) => {
+        return Err("color: quantity 'Yellow' needs a scalar reference.".to_string())
+      }
       (_, ColorReference::Pair(_)) => {
-        return Err("color: [2] pair reference needs quantity 'DomWl'.".to_string())
+        return Err("color: [2] pair reference needs quantity 'DomWl'|'White'.".to_string())
       }
       (_, _) => return Err("color: scalar reference needs quantity 'Y'.".to_string()),
     }
@@ -163,6 +188,16 @@ impl ColorDemand {
           "color: quantity '{quantity:?}' with distance '{distance:?}' refused (display/coordinate quantities take Channels)."
         ))
       }
+      (ColorQuantity::Din99, ColorDistance::DeltaE2000)
+      | (ColorQuantity::Din99, ColorDistance::DeltaE76)
+      | (ColorQuantity::White, ColorDistance::DeltaE2000)
+      | (ColorQuantity::White, ColorDistance::DeltaE76)
+      | (ColorQuantity::Yellow, ColorDistance::DeltaE2000)
+      | (ColorQuantity::Yellow, ColorDistance::DeltaE76) => {
+        return Err(format!(
+          "color: quantity '{quantity:?}' with distance '{distance:?}' refused (DIN99 is already euclidean; whiteness/yellowness are scalar-or-pair indices — use Channels)."
+        ))
+      }
       (ColorQuantity::DomWl, ColorDistance::DeltaE2000) | (ColorQuantity::DomWl, ColorDistance::DeltaE76) => {
         return Err(format!(
           "color: quantity 'DomWl' with distance '{distance:?}' refused (pair demand takes Channels)."
@@ -187,6 +222,9 @@ impl ColorDemand {
       if t.iter().any(|v| !v.is_finite()) {
         return Err("color: non-finite reference triple.".to_string());
       }
+    }
+    if !yi_cx.is_finite() || !yi_cz.is_finite() {
+      return Err("color: non-finite E313 coefficients.".to_string());
     }
     // DomWl locus: monochromatic chromaticities of the demand CMF
     // (illuminant-independent); degenerate tables refused here.
@@ -215,6 +253,8 @@ impl ColorDemand {
     Ok(ColorDemand {
       key_idx,
       locus,
+      yi_cx,
+      yi_cz,
       cmf,
       cmf_wl,
       illuminant,
@@ -392,7 +432,34 @@ pub(crate) fn color_of_xyz(
       Ok(out[0])
     }
     ColorQuantity::Xyz => Ok(*xyz),
+    ColorQuantity::Din99 => {
+      let mut lab = [[0.0; 3]];
+      xyz_to_lab(&[*xyz], white, &mut lab);
+      let mut out = [[0.0; 3]];
+      lab_to_din99(&lab, 1.0, 1.0, &mut out);
+      Ok(out[0])
+    }
+    ColorQuantity::White | ColorQuantity::Yellow => {
+      Err("color: quantity 'White'|'Yellow' is a pair/scalar index (no triple form).".to_string())
+    }
   }
+}
+
+/// CIE whiteness [W, Tw] (W on 0-100: Y here is 0-1). Pure closed form on
+/// XYZ + the demand white — illuminant-agnostic by construction.
+pub(crate) fn cie_whiteness(xyz: &[f64; 3], white: &[f64; 3]) -> [f64; 2] {
+  let s = xyz[0] + xyz[1] + xyz[2];
+  let ws = white[0] + white[1] + white[2];
+  let (x, y) = (xyz[0] / s, xyz[1] / s);
+  let (xn, yn) = (white[0] / ws, white[1] / ws);
+  let w = 100.0 * xyz[1] + 800.0 * (xn - x) + 1700.0 * (yn - y);
+  let tw = 1000.0 * (xn - x) - 650.0 * (yn - y);
+  [w, tw]
+}
+
+/// ASTM E313 yellowness index with explicit coefficients.
+pub(crate) fn e313_yellowness(xyz: &[f64; 3], cx: f64, cz: f64) -> f64 {
+  100.0 * (cx * xyz[0] - cz * xyz[2]) / xyz[1]
 }
 
 /// Wrap a hue difference in degrees to [-180, 180] BEFORE scaling
@@ -482,6 +549,28 @@ fn objective_of_xyz(demand: &ColorDemand, xyz: &[f64; 3]) -> Result<f64, String>
     let rl = (dl - t[0]) / demand.tol[0];
     let rp = (dp - t[1]) / demand.tol[1];
     return Ok(demand.weight * (rl * rl + rp * rp));
+  }
+  if demand.quantity == ColorQuantity::White {
+    let ColorReference::Pair(t) = &demand.reference else {
+      return Err("color: quantity 'White' needs a [2] [whiteness, tint] reference.".to_string());
+    };
+    if !(xyz[1] > 0.0) || xyz.iter().any(|v| !v.is_finite()) {
+      return Err("color: non-finite/non-positive XYZ in whiteness map.".to_string());
+    }
+    let [w, tw] = cie_whiteness(xyz, &demand.white);
+    let rw = (w - t[0]) / demand.tol[0];
+    let rt = (tw - t[1]) / demand.tol[1];
+    return Ok(demand.weight * (rw * rw + rt * rt));
+  }
+  if demand.quantity == ColorQuantity::Yellow {
+    let ColorReference::Scalar(t) = &demand.reference else {
+      return Err("color: quantity 'Yellow' needs a scalar reference.".to_string());
+    };
+    if !(xyz[1] > 1e-12) || xyz.iter().any(|v| !v.is_finite()) {
+      return Err("color: non-finite/near-zero-Y XYZ in yellowness map.".to_string());
+    }
+    let r = (e313_yellowness(xyz, demand.yi_cx, demand.yi_cz) - t) / demand.tol[0];
+    return Ok(demand.weight * r * r);
   }
   let c = color_of_xyz(xyz, &demand.white, demand.quantity)?;
   match demand.distance {
@@ -610,7 +699,7 @@ mod tests {
       ColorQuantity::Lab,
       ColorReference::Triple([60.0, 10.0, -20.0]),
       ColorDistance::DeltaE2000,
-      2.0,
+      2.0, E313_CX_D65_10, E313_CZ_D65_10,
     )
     .unwrap()
   }
@@ -714,7 +803,7 @@ mod tests {
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
     let mk = |q, r, dist| {
       ColorDemand::new(
-        0, cmf.clone(), cmf_wl.clone(), illuminant.clone(), illum_wl.clone(), q, r, dist, 1.0,
+        0, cmf.clone(), cmf_wl.clone(), illuminant.clone(), illum_wl.clone(), q, r, dist, 1.0, E313_CX_D65_10, E313_CZ_D65_10,
       )
     };
     assert!(mk(ColorQuantity::XyY, ColorReference::Triple([0.3, 0.3, 0.5]), ColorDistance::DeltaE2000)
@@ -767,7 +856,7 @@ mod tests {
 
   fn p2_demand(q: ColorQuantity, r: ColorReference) -> ColorDemand {
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
-    ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0)
+    ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10)
       .unwrap()
   }
 
@@ -832,7 +921,7 @@ mod tests {
       ColorQuantity::LCh,
       ColorReference::Triple([60.0, 20.0, 100.0]),
       ColorDistance::DeltaE76,
-      1.0,
+      1.0, E313_CX_D65_10, E313_CZ_D65_10,
     )
     .unwrap();
     let row = vec![0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25];
@@ -881,7 +970,7 @@ mod tests {
       (ColorQuantity::Y, ColorReference::Scalar(0.4)),
     ] {
       let (cmf_wl, cmf, illum_wl, illuminant) = toy();
-      let d = ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0)
+      let d = ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10)
         .unwrap();
       let (resid, grad) = eval_color(&d, &row, &wl).unwrap();
       assert!(resid.is_finite());
@@ -900,7 +989,7 @@ mod tests {
       ColorQuantity::DomWl,
       ColorReference::Pair([550.0, 0.9]),
       ColorDistance::Channels,
-      1.0,
+      1.0, E313_CX_D65_10, E313_CZ_D65_10,
     )
     .unwrap()
   }
@@ -950,7 +1039,7 @@ mod tests {
         q,
         r,
         ColorDistance::Channels,
-        1.0,
+        1.0, E313_CX_D65_10, E313_CZ_D65_10,
       )
     };
     assert!(mk(ColorQuantity::DomWl, ColorReference::Pair([550.0, 0.9])).is_ok());
@@ -965,7 +1054,7 @@ mod tests {
       ColorQuantity::DomWl,
       ColorReference::Pair([550.0, 0.9]),
       ColorDistance::DeltaE2000,
-      1.0,
+      1.0, E313_CX_D65_10, E313_CZ_D65_10,
     );
     assert!(de.unwrap_err().contains("pair demand takes Channels"));
   }
@@ -1002,12 +1091,86 @@ mod tests {
     ] {
       let (cmf_wl2, cmf2, illum_wl2, illuminant2) = toy();
       let d = ColorDemand::new(
-        0, cmf2, cmf_wl2, illuminant2, illum_wl2, q, r, ColorDistance::Channels, 1.0,
+        0, cmf2, cmf_wl2, illuminant2, illum_wl2, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10,
       )
       .unwrap();
       let (resid, grad) = eval_color(&d, &row, &wl).unwrap();
       assert!(resid.is_finite(), "{q:?}");
       assert!(grad.iter().all(|v| v.is_finite()), "{q:?}");
     }
+  }
+
+  fn idx_demand(q: ColorQuantity, r: ColorReference) -> ColorDemand {
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    ColorDemand::new(
+      0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0,
+      E313_CX_D65_10, E313_CZ_D65_10,
+    )
+    .unwrap()
+  }
+
+  #[test]
+  fn din99_matches_delta_path_and_white_yellow_hand() {
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    let wl = cmf_wl.clone();
+    let ones = vec![1.0; 8];
+    let white =
+      xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl).unwrap();
+    let xyz = [0.3, 0.4, 0.2];
+    // Din99 wrapper bitwise vs direct calls.
+    let mut lab = [[0.0; 3]];
+    xyz_to_lab(&[xyz], &white, &mut lab);
+    let mut d99 = [[0.0; 3]];
+    crate::color::func_12::lab_to_din99(&lab, 1.0, 1.0, &mut d99);
+    assert_eq!(color_of_xyz(&xyz, &white, ColorQuantity::Din99).unwrap(), d99[0]);
+    // Whiteness/yellowness closed forms, bitwise vs hand evaluation.
+    let [w, tw] = cie_whiteness(&xyz, &white);
+    let s = xyz[0] + xyz[1] + xyz[2];
+    let ws = white[0] + white[1] + white[2];
+    assert_eq!(w, 100.0 * xyz[1] + 800.0 * (white[0] / ws - xyz[0] / s) + 1700.0 * (white[1] / ws - xyz[1] / s));
+    assert_eq!(tw, 1000.0 * (white[0] / ws - xyz[0] / s) - 650.0 * (white[1] / ws - xyz[1] / s));
+    assert_eq!(e313_yellowness(&xyz, 1.3013, 1.1498), 100.0 * (1.3013 * xyz[0] - 1.1498 * xyz[2]) / xyz[1]);
+    // Perfect diffuser hits W = 100, Tw = 0 (bitwise — same fractions).
+    let [w1, t1] = cie_whiteness(&white, &white);
+    // 1-ulp via white[1] (per-term k rounding, same class as the Y identity).
+    assert!((w1 - 100.0).abs() < 1e-12, "{w1}");
+    assert_eq!(t1, 0.0);
+    // End-to-end residuals finite on a smooth row (all three).
+    let row = vec![0.5, 0.55, 0.6, 0.65, 0.6, 0.55, 0.5, 0.45];
+    for d in [
+      idx_demand(ColorQuantity::Din99, ColorReference::Triple([50.0, 5.0, 5.0])),
+      idx_demand(ColorQuantity::White, ColorReference::Pair([90.0, 2.0])),
+      idx_demand(ColorQuantity::Yellow, ColorReference::Scalar(5.0)),
+    ] {
+      let (resid, grad) = eval_color(&d, &row, &wl).unwrap();
+      assert!(resid.is_finite());
+      assert!(grad.iter().all(|v| v.is_finite()));
+    }
+  }
+
+  #[test]
+  fn index_gates_name_all_sides() {
+    let bad_q = |q, r: ColorReference, d: ColorDistance| {
+      let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+      ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, d, 1.0, 1.3013, 1.1498)
+    };
+    assert!(bad_q(ColorQuantity::White, ColorReference::Triple([0.0; 3]), ColorDistance::Channels)
+      .unwrap_err()
+      .contains("White"));
+    assert!(bad_q(ColorQuantity::Yellow, ColorReference::Triple([0.0; 3]), ColorDistance::Channels)
+      .unwrap_err()
+      .contains("scalar"));
+    assert!(bad_q(ColorQuantity::Din99, ColorReference::Triple([50.0; 3]), ColorDistance::DeltaE76)
+      .unwrap_err()
+      .contains("Channels"));
+    // Explicit coefficients ride through (F2 geometry would pass its own).
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    let d = ColorDemand::new(
+      0, cmf, cmf_wl, illuminant, illum_wl,
+      ColorQuantity::Yellow, ColorReference::Scalar(5.0), ColorDistance::Channels, 1.0,
+      1.2769, 1.0592,
+    )
+    .unwrap();
+    assert_eq!((d.yi_cx, d.yi_cz), (1.2769, 1.0592));
   }
 }

@@ -328,3 +328,59 @@ def test_xyz_channels_hex_against_hand_oracle():
                    z.tolist(), ev.tolist())
   f = 2.0 * sum((a - b) ** 2 for a, b in zip(xyz, ref))
   assert got[0].hex() == (f ** 0.5).hex()
+
+
+def test_din99_channels_against_numpy():
+  # Independent oracle: Lab (via _color) -> DIN99 closed form in numpy.
+  import math
+  wl, x, y, z, el, ev = window(400.0, 700.0)
+  row = 0.5 + 0.3 * np.sin((wl - 400.0) / 300.0 * np.pi)
+  ref = (50.0, 5.0, 5.0)
+  spec = demand(quantity="Din99", reference=ref, distance="Channels",
+                tables=(wl, x, y, z, el, ev))
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = spec.residuals(sim)
+  xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
+                   z.tolist(), ev.tolist())
+  white = xyz_oracle([1.0] * len(wl), wl.tolist(), x.tolist(), y.tolist(),
+                     z.tolist(), ev.tolist())
+  lab = C.XYZ_to_Lab(np.array([xyz]), illuminant=white)[0]
+  def din99(lab):
+    l, a, b = lab
+    l99 = 105.509 * math.log1p(0.0158 * l)
+    e = a * math.cos(math.radians(16.0)) + b * math.sin(math.radians(16.0))
+    f = 0.7 * (-a * math.sin(math.radians(16.0)) + b * math.cos(math.radians(16.0)))
+    g = math.hypot(e, f)
+    if g < 1e-12:
+      return (l99, 0.0, 0.0)
+    c = math.log1p(0.045 * g) / 0.045
+    h = math.atan2(f, e)
+    return (l99, c * math.cos(h), c * math.sin(h))
+  d = din99(lab.tolist())
+  f = sum((a - b) ** 2 for a, b in zip(d, ref))
+  assert got[0] == pytest.approx(f ** 0.5, rel=1e-12)
+
+
+def test_white_yellow_against_hand_oracles():
+  wl, x, y, z, el, ev = window(500.0, 519.0)
+  row = 0.2 + 0.6 * (wl - wl[0]) / (wl[-1] - wl[0])
+  xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
+                   z.tolist(), ev.tolist())
+  white = xyz_oracle([1.0] * len(wl), wl.tolist(), x.tolist(), y.tolist(),
+                     z.tolist(), ev.tolist())
+  # Whiteness pair vs closed form (1e-12; same fractions, both sides).
+  wspec = demand(quantity="White", reference=(90.0, 2.0), distance="Channels",
+                 tables=(wl, x, y, z, el, ev))
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = wspec.residuals(sim)
+  s, ws = sum(xyz), sum(white)
+  w = 100.0 * xyz[1] + 800.0 * (white[0] / ws - xyz[0] / s) + 1700.0 * (white[1] / ws - xyz[1] / s)
+  tw = 1000.0 * (white[0] / ws - xyz[0] / s) - 650.0 * (white[1] / ws - xyz[1] / s)
+  assert got[0] == pytest.approx(((w - 90.0) ** 2 + (tw - 2.0) ** 2) ** 0.5, rel=1e-12)
+  # Yellowness scalar vs E313 hand formula (HEX: identical op order).
+  yspec = demand(quantity="Yellow", reference=5.0, distance="Channels",
+                 tables=(wl, x, y, z, el, ev))
+  goty = yspec.residuals(sim)
+  yi = 100.0 * (1.3013 * xyz[0] - 1.1498 * xyz[2]) / xyz[1]
+  # sqrt(r^2) rounds once vs abs(): 1e-12, not hex.
+  assert goty[0] == pytest.approx(abs(yi - 5.0), rel=1e-12)

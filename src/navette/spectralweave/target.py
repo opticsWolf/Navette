@@ -164,7 +164,8 @@ class AngularTarget:
         object.__setattr__(self, 'band', band)
         _validate(_json.dumps({"spectral": [], "angular": [self._dump()]}))
 
-ColorQuantity = Literal["Lab", "XyY", "LCh", "Oklab", "Y", "DomWl", "sRGB", "Luv", "XYZ"]
+ColorQuantity = Literal["Lab", "XyY", "LCh", "Oklab", "Y", "DomWl", "sRGB", "Luv", "XYZ",
+                             "Din99", "White", "Yellow"]
 ColorDistance = Literal["DeltaE2000", "DeltaE76", "Channels"]
 
 
@@ -208,6 +209,8 @@ class ColorTarget:
     weight:       float = 1.0
     kind:         str = "Exact"
     transform:    str = "linear"
+    yi_cx:        Union[float, None] = None
+    yi_cz:        Union[float, None] = None
 
     def _dump(self) -> dict:
         return {
@@ -219,6 +222,7 @@ class ColorTarget:
             "distance": str(self.distance),
             "weight": float(self.weight) if isinstance(self.weight, (int, float)) else self.weight,
             "kind": str(self.kind), "transform": str(self.transform),
+            "yi_cx": self.yi_cx, "yi_cz": self.yi_cz,
         }
 
     def __post_init__(self) -> None:

@@ -158,3 +158,21 @@ def test_coordinate_quantities_construct_and_compile():
     assert np.isfinite(spec.merit(sim, 1e6))
     with pytest.raises(ValueError, match="take Channels"):
       ColorTarget(quantity=q, reference=ref, distance="DeltaE76")
+
+
+def test_index_quantities_construct_and_compile():
+  cases = [("Din99", (50.0, 5.0, 5.0), {}),
+           ("White", (90.0, 2.0), {}),
+           ("Yellow", 5.0, {}),
+           ("Yellow", 5.0, {"yi_cx": 1.2769, "yi_cz": 1.0592})]
+  for q, ref, kw in cases:
+    col = TargetCollection()
+    col.add(ColorTarget(quantity=q, reference=ref, distance="Channels", **kw))
+    spec = build_merit_spec(col)
+    assert spec.n_residuals() == 1
+    wl = np.linspace(500., 519., 20)
+    row = np.full((1, len(wl)), 0.5)
+    sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+    assert np.isfinite(spec.merit(sim, 1e6))
+    with pytest.raises(ValueError, match="Channels"):
+      ColorTarget(quantity=q, reference=ref, distance="DeltaE76", **kw)

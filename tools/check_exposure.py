@@ -56,6 +56,8 @@ ALLOWLIST = {
     "vec_mul_mat3", "xyz_to_luv_d65", "xyz_to_uv_prime",
     "xyz_to_uv_prime_batch", "delta_e_2000_single", "delta_e_76_single",
     "delta_e_94_single", "delta_e_cmc_single", "delta_e_din99_single",
+    # DIN99 coordinates (via color demand kernel)
+    "lab_to_din99",
     # materials unit/grid/kk helpers (via model kernels)
     "energy_ev", "energy_ev_arr", "energy_grid", "eps2_monolog",
     "eps2_multi", "generate_from_steps", "kk_fft", "wiener_bounds",

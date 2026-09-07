@@ -1743,7 +1743,7 @@ mod tests {
                     R4Qty::XyY,
                     R4Ref::Triple(reference),
                     R4Dist::Channels,
-                    1.0,
+                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
                 )
                 .unwrap(),
             )
@@ -1854,6 +1854,9 @@ mod tests {
             (QQty::Srgb, QRef::Triple([0.5, 0.4, 0.6])),
             (QQty::Luv, QRef::Triple([50.0, 10.0, -20.0])),
             (QQty::Xyz, QRef::Triple([0.3, 0.4, 0.2])),
+            (QQty::Din99, QRef::Triple([50.0, 5.0, 5.0])),
+            (QQty::White, QRef::Pair([90.0, 2.0])),
+            (QQty::Yellow, QRef::Scalar(5.0)),
         ];
         let base = vec![0.55, 0.50, 0.45, 0.60, 0.52, 0.48];
         let mk = |row: Vec<f64>| {
@@ -1875,7 +1878,7 @@ mod tests {
                         q,
                         r,
                         QDist::Channels,
-                        1.0,
+                        1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
                     )
                     .unwrap(),
                 )
@@ -1927,7 +1930,7 @@ mod tests {
                     DQty::DomWl,
                     DRef::Pair([540.0, 0.7]),
                     DDist::Channels,
-                    1.0,
+                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
                 )
                 .unwrap(),
             )
