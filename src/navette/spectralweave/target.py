@@ -183,8 +183,15 @@ class ColorTarget:
     Lab white point is always the demand illuminant's own white.
     Limits (all refused natively with named messages): front R/T curves
     only (no back, no absorption/phase curves), kind ``"Exact"`` only,
-    ``"linear"`` only; quantities Lab|XyY|LCh|Oklab|Y — DeltaE2000|DeltaE76
-    in Lab/LCh only (XyY and Oklab take Channels; Y is scalar Channels).
+    ``"linear"`` only; quantities Lab|XyY|LCh|Oklab|Y|DomWl|sRGB|Luv|XYZ|
+    Din99|White|Yellow — DeltaE2000|DeltaE76 in Lab|LCh only (everything
+    else takes Channels; Y|Yellow are scalar Channels; DomWl|White are
+    [2]-pair Channels: (nm, purity) | (whiteness, tint)). ``reference``
+    is a triple, a scalar for ``"Y"``|``"Yellow"``, or a pair for
+    ``"DomWl"``|``"White"``. Channels tolerances are unit and fixed
+    (no per-channel tol in v1) — see
+    ``docs/spectralweave-target-kinds.md`` for the effective weighting
+    this implies per quantity (notably DomWl purity).
     Oklab references are D65-Oklab (non-D65 demands Bradford-adapt first;
     in-tree D65 white carries a pre-existing ~1e-4 b offset — systematic,
     far below demand relevance). LCh hue wraps before scaling; near-neutral
@@ -267,7 +274,7 @@ BaseTarget = Union[SpectralTarget, AngularTarget, ColorTarget]
 @dataclass(slots=True)
 class TargetCollection:
     """
-    User-facing container for mixed Spectral and Angular targets.
+    User-facing container for mixed Spectral, Angular, and Color targets.
     """
     _spectral_targets: list[SpectralTarget] = field(default_factory=list)
     _angular_targets:  list[AngularTarget]  = field(default_factory=list)

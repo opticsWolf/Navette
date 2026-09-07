@@ -257,16 +257,36 @@ quantity × distance × weight. Defaults D65 + 1931 2°, all overridable;
 names (`"D65"`, `"1931_2deg"`) resolve to the embedded defaults, anything
 else must be an explicit table (no registry to drift).
 
-- **Quantities/distances:** Lab|XyY × DeltaE2000|DeltaE76|Channels, with
-  the compat matrix enforced at compile (XyY takes Channels only — DeltaE
-  is Lab-space). Lab white is always the demand illuminant's own white
+- **Quantities/distances:** Lab|XyY (P1), LCh|Oklab|Y (P2),
+  DomWl|sRGB|Luv|XYZ|Din99|White|Yellow (P3) ×
+  DeltaE2000|DeltaE76|Channels, with the compat matrix enforced at
+  compile (DeltaE2000|DeltaE76 live in Lab|LCh only — everything else
+  takes Channels; Y|Yellow are scalar Channels; DomWl|White are pair
+  Channels). Lab white is always the demand illuminant's own white
   (computed at compile from native tables, never adapted).
 - **Kinds/transforms:** `Exact` + `linear` only. No `integral` /
   `count_norm` / `phase` / `band` — a color demand already is integral
   (one residual per demand, not per wavelength).
+- **Channels tolerances are unit and fixed (v1):** there is no
+  per-channel tol — every Channels residual divides by 1.0 in native
+  channel units, and `weight` scales the whole demand only. Effective
+  weighting this implies: Lab/LCh/sRGB channels are comparable-by-luck
+  (L ~ 0-100 vs a/b, hue degrees, rgb units); XyY/XYZ/Y compare
+  commensurate 0-1 units; White W (0-100) vs Tw comparable-ish. The
+  exception is **DomWl: wavelength (nm) vs purity (0-1) equally
+  weighted, so 1 nm ≡ 1.0 purity — purity is ~100x mute in practice
+  and the demand overwhelmingly optimizes wavelength.** A purity-first
+  DomWl demand is not expressible in v1 (per-channel tol is parked as
+  a non-breaking additive follow-up); use `weight` for demand-level
+  balance only.
 - **Merit path:** missing curve fails the whole key group (standard
   missing-penalty path, parity with pointwise); empty table/sim overlap
   errors instead of skipping (a demand that sees nothing is a spec bug).
+  Coverage note: the integral runs over the OVERLAP SUBSET of sim grid
+  and demand tables — partial overlap narrows the integral silently
+  (deliberate: narrow-window twins use this on purpose). A typo'd table
+  range therefore yields a finite, plausible, wrong merit; when a demand
+  looks dead, check table-vs-sim coverage first.
 - **Needle fold (Option B):** each demand deposits its analytic gradient
   g(point) = dF/dcurve (weight, residual, and the U-curve half included)
   into the `grad_r`/`grad_t` buckets — not a (target, weight) pair. `Ru`
@@ -288,13 +308,15 @@ else must be an explicit table (no registry to drift).
   smooth). DeltaE on Oklab is refused — equal-tol Channels *is*
   unweighted Euclidean. Note: the in-tree D65 white constant and the
   Oklab matrix disagree ~1e-4 in b (pre-existing); systematic, negligible.
-- **Y:** scalar reference, single residual off `tol[0]` (the AR classic:
-  dark residual, hue free).
+- **Y:** scalar reference, single residual off `tol[0]` (= 1.0 unit —
+  see the unit-tol note above; the AR classic: dark residual, hue free).
 
 ### Dominant wavelength + purity (P3: `DomWl`)
 
 - **Reference** is a `[wavelength_nm, purity]` pair; residual is
-  Channels-style off `tol[0]` (nm) / `tol[1]` (purity). DeltaE refused.
+  Channels-style off `tol[0]` (nm) / `tol[1]` (purity) — both unit (see
+  the unit-tol note above: purity is effectively ~100x mute). DeltaE
+  refused.
 - **Geometry:** forward ray (own-white → sample) vs the demand-locus
   polyline (monochromatic chromaticities of the demand CMF): a hit past
   the sample is spectral (`purity = 1/t`). A miss means a purple-direction
@@ -328,7 +350,8 @@ else must be an explicit table (no registry to drift).
   0-1, hence x100). The formula needs only XYZ + demand white —
   illuminant-agnostic by construction. Perfect diffuser hits exactly
   (100, 0). No CIE validity-box enforcement (documented scope).
-- **`Yellow`:** ASTM E313 scalar `100*(Cx*X - Cz*Z)/Y` off `tol[0]`.
+- **`Yellow`:** ASTM E313 scalar `100*(Cx*X - Cz*Z)/Y` off `tol[0]`
+  (= 1.0 unit).
   Coefficients ride the demand (`yi_cx`/`yi_cz`, defaulting to the E313
   D65/10-deg table 1.3013/1.1498) — other geometries pass their own
   table values explicitly, never silently reuse D65/10-deg.

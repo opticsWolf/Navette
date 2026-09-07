@@ -495,7 +495,7 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
       ReferenceJson::Valid(r) => r.clone(),
       ReferenceJson::Other(v) => {
         return Err(format!(
-          "color: reference must be a [3] triple (scalar for 'Y'), got {v}."
+          "color: reference must be a [3] triple (scalar for 'Y'|'Yellow', [2] pair for 'DomWl'|'White'), got {v}."
         ))
       }
     };

@@ -1,8 +1,14 @@
 //! synthesis::color_merit — colorimetric demand kernel (Option B plan D2).
 //!
-//! P1 serves `Lab | XyY` × `DeltaE2000 | DeltaE76 | Channels`. The P2
-//! variants (`LCh | Oklab | Y`) exist in the enums so the schema is stable,
-//! but evaluate through them is refused here until 0.4.27.
+//! Shipped: 15 quantities — P1 `Lab | XyY`, P2 `LCh | Oklab | Y`, P3
+//! `DomWl | sRGB | Luv | Xyz | Din99 | White | Yellow` — crossed with
+//! `DeltaE2000 | DeltaE76 | Channels` through the compat matrix in `new`
+//! (DeltaE lives in Lab|LCh; everything else is Channels; `Y`|`Yellow`
+//! scalar, `DomWl`|`White` pair). Channels tolerances are unit and fixed
+//! (no per-channel tol in v1 — see the weighting note in
+//! `docs/spectralweave-target-kinds.md`); the integral runs over the
+//! table/sim overlap subset (empty overlap errors, partial narrows
+//! silently — same doc for the coverage rule).
 //!
 //! All fns are `pub(crate)`: the whole demand lifecycle (compile → merit →
 //! needle fold) lives in-crate; the PyO3 surface binds those arms, never
@@ -623,10 +629,9 @@ fn objective_of_xyz(demand: &ColorDemand, xyz: &[f64; 3]) -> Result<f64, String>
   }
 }
 
-/// `(residual = √F, grad = ∂F/∂R(λ))`: analytic `dXYZ/dR` (exact, linear)
-/// chained with a central 3-pt FD of the XYZ→objective map
-/// (`h = 1e-6·(1+|XYZ|)`). Cost: 1 XYZ + 6 tiny map evals.
-/// `(residual = √F, covered)` with covered sim indices: the needle fold
+/// `(residual = √F, covered)` with covered sim indices: analytic `dXYZ/dR`
+/// (exact, linear) chained with a central 3-pt FD of the XYZ→objective map
+/// (`h = 1e-6·(1+|XYZ|)`). Cost: 1 XYZ + 6 tiny map evals. The needle fold
 /// deposits each gradient value at its own sim point (solver-mapped).
 /// `eval_color` is the dense projection (covered order = ascending).
 pub(crate) fn eval_color_covered(
@@ -1130,7 +1135,8 @@ mod tests {
     assert_eq!(w, 100.0 * xyz[1] + 800.0 * (white[0] / ws - xyz[0] / s) + 1700.0 * (white[1] / ws - xyz[1] / s));
     assert_eq!(tw, 1000.0 * (white[0] / ws - xyz[0] / s) - 650.0 * (white[1] / ws - xyz[1] / s));
     assert_eq!(e313_yellowness(&xyz, 1.3013, 1.1498), 100.0 * (1.3013 * xyz[0] - 1.1498 * xyz[2]) / xyz[1]);
-    // Perfect diffuser hits W = 100, Tw = 0 (bitwise — same fractions).
+    // Perfect diffuser hits W = 100, Tw = 0 (W 1-ulp via white[1]'s own
+    // k-rounding — same class as the Y identity; Tw exactly 0).
     let [w1, t1] = cie_whiteness(&white, &white);
     // 1-ulp via white[1] (per-term k rounding, same class as the Y identity).
     assert!((w1 - 100.0).abs() < 1e-12, "{w1}");
