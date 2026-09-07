@@ -126,10 +126,14 @@ At the operating point, with `g(λ) = 2·w·residual·∂F/∂R(λ)`:
   stays green.
 - Estimated total: ~600 Rust lines + ~150 Python lines + tests.
 
-## 7. Decisions needed
-4. Option A (pseudo-demand fold, recommended) vs B (gradient bucket)?
-   — see analysis 2026-09-06 in chat; numerically identical at the op
-   point, differ in honesty/extensibility only.
-5. Embed default CIE tables (D65 + 1931-2°, ~50 KB) in the Rust crate
-   with a CI byte-compare against `src/navette/data/CIE/` (recommended)
-   vs explicit-tables-only for standalone Rust?
+## 7. Decisions (all locked 2026-09-06)
+4. **Option B** — dedicated gradient bucket (detail plan:
+   `docs/plans/color_targets_optionB_plan.md`).
+5. **Embed defaults** (D65 + 1931-2°) with CI byte-compare; explicit
+   tables always accepted as override.
+6. **Quantities, phased:** P1 Lab|xyY (+ΔE₀₀/ΔE₇₆/Channels, compat-gated);
+   P2 LCh|Oklab|Y-scalar (scalar-`reference` shape, hue-wrap, Oklab
+   D65-adapt rule); P3 on demand (sRGB/Luv/XYZ-raw/DIN99-coords,
+   whiteness/yellowness, dominant-λ, opacity-as-architecture).
+
+Parser prerequisite shipped 0.4.22 (`color::tables`, all 97 files bitwise).

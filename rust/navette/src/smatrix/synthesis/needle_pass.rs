@@ -1743,7 +1743,7 @@ mod tests {
                     R4Qty::XyY,
                     R4Ref::Triple(reference),
                     R4Dist::Channels,
-                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
+                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
                 )
                 .unwrap(),
             )
@@ -1878,7 +1878,7 @@ mod tests {
                         q,
                         r,
                         QDist::Channels,
-                        1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
+                        1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
                     )
                     .unwrap(),
                 )
@@ -1930,7 +1930,7 @@ mod tests {
                     DQty::DomWl,
                     DRef::Pair([540.0, 0.7]),
                     DDist::Channels,
-                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
+                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
                 )
                 .unwrap(),
             )

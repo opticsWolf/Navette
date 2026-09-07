@@ -176,3 +176,18 @@ def test_index_quantities_construct_and_compile():
     assert np.isfinite(spec.merit(sim, 1e6))
     with pytest.raises(ValueError, match="Channels"):
       ColorTarget(quantity=q, reference=ref, distance="DeltaE76", **kw)
+
+
+def test_wavelength_range_surface():
+  col = TargetCollection()
+  col.add(ColorTarget(quantity="Lab", reference=(60.0, 10.0, -20.0),
+                      wavelength_range=(500.0, 519.0)))
+  spec = build_merit_spec(col)
+  assert spec.n_residuals() == 1
+  wl = np.linspace(400., 700., 301)
+  row = np.full((1, len(wl)), 0.5)
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+  assert np.isfinite(spec.merit(sim, 1e6))
+  with pytest.raises(ValueError, match="lo < hi"):
+    ColorTarget(quantity="Lab", reference=(60.0, 10.0, -20.0),
+                wavelength_range=(519.0, 500.0))

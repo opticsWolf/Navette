@@ -199,6 +199,10 @@ class ColorTarget:
     near the achromatic axis). No ``integral`` /
     ``count_norm`` / ``phase`` / ``band`` — a color demand already is
     integral. ``weight`` scales the demand's merit sum (default 1).
+    ``wavelength_range`` is an optional ``[lo, hi]`` nm window restricting
+    the *sample* integral only — the white stays the full-illuminant white
+    and the DomWl locus stays full-CMF, so windowed numbers stay comparable
+    to full-range numbers (``None`` = full overlap).
     Needle note: ``Ru``/``Tu`` demands split half per polarization branch
     (Ru is the Rs/Rp mean); s/p demands ride their shared bucket, same
     convention as pointwise targets — see
@@ -216,6 +220,7 @@ class ColorTarget:
     weight:       float = 1.0
     kind:         str = "Exact"
     transform:    str = "linear"
+    wavelength_range: Union[tuple, list, None] = None
     yi_cx:        Union[float, None] = None
     yi_cz:        Union[float, None] = None
 
@@ -229,6 +234,7 @@ class ColorTarget:
             "distance": str(self.distance),
             "weight": float(self.weight) if isinstance(self.weight, (int, float)) else self.weight,
             "kind": str(self.kind), "transform": str(self.transform),
+            "wavelength_range": _dump_range(self.wavelength_range),
             "yi_cx": self.yi_cx, "yi_cz": self.yi_cz,
         }
 
@@ -252,6 +258,16 @@ def _dump_table(spec: Union[str, dict], role: str):
             out[key] = value
         return out
     return spec
+
+
+def _dump_range(wr: Union[tuple, list, None]):
+    """[lo, hi] -> [f, f], None -> None; anything else passes through
+    for the native validator to refuse with a named message."""
+    if wr is None:
+        return None
+    if isinstance(wr, (tuple, list)):
+        return [float(v) for v in wr]
+    return wr
 
 
 def _dump_reference(ref: Union[tuple, list, float]):

@@ -279,6 +279,13 @@ else must be an explicit table (no registry to drift).
   DomWl demand is not expressible in v1 (per-channel tol is parked as
   a non-breaking additive follow-up); use `weight` for demand-level
   balance only.
+- **Wavelength window:** optional `wavelength_range: [lo, hi]` nm per
+  demand restricts the *sample* integral only — the white stays the
+  full-illuminant white and the DomWl locus stays full-CMF, so windowed
+  numbers stay comparable to full-range numbers (`None` = full overlap).
+  `lo < hi` + finiteness refused natively; a window missing the grids
+  errors naming the range. The needle fold inherits it (covered points
+  deposit, the rest keep zero buckets) with zero fold changes.
 - **Merit path:** missing curve fails the whole key group (standard
   missing-penalty path, parity with pointwise); empty table/sim overlap
   errors instead of skipping (a demand that sees nothing is a spec bug).

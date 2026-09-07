@@ -29,7 +29,8 @@ def window(a, b):
 
 
 def demand(curve="Rs", angle=0.0, quantity="Lab", reference=(60.0, 10.0, -20.0),
-           distance="DeltaE2000", weight=1.0, tables=None, names=False):
+           distance="DeltaE2000", weight=1.0, tables=None, names=False,
+           wr=None):
   if names:
     illum, cmf = "D65", "1931_2deg"
   else:
@@ -42,7 +43,8 @@ def demand(curve="Rs", angle=0.0, quantity="Lab", reference=(60.0, 10.0, -20.0),
                     "illuminant": illum, "observer": cmf,
                     "quantity": quantity,
                     "reference": (list(reference) if isinstance(reference, (tuple, list)) else reference),
-                    "distance": distance, "weight": weight}],
+                    "distance": distance, "weight": weight,
+                    "wavelength_range": wr}],
          "cache_size": 128, "tolerance_floor": 1e-12}
   return compile_merit_spec(json.dumps(doc))
 
@@ -384,3 +386,29 @@ def test_white_yellow_against_hand_oracles():
   yi = 100.0 * (1.3013 * xyz[0] - 1.1498 * xyz[2]) / xyz[1]
   # sqrt(r^2) rounds once vs abs(): 1e-12, not hex.
   assert goty[0] == pytest.approx(abs(yi - 5.0), rel=1e-12)
+
+
+def test_wavelength_range_windows_the_sample_only():
+  # Full tables + wr=[500, 519] vs oracle integrating ONLY that slice.
+  # White stays full-range: oracle Lab uses the full-table white.
+  wl, x, y, z, el, ev = window(400.0, 700.0)
+  row = 0.5 + 0.3 * np.sin((wl - 400.0) / 300.0 * np.pi)
+  ref = (60.0, 10.0, -20.0)
+  spec = demand(quantity="Lab", reference=ref, distance="DeltaE2000",
+                tables=(wl, x, y, z, el, ev), wr=[500.0, 519.0])
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = spec.residuals(sim)
+  assert spec.n_residuals() == 1 and len(got) == 1
+  m = (wl >= 500.0) & (wl <= 519.0)
+  xyz = xyz_oracle(row[m].tolist(), wl[m].tolist(), x[m].tolist(),
+                   y[m].tolist(), z[m].tolist(), ev[m].tolist())
+  white = xyz_oracle([1.0] * len(wl), wl.tolist(), x.tolist(), y.tolist(),
+                     z.tolist(), ev.tolist())
+  lab = C.XYZ_to_Lab(np.array([xyz]), illuminant=white)[0]
+  tlab = np.asarray(ref)
+  d = C.delta_E_CIE2000(np.array([lab]), np.array([ref]), 1.0, 1.0, 1.0, False)[0]
+  assert got[0] == pytest.approx(float(d), rel=1e-12)
+  # Reversed range refuses LOUD at compile (named, not silent).
+  with pytest.raises(Exception, match="lo < hi"):
+    demand(quantity="Lab", reference=ref, distance="DeltaE2000",
+           tables=(wl, x, y, z, el, ev), wr=[519.0, 500.0])

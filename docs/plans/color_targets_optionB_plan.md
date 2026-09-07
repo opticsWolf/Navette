@@ -395,6 +395,15 @@ kernel first) would touch every arm twice.
   Twins: din99 vs numpy closed form, whiteness hand oracle, yellowness
   E313 hand, gates incl. coeff ride-through, needle FD extended to 11,
   surface builds. 335+22+15 Rust, exposure 208/94, 353 green).
+  Per-target wavelength_range DONE 0.4.31 (dev, outside the P3 list —
+  user-requested, no back-compat constraint: optional `[lo, hi]` window
+  on the sample integral only — white stays full-illuminant, DomWl locus
+  stays full-CMF; merit + fold untouched (ninth feature in a row).
+  Twins: windowed-full BITWISE truncated-tables (xyz + residual + grad),
+  white/locus invariance, lo<hi/named-range refusals, outside-window FD
+  exactly zero, R2 forward + loud-length refusal, Python windowed oracle
+  1e-12 + reversed refuses, surface builds. 339+22+15 Rust, exposure
+  208/94, 355 green).
   Original P3 list (kept for reference): sRGB / Luv /
   XYZ-raw / DIN99-coords (all kernels in-tree); whiteness/yellowness
   (~20-line kernels first); dominant-wavelength+purity (2-vector ref +
@@ -420,7 +429,8 @@ ff to main. Parser prerequisite shipped 0.4.22 (all 97 files bitwise).
 ## D11. Opacity — two-spectrum demand (DEFERRED 2026-09-07, spec locked)
 
 STATUS: deferred by user decision — do NOT implement until recalled.
-When recalled: version 0.4.31, implement D11.1–D11.5 as written, then
+When recalled: version 0.4.32 (0.4.31 taken by the per-target
+wavelength_range feature), implement D11.1–D11.5 as written, then
 resolve the one open question below (one-line spec change either way).
 
 OPEN QUESTION (flagged back by the designer, awaiting user call on

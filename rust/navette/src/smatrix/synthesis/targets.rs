@@ -147,6 +147,14 @@ pub struct ColorTargetJson {
   pub quantity: String,
   pub reference: ReferenceJson,
   pub distance: String,
+  /// Optional sample-integration window `[lo, hi]` nm (`None` = full
+  /// overlap). Restricts the sample integral only — white stays the
+  /// full-illuminant white, DomWl locus stays full-CMF. Wrong-length
+  /// arrays fail deserialization loud (generic serde length error —
+  /// typed-field precedent); `lo < hi` + finiteness enforced in
+  /// `ColorDemand::new`.
+  #[serde(default)]
+  pub wavelength_range: Option<[f64; 2]>,
   #[serde(default = "d_weight")]
   pub weight: f64,
   /// E313 yellowness coefficients (Yellow only; defaults: D65/10 deg
@@ -535,6 +543,7 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
       t.weight,
       t.yi_cx.unwrap_or(crate::smatrix::synthesis::color_merit::E313_CX_D65_10),
       t.yi_cz.unwrap_or(crate::smatrix::synthesis::color_merit::E313_CZ_D65_10),
+      t.wavelength_range,
     )
 }
 
@@ -798,6 +807,7 @@ mod tests {
       reference: ReferenceJson::Valid(ColorReference::Triple([60.0, 10.0, -20.0])),
       distance: "DeltaE2000".to_string(),
       weight: 1.0,
+      wavelength_range: None,
       yi_cx: None,
       yi_cz: None,
       kind: "Exact".to_string(),
@@ -898,6 +908,40 @@ mod tests {
         "{q}"
       );
     }
+  }
+
+  #[test]
+  fn wavelength_range_forwards_and_misshaped_is_loud() {
+    // Forwards onto the demand (bitwise ride-through).
+    let mut set = color_set();
+    set.color[0].wavelength_range = Some([520.0, 550.0]);
+    let spec = compile_merit_spec(&set).unwrap();
+    assert_eq!(spec.color_demands()[0].wr, Some([520.0, 550.0]));
+    // White stays full-range even when windowed (sample-only semantics).
+    let full = compile_merit_spec(&color_set()).unwrap();
+    assert_eq!(
+      spec.color_demands()[0].white,
+      full.color_demands()[0].white
+    );
+    // Reversed range refuses with a named message.
+    let mut set = color_set();
+    set.color[0].wavelength_range = Some([550.0, 520.0]);
+    assert!(
+      compile_merit_spec(&set)
+        .unwrap_err()
+        .contains("lo < hi")
+    );
+    // Wrong-length array fails deserialization LOUD (hard compile error —
+    // generic serde length message, same precedent as every other typed
+    // field; domain refusals like lo<hi above carry the names).
+    let mut v = serde_json::to_value(color_set()).unwrap();
+    v["color"][0]["wavelength_range"] = serde_json::json!([500.0, 520.0, 540.0]);
+    assert!(
+      serde_json::from_value::<TargetSet>(v)
+        .unwrap_err()
+        .to_string()
+        .contains("length")
+    );
   }
 
   #[test]
@@ -1017,7 +1061,7 @@ mod tests {
     let ones = vec![1.0; dt.illum_wl.len()];
     let white = xyz_of_spectrum(
       &ones, &dt.illum_wl, &dt.cmf_xyz, &dt.cmf_wl, &dt.illum, &dt.illum_wl,
-    )
+    None)
     .unwrap();
     assert_eq!(d.white, white);
   }

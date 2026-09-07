@@ -1843,7 +1843,7 @@ mod tests {
       let ones = vec![1.0; NW];
       let white = crate::smatrix::synthesis::color_merit::xyz_of_spectrum(
         &ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl,
-      )
+      None)
       .unwrap();
       let s = white[0] + white[1] + white[2];
       let mut spec = MeritSpec::new();
@@ -1859,7 +1859,7 @@ mod tests {
             ColorQuantity::XyY,
             ColorReference::Triple([white[0] / s, white[1] / s, target_y]),
             ColorDistance::Channels,
-            1.0,
+            1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
           )
           .unwrap(),
         )

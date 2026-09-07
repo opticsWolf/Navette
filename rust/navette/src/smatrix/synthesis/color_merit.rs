@@ -104,6 +104,11 @@ pub struct ColorDemand {
   /// E313 coefficients for `Yellow` (defaults: D65/10 deg table).
   pub yi_cx: f64,
   pub yi_cz: f64,
+  /// Optional sample-integration window `[lo, hi]` nm (`None` = full
+  /// overlap). Restricts the SAMPLE integral only: the white stays the
+  /// full-illuminant white and the DomWl locus stays full-CMF, so
+  /// windowed numbers stay comparable to full-range numbers.
+  pub wr: Option<[f64; 2]>,
   pub quantity: ColorQuantity,
   pub reference: ColorReference,
   pub distance: ColorDistance,
@@ -139,6 +144,7 @@ impl ColorDemand {
     weight: f64,
     yi_cx: f64,
     yi_cz: f64,
+    wr: Option<[f64; 2]>,
   ) -> Result<Self, String> {
     // Reference shape gates on quantity (all three shapes, both directions).
     match (&quantity, &reference) {
@@ -232,6 +238,16 @@ impl ColorDemand {
     if !yi_cx.is_finite() || !yi_cz.is_finite() {
       return Err("color: non-finite E313 coefficients.".to_string());
     }
+    if let Some([lo, hi]) = wr {
+      if !lo.is_finite() || !hi.is_finite() {
+        return Err("color: non-finite wavelength_range bound.".to_string());
+      }
+      if !(lo < hi) {
+        return Err(format!(
+          "color: wavelength_range must be [lo, hi] with lo < hi, got [{lo}, {hi}]."
+        ));
+      }
+    }
     // DomWl locus: monochromatic chromaticities of the demand CMF
     // (illuminant-independent); degenerate tables refused here.
     let locus: Vec<([f64; 2], f64)> = if quantity == ColorQuantity::DomWl {
@@ -251,8 +267,10 @@ impl ColorDemand {
     };
     // Own-white rule: integrate the illuminant as a perfect diffuser on
     // its NATIVE grid (no resample involved — both tables native here).
+    // ALWAYS full range (`None`): the white is the illuminant's own white,
+    // never windowed — `wr` restricts the sample integral only.
     let ones = vec![1.0; illuminant.len()];
-    let white = xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl)?;
+    let white = xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl, None)?;
     if white.iter().any(|v| !v.is_finite()) {
       return Err("color: degenerate illuminant (non-finite white point).".to_string());
     }
@@ -261,6 +279,7 @@ impl ColorDemand {
       locus,
       yi_cx,
       yi_cz,
+      wr,
       cmf,
       cmf_wl,
       illuminant,
@@ -315,6 +334,7 @@ fn xyz_workspace(
   cmf_wl: &[f64],
   illum: &[f64],
   illum_wl: &[f64],
+  wr: Option<[f64; 2]>,
 ) -> Result<XyzWorkspace, String> {
   if sim_row.len() != sim_wl.len() || sim_row.is_empty() {
     return Err("color: spectrum length != grid length (or empty).".to_string());
@@ -327,6 +347,13 @@ fn xyz_workspace(
   let mut e_res = Vec::new();
   let mut cmf_res = Vec::new();
   for (i, &w) in sim_wl.iter().enumerate() {
+    // Sample window: points outside [lo, hi] never enter the integral
+    // (inclusive bounds; the white/locus above already used full range).
+    if let Some([lo, hi]) = wr {
+      if w < lo || w > hi {
+        continue;
+      }
+    }
     let e = resample(illum_wl, illum, w);
     let x = resample(cmf_wl, &cmf_c[0], w);
     let y = resample(cmf_wl, &cmf_c[1], w);
@@ -338,7 +365,12 @@ fn xyz_workspace(
     }
   }
   if idx.is_empty() {
-    return Err("color: no overlap between sim grid and CMF/illuminant tables.".to_string());
+    return Err(match wr {
+      Some([lo, hi]) => format!(
+        "color: no overlap between wavelength_range [{lo}, {hi}] and the sim grid/tables."
+      ),
+      None => "color: no overlap between sim grid and CMF/illuminant tables.".to_string(),
+    });
   }
   if idx.len() < 2 {
     return Err("color: table overlap is a single point (need >= 2).".to_string());
@@ -378,8 +410,9 @@ pub(crate) fn xyz_of_spectrum(
   cmf_wl: &[f64],
   illum: &[f64],
   illum_wl: &[f64],
+  wr: Option<[f64; 2]>,
 ) -> Result<[f64; 3], String> {
-  xyz_workspace(sim_row, sim_wl, cmf, cmf_wl, illum, illum_wl).map(|w| w.xyz)
+  xyz_workspace(sim_row, sim_wl, cmf, cmf_wl, illum, illum_wl, wr).map(|w| w.xyz)
 }
 
 /// XYZ → quantity triple. Lab white = the demand illuminant's own white.
@@ -639,7 +672,15 @@ pub(crate) fn eval_color_covered(
   sim_row: &[f64],
   sim_wl: &[f64],
 ) -> Result<(f64, Vec<(usize, f64)>), String> {
-  let ws = xyz_workspace(sim_row, sim_wl, &demand.cmf, &demand.cmf_wl, &demand.illuminant, &demand.illum_wl)?;
+  let ws = xyz_workspace(
+    sim_row,
+    sim_wl,
+    &demand.cmf,
+    &demand.cmf_wl,
+    &demand.illuminant,
+    &demand.illum_wl,
+    demand.wr,
+  )?;
   let f0 = objective_of_xyz(demand, &ws.xyz)?;
   if !f0.is_finite() {
     return Err("color: non-finite objective at op point.".to_string());
@@ -704,7 +745,7 @@ mod tests {
       ColorQuantity::Lab,
       ColorReference::Triple([60.0, 10.0, -20.0]),
       ColorDistance::DeltaE2000,
-      2.0, E313_CX_D65_10, E313_CZ_D65_10,
+      2.0, E313_CX_D65_10, E313_CZ_D65_10, None,
     )
     .unwrap()
   }
@@ -716,7 +757,7 @@ mod tests {
     let d = toy_demand();
     let ones = vec![1.0; 8];
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
-    let xyz = xyz_of_spectrum(&ones, &cmf_wl, &cmf, &cmf_wl, &illuminant, &illum_wl).unwrap();
+    let xyz = xyz_of_spectrum(&ones, &cmf_wl, &cmf, &cmf_wl, &illuminant, &illum_wl, None).unwrap();
     // 1-ulp, not bitwise: the per-term k multiplication rounds once.
     assert!((xyz[1] - 1.0).abs() < 1e-15);
     assert!((d.white[1] - 1.0).abs() < 1e-15);
@@ -730,7 +771,7 @@ mod tests {
     // bounds both formula and summation-order error.
     let (wl, cmf, _, illum) = toy();
     let ramp: Vec<f64> = (0..8).map(|i| 0.2 + 0.05 * i as f64).collect();
-    let xyz = xyz_of_spectrum(&ramp, &wl, &cmf, &wl, &illum, &wl).unwrap();
+    let xyz = xyz_of_spectrum(&ramp, &wl, &cmf, &wl, &illum, &wl, None).unwrap();
     let h: f64 = 10.0;
     let denom: f64 = (0..8).rev().map(|i| illum[i] * cmf[i][1] * h).sum();
     let k = 1.0 / denom;
@@ -795,8 +836,8 @@ mod tests {
       rp[i] += delta;
       let mut rm = row.clone();
       rm[i] -= delta;
-      let fp = objective_of_xyz(&d, &xyz_of_spectrum(&rp, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap()).unwrap();
-      let fm = objective_of_xyz(&d, &xyz_of_spectrum(&rm, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap()).unwrap();
+      let fp = objective_of_xyz(&d, &xyz_of_spectrum(&rp, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap()).unwrap();
+      let fm = objective_of_xyz(&d, &xyz_of_spectrum(&rm, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap()).unwrap();
       let brute = (fp - fm) / (2.0 * delta);
       let rel = (grad[i] - brute).abs() / brute.abs().max(1e-300);
       assert!(rel < 1e-6, "λ{i} rel={rel}");
@@ -808,7 +849,7 @@ mod tests {
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
     let mk = |q, r, dist| {
       ColorDemand::new(
-        0, cmf.clone(), cmf_wl.clone(), illuminant.clone(), illum_wl.clone(), q, r, dist, 1.0, E313_CX_D65_10, E313_CZ_D65_10,
+        0, cmf.clone(), cmf_wl.clone(), illuminant.clone(), illum_wl.clone(), q, r, dist, 1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
       )
     };
     assert!(mk(ColorQuantity::XyY, ColorReference::Triple([0.3, 0.3, 0.5]), ColorDistance::DeltaE2000)
@@ -835,7 +876,7 @@ mod tests {
     // Empty overlap / single point / non-finite.
     let d = toy_demand();
     let far: Vec<f64> = (0..8).map(|i| 1000.0 + 10.0 * i as f64).collect();
-    assert!(xyz_of_spectrum(&vec![0.5; 8], &far, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl)
+    assert!(xyz_of_spectrum(&vec![0.5; 8], &far, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None)
       .unwrap_err()
       .contains("no overlap"));
     let mut bad = vec![0.5; 8];
@@ -853,7 +894,7 @@ mod tests {
     assert_eq!(t.cmf_wl[470], 830.0);
     let ones = vec![1.0; t.illum_wl.len()];
     let white =
-      xyz_of_spectrum(&ones, &t.illum_wl, &t.cmf_xyz, &t.cmf_wl, &t.illum, &t.illum_wl).unwrap();
+      xyz_of_spectrum(&ones, &t.illum_wl, &t.cmf_xyz, &t.cmf_wl, &t.illum, &t.illum_wl, None).unwrap();
     assert!((white[1] - 1.0).abs() < 1e-12);
     assert!((white[0] - 0.9505).abs() < 1e-3, "X={}", white[0]);
     assert!((white[2] - 1.0890).abs() < 1e-3, "Z={}", white[2]);
@@ -861,7 +902,7 @@ mod tests {
 
   fn p2_demand(q: ColorQuantity, r: ColorReference) -> ColorDemand {
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
-    ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10)
+    ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10, None)
       .unwrap()
   }
 
@@ -897,7 +938,7 @@ mod tests {
     // the common D65-demand regime, exact by construction.)
     let (twl, tcmf, tewl, till) = toy();
     let ones = vec![1.0; 8];
-    let tw = xyz_of_spectrum(&ones, &tewl, &tcmf, &twl, &till, &tewl).unwrap();
+    let tw = xyz_of_spectrum(&ones, &tewl, &tcmf, &twl, &till, &tewl, None).unwrap();
     let mut w65 = [[0.0; 3]];
     adapt(&[tw], &tw, &REF_WHITE_D65, false, &mut w65);
     for i in 0..3 {
@@ -926,12 +967,12 @@ mod tests {
       ColorQuantity::LCh,
       ColorReference::Triple([60.0, 20.0, 100.0]),
       ColorDistance::DeltaE76,
-      1.0, E313_CX_D65_10, E313_CZ_D65_10,
+      1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
     )
     .unwrap();
     let row = vec![0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25];
     let (r, _) = eval_color(&d, &row, &wl).unwrap();
-    let xyz = xyz_of_spectrum(&row, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let xyz = xyz_of_spectrum(&row, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap();
     let mut lab = [[0.0; 3]];
     xyz_to_lab(&[xyz], &d.white, &mut lab);
     let mut ref_lab = [[0.0; 3]];
@@ -949,7 +990,7 @@ mod tests {
     let (wl, _, _, _) = toy();
     let row = vec![0.6; 8];
     let (r, g) = eval_color(&d, &row, &wl).unwrap();
-    let xyz = xyz_of_spectrum(&row, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let xyz = xyz_of_spectrum(&row, &wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap();
     let e = ((xyz[1] - 0.5) / 1.0).abs();
     assert_eq!(r, e);
     assert_eq!(g.len(), 8);
@@ -975,7 +1016,7 @@ mod tests {
       (ColorQuantity::Y, ColorReference::Scalar(0.4)),
     ] {
       let (cmf_wl, cmf, illum_wl, illuminant) = toy();
-      let d = ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10)
+      let d = ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10, None)
         .unwrap();
       let (resid, grad) = eval_color(&d, &row, &wl).unwrap();
       assert!(resid.is_finite());
@@ -994,7 +1035,7 @@ mod tests {
       ColorQuantity::DomWl,
       ColorReference::Pair([550.0, 0.9]),
       ColorDistance::Channels,
-      1.0, E313_CX_D65_10, E313_CZ_D65_10,
+      1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
     )
     .unwrap()
   }
@@ -1006,7 +1047,7 @@ mod tests {
     let wl = &d.illum_wl;
     // Narrow lobe at 550 nm: spectral, high purity.
     let gauss: Vec<f64> = wl.iter().map(|w| (-((w - 550.0) / 15.0).powi(2)).exp()).collect();
-    let xyz = xyz_of_spectrum(&gauss, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let xyz = xyz_of_spectrum(&gauss, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap();
     let (lam, p) = dom_wl_purity(&d, &xyz).unwrap();
     assert!((lam - 550.0).abs() < 3.0, "{lam}");
     assert!(p > 0.8, "{p}");
@@ -1017,13 +1058,13 @@ mod tests {
         (-((w - 450.0) / 12.0).powi(2)).exp() + (-((w - 650.0) / 12.0).powi(2)).exp()
       })
       .collect();
-    let xyz_m = xyz_of_spectrum(&mag, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let xyz_m = xyz_of_spectrum(&mag, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap();
     let (lam_c, p_c) = dom_wl_purity(&d, &xyz_m).unwrap();
     assert!(p_c < 0.0, "{p_c}");
     assert!((490.0..570.0).contains(&lam_c), "{lam_c}");
     // Achromatic: hue carries nothing (rule returns (0, 0)).
     let ones = vec![1.0; wl.len()];
-    let xyz_w = xyz_of_spectrum(&ones, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let xyz_w = xyz_of_spectrum(&ones, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None).unwrap();
     assert_eq!(dom_wl_purity(&d, &xyz_w).unwrap(), (0.0, 0.0));
     // Gradient finite on the smooth (spectral, mid-locus) point.
     let (resid, grad) = eval_color(&d, &gauss, wl).unwrap();
@@ -1044,7 +1085,7 @@ mod tests {
         q,
         r,
         ColorDistance::Channels,
-        1.0, E313_CX_D65_10, E313_CZ_D65_10,
+        1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
       )
     };
     assert!(mk(ColorQuantity::DomWl, ColorReference::Pair([550.0, 0.9])).is_ok());
@@ -1059,7 +1100,7 @@ mod tests {
       ColorQuantity::DomWl,
       ColorReference::Pair([550.0, 0.9]),
       ColorDistance::DeltaE2000,
-      1.0, E313_CX_D65_10, E313_CZ_D65_10,
+      1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
     );
     assert!(de.unwrap_err().contains("pair demand takes Channels"));
   }
@@ -1069,7 +1110,7 @@ mod tests {
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
     let ones = vec![1.0; 8];
     let white =
-      xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl).unwrap();
+      xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl, None).unwrap();
     let xyz = [0.3, 0.4, 0.2];
     // sRGB: same adapt + unclipped map (bitwise); negatives extend
     // linearly (finite, monotone — no clip flat-spots, no NaN).
@@ -1096,7 +1137,7 @@ mod tests {
     ] {
       let (cmf_wl2, cmf2, illum_wl2, illuminant2) = toy();
       let d = ColorDemand::new(
-        0, cmf2, cmf_wl2, illuminant2, illum_wl2, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10,
+        0, cmf2, cmf_wl2, illuminant2, illum_wl2, q, r, ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
       )
       .unwrap();
       let (resid, grad) = eval_color(&d, &row, &wl).unwrap();
@@ -1109,7 +1150,7 @@ mod tests {
     let (cmf_wl, cmf, illum_wl, illuminant) = toy();
     ColorDemand::new(
       0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0,
-      E313_CX_D65_10, E313_CZ_D65_10,
+      E313_CX_D65_10, E313_CZ_D65_10, None,
     )
     .unwrap()
   }
@@ -1120,7 +1161,7 @@ mod tests {
     let wl = cmf_wl.clone();
     let ones = vec![1.0; 8];
     let white =
-      xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl).unwrap();
+      xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl, None).unwrap();
     let xyz = [0.3, 0.4, 0.2];
     // Din99 wrapper bitwise vs direct calls.
     let mut lab = [[0.0; 3]];
@@ -1158,7 +1199,7 @@ mod tests {
   fn index_gates_name_all_sides() {
     let bad_q = |q, r: ColorReference, d: ColorDistance| {
       let (cmf_wl, cmf, illum_wl, illuminant) = toy();
-      ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, d, 1.0, 1.3013, 1.1498)
+      ColorDemand::new(0, cmf, cmf_wl, illuminant, illum_wl, q, r, d, 1.0, 1.3013, 1.1498, None)
     };
     assert!(bad_q(ColorQuantity::White, ColorReference::Triple([0.0; 3]), ColorDistance::Channels)
       .unwrap_err()
@@ -1174,9 +1215,135 @@ mod tests {
     let d = ColorDemand::new(
       0, cmf, cmf_wl, illuminant, illum_wl,
       ColorQuantity::Yellow, ColorReference::Scalar(5.0), ColorDistance::Channels, 1.0,
-      1.2769, 1.0592,
+      1.2769, 1.0592, None,
     )
     .unwrap();
     assert_eq!((d.yi_cx, d.yi_cz), (1.2769, 1.0592));
+  }
+
+  fn wr_demand(q: ColorQuantity, r: ColorReference, wr: Option<[f64; 2]>) -> ColorDemand {
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    ColorDemand::new(
+      0, cmf, cmf_wl, illuminant, illum_wl, q, r, ColorDistance::Channels, 1.0,
+      E313_CX_D65_10, E313_CZ_D65_10, wr,
+    )
+    .unwrap()
+  }
+
+  #[test]
+  fn window_refusals_name_the_range() {
+    assert!(wr_demand(ColorQuantity::Lab, ColorReference::Triple([60.0, 0.0, 0.0]), None).wr.is_none());
+    let bad = |wr| {
+      let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+      ColorDemand::new(
+        0, cmf, cmf_wl, illuminant, illum_wl,
+        ColorQuantity::Lab, ColorReference::Triple([60.0, 0.0, 0.0]),
+        ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10, wr,
+      )
+    };
+    assert!(bad(Some([520.0, 520.0])).unwrap_err().contains("lo < hi"));
+    assert!(bad(Some([540.0, 520.0])).unwrap_err().contains("lo < hi"));
+    assert!(bad(Some([f64::NAN, 540.0])).unwrap_err().contains("non-finite"));
+    // Window missing the tables entirely names the range (not bare overlap).
+    let d = wr_demand(
+      ColorQuantity::Lab,
+      ColorReference::Triple([60.0, 0.0, 0.0]),
+      Some([1000.0, 1010.0]),
+    );
+    let (wl, _, _, _) = toy();
+    assert!(
+      eval_color(&d, &vec![0.5; 8], &wl)
+        .unwrap_err()
+        .contains("[1000, 1010]")
+    );
+  }
+
+  #[test]
+  fn windowed_full_is_bitwise_truncated_tables() {
+    // Same nodes, same resample, same dw subset, same k — windowing the
+    // full tables MUST equal pre-truncated tables op-for-op.
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    let row = vec![0.5, 0.55, 0.6, 0.65, 0.6, 0.55, 0.5, 0.45];
+    let wl = cmf_wl.clone();
+    // Window [520, 550] = toy indices 2..=5.
+    let win = wr_demand(
+      ColorQuantity::Lab,
+      ColorReference::Triple([60.0, 10.0, -20.0]),
+      Some([520.0, 550.0]),
+    );
+    let tcmf: Vec<[f64; 3]> = cmf[2..=5].to_vec();
+    let tcmf_wl: Vec<f64> = cmf_wl[2..=5].to_vec();
+    let till: Vec<f64> = illuminant[2..=5].to_vec();
+    let till_wl: Vec<f64> = illum_wl[2..=5].to_vec();
+    let trunc = ColorDemand::new(
+      0, tcmf.clone(), tcmf_wl.clone(), till.clone(), till_wl.clone(),
+      ColorQuantity::Lab, ColorReference::Triple([60.0, 10.0, -20.0]),
+      ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10, None,
+    )
+    .unwrap();
+    let xw = xyz_of_spectrum(&row, &wl, &cmf, &cmf_wl, &illuminant, &illum_wl, Some([520.0, 550.0])).unwrap();
+    let xt = xyz_of_spectrum(&row[2..=5], &tcmf_wl, &tcmf, &tcmf_wl, &till, &till_wl, None).unwrap();
+    assert_eq!(xw, xt);
+    // eval_color strips indices (covered-only, covered order): both sides
+    // hold exactly the window entries — bitwise.
+    let (rw, gw) = eval_color(&win, &row, &wl).unwrap();
+    let (rt, gt) = eval_color(&trunc, &row[2..=5], &tcmf_wl).unwrap();
+    assert_eq!(rw, rt);
+    assert_eq!(gw, gt);
+    // Exclusion lives in the indices (the fold deposits covered only, so
+    // outside-window solver points keep their default zero bucket).
+    let (_, covered) = eval_color_covered(&win, &row, &wl).unwrap();
+    assert_eq!(covered.len(), 4);
+    assert!(covered.iter().all(|(i, _)| (2..=5).contains(i)));
+    // White is the FULL-illuminant white regardless of window (bitwise:
+    // same inputs, same order as the unwindowed demand).
+    let full = wr_demand(
+      ColorQuantity::Lab,
+      ColorReference::Triple([60.0, 10.0, -20.0]),
+      None,
+    );
+    assert_eq!(win.white, full.white);
+  }
+
+  #[test]
+  fn window_leaves_locus_and_fd_outside_zero() {
+    // DomWl locus is built from the full CMF even when windowed.
+    let t = default_tables();
+    let mk = |wr| {
+      ColorDemand::new(
+        0,
+        t.cmf_xyz.clone(),
+        t.cmf_wl.clone(),
+        t.illum.clone(),
+        t.illum_wl.clone(),
+        ColorQuantity::DomWl,
+        ColorReference::Pair([550.0, 0.9]),
+        ColorDistance::Channels,
+        1.0, E313_CX_D65_10, E313_CZ_D65_10,
+        wr,
+      )
+      .unwrap()
+    };
+    let (full, win) = (mk(None), mk(Some([500.0, 600.0])));
+    assert_eq!(win.locus.len(), full.locus.len());
+    // FD outside the window moves nothing: merit delta is exactly 0 and
+    // the fold holds no entry there (covered-subset semantics).
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    let wl = cmf_wl.clone();
+    let d = ColorDemand::new(
+      0, cmf, cmf_wl, illuminant, illum_wl,
+      ColorQuantity::Lab, ColorReference::Triple([60.0, 10.0, -20.0]),
+      ColorDistance::Channels, 1.0, E313_CX_D65_10, E313_CZ_D65_10,
+      Some([520.0, 550.0]),
+    )
+    .unwrap();
+    let row = vec![0.5, 0.55, 0.6, 0.65, 0.6, 0.55, 0.5, 0.45];
+    let (r0, _) = eval_color(&d, &row, &wl).unwrap();
+    let mut bumped = row.clone();
+    bumped[0] += 1e-6; // 500 nm — outside [520, 550]
+    let (r1, _) = eval_color(&d, &bumped, &wl).unwrap();
+    assert_eq!(r0, r1);
+    let (_, covered) = eval_color_covered(&d, &row, &wl).unwrap();
+    assert!(covered.iter().all(|(i, _)| (2..=5).contains(i)));
   }
 }
