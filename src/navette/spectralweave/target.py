@@ -164,7 +164,7 @@ class AngularTarget:
         object.__setattr__(self, 'band', band)
         _validate(_json.dumps({"spectral": [], "angular": [self._dump()]}))
 
-ColorQuantity = Literal["Lab", "XyY", "LCh", "Oklab", "Y"]
+ColorQuantity = Literal["Lab", "XyY", "LCh", "Oklab", "Y", "DomWl"]
 ColorDistance = Literal["DeltaE2000", "DeltaE76", "Channels"]
 
 

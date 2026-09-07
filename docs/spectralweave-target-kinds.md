@@ -290,3 +290,19 @@ else must be an explicit table (no registry to drift).
   Oklab matrix disagree ~1e-4 in b (pre-existing); systematic, negligible.
 - **Y:** scalar reference, single residual off `tol[0]` (the AR classic:
   dark residual, hue free).
+
+### Dominant wavelength + purity (P3: `DomWl`)
+
+- **Reference** is a `[wavelength_nm, purity]` pair; residual is
+  Channels-style off `tol[0]` (nm) / `tol[1]` (purity). DeltaE refused.
+- **Geometry:** forward ray (own-white → sample) vs the demand-locus
+  polyline (monochromatic chromaticities of the demand CMF): a hit past
+  the sample is spectral (`purity = 1/t`). A miss means a purple-direction
+  ray; the backward extension hits the locus (complementary branch,
+  purity **negative** — explicit in the value, never a hidden mode).
+- **Achromatic samples** (|d| < 1e-9 in xy) return (0, 0): hue carries no
+  information at white, purity does the work. Any rule kinks here
+  (lambda is undefined at white) — same family as band-edge kinks; pair
+  hue demands with a purity/Y floor, or use Lab near neutrals.
+- Mixed-branch refs (spectral op vs complementary ref) stay continuous
+  in purity but kink in lambda at white — pick refs in the right family.

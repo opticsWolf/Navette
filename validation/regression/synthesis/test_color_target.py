@@ -27,8 +27,10 @@ def test_construction_refusals_mirror_native():
     ColorTarget(distance="DIN99")
   with pytest.raises(ValueError, match="scalar reference"):
     ColorTarget(reference=1.5)
-  with pytest.raises(ValueError, match="\\[3\\] triple"):
+  with pytest.raises(ValueError, match="pair reference"):
     ColorTarget(reference=[1.0, 2.0])
+  with pytest.raises(ValueError, match="\\[3\\] triple"):
+    ColorTarget(reference=[1.0, 2.0, 3.0, 4.0])
   with pytest.raises(ValueError, match="unknown illuminant"):
     ColorTarget(illuminant="F2")
   # Defaults construct clean.
@@ -125,3 +127,19 @@ def test_p2_quantities_construct_and_compile():
                 distance="DeltaE76")
   with pytest.raises(ValueError, match="'Y'"):
     ColorTarget(quantity="Y", reference=0.45, distance="DeltaE2000")
+
+
+def test_domwl_constructs_and_compiles():
+  col = TargetCollection()
+  col.add(ColorTarget(curve="Rs", quantity="DomWl", reference=(550.0, 0.9),
+                      distance="Channels"))
+  spec = build_merit_spec(col)
+  assert spec.n_residuals() == 1
+  wl = np.linspace(400., 700., 301)
+  row = np.exp(-((wl - 550.0) / 15.0) ** 2).reshape(1, -1)
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row})
+  assert np.isfinite(spec.merit(sim, 1e6))
+  with pytest.raises(ValueError, match="DomWl"):
+    ColorTarget(quantity="DomWl", reference=(60.0, 10.0, -20.0))
+  with pytest.raises(ValueError, match="pair reference"):
+    ColorTarget(reference=(550.0, 0.9))

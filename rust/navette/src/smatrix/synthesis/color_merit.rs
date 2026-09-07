@@ -26,6 +26,9 @@ pub enum ColorQuantity {
   LCh,
   Oklab,
   Y,
+  /// Dominant wavelength + purity (P3): [wavelength_nm, purity] pair ref,
+  /// Channels-style residual off tol[0] (nm) / tol[1] (purity).
+  DomWl,
 }
 
 /// P1: all three live; XyY×ΔE and Oklab×ΔE are refused (see matrix).
@@ -44,6 +47,9 @@ pub enum ColorDistance {
 #[serde(untagged)]
 pub enum ColorReference {
   Triple([f64; 3]),
+  /// Dominant-wavelength pair: [wavelength_nm, purity] (purity < 0 flags
+  /// the complementary branch — explicit in the value, never a hidden mode).
+  Pair([f64; 2]),
   Scalar(f64),
 }
 
@@ -61,6 +67,10 @@ pub struct ColorDemand {
   pub illuminant: Vec<f64>,
   pub illum_wl: Vec<f64>,
   pub white: [f64; 3],
+  /// DomWl locus polyline ((x, y), wavelength), built from the demand CMF
+  /// in `new` (monochromatic chromaticities — illuminant-independent).
+  /// Empty for other quantities.
+  pub locus: Vec<([f64; 2], f64)>,
   pub quantity: ColorQuantity,
   pub reference: ColorReference,
   pub distance: ColorDistance,
@@ -95,15 +105,24 @@ impl ColorDemand {
     distance: ColorDistance,
     weight: f64,
   ) -> Result<Self, String> {
-    // Reference shape gates on quantity (both directions).
-    let want_scalar = quantity == ColorQuantity::Y;
-    let got_scalar = matches!(reference, ColorReference::Scalar(_));
-    if want_scalar != got_scalar {
-      return Err(if want_scalar {
-        "color: quantity 'Y' needs a scalar reference.".to_string()
-      } else {
-        "color: scalar reference needs quantity 'Y'.".to_string()
-      });
+    // Reference shape gates on quantity (all three shapes, both directions).
+    match (&quantity, &reference) {
+      (ColorQuantity::DomWl, ColorReference::Pair(_)) => {}
+      (ColorQuantity::Y, ColorReference::Scalar(_)) => {}
+      (_, ColorReference::Triple(_))
+        if quantity != ColorQuantity::DomWl && quantity != ColorQuantity::Y => {}
+      (ColorQuantity::DomWl, _) => {
+        return Err(
+          "color: quantity 'DomWl' needs a [2] [wavelength_nm, purity] reference.".to_string(),
+        )
+      }
+      (ColorQuantity::Y, _) => {
+        return Err("color: quantity 'Y' needs a scalar reference.".to_string())
+      }
+      (_, ColorReference::Pair(_)) => {
+        return Err("color: [2] pair reference needs quantity 'DomWl'.".to_string())
+      }
+      (_, _) => return Err("color: scalar reference needs quantity 'Y'.".to_string()),
     }
     // Compat matrix (§D2): ΔE is Lab-space (XyY takes Channels);
     // Oklab-ΔE would double-count (equal-tol Channels is mathematically
@@ -122,6 +141,11 @@ impl ColorDemand {
       (ColorQuantity::Y, ColorDistance::DeltaE2000) | (ColorQuantity::Y, ColorDistance::DeltaE76) => {
         return Err(format!(
           "color: quantity 'Y' with distance '{distance:?}' refused (scalar demand takes Channels)."
+        ))
+      }
+      (ColorQuantity::DomWl, ColorDistance::DeltaE2000) | (ColorQuantity::DomWl, ColorDistance::DeltaE76) => {
+        return Err(format!(
+          "color: quantity 'DomWl' with distance '{distance:?}' refused (pair demand takes Channels)."
         ))
       }
       _ => {}
@@ -144,6 +168,23 @@ impl ColorDemand {
         return Err("color: non-finite reference triple.".to_string());
       }
     }
+    // DomWl locus: monochromatic chromaticities of the demand CMF
+    // (illuminant-independent); degenerate tables refused here.
+    let locus: Vec<([f64; 2], f64)> = if quantity == ColorQuantity::DomWl {
+      let mut loc = Vec::with_capacity(cmf.len());
+      for (i, c) in cmf.iter().enumerate() {
+        let s = c[0] + c[1] + c[2];
+        if s > 0.0 {
+          loc.push(([c[0] / s, c[1] / s], cmf_wl[i]));
+        }
+      }
+      if loc.len() < 2 {
+        return Err("color: degenerate CMF locus (need >= 2 chromatic points).".to_string());
+      }
+      loc
+    } else {
+      Vec::new()
+    };
     // Own-white rule: integrate the illuminant as a perfect diffuser on
     // its NATIVE grid (no resample involved — both tables native here).
     let ones = vec![1.0; illuminant.len()];
@@ -153,6 +194,7 @@ impl ColorDemand {
     }
     Ok(ColorDemand {
       key_idx,
+      locus,
       cmf,
       cmf_wl,
       illuminant,
@@ -312,6 +354,9 @@ pub(crate) fn color_of_xyz(
       Ok(out[0])
     }
     ColorQuantity::Y => Err("color: quantity 'Y' is scalar (no triple form).".to_string()),
+    ColorQuantity::DomWl => {
+      Err("color: quantity 'DomWl' is a [2] pair (no triple form).".to_string())
+    }
   }
 }
 
@@ -322,6 +367,67 @@ pub(crate) fn wrap_deg(d: f64) -> f64 {
 }
 
 /// Scalar objective `F(xyz)`: `w·ΔE²`, resp. `w·Σ((c−c_t)/tol)²`.
+/// Dominant wavelength (nm) + purity from XYZ against the demand locus.
+///
+/// Forward ray (white -> sample) vs locus-only segments: a hit past the
+/// sample is spectral (purity = 1/t). A miss means a purple-direction ray;
+/// the backward extension then hits the locus (complementary branch,
+/// purity NEGATIVE — the branch rule is explicit in the value, never a
+/// hidden mode). Achromatic samples (|d| < 1e-9 in xy) return (0, 0):
+/// hue carries no information at white, purity does the work (documented
+/// kink — any rule kinks there, lambda is undefined at white).
+fn dom_wl_purity(demand: &ColorDemand, xyz: &[f64; 3]) -> Result<(f64, f64), String> {
+  let s = xyz[0] + xyz[1] + xyz[2];
+  if !(s > 0.0) || xyz.iter().any(|v| !v.is_finite()) {
+    return Err("color: non-finite/non-positive XYZ in DomWl map.".to_string());
+  }
+  let ws = demand.white[0] + demand.white[1] + demand.white[2];
+  let w = [demand.white[0] / ws, demand.white[1] / ws];
+  let px = xyz[0] / s;
+  let py = xyz[1] / s;
+  let d = [px - w[0], py - w[1]];
+  if d[0] * d[0] + d[1] * d[1] < 1e-18 {
+    return Ok((0.0, 0.0));
+  }
+  // Locus pairs carry their own wavelengths (zero-sum CMF rows were
+  // skipped at construction — no index alignment needed).
+  let locus = &demand.locus;
+  let mut forward: Option<(f64, f64)> = None;
+  let mut backward: Option<(f64, f64)> = None;
+  for wseg in locus.windows(2) {
+    let (a, la) = (wseg[0].0, wseg[0].1);
+    let (b, lb) = (wseg[1].0, wseg[1].1);
+    let e = [b[0] - a[0], b[1] - a[1]];
+    let den = d[0] * e[1] - d[1] * e[0];
+    if den.abs() < 1e-300 {
+      continue;
+    }
+    let aw = [a[0] - w[0], a[1] - w[1]];
+    let t = (aw[0] * e[1] - aw[1] * e[0]) / den;
+    let sg = (aw[0] * d[1] - aw[1] * d[0]) / den;
+    if !(0.0..=1.0).contains(&sg) {
+      continue;
+    }
+    let lam = la + sg * (lb - la);
+    // Forward: smallest t past the sample (1-eps keeps monochrome edge).
+    if t > 1.0 - 1e-9 && forward.map_or(true, |(bt, _)| t < bt) {
+      forward = Some((t, lam));
+    }
+    // Backward ray: u = -t form, smallest positive u.
+    let u = -t;
+    if u > 1e-9 && backward.map_or(true, |(bu, _)| u < bu) {
+      backward = Some((u, lam));
+    }
+  }
+  if let Some((t, lam)) = forward {
+    return Ok((lam, 1.0 / t));
+  }
+  if let Some((u, lam)) = backward {
+    return Ok((lam, -1.0 / u));
+  }
+  Err("color: DomWl ray misses the locus both ways (degenerate tables?).".to_string())
+}
+
 fn objective_of_xyz(demand: &ColorDemand, xyz: &[f64; 3]) -> Result<f64, String> {
   // Scalar Y: single residual off tol[0] (no triple form involved).
   if demand.quantity == ColorQuantity::Y {
@@ -330,6 +436,17 @@ fn objective_of_xyz(demand: &ColorDemand, xyz: &[f64; 3]) -> Result<f64, String>
     };
     let r = (xyz[1] - t) / demand.tol[0];
     return Ok(demand.weight * r * r);
+  }
+  if demand.quantity == ColorQuantity::DomWl {
+    let ColorReference::Pair(t) = &demand.reference else {
+      return Err(
+        "color: quantity 'DomWl' needs a [2] [wavelength_nm, purity] reference.".to_string(),
+      );
+    };
+    let (dl, dp) = dom_wl_purity(demand, xyz)?;
+    let rl = (dl - t[0]) / demand.tol[0];
+    let rp = (dp - t[1]) / demand.tol[1];
+    return Ok(demand.weight * (rl * rl + rp * rp));
   }
   let c = color_of_xyz(xyz, &demand.white, demand.quantity)?;
   match demand.distance {
@@ -735,5 +852,86 @@ mod tests {
       assert!(resid.is_finite());
       assert!(grad.iter().all(|v| v.is_finite()), "{q:?}");
     }
+  }
+
+  fn domwl_demand() -> ColorDemand {
+    let t = default_tables();
+    ColorDemand::new(
+      0,
+      t.cmf_xyz.clone(),
+      t.cmf_wl.clone(),
+      t.illum.clone(),
+      t.illum_wl.clone(),
+      ColorQuantity::DomWl,
+      ColorReference::Pair([550.0, 0.9]),
+      ColorDistance::Channels,
+      1.0,
+    )
+    .unwrap()
+  }
+
+  #[test]
+  fn domwl_spectral_complementary_and_white() {
+    let d = domwl_demand();
+    assert!(d.locus.len() >= 400);
+    let wl = &d.illum_wl;
+    // Narrow lobe at 550 nm: spectral, high purity.
+    let gauss: Vec<f64> = wl.iter().map(|w| (-((w - 550.0) / 15.0).powi(2)).exp()).collect();
+    let xyz = xyz_of_spectrum(&gauss, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let (lam, p) = dom_wl_purity(&d, &xyz).unwrap();
+    assert!((lam - 550.0).abs() < 3.0, "{lam}");
+    assert!(p > 0.8, "{p}");
+    // Twin magenta lobes (450 + 650): purple direction -> complementary.
+    let mag: Vec<f64> = wl
+      .iter()
+      .map(|w| {
+        (-((w - 450.0) / 12.0).powi(2)).exp() + (-((w - 650.0) / 12.0).powi(2)).exp()
+      })
+      .collect();
+    let xyz_m = xyz_of_spectrum(&mag, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    let (lam_c, p_c) = dom_wl_purity(&d, &xyz_m).unwrap();
+    assert!(p_c < 0.0, "{p_c}");
+    assert!((490.0..570.0).contains(&lam_c), "{lam_c}");
+    // Achromatic: hue carries nothing (rule returns (0, 0)).
+    let ones = vec![1.0; wl.len()];
+    let xyz_w = xyz_of_spectrum(&ones, wl, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl).unwrap();
+    assert_eq!(dom_wl_purity(&d, &xyz_w).unwrap(), (0.0, 0.0));
+    // Gradient finite on the smooth (spectral, mid-locus) point.
+    let (resid, grad) = eval_color(&d, &gauss, wl).unwrap();
+    assert!(resid.is_finite());
+    assert!(grad.iter().all(|v| v.is_finite()));
+  }
+
+  #[test]
+  fn domwl_shape_and_pair_gates() {
+    let t = default_tables();
+    let mk = |q, r: ColorReference| {
+      ColorDemand::new(
+        0,
+        t.cmf_xyz.clone(),
+        t.cmf_wl.clone(),
+        t.illum.clone(),
+        t.illum_wl.clone(),
+        q,
+        r,
+        ColorDistance::Channels,
+        1.0,
+      )
+    };
+    assert!(mk(ColorQuantity::DomWl, ColorReference::Pair([550.0, 0.9])).is_ok());
+    assert!(mk(ColorQuantity::DomWl, ColorReference::Triple([0.0; 3])).unwrap_err().contains("DomWl"));
+    assert!(mk(ColorQuantity::Lab, ColorReference::Pair([550.0, 0.9])).unwrap_err().contains("pair reference"));
+    let de = ColorDemand::new(
+      0,
+      t.cmf_xyz.clone(),
+      t.cmf_wl.clone(),
+      t.illum.clone(),
+      t.illum_wl.clone(),
+      ColorQuantity::DomWl,
+      ColorReference::Pair([550.0, 0.9]),
+      ColorDistance::DeltaE2000,
+      1.0,
+    );
+    assert!(de.unwrap_err().contains("pair demand takes Channels"));
   }
 }

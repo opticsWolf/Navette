@@ -462,9 +462,10 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
       "LCh" => ColorQuantity::LCh,
       "Oklab" => ColorQuantity::Oklab,
       "Y" => ColorQuantity::Y,
+      "DomWl" => ColorQuantity::DomWl,
       q => {
         return Err(format!(
-          "color: unknown quantity {q:?} (one of 'Lab'|'XyY'|'LCh'|'Oklab'|'Y')."
+          "color: unknown quantity {q:?} (one of 'Lab'|'XyY'|'LCh'|'Oklab'|'Y'|'DomWl')."
         ))
       }
     };
@@ -856,6 +857,25 @@ mod tests {
   }
 
   #[test]
+  fn domwl_pair_compiles_from_json() {
+    // 2-array reference routes to Pair (untagged) and compiles; 3-array
+    // and scalar refs refuse with the shape gate.
+    let doc = serde_json::json!({
+      "spectral": [], "angular": [],
+      "color": [{
+        "curve": "Rs", "angle": 0.0,
+        "illuminant": "D65", "observer": "1931_2deg",
+        "quantity": "DomWl", "reference": [550.0, 0.9],
+        "distance": "Channels",
+      }],
+    });
+    let set: TargetSet = serde_json::from_value(doc).unwrap();
+    let spec = compile_merit_spec(&set).unwrap();
+    assert_eq!(spec.color_demands().len(), 1);
+    assert_eq!(spec.n_residuals(), 1);
+  }
+
+  #[test]
   fn color_json_shapes_refuse_loud() {
     // A non-3 reference array parses (Other catch-all) and refuses at
     // compile with the specified message — never a serde riddle.
@@ -869,7 +889,20 @@ mod tests {
       }],
     });
     let set: TargetSet = serde_json::from_value(doc).unwrap();
-    assert!(compile_merit_spec(&set).unwrap_err().contains("[3] triple"));
+    // A 2-array is a Pair (DomWl shape) — refused here by the shape gate.
+    assert!(compile_merit_spec(&set).unwrap_err().contains("pair reference"));
+    // A 4-array matches no shape: the Other catch-all names the triple.
+    let doc4 = serde_json::json!({
+      "spectral": [], "angular": [],
+      "color": [{
+        "curve": "Ru", "angle": 0.0,
+        "illuminant": "D65", "observer": "1931_2deg",
+        "quantity": "Lab", "reference": [1.0, 2.0, 3.0, 4.0],
+        "distance": "DeltaE2000",
+      }],
+    });
+    let set4: TargetSet = serde_json::from_value(doc4).unwrap();
+    assert!(compile_merit_spec(&set4).unwrap_err().contains("[3] triple"));
     // Unknown top-level keys still denied.
     assert!(serde_json::from_value::<TargetSet>(
       serde_json::json!({"color": [], "bogus": 1})

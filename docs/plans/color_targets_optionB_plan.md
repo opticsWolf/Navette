@@ -375,7 +375,14 @@ kernel first) would touch every arm twice.
   Y-scalar vs hand-rolled ΣR·E·ȳ oracle (bitwise); hue-wrap unit test;
   adapted-white identity (Oklab under F2 ≡ Oklab of adapted XYZ).
   Needle R4 batch re-run per new quantity (chain-rule vs FD sweep).
-- **P3 — on demand (unversioned, each its own patch+twin):** sRGB / Luv /
+- **P3 — on demand (unversioned, each its own patch+twin):** DONE
+  0.4.28 (dev): dominant-wavelength+purity (`DomWl` [nm, purity] pair ref,
+  locus precomputed from demand CMF, forward-spectral / backward-
+  complementary branch rule with negative-purity flag, achromatic (0,0)
+  rule, Channels-only). Twins: spectral/complementary/white + FD-finite
+  (Rust), needle FD, JSON pair-shape routing, numpy ray-polygon oracle
+  (1e-9), surface compile. Zero merit/fold/needle changes (eval-owned).
+  Remaining P3: sRGB / Luv /
   XYZ-raw / DIN99-coords (all kernels in-tree); whiteness/yellowness
   (~20-line kernels first); dominant-wavelength+purity (2-vector ref +
   purple-line branch rule); opacity (two-spectrum demand — architecture

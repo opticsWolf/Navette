@@ -223,3 +223,57 @@ def test_y_scalar_hex_against_hand_oracle():
                    z.tolist(), ev.tolist())
   f = 2.0 * ((xyz[1] - 0.45) / 1.0) ** 2
   assert got[0].hex() == (f ** 0.5).hex()
+
+
+def _domwl_oracle(xyz, white, locus):
+  """Independent ray-vs-locus oracle (same math, numpy scalar ops)."""
+  s = sum(xyz)
+  ws = sum(white)
+  w = [white[0] / ws, white[1] / ws]
+  p = [xyz[0] / s, xyz[1] / s]
+  d = [p[0] - w[0], p[1] - w[1]]
+  if d[0] * d[0] + d[1] * d[1] < 1e-18:
+    return (0.0, 0.0)
+  fwd, bwd = None, None
+  for (ax, ay, la), (bx, by, lb) in zip(locus[:-1], locus[1:]):
+    ex, ey = bx - ax, by - ay
+    den = d[0] * ey - d[1] * ex
+    if abs(den) < 1e-300:
+      continue
+    awx, awy = ax - w[0], ay - w[1]
+    t = (awx * ey - awy * ex) / den
+    sg = (awx * d[1] - awy * d[0]) / den
+    if not (0.0 <= sg <= 1.0):
+      continue
+    lam = la + sg * (lb - la)
+    if t > 1.0 - 1e-9 and (fwd is None or t < fwd[0]):
+      fwd = (t, lam)
+    u = -t
+    if u > 1e-9 and (bwd is None or u < bwd[0]):
+      bwd = (u, lam)
+  if fwd is not None:
+    return (fwd[1], 1.0 / fwd[0])
+  if bwd is not None:
+    return (bwd[1], -1.0 / bwd[0])
+  raise AssertionError("oracle missed locus")
+
+
+def test_domwl_against_independent_oracle():
+  wl, x, y, z, el, ev = window(400.0, 700.0)
+  row = np.exp(-((wl - 550.0) / 15.0) ** 2)
+  ref = (550.0, 0.9)
+  spec = demand(quantity="DomWl", reference=ref, distance="Channels",
+                tables=(wl, x, y, z, el, ev))
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = spec.residuals(sim)
+  xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
+                   z.tolist(), ev.tolist())
+  white = xyz_oracle([1.0] * len(wl), wl.tolist(), x.tolist(), y.tolist(),
+                     z.tolist(), ev.tolist())
+  locus = [(a / (a + b + c), b / (a + b + c), w)
+           for a, b, c, w in zip(x.tolist(), y.tolist(), z.tolist(), wl.tolist())
+           if a + b + c > 0]
+  lam, purity = _domwl_oracle(xyz, white, locus)
+  assert lam == pytest.approx(550.0, abs=3.0) and purity > 0.8
+  f = ((lam - ref[0]) / 1.0) ** 2 + ((purity - ref[1]) / 1.0) ** 2
+  assert got[0] == pytest.approx(f ** 0.5, rel=1e-9)
