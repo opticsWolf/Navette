@@ -42,6 +42,8 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 
 - **Thickness Optimization**: Levenberg-Marquardt refinement over free layers with bounds and clamping, interleaved with insertion passes and impact-ranked cleanup (merge, thin-layer removal, re-optimization).
 
+- **Multi-domain Targets**: One joint merit over spectral, angular, and CIE color demands — multiple angles, illuminants with own-white metamerism control, and per-target wavelength windows — all folded into the needle gradient with analytic chain-rule terms, so a single run designs for daylight and showroom light at once.
+
 - **Graded Media**: Gradient-index profiles expand natively for simulation and serve as pinned background (substrate diffusion gradients, rugate foundations) while the needle designs around them.
 ### Technical Specifications
 
@@ -122,8 +124,8 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.4.0-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.5.0-*.whl (single wheel, all engines)
 ```
 
 Manual fallback: `cargo publish -p navette`;
-`maturin upload target/wheels/navette-0.4.0-*.whl`.
+`maturin upload target/wheels/navette-0.5.0-*.whl`.
