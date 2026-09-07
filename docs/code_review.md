@@ -418,6 +418,8 @@ The second expansion pass (needle engine, eigenmode tools, remaining synthesis i
 
 **Revised recommended order of attack:** (1) fix rtype-5 transmission factor + roughness energy test (§3.2 — unchanged, the physics bug stands); (2) fix `energy_conservation()` wrapper (§15) and bound `refine_mode` (§16) — both one-liners; (3) README → `maturin develop --release`, bench scripts assert non-debug + UTF-8-safe output; (4) minimal push-CI + request-bit sync test + narrow the parity `collect_ignore` (§15); (5) numpy>=2.0 floor; (6) fix/execute examples in CI; (7) optimize `unweave_collection` batch path; (8) refactor `needle_gradient` (§4.1); (9) delete `attic/`, refresh stale docs.
 
+*(Every finding above with a required change is now turned into a work item with fix design, validation strategy, new-test list, and sequencing in **`docs/remediation_plan.md`** — that plan supersedes this bullet list where they differ.)*
+
 ---
 
 ## 18. Remaining Coverage Gaps — what this review did NOT fully examine
