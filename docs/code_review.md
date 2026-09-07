@@ -484,7 +484,7 @@ The rtype-5 finding (§3.2) proved a reference can be wrong; everything below sh
 
 ## 19. Independent Verification of the Synthesis Gradient Chain ✔ (one parity gap found)
 
-Step 1 of §18.5, executed. Method: everything below was verified against **finite differences through the real solver and hand-rolled Python reimplementations** — no loom, no parity reference. Harness: `_review_scratch/fd_step1.py` + `fd_rchannel.py` (kept for reproduction). A 5-layer roughness-free stack (air | TiO₂ 120 | SiO₂ 200 | Ta₂O₅ 80 | glass, 31 λ × 2 angles) and a mixed spec (kinds e / a / r with band, weights 0.9–1.7, linear + log + phase transforms) were used.
+Step 1 of §18.5, executed. Method: everything below was verified against **finite differences through the real solver and hand-rolled Python reimplementations** — no loom, no parity reference. Harness: `validation/review/fd_step1.py` + `fd_rchannel.py` (kept for reproduction). A 5-layer roughness-free stack (air | TiO₂ 120 | SiO₂ 200 | Ta₂O₅ 80 | glass, 31 λ × 2 angles) and a mixed spec (kinds e / a / r with band, weights 0.9–1.7, linear + log + phase transforms) were used.
 
 ### 19.1 Results — all verified
 
@@ -514,7 +514,7 @@ The needle-slope algebra itself (ρ̂ = −2iβ′r₁₂/(1−r₁₂²), τ̂ 
 
 ## 20. `color_merit.rs` — Color Synthesis Merit ✔ (verified exact; one Python-API gap)
 
-Step 2 of §18.5: the full 1,349-line color-demand kernel, read and then verified numerically against independent reimplementations (`_review_scratch/color_merit_check.py`). Setup: D65/1931-2° demand on the solver's Rₛ row (450–750 nm, 31 pts, 30°), weight 1.7.
+Step 2 of §18.5: the full 1,349-line color-demand kernel, read and then verified numerically against independent reimplementations (`validation/review/color_merit_check.py`). Setup: D65/1931-2° demand on the solver's Rₛ row (450–750 nm, 31 pts, 30°), weight 1.7.
 
 ### 20.1 Verified (all exact)
 
@@ -547,7 +547,7 @@ The Rust fold computes dedicated color buckets (`grad_r`/`grad_t` — chain-rule
 
 ## 21. Garbage-in Audit — NaN/inf/sinθ>1 (§18.5 step 3)
 
-Systematic pass across `ScatterMatrix`, `needle_gradient`, `UniInterpolator` (`_review_scratch/garbage_in.py`). Results sorted by severity:
+Systematic pass across `ScatterMatrix`, `needle_gradient`, `UniInterpolator` (`validation/review/garbage_in.py`). Results sorted by severity:
 
 ### 21.1 Findings
 
@@ -567,7 +567,7 @@ A single `_validate_stack(n, d, wavelengths, angles)` at `ScatterMatrix` constru
 
 ## 22. OpticalWeaver Concurrency & LRU Eviction ✔ (§18.5 step 4)
 
-The docstring advertises "optimized for concurrent simulation loops" — tested (`_review_scratch/weaver_race.py`):
+The docstring advertises "optimized for concurrent simulation loops" — tested (`validation/review/weaver_race.py`):
 
 * **LRU plan-cache eviction**: `cache_size=2` with 4 tiling frames and 10 keys (deliberate thrash) — every key reassembles **bit-exactly** (bad = 0/10). Evicted plans rebuild correctly; data frames are independent of the plan cache.
 * **8-thread race**: 320 mixed operations (`unweave`, `unweave_collection`, `get_weaved`, `get_weaved_collections`, `invalidate_cache`) against one weaver with cache_size=2 — **no exceptions, no torn writes**: all 192 single-writer keys reassemble exactly to their writer's curve (0 mismatches). The `RwLock`-protected frame map + `Arc`-shared frames + per-key fragment writes hold under contention.
@@ -578,7 +578,7 @@ The docstring advertises "optimized for concurrent simulation loops" — tested 
 
 ## 23. Material Kernel Golden from First Principles: Tauc–Lorentz ✔ (§18.5 step 5)
 
-The reference-oracle dependence is broken for one KK-family model. `TaucLorentz` (Jellison–Modine 1996) was verified entirely from first principles (`_review_scratch/tauc_check.py`, `kk_validate.py`, `kk_conv.py`) — no loom, no goldens:
+The reference-oracle dependence is broken for one KK-family model. `TaucLorentz` (Jellison–Modine 1996) was verified entirely from first principles (`validation/review/tauc_check.py`, `kk_validate.py`, `kk_conv.py`) — no loom, no goldens:
 
 | Check | Result |
 |---|---|
