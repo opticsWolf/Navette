@@ -382,7 +382,14 @@ kernel first) would touch every arm twice.
   rule, Channels-only). Twins: spectral/complementary/white + FD-finite
   (Rust), needle FD, JSON pair-shape routing, numpy ray-polygon oracle
   (1e-9), surface compile. Zero merit/fold/needle changes (eval-owned).
-  Remaining P3: sRGB / Luv /
+  Remaining P3: DIN99-coords + whiteness/yellowness + opacity (sRGB / Luv /
+  XYZ-raw DONE 0.4.29 (dev): map-only arms reusing in-tree kernels — sRGB
+  D65-adapted unclipped (linear extension, no clip flat-spots), Luv under
+  own white, XYZ identity; Channels-only. Twins: sRGB/Luv vs bound
+  pipeline 1e-12, XYZ HEX hand oracle, per-quantity needle FD extended to
+  8, compile gates, surface constructions. 332+22+15 Rust, exposure
+  207/93, 350 green. Still open: DIN99-coords + whiteness/yellowness /
+  opacity. Original P3 list (kept for reference): sRGB / Luv /
   XYZ-raw / DIN99-coords (all kernels in-tree); whiteness/yellowness
   (~20-line kernels first); dominant-wavelength+purity (2-vector ref +
   purple-line branch rule); opacity (two-spectrum demand — architecture

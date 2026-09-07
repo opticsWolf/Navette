@@ -463,9 +463,12 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
       "Oklab" => ColorQuantity::Oklab,
       "Y" => ColorQuantity::Y,
       "DomWl" => ColorQuantity::DomWl,
+      "sRGB" => ColorQuantity::Srgb,
+      "Luv" => ColorQuantity::Luv,
+      "XYZ" => ColorQuantity::Xyz,
       q => {
         return Err(format!(
-          "color: unknown quantity {q:?} (one of 'Lab'|'XyY'|'LCh'|'Oklab'|'Y'|'DomWl')."
+          "color: unknown quantity {q:?} (one of 'Lab'|'XyY'|'LCh'|'Oklab'|'Y'|'DomWl'|'sRGB'|'Luv'|'XYZ')."
         ))
       }
     };
@@ -854,6 +857,26 @@ mod tests {
     assert!(ok("Oklab", ReferenceJson::Valid(crate::smatrix::synthesis::color_merit::ColorReference::Triple([0.5, 0.0, 0.0])), "DeltaE76").unwrap_err().contains("Oklab"));
     assert!(ok("Y", ReferenceJson::Valid(crate::smatrix::synthesis::color_merit::ColorReference::Scalar(0.5)), "DeltaE76").unwrap_err().contains("'Y'"));
     assert!(ok("Y", ReferenceJson::Valid(crate::smatrix::synthesis::color_merit::ColorReference::Triple([0.5, 0.0, 0.0])), "Channels").unwrap_err().contains("scalar"));
+  }
+
+  #[test]
+  fn coordinate_quantities_compile_channels_only() {
+    let ok = |q: &str| {
+      let mut set = color_set();
+      set.color[0].quantity = q.to_string();
+      compile_merit_spec(&set)
+    };
+    for q in ["sRGB", "Luv", "XYZ"] {
+      let mut set = color_set();
+      set.color[0].quantity = q.to_string();
+      set.color[0].distance = "Channels".to_string();
+      assert!(compile_merit_spec(&set).is_ok(), "{q}");
+      set.color[0].distance = "DeltaE76".to_string();
+      assert!(
+        compile_merit_spec(&set).unwrap_err().contains("take Channels"),
+        "{q}"
+      );
+    }
   }
 
   #[test]

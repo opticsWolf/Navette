@@ -306,3 +306,15 @@ else must be an explicit table (no registry to drift).
   hue demands with a purity/Y floor, or use Lab near neutrals.
 - Mixed-branch refs (spectral op vs complementary ref) stay continuous
   in purity but kink in lambda at white — pick refs in the right family.
+
+### Coordinate quantities (P3: `sRGB` | `Luv` | `XYZ`)
+
+- All three take Channels only (DeltaE76/2000 are Lab-space; Luv's own
+  dE_uv is out of scope — Channels on (L,u,v) covers the need).
+- **`sRGB`:** D65-adapted, gamma-encoded, UNCLIPPED. In-gamut values are
+  exact standard sRGB; out-of-gamut extends linearly (the transfer's
+  linear branch below 0.0031308 keeps it smooth and monotone). Display
+  clipping is presentation — demands compare unclipped, so gradients
+  never vanish outside the gamut.
+- **`Luv`:** under the demand illuminant's own white (like Lab).
+- **`XYZ`:** raw tristimulus, linear sensor-space matching.

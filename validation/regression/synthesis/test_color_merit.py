@@ -277,3 +277,54 @@ def test_domwl_against_independent_oracle():
   assert lam == pytest.approx(550.0, abs=3.0) and purity > 0.8
   f = ((lam - ref[0]) / 1.0) ** 2 + ((purity - ref[1]) / 1.0) ** 2
   assert got[0] == pytest.approx(f ** 0.5, rel=1e-9)
+
+
+def test_srgb_channels_against_pipeline():
+  # In-gamut gray ramp: kernel == bound pipeline (adapt + unclipped map).
+  wl, x, y, z, el, ev = window(400.0, 700.0)
+  row = np.linspace(0.05, 0.9, len(wl))
+  ref = (0.5, 0.5, 0.5)
+  spec = demand(quantity="sRGB", reference=ref, distance="Channels",
+                tables=(wl, x, y, z, el, ev))
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = spec.residuals(sim)
+  xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
+                   z.tolist(), ev.tolist())
+  white = xyz_oracle([1.0] * len(wl), wl.tolist(), x.tolist(), y.tolist(),
+                     z.tolist(), ev.tolist())
+  adapted = C.chromatic_adaptation_VonKries(
+    np.array([xyz]), white, list(C.REF_WHITE_D65), False)
+  rgb = C.XYZ_to_sRGB(adapted, clip=False)[0]
+  f = sum((a - b) ** 2 for a, b in zip(rgb, ref))
+  assert got[0] == pytest.approx(f ** 0.5, rel=1e-12)
+
+
+def test_luv_channels_against_pipeline():
+  wl, x, y, z, el, ev = window(400.0, 700.0)
+  row = 0.5 + 0.3 * np.sin((wl - 400.0) / 300.0 * np.pi)
+  ref = (50.0, 10.0, -20.0)
+  spec = demand(quantity="Luv", reference=ref, distance="Channels",
+                tables=(wl, x, y, z, el, ev))
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = spec.residuals(sim)
+  xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
+                   z.tolist(), ev.tolist())
+  white = xyz_oracle([1.0] * len(wl), wl.tolist(), x.tolist(), y.tolist(),
+                     z.tolist(), ev.tolist())
+  luv = C.XYZ_to_Luv(np.array([xyz]), illuminant=white)[0]
+  f = sum((a - b) ** 2 for a, b in zip(luv, ref))
+  assert got[0] == pytest.approx(f ** 0.5, rel=1e-12)
+
+
+def test_xyz_channels_hex_against_hand_oracle():
+  wl, x, y, z, el, ev = window(500.0, 519.0)
+  row = 0.2 + 0.6 * (wl - wl[0]) / (wl[-1] - wl[0])
+  ref = (0.3, 0.4, 0.2)
+  spec = demand(quantity="XYZ", reference=ref, distance="Channels",
+                weight=2.0, tables=(wl, x, y, z, el, ev))
+  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  got = spec.residuals(sim)
+  xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
+                   z.tolist(), ev.tolist())
+  f = 2.0 * sum((a - b) ** 2 for a, b in zip(xyz, ref))
+  assert got[0].hex() == (f ** 0.5).hex()

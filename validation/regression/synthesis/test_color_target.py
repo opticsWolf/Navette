@@ -143,3 +143,18 @@ def test_domwl_constructs_and_compiles():
     ColorTarget(quantity="DomWl", reference=(60.0, 10.0, -20.0))
   with pytest.raises(ValueError, match="pair reference"):
     ColorTarget(reference=(550.0, 0.9))
+
+
+def test_coordinate_quantities_construct_and_compile():
+  for q, ref in [("sRGB", (0.5, 0.5, 0.5)), ("Luv", (50.0, 10.0, -20.0)),
+                 ("XYZ", (0.3, 0.4, 0.2))]:
+    col = TargetCollection()
+    col.add(ColorTarget(quantity=q, reference=ref, distance="Channels"))
+    spec = build_merit_spec(col)
+    assert spec.n_residuals() == 1
+    wl = np.linspace(500., 519., 20)
+    row = np.full((1, len(wl)), 0.5)
+    sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+    assert np.isfinite(spec.merit(sim, 1e6))
+    with pytest.raises(ValueError, match="take Channels"):
+      ColorTarget(quantity=q, reference=ref, distance="DeltaE76")

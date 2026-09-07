@@ -1851,6 +1851,9 @@ mod tests {
             (QQty::LCh, QRef::Triple([60.0, 20.0, 100.0])),
             (QQty::Oklab, QRef::Triple([0.55, 0.02, -0.03])),
             (QQty::Y, QRef::Scalar(0.45)),
+            (QQty::Srgb, QRef::Triple([0.5, 0.4, 0.6])),
+            (QQty::Luv, QRef::Triple([50.0, 10.0, -20.0])),
+            (QQty::Xyz, QRef::Triple([0.3, 0.4, 0.2])),
         ];
         let base = vec![0.55, 0.50, 0.45, 0.60, 0.52, 0.48];
         let mk = |row: Vec<f64>| {

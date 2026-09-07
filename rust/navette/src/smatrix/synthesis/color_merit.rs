@@ -11,7 +11,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::color::common::{xyz_to_lab, REF_WHITE_D65};
+use crate::color::common::xyz_to_srgb;
 use crate::color::func_02::{lab_to_lch, lch_to_lab};
+use crate::color::func_03::xyz_to_luv;
 use crate::color::func_04::xyz_to_oklab;
 use crate::color::func_08::adapt;
 use crate::color::func_01::xyz_to_xyy;
@@ -29,6 +31,14 @@ pub enum ColorQuantity {
   /// Dominant wavelength + purity (P3): [wavelength_nm, purity] pair ref,
   /// Channels-style residual off tol[0] (nm) / tol[1] (purity).
   DomWl,
+  /// Display-referred sRGB triple (P3): D65-adapted, gamma-encoded,
+  /// UNCLIPPED (linear extension past [0,1] keeps gradients honest;
+  /// display clipping is presentation, not optimization).
+  Srgb,
+  /// CIELUV under the demand white (P3).
+  Luv,
+  /// Raw tristimulus XYZ (P3): linear sensor-space matching.
+  Xyz,
 }
 
 /// P1: all three live; XyY×ΔE and Oklab×ΔE are refused (see matrix).
@@ -141,6 +151,16 @@ impl ColorDemand {
       (ColorQuantity::Y, ColorDistance::DeltaE2000) | (ColorQuantity::Y, ColorDistance::DeltaE76) => {
         return Err(format!(
           "color: quantity 'Y' with distance '{distance:?}' refused (scalar demand takes Channels)."
+        ))
+      }
+      (ColorQuantity::Srgb, ColorDistance::DeltaE2000)
+      | (ColorQuantity::Srgb, ColorDistance::DeltaE76)
+      | (ColorQuantity::Luv, ColorDistance::DeltaE2000)
+      | (ColorQuantity::Luv, ColorDistance::DeltaE76)
+      | (ColorQuantity::Xyz, ColorDistance::DeltaE2000)
+      | (ColorQuantity::Xyz, ColorDistance::DeltaE76) => {
+        return Err(format!(
+          "color: quantity '{quantity:?}' with distance '{distance:?}' refused (display/coordinate quantities take Channels)."
         ))
       }
       (ColorQuantity::DomWl, ColorDistance::DeltaE2000) | (ColorQuantity::DomWl, ColorDistance::DeltaE76) => {
@@ -357,6 +377,21 @@ pub(crate) fn color_of_xyz(
     ColorQuantity::DomWl => {
       Err("color: quantity 'DomWl' is a [2] pair (no triple form).".to_string())
     }
+    ColorQuantity::Srgb => {
+      // sRGB is D65-defined (same adapt as Oklab); unclipped gamma
+      // extension past [0,1] — exact in gamut, smooth outside it.
+      let mut adapted = [[0.0; 3]];
+      adapt(&[*xyz], white, &REF_WHITE_D65, false, &mut adapted);
+      let mut out = [[0.0; 3]];
+      xyz_to_srgb(&adapted, false, &mut out);
+      Ok(out[0])
+    }
+    ColorQuantity::Luv => {
+      let mut out = [[0.0; 3]];
+      xyz_to_luv(&[*xyz], white, &mut out);
+      Ok(out[0])
+    }
+    ColorQuantity::Xyz => Ok(*xyz),
   }
 }
 
@@ -933,5 +968,46 @@ mod tests {
       1.0,
     );
     assert!(de.unwrap_err().contains("pair demand takes Channels"));
+  }
+
+  #[test]
+  fn coordinate_quantities_are_bitwise_and_smooth() {
+    let (cmf_wl, cmf, illum_wl, illuminant) = toy();
+    let ones = vec![1.0; 8];
+    let white =
+      xyz_of_spectrum(&ones, &illum_wl, &cmf, &cmf_wl, &illuminant, &illum_wl).unwrap();
+    let xyz = [0.3, 0.4, 0.2];
+    // sRGB: same adapt + unclipped map (bitwise); negatives extend
+    // linearly (finite, monotone — no clip flat-spots, no NaN).
+    let mut adapted = [[0.0; 3]];
+    adapt(&[xyz], &white, &crate::color::common::REF_WHITE_D65, false, &mut adapted);
+    let mut rgb = [[0.0; 3]];
+    xyz_to_srgb(&adapted, false, &mut rgb);
+    assert_eq!(color_of_xyz(&xyz, &white, ColorQuantity::Srgb).unwrap(), rgb[0]);
+    let far = color_of_xyz(&[-0.5, 0.1, 2.0], &white, ColorQuantity::Srgb).unwrap();
+    assert!(far.iter().all(|v| v.is_finite()));
+    assert!(far[0] < 0.0 && far[2] > 1.0); // honest extension, not clipped
+    // Luv under the demand white (bitwise); XYZ identity.
+    let mut luv = [[0.0; 3]];
+    xyz_to_luv(&[xyz], &white, &mut luv);
+    assert_eq!(color_of_xyz(&xyz, &white, ColorQuantity::Luv).unwrap(), luv[0]);
+    assert_eq!(color_of_xyz(&xyz, &white, ColorQuantity::Xyz).unwrap(), xyz);
+    // FD gradients finite on a smooth point (affine toy is fine here).
+    let (wl, _, _, _) = toy();
+    let row = vec![0.5, 0.55, 0.6, 0.65, 0.6, 0.55, 0.5, 0.45];
+    for (q, r) in [
+      (ColorQuantity::Srgb, ColorReference::Triple([0.5, 0.4, 0.6])),
+      (ColorQuantity::Luv, ColorReference::Triple([50.0, 10.0, -20.0])),
+      (ColorQuantity::Xyz, ColorReference::Triple([0.3, 0.4, 0.2])),
+    ] {
+      let (cmf_wl2, cmf2, illum_wl2, illuminant2) = toy();
+      let d = ColorDemand::new(
+        0, cmf2, cmf_wl2, illuminant2, illum_wl2, q, r, ColorDistance::Channels, 1.0,
+      )
+      .unwrap();
+      let (resid, grad) = eval_color(&d, &row, &wl).unwrap();
+      assert!(resid.is_finite(), "{q:?}");
+      assert!(grad.iter().all(|v| v.is_finite()), "{q:?}");
+    }
   }
 }
