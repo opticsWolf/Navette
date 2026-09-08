@@ -60,6 +60,7 @@ coverage is thin.
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` | P1 | shipped example broken | S | S | §6.2 |
+| R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | synthesis robustness on ill-conditioned stacks | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
@@ -585,6 +586,50 @@ clone — API drift; opaque `Length mismatch` from deep inside native).
 
 ---
 
+### R4.4 Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers
+
+**Review:** §3.6 (the LM solves the **normal equations (JᵀJ)** — squaring the condition number; thin-film stacks with correlated layers are exactly where JᵀJ goes singular; the λ-floor bails it out today), §18.2 ("plan docs claim scipy parity; this review never reproduced it").
+
+**Current state** (`rust/navette/src/smatrix/synthesis/thick_opt.rs`, 675 lines): Marquardt damping `(JᵀJ + λ·diag(JᵀJ))δ = −Jᵀr` with the diagonal floored at 1e-14 (`:206-210`), fixed λ factors ×5 / ÷3 (`lambda_up/down`), strict-decrease acceptance (`new_cost < cost`), normal-equation solve via `solve_symmetric` (`:373`, Gaussian elimination), bound veto+clamp (`:238-246`), central-difference rayon Jacobian (h = ∛ε·max(|x|,1)), terminations gtol‖Jᵀr‖∞ / xtol / ftol(actual-only) / MaxIterations / Stalled.
+
+#### R4.4a Reference implementations surveyed (Sept 2025)
+
+| Crate | What it is | Relevant facts |
+|---|---|---|
+| **argmin 0.11.0** (argmin-rs, MIT/Apache-2.0) | solver *framework*: `Solver<O>` trait, `IterState`, observers/checkpointing, `argmin-math 0.5` linalg backends (nalgebra / ndarray) | Ships GaussNewton (Operator+Jacobian, step width γ, cost-difference tolerance), TrustRegion (dogleg/Cauchy/Steinhaug), quasi-Newton, Nelder-Mead, PSO, SA. **No LM solver anymore** — LM was removed from the argmin core; the ecosystem's reference LM lives in the dedicated crate below. None of its local solvers support box bounds natively. |
+| **levenberg-marquardt 0.15.0** (rust-cv, MIT, nalgebra 0.34) | the argmin-ecosystem's reference LM — a MINPACK-`lmdif`-derived implementation | `LeastSquaresProblem` trait (`set_params`/`params`/`residuals`/`jacobian`) + `differentiate_numerically` checker; hyperparameters ftol / xtol / gtol / stepbound; **step solved by column-pivoted QR on J** (`lm.rs:279 PivotedQR::new(jacobian)`) — *not* normal equations; termination on actual **and** predicted relative reduction ≤ ftol (MINPACK semantics); scale-invariant gtol = cos∠(Jeᵢ, r) ≤ gtol; eval-count termination. Unbounded. |
+
+Three consequences drive the design: (1) the condition-squaring critique applies to the current built-in — the reference avoids it via pivoted QR; (2) "add argmin" buys the framework plus extra algorithms, **not** LM — the LM reference is the `levenberg-marquardt` crate; (3) both references are unbounded — Navette's bounds contract must be preserved on the default path and wrapped explicitly on alternative backends.
+
+#### R4.4b Work item A — harden the built-in LM (default backend, zero new dependencies)
+
+1. **QR step solve.** Replace `solve_symmetric(&a, &neg(&jtr), &mut delta)` (thick_opt.rs:373) with a column-pivoted QR solve of the damped augmented system `[J; √λ·D]δ ≈ [−r; 0]` (D = the same diag-scaled Marquardt weights, keeping the current 1e-14 flooring semantics). Hand-rolled Householder + pivoting in the module's existing self-contained style (or port the `PivotedQR` pattern from the reference). Rank deficiency then degrades gracefully (pivot-driven column drop) instead of relying on the current λ-escalation retry after solve failure — which remains as fallback.
+2. **Gain-ratio damping update** (MINPACK, replaces fixed ×5/÷3): ρ = actual/predicted reduction (predicted comes free from the QR solve); accept when ρ > 0; on acceptance λ ← λ·max(1/3, 1−(2ρ−1)³), ν ← 2; on rejection λ ← λ·ν with ν ← 2ν. Fewer residual evaluations near the optimum, better behavior on correlated layers.
+3. **MINPACK termination semantics.** ftol: require **both** actual and predicted relative reductions ≤ ftol (currently actual-only). gtol: add the scale-invariant angle criterion (cos∠(Jeᵢ, r) ≤ gtol) alongside the existing ‖Jᵀr‖∞ test (config flag `gtol_scale_invariant: bool`, default true for new configs; the scale-dependent check stays available).
+4. **Keep unchanged:** the bound veto+clamp contract (documented as Navette's bounds semantics — neither reference has bounds), the FD rayon Jacobian, eval accounting, and the `LmTermination` variants (map new conditions onto existing values where possible to avoid API churn; extend only if a new reason is genuinely distinct).
+
+#### R4.4c Work item B — backend selection + optional ecosystem solvers (feature-gated)
+
+1. New `synthesis/optimizer.rs`: `enum OptimizerBackend { BuiltinLm, MinpackLm, ArgminGaussNewton, ArgminTrustRegion }`; `OptimizerConfig { backend, ftol, xtol, gtol, max_iterations, max_evals, stepbound, … }` mapping 1:1 onto `LmConfig` for the default; one entry point `run_optimizer(problem, x0, bounds, cfg) -> OptimizerResult` with the existing result shape (x / cost / iterations / evals / termination). Residual system stays the injected closure (`MeritSpec::residuals`) — it is already solver-agnostic.
+2. Cargo features, **default OFF** (zero new dependencies for standard builds): `opt-minpack-lm = ["dep:levenberg-marquardt"]`, `opt-argmin = ["dep:argmin", "dep:argmin-math"]` (pin `argmin = "0.11"`, `levenberg-marquardt = "0.15"`). Python surface: `optimizer: str = "builtin"` kwarg on the synthesis entry points; absent feature → `PyValueError` with a rebuild hint (same pattern as the module ImportError fallbacks, §13). `design_config.rs` gains the backend field (`deny_unknown_fields` envelope updated in lockstep — the schema-version rule of §9.3 applies).
+3. **Bounds contract per backend:** `MinpackLm`/`Argmin*` are unbounded — wrap with an interior logit reparametrization u = atanh(2(x−lb−ε)/(ub−lb−2ε)), x = lb+ε+(ub−lb−2ε)·(tanh(u)+1)/2. The transform is elementwise and the LM Jacobian is FD per parameter, so gradients pass through it exactly. Document explicitly that boundary semantics on these backends (interior parametrization, optimum strictly inside) **differ** from the built-in veto+clamp (optimum may sit on the bound) — this is a contract difference, not a bug; the built-in stays the default for bounded problems.
+4. **argmin integration friction, recorded up front:** argmin-math 0.5 ships backends for nalgebra and ndarray ≤ 0.16; navette pins **ndarray 0.17** (§7) → either write the small manual adapter for our residual types (~100 lines; argmin explicitly supports user-supplied implementations) or convert J to nalgebra matrices per iteration (m×n copy per iteration — negligible against the TMM residual cost). Decide at implementation time; do not bump the ndarray pin for it.
+
+#### R4.4d Validation
+
+- **Existing:** the 11 `thick_opt` cargo tests (linear exact recovery, exponential fit, bounds corner, mixed interior/bound variables, residual error propagation, max-iterations, x0-outside-bounds, invalid inputs) must stay green or be updated **deliberately** with rationale; `bench_refold` (LM = 2.1 ms baseline — no-regression gate; note the bench's self-reported "no insertions" degeneracy remains item §5.4, unaffected); synthesis regression tests (pinned optima — see risk).
+- **New — required:** `validation/review/lm_check.py` — the §18.2 scipy parity, finally executed. Run the bounded problems from the cargo tests **and** a thin-film refold case through both `scipy.optimize.least_squares(method="trf")` and the engine optimizer; assert final-cost agreement (rel ≤ 1e-6), optimum agreement within stated tolerance, and plausible termination reasons. Parametrize the harness over every enabled backend.
+- **New — required:** cargo tests comparing backends on identical problems (optimum/cost agreement within tolerance; iteration counts reported, not pinned). The analytic-vs-FD Jacobian question is already covered by `validation/review/fd_step1.py` / `fd_rchannel.py` for the gradient chain — reference, don't duplicate.
+- **Golden protocol (§8):** termination-semantics changes may shift pinned synthesis optima (same-or-better cost expected); triage per §8 with one hand-check per file before updating pins.
+
+#### R4.4e Risk, effort, sequencing
+
+- **Risk M:** (a) termination-semantics change can shift regression-pinned optima → §8 protocol; (b) a new backend could regress runtime → bench gate; built-in stays default until an alternative demonstrably wins on real refold workloads; (c) reparametrized backends change boundary behavior → documented as a distinct contract; (d) MIT-licensed crates are LGPL-compatible — note in Cargo.toml comment.
+- **Effort:** item A = M (self-contained, precisely specified by MINPACK); item B = M–L (feature plumbing, adapters, Python surface).
+- **Sequencing:** A before B (the default must be worthy of being the default). Independent of R6.1 (different file) but both touch synthesis — do not land simultaneously. Place after R4.2/R4.3 in Phase 4.
+
+---
+
 ## 5. Phase 5 — Performance (P2/P3)
 
 ### R5.1 `unweave_collection` batch path
@@ -772,6 +817,8 @@ recur — the same pattern as `check_cie_sync.py`.
 | `validation/review/color_grad_python.py` | R4.2 | Python-path color gradient vs native + hand chain rule |
 | `validation/benches/_bench_common.py` | R2.1/2.2 | release-assert + UTF-8 setup shared by benches |
 | parity: R-row in `test_needle_t_a_phi.py` `check_fd` | §19.2 | permanent R-channel FD coverage with a distinct needle material (one-line addition, do it with R1.1's commit or R2.4) |
+| `validation/review/lm_check.py` | R4.4 | engine optimizer vs `scipy.optimize.least_squares(trf)` parity (closes §18.2's never-reproduced claim), parametrized over enabled backends |
+| cargo: backend-equivalence tests | R4.4 | same problem through `BuiltinLm`/`MinpackLm`/`Argmin*` — optimum/cost agreement within tolerance |
 
 ### 7.3 Optional additional tests (recommended, not blocking)
 
@@ -822,7 +869,8 @@ Phase 2 (R2.1→R2.5)           guards; R2.3 requires the warning-fix commit
    └─ R2.3 (CI) becomes the gate for everything after; R2.4 widens its scope
 Phase 3 (R3.1→R3.3)           behavior changes (0.6.0); R3.1 before R3.2
    └─ R3.1's audit may touch tests R2.4 just un-hid — run both
-Phase 4 (R4.1→R4.3)           R4.2 before R6.1 (refactor absorbs the new slots)
+Phase 4 (R4.1→R4.4)           R4.2 before R6.1 (refactor absorbs the new slots);
+                              R4.4a (hardened LM) before R4.4b (backends)
 Phase 5 (R5.1, R5.2)          perf; R5.2 gated by the optional scaling bench
 Phase 6 (R6.1→R6.5)           R6.1 last among code items (XL, bit-exact gate)
 ```
@@ -844,6 +892,7 @@ release.
 | Perf regression from R6.1/R6.3 | R6.x | benches before/after; abort criteria (>2%) written into the item |
 | Bit-identity drift from parallelization | R5.2 | §13's per-destination pattern; differential test is the hard gate |
 | Review harnesses encode soon-obsolete behavior | R3.1 | update `garbage_in.py` expectations in the same commit as the validation change |
+| Termination-semantics change shifts pinned synthesis optima | R4.4 | §8 protocol; cost must be same-or-better; hand-checked expectation per changed pin; built-in stays default until alternatives win on real workloads |
 
 ## 11. Explicitly deferred (reviewed, no change required now)
 
