@@ -70,6 +70,7 @@ coverage is thin.
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
 | R6.4 | docs/hygiene batch | P3 | audit-trail rot | S | M | §6.3, §24.2, §18.4 |
 | R6.5 | `.pyi` stubs for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
+| R6.6 | Rename `color/func_NN.rs` → descriptive module names | P3 | readability; the mod.rs doc comment is currently the only decoder ring | S (internal paths only) | S–M | §11 |
 
 Recommended execution order = the phase order below. R1.1 and R1.2 come
 first despite the CI item being "enabling": the physics bug is the single
@@ -836,6 +837,48 @@ the drift audit did; add a CI check (extend the §24.1 extraction into
 recur — the same pattern as `check_cie_sync.py`.
 
 **Effort.** M.
+
+---
+
+### R6.6 Rename `color/func_NN.rs` → descriptive module names
+
+**Review:** §11 (the color catalog is organized as `func_01`–`func_16` after the original port task numbering).
+
+**What.** `rust/navette/src/color/func_01.rs` … `func_16.rs` carry opaque names; the only map is the doc-comment list in `mod.rs:11-26` (func_01 xyY … func_16 CIEDE2000). The sibling files (`common.rs`, `tables.rs`, `matrices.rs`, `metrics.rs`, `composites.rs`, `golden.rs`, `parity.rs`) are already descriptive — the item covers exactly the 16 `func_NN` files. The Python surface is unaffected (bindings call functions, not module paths).
+
+**Proposed mapping** (from the `mod.rs` doc, which becomes the migration record):
+
+| Old | New | Content |
+|---|---|---|
+| `func_01` | `xyy` | XYZ ↔ xyY |
+| `func_02` | `lch` | Lab ↔ LCh |
+| `func_03` | `luv` | XYZ ↔ CIELUV |
+| `func_04` | `oklab_xyz` | XYZ ↔ Oklab (direct XYZ matrices) |
+| `func_05` | `oklab_srgb` | sRGB ↔ Oklab (legacy sRGB matrices) |
+| `func_06` | `uvw1964` | CIE 1964 U\*V\*W\* |
+| `func_07` | `ucs1960` | CIE 1960 UCS & chromaticity |
+| `func_08` | `bradford` | Bradford chromatic adaptation |
+| `func_09` | `delta_e_76` | ΔE 76 |
+| `func_10` | `delta_e_94` | ΔE 94 |
+| `func_11` | `delta_e_cmc` | ΔE CMC(l:c) |
+| `func_12` | `din99` | DIN99 |
+| `func_13` | `spectral_srgb` | spectral pipeline (SPD × CMF → sRGB) |
+| `func_14` | `photometry` | photometry engine |
+| `func_15` | `shapes` | shape handling & broadcasting |
+| `func_16` | `delta_e_2000` | CIEDE2000 |
+
+**Mechanics.**
+1. `git mv` each file (rename detection keeps history; verify with `git log --follow` on one file afterwards).
+2. Update `mod.rs`: the 16 `pub mod func_NN;` declarations, the doc-comment list (keep a one-line `func_NN → new_name` mapping table at the bottom of the module docstring for traceability with the port records), and any intra-module `crate::color::func_NN::` paths.
+3. Update all external path references — grep-verified sites: `rust/navette/src/smatrix/synthesis/color_merit.rs`, `rust/navette-py/src/color.rs`, plus intra-module uses from `common.rs`/`composites.rs`/`metrics.rs`/`parity.rs`; re-run the grep after the rename to confirm zero remaining `func_` module-path hits (`smatrix/optics_core.rs` also matched the grep — verify whether it is a real path or a coincidental doc string before renaming).
+4. Check `tools/check_exposure.py` (its allowlist may key on module paths) and the CodeRadar index (`codegraph_reindex` after the change) — both must reflect the new names.
+5. **Do not touch** `docs/plans/color/func_NN_*.md` — they are historical port-task records under their original names; instead add the same old→new mapping row to `docs/plans/color/README.md` so the records stay findable. The review doc's §11 catalog keeps the func_NN labels as historical text.
+
+**Risk.** S — internal module paths only, no public API change (verify: after the rename, `check_exposure.py` passes unchanged and the Python suite is green untouched). Mechanical but wide; single-purpose commit, nothing else mixed in.
+
+**Validation.** Existing: `cargo test --workspace` (376 — the color units live in `#[cfg(test)]` inside the renamed files and move with them), `pytest validation` (355 — Python surface must be bit-identical), `check_exposure.py`, color benches untouched. New: none required — this is a pure rename; the verification is the unchanged-suite run plus the zero-remaining-`func_` grep.
+
+**Effort.** S–M.
 
 ---
 
