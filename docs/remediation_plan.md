@@ -61,6 +61,8 @@ coverage is thin.
 | R4.2 | color gradients on Python needle path | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` | P1 | shipped example broken | S | S | §6.2 |
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | synthesis robustness on ill-conditioned stacks | M (pinned optima may shift) | M–L | §3.6, §18.2 |
+| R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | 2n→1 solver sweeps per LM iteration; removes the FD noise floor; benefits every backend | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
+| R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
@@ -612,7 +614,7 @@ Three consequences drive the design: (1) the condition-squaring critique applies
 
 #### R4.4c Work item B — backend selection + optional ecosystem solvers (feature-gated)
 
-1. New `synthesis/optimizer.rs`: `enum OptimizerBackend { BuiltinLm, MinpackLm, ArgminGaussNewton, ArgminTrustRegion }`; `OptimizerConfig { backend, ftol, xtol, gtol, max_iterations, max_evals, stepbound, … }` mapping 1:1 onto `LmConfig` for the default; one entry point `run_optimizer(problem, x0, bounds, cfg) -> OptimizerResult` with the existing result shape (x / cost / iterations / evals / termination). Residual system stays the injected closure (`MeritSpec::residuals`) — it is already solver-agnostic.
+1. New `synthesis/optimizer.rs`: `enum OptimizerBackend { BuiltinLm, MinpackLm, Trf /* R4.6 */, ArgminGaussNewton, ArgminTrustRegion }`; `OptimizerConfig { backend, ftol, xtol, gtol, max_iterations, max_evals, stepbound, … }` mapping 1:1 onto `LmConfig` for the default; one entry point `run_optimizer(problem, x0, bounds, cfg) -> OptimizerResult` with the existing result shape (x / cost / iterations / evals / termination). Residual system stays the injected closure (`MeritSpec::residuals`) — it is already solver-agnostic.
 2. Cargo features, **default OFF** (zero new dependencies for standard builds): `opt-minpack-lm = ["dep:levenberg-marquardt"]`, `opt-argmin = ["dep:argmin", "dep:argmin-math"]` (pin `argmin = "0.11"`, `levenberg-marquardt = "0.15"`). Python surface: `optimizer: str = "builtin"` kwarg on the synthesis entry points; absent feature → `PyValueError` with a rebuild hint (same pattern as the module ImportError fallbacks, §13). `design_config.rs` gains the backend field (`deny_unknown_fields` envelope updated in lockstep — the schema-version rule of §9.3 applies).
 3. **Bounds contract per backend:** `MinpackLm`/`Argmin*` are unbounded — wrap with an interior logit reparametrization u = atanh(2(x−lb−ε)/(ub−lb−2ε)), x = lb+ε+(ub−lb−2ε)·(tanh(u)+1)/2. The transform is elementwise and the LM Jacobian is FD per parameter, so gradients pass through it exactly. Document explicitly that boundary semantics on these backends (interior parametrization, optimum strictly inside) **differ** from the built-in veto+clamp (optimum may sit on the bound) — this is a contract difference, not a bug; the built-in stays the default for bounded problems.
 4. **argmin integration friction, recorded up front:** argmin-math 0.5 ships backends for nalgebra and ndarray ≤ 0.16; navette pins **ndarray 0.17** (§7) → either write the small manual adapter for our residual types (~100 lines; argmin explicitly supports user-supplied implementations) or convert J to nalgebra matrices per iteration (m×n copy per iteration — negligible against the TMM residual cost). Decide at implementation time; do not bump the ndarray pin for it.
@@ -621,7 +623,7 @@ Three consequences drive the design: (1) the condition-squaring critique applies
 
 - **Existing:** the 11 `thick_opt` cargo tests (linear exact recovery, exponential fit, bounds corner, mixed interior/bound variables, residual error propagation, max-iterations, x0-outside-bounds, invalid inputs) must stay green or be updated **deliberately** with rationale; `bench_refold` (LM = 2.1 ms baseline — no-regression gate; note the bench's self-reported "no insertions" degeneracy remains item §5.4, unaffected); synthesis regression tests (pinned optima — see risk).
 - **New — required:** `validation/review/lm_check.py` — the §18.2 scipy parity, finally executed. Run the bounded problems from the cargo tests **and** a thin-film refold case through both `scipy.optimize.least_squares(method="trf")` and the engine optimizer; assert final-cost agreement (rel ≤ 1e-6), optimum agreement within stated tolerance, and plausible termination reasons. Parametrize the harness over every enabled backend.
-- **New — required:** cargo tests comparing backends on identical problems (optimum/cost agreement within tolerance; iteration counts reported, not pinned). The analytic-vs-FD Jacobian question is already covered by `validation/review/fd_step1.py` / `fd_rchannel.py` for the gradient chain — reference, don't duplicate.
+- **New — required:** cargo tests comparing backends on identical problems (optimum/cost agreement within tolerance; iteration counts reported, not pinned). The analytic-vs-FD Jacobian question is initially covered by `validation/review/fd_step1.py` / `fd_rchannel.py` for the gradient chain; once R4.5 lands, the per-element cross-check becomes a first-class required cargo test (see R4.5 validation).
 - **New — required (work item A internals):** the QR-vs-legacy step cross-check and the clipped-step prediction unit test (R4.4b items 1 and 3) — these two are the guards that make the MINPACK port trustworthy without a new dependency.
 - **Golden protocol (§8):** termination-semantics changes may shift pinned synthesis optima (same-or-better cost expected); triage per §8 with one hand-check per file before updating pins.
 
@@ -630,6 +632,48 @@ Three consequences drive the design: (1) the condition-squaring critique applies
 - **Risk M:** (a) termination-semantics change can shift regression-pinned optima → §8 protocol; (b) a new backend could regress runtime → bench gate; built-in stays default until an alternative demonstrably wins on real refold workloads; (c) reparametrized backends change boundary behavior → documented as a distinct contract; (d) MIT-licensed crates are LGPL-compatible — note in Cargo.toml comment; (e) gain-ratio damping changes the iteration *path* (not the optimum): iteration counts, ftol/xtol exit points, and everything pinned downstream of them (synthesis regression optima, `bench_refold` timings) can move within tolerance — mandatory §8 triage with one hand-check per changed pin; (f) eval-count variance (#5 above) means bench medians should be compared over a fixed workload before/after, not single runs.
 - **Effort:** item A = M (self-contained, precisely specified by MINPACK); item B = M–L (feature plumbing, adapters, Python surface).
 - **Sequencing:** A before B (the default must be worthy of being the default). Independent of R6.1 (different file) but both touch synthesis — do not land simultaneously. Place after R4.2/R4.3 in Phase 4.
+
+---
+
+### R4.5 Analytic Jacobian for the refold optimizer — assemble J from the verified deposit chain
+
+**Review:** §3.6 (`build_jacobian` is central-difference: **2·n full residual evaluations per LM iteration**, thick_opt.rs:305 called at :160), §19.1 (the analytic chain is independently verified: fold evaluator 2e-16, end-to-end gradient 2e-8–7e-7 vs solver FD, dispersion ladder bit-exact), §20.2 (the deposit machinery exists in the Rust fold).
+
+**What.** Each target row's residual depends on one curve value (or an integral aggregate over points), whose per-parameter derivative the needle engine computes **in the same solver sweep that produces the curves** (needle slopes; the dispersion sensitivity chain dφ/dgd/dgdd/dtod/dfod was verified bit-exact in §19.1 Part C). The LM can therefore get exact Jacobian columns for one sweep instead of 2n — and without the FD noise floor that pollutes J exactly where it matters (small steps near the optimum; the solver docstring's own TOD-noise warning).
+
+**Fix design.**
+1. Expose **per-point deposits** for the residual assembly: d(curve_c[j])/dθ_k per point/channel, already produced by the sweep — no new solver work, reuse the pass.
+2. Expose **fold-chain weights per residual row**: J[i,k] = (d residual_i / d curve value) · (deposit), where the first factor is the transform derivative × rscale (linear/log/phase — verified in `fd_step1` Part A) and, for integral-mean rows, the aggregation weights over points. This is a refactor of the existing fold accumulation (which currently collapses directly into the r-weighted merit gradient) into row-wise form.
+3. **Materialize J (m×n)** — sizes are small (m ~ 10³–10⁴ rows, n ≲ 50 layers) — and hand it to the optimizer. R4.4b's QR step solve consumes J directly, so work item A slots in unchanged.
+4. `OptimizerConfig.jacobian = "analytic" | "fd"`, analytic the default when deposit coverage exists for every active channel (R/T/A/φ + the dispersion channels all have verified chains); FD remains the fallback for uncovered channels **and** the cross-check oracle.
+5. **Determinism:** J assembly is per-(row,point) writes into a fixed-address buffer — the per-destination pattern §13 certifies. Prefer materializing J over any JᵀJ-style accumulation; if an accumulation is ever added, it must keep an ordered reduction (§13's contract).
+
+**Impact.** 2n solver sweeps → 1 per LM iteration (at n = 30 layers, ~98 % of the Jacobian's share of the 2.1 ms refold LM gone); exact J instead of noisy J; benefits every backend (R4.4b/c and R4.6 all consume the same J).
+
+**Risk & mitigation.** M: (a) sub-gradient semantics at fold kinks (kinds a/b/r clamps) must match the FD conventions the native pipeline already uses — same source of truth, but document it at the assembly site; (b) per-element analytic-vs-FD cross-check becomes a **first-class required cargo test**: rel ≤ 1e-6 per element away from kinks on a representative spec; (c) a coverage test asserting every channel activated by a representative spec has deposit support (else the fallback must trip visibly); (d) bench gate.
+
+**Validation.** Existing: `fd_step1` Parts A/B (fold + end-to-end), `bench_refold` (expect a large refold-cost drop; update the bench to assert which jacobian path ran). New: the per-element J cross-check and the coverage test above.
+
+**Effort.** M. **Sequencing:** after R4.4b (feeds it J directly), before R4.6 (TRF consumes the same J).
+
+---
+
+### R4.6 TRF backend — trust-region-reflective, the bounded-LS reference method
+
+**Review/context.** `thick_opt.rs`'s own docstring says it replaces scipy `least_squares(method="trf")` — the Rust rewrite dropped to a simpler clamped LM, and the clamp is exactly the weak point R4.4b item 3 patches. TRF (Branch–Coleman–Li 1999) is the reference bounded-LS method: bounds enter the trust-region subproblem (scaled space + reflection steps), iterates stay strictly interior, and boundary optima are handled by construction — the existing corner/boundary cargo cases are precisely where clamp-LM is weakest.
+
+**Fix design.**
+1. New `OptimizerBackend::Trf` in the R4.4c enum. Hand-rolled like the rest of the module — scipy's `_lsq/trf.py` is the semantic reference, no new dependency.
+2. Structure: D = column-norm scaling (frozen, MINPACK-style); **generalized Cauchy point** in the scaled box for the initial step; 2-D subspace minimization with reflections at active bounds; ρ-based radius update (same gain-ratio machinery as R4.4b item 2); the subproblem's least-squares solves **reuse R4.4b's QR infrastructure** — this is why item A is not wasted work when TRF arrives.
+3. Termination: the same ftol/xtol/gtol MINPACK semantics — which is why scipy is a *direct oracle* here (same algorithm family): extend `lm_check.py` with `method="trf"` rows and assert the tightest agreement in the whole plan (same algorithm vs same algorithm).
+4. **Bounds contract:** replaces veto+clamp entirely on this backend — the R4.4b item-3 clipped-prediction caveat *does not exist* for TRF (the predicted reduction is computed for the actual feasible step). When TRF is made the default for bounded problems, that caveat retires rather than being patched forever.
+5. Requires J — analytic (R4.5) preferred, FD fallback; same problem interface as the other backends.
+
+**Impact.** Correct boundary behavior, direct scipy parity, kills the clamp-prediction subtlety by construction.
+
+**Risk & mitigation.** The largest algorithmic lift in the R4.4 family (Cauchy point + reflection logic are fiddly): mitigated by (a) scipy-as-oracle in `lm_check.py`, (b) reuse of QR + gain-ratio pieces, (c) backend-equivalence tests, (d) bench gate; shipped behind the backend enum — built-in stays default until TRF demonstrably wins on real refold workloads.
+
+**Effort.** L. **Sequencing:** after R4.4b (QR + gain-ratio) and R4.5 (analytic J).
 
 ---
 
@@ -821,7 +865,9 @@ recur — the same pattern as `check_cie_sync.py`.
 | `validation/benches/_bench_common.py` | R2.1/2.2 | release-assert + UTF-8 setup shared by benches |
 | parity: R-row in `test_needle_t_a_phi.py` `check_fd` | §19.2 | permanent R-channel FD coverage with a distinct needle material (one-line addition, do it with R1.1's commit or R2.4) |
 | `validation/review/lm_check.py` | R4.4 | engine optimizer vs `scipy.optimize.least_squares(trf)` parity (closes §18.2's never-reproduced claim), parametrized over enabled backends |
-| cargo: backend-equivalence tests | R4.4 | same problem through `BuiltinLm`/`MinpackLm`/`Argmin*` — optimum/cost agreement within tolerance |
+| cargo: backend-equivalence tests | R4.4 | same problem through `BuiltinLm`/`MinpackLm`/`Trf`/`Argmin*` — optimum/cost agreement within tolerance |
+| cargo: analytic-vs-FD per-element J cross-check | R4.5 | deposit-assembled J vs FD J on a representative spec (rel ≤ 1e-6 away from fold kinks) + channel-deposit coverage test |
+| `lm_check.py` TRF rows | R4.6 | TRF vs `scipy.optimize.least_squares(method="trf")` — same algorithm family, the tightest parity in the plan |
 
 ### 7.3 Optional additional tests (recommended, not blocking)
 
@@ -872,8 +918,9 @@ Phase 2 (R2.1→R2.5)           guards; R2.3 requires the warning-fix commit
    └─ R2.3 (CI) becomes the gate for everything after; R2.4 widens its scope
 Phase 3 (R3.1→R3.3)           behavior changes (0.6.0); R3.1 before R3.2
    └─ R3.1's audit may touch tests R2.4 just un-hid — run both
-Phase 4 (R4.1→R4.4)           R4.2 before R6.1 (refactor absorbs the new slots);
-                              R4.4a (hardened LM) before R4.4b (backends)
+Phase 4 (R4.1→R4.6)           R4.2 before R6.1 (refactor absorbs the new slots);
+                              R4.4b (QR + gain-ratio) before R4.4c (backends);
+                              R4.5 (analytic J) after R4.4b, before R4.6 (TRF consumes J)
 Phase 5 (R5.1, R5.2)          perf; R5.2 gated by the optional scaling bench
 Phase 6 (R6.1→R6.5)           R6.1 last among code items (XL, bit-exact gate)
 ```
@@ -896,6 +943,7 @@ release.
 | Bit-identity drift from parallelization | R5.2 | §13's per-destination pattern; differential test is the hard gate |
 | Review harnesses encode soon-obsolete behavior | R3.1 | update `garbage_in.py` expectations in the same commit as the validation change |
 | Termination-semantics change shifts pinned synthesis optima | R4.4 | §8 protocol; cost must be same-or-better; hand-checked expectation per changed pin; built-in stays default until alternatives win on real workloads |
+| Analytic-J assembly introduces a cross-point reduction that breaks bit-identity | R4.5 | materialize J per-destination (no reduction); any accumulation keeps ordered reduction per §13; per-element cross-check against FD |
 
 ## 11. Explicitly deferred (reviewed, no change required now)
 
