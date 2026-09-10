@@ -116,6 +116,16 @@ Rust function is exposed via PyO3, so Python can drive the whole engine.
 `tools/check_exposure.py` enforces this both ways in CI (see
 docs/plans/exposure_audit.md).
 
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+`cargo test --workspace`, a zero-compiler-warnings check (`-D warnings`),
+`pytest validation` on Windows and Linux, the exposure and CIE-sync lints,
+and an assertion that the installed extension is a release build.
+`cargo clippy` and `cargo fmt --check` run advisory for now — the reasons,
+and what it takes to make them blocking, are recorded at the top of the
+workflow.
+
 ### Layout notes
 
 - `rust/` holds the Cargo workspace (the single `navette` engine crate
@@ -127,12 +137,14 @@ docs/plans/exposure_audit.md).
 ### Release & publish
 
 Release automation: tag `vX.Y.Z` (must match `pyproject.toml`, workspace
-`Cargo.toml`, `__about__.py` — enforced by CI) → `.github/workflows/release.yml`
+`Cargo.toml`, its internal `navette` dependency, `__about__.py` and both
+`Cargo.lock` entries — all six enforced by CI) →
+`.github/workflows/release.yml`
 builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.5.0-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.5.6-*.whl (single wheel, all engines)
 ```
 
 Manual fallback: `cargo publish -p navette`;

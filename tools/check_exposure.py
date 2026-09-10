@@ -45,6 +45,12 @@ ALLOWLIST = {
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",
+    # NOTE: until 0.5.5 this one counted as "exposed" only because
+    # navette-py/src/smatrix.rs carried an UNUSED `use` of it. Deleting the
+    # dead import surfaced it. A bare `use` satisfies this lint, so an
+    # unused-import cleanup can turn it red -- that is the lint working, not
+    # breaking. (via Solver::solve, which reads the request bits)
+    "max_disp_order",
     # optimizer internals (via scan/refine bindings)
     "char_func", "char_func_xy", "reflection_coefficient_helper",
     # pipeline stages (via NeedlePipeline::run / run_design)

@@ -9,6 +9,11 @@
 #
 # Flow: check tag↔versions → build wheels (3 OS, abi3) → PyPI (OIDC) →
 # crates.io (token), single `navette` crate.
+#
+# Correctness is gated by `ci.yml` on push/PR, so a tag points at a commit
+# that has already been through the suites. This workflow re-checks only
+# what is release-specific: tag/version agreement (now including Cargo.lock)
+# and CIE table sync.
 
 name: release
 
@@ -45,9 +50,21 @@ jobs:
           PY=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
           RS=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
           PYABOUT=$(grep -m1 '__version__' src/navette/__about__.py | cut -d'"' -f2)
-          echo "tag=$TAG pyproject=$PY workspace=$RS about=$PYABOUT"
-          test "$TAG" = "$PY" -a "$TAG" = "$RS" -a "$TAG" = "$PYABOUT" \
-            || { echo "version mismatch"; exit 1; }
+          # The lock was NOT checked here until 0.5.6 and silently lagged a
+          # release behind (0.5.1 while Cargo.toml said 0.5.2): it passed this
+          # gate while dirtying the tree on the first `cargo build`.
+          LOCK=$(grep -A1 -m1 '^name = "navette"$' Cargo.lock | grep -m1 '^version = ' | cut -d'"' -f2)
+          LOCKPY=$(grep -A1 -m1 '^name = "navette-py"$' Cargo.lock | grep -m1 '^version = ' | cut -d'"' -f2)
+          # The internal path dependency carries its own version requirement.
+          DEP=$(grep -m1 '^navette = { version = ' Cargo.toml | cut -d'"' -f2)
+          echo "tag=$TAG pyproject=$PY workspace=$RS about=$PYABOUT dep=$DEP lock=$LOCK lock-py=$LOCKPY"
+          fail=0
+          for pair in "pyproject:$PY" "workspace:$RS" "about:$PYABOUT" \
+                      "cargo-dep:$DEP" "lock-navette:$LOCK" "lock-navette-py:$LOCKPY"; do
+            name=${pair%%:*}; value=${pair#*:}
+            [ "$value" = "$TAG" ] || { echo "::error::$name=$value does not match tag $TAG"; fail=1; }
+          done
+          [ $fail -eq 0 ] || exit 1
 
   build-wheels:
     needs: [check-versions, check-cie-sync]

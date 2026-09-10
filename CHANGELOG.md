@@ -3,6 +3,52 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.6] — push/PR CI gate (R2.3, §7)
+
+### Added
+
+- **`.github/workflows/ci.yml`** — runs on every push and pull request.
+  Until now the only workflow was `release.yml`, and it only ran on a tag:
+  a broken example, unsynced request bits and a tree full of live compiler
+  warnings all survived the 0.5.0 release with nothing to catch them.
+
+  Blocking: `cargo test --workspace`; `cargo check --workspace --all-targets`
+  under `RUSTFLAGS=-D warnings` (possible as of 0.5.5); `pytest validation` on
+  Windows **and** Linux; `tools/check_exposure.py` — the README has claimed
+  this is "enforced in CI" for some time and it now is; `tools/check_cie_sync.py`;
+  and an assertion that the PEP 517 install really is a release build, which
+  exercises R2.1's `build_profile()` probe end to end.
+
+  Advisory (`continue-on-error`), each with the reason recorded in the file:
+  `cargo clippy` (248 findings), `cargo fmt --check` (981 files differ from
+  rustfmt defaults), and the numpy-floor job (see below). Making any of them
+  blocking means landing a large mechanical diff first; doing that inside the
+  commit that introduces the gate would bury the gate. A CI that cannot go
+  green teaches people to ignore CI.
+
+### Fixed
+
+- **`release.yml`'s `check-versions` could not catch the version skew that
+  actually happened.** It compared the tag against `pyproject.toml`,
+  `Cargo.toml` and `__about__.py` — but not `Cargo.lock` (which lagged at
+  0.5.1 while `Cargo.toml` said 0.5.2, see 0.5.3) nor the internal `navette`
+  path-dependency requirement in `Cargo.toml`. All six are now checked, each
+  mismatch reported individually as a `::error::` rather than one opaque
+  "version mismatch". Verified both ways against the working tree.
+
+- `tools/check_exposure.py`: allowlisted `max_disp_order`. It had counted as
+  exposed only because `navette-py/src/smatrix.rs` carried an **unused `use`**
+  of it; deleting that dead import in 0.5.5 surfaced it. A bare `use`
+  satisfies this lint, so an unused-import cleanup can legitimately turn it
+  red — worth knowing before assuming a red run means a lost binding.
+
+### Known gaps
+
+- The **declared numpy floor is fiction**: `pyproject.toml` says
+  `numpy>=1.22.0` while `requires-python` is `>=3.12`, and numpy only gained
+  cp312 wheels at 1.26. The CI job that would catch this is present but
+  advisory; **R4.1 must raise the floor and delete its `continue-on-error`**.
+
 ## [0.5.5] — Zero compiler warnings (R2.3 prerequisite, §7)
 
 Prerequisite for the push/PR CI gate: `-D warnings` cannot be enabled while

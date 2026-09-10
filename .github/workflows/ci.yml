@@ -1,0 +1,138 @@
+# Push/PR gate. Before this existed only `release.yml` ran, and only on a
+# tag: a broken example, unsynced request bits and a tree full of live
+# compiler warnings all survived the 0.5.0 release. (R2.3, review §7.)
+#
+# What is BLOCKING here is what the tree can actually satisfy today:
+#   * cargo test --workspace          (376 tests)
+#   * rustc -D warnings               (zero warnings as of 0.5.5)
+#   * pytest validation               (450 tests, Windows + Linux)
+#   * tools/check_exposure.py         (README claims it is "enforced in CI" —
+#                                      as of this workflow that is finally true)
+#   * tools/check_cie_sync.py
+#   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
+#
+# What is ADVISORY (continue-on-error) and why:
+#   * cargo clippy  — 248 findings on the current tree
+#   * cargo fmt     — 981 files differ from rustfmt defaults
+#   * numpy floor   — declared floor cannot install on the declared Python
+# Both are tracked as their own items. Turning either blocking means landing
+# a large mechanical diff first; doing it inside this commit would bury the
+# gate itself. A gate that cannot go green teaches people to ignore CI, so
+# these report without failing until that work lands.
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  rust:
+    name: rust (test + warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: no compiler warnings
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo check --workspace --all-targets
+
+      - name: clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      - name: rustfmt (advisory)
+        continue-on-error: true
+        run: cargo fmt --all --check
+
+  python:
+    name: python (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The maturin PEP 517 backend builds release; `maturin develop` without
+      # --release does not. Asserted below rather than assumed (R2.1).
+      - name: install (editable, native extension)
+        run: python -m pip install -e ".[dev]"
+
+      - name: extension is a release build
+        shell: bash
+        run: |
+          P=$(python -c "import navette; print(navette.build_profile())")
+          echo "build_profile=$P"
+          test "$P" = "release" || { echo "CI is testing a $P build"; exit 1; }
+
+      - name: pytest validation
+        run: python -m pytest validation
+
+      - name: exposure lint (Rust <-> Python surface)
+        run: python tools/check_exposure.py
+
+      - name: embedded CIE tables match sources
+        run: python tools/check_cie_sync.py
+
+  numpy-floor:
+    # Guards the declared floor: the version in `pyproject.toml` must
+    # actually install and import, or the floor is fiction.
+    #
+    # ADVISORY today, and expected to fail: the declared floor is
+    # `numpy>=1.22.0` while `requires-python` is `>=3.12`, and numpy gained
+    # cp312 wheels only at 1.26. R4.1 raises the floor to `numpy>=2.0`;
+    # **that item must also delete the `continue-on-error` below**, at which
+    # point this job starts doing its job.
+    name: numpy floor (advisory until R4.1)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install against the declared numpy floor
+        run: |
+          python -m pip install -e .
+          FLOOR=$(python - <<'PY'
+          import re, pathlib
+          t = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          print(re.search(r'"numpy>=([0-9.]+)"', t).group(1))
+          PY
+          )
+          echo "declared numpy floor: $FLOOR"
+          python -m pip install "numpy==$FLOOR"
+      - name: import at the floor
+        run: |
+          python -c "import numpy, navette; print('numpy', numpy.__version__, 'navette', navette.__version__, navette.build_profile())"

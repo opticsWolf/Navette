@@ -54,6 +54,8 @@ coverage is thin.
 | R2.1 | `build_profile()` probe + bench guard | P0-enabler | benchmarking hygiene | S | S | §5.1.1 |
 | R2.2 | README `--release` + bench UTF-8 | P0-enabler | docs/benches | S | S | §5.1.1, §17 |
 | R2.3 | push/PR CI workflow | **P0-enabler** | gates everything after it | M (fix live warnings first) | M | §7 |
+| R2.3a | clippy clean → blocking gate | P2 | 248 findings in hot code | M (numeric drift) | M–L | §7 |
+| R2.3b | rustfmt adoption → blocking gate | P3 | 981 files; style decision first | S (blame churn) | S/L review | §7 |
 | R2.4 | parity tests collected; `sys.exit` → skip | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
 | R2.5 | request-bit + schema sync tests | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
 | R3.1 | `ScatterMatrix` input validation | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
@@ -292,7 +294,7 @@ time, not test time).
 running one bench in a `cmd.exe` console without `PYTHONIOENCODING`).
 **Effort.** S.
 
-### R2.3 push/PR CI workflow
+### R2.3 push/PR CI workflow — DONE (0.5.6; warning cleanup 0.5.5)
 
 **Review:** §7 (only tag-triggered `release.yml` exists; README claims
 exposure lint is "enforced in CI" — it is not).
@@ -305,6 +307,19 @@ exposure lint is "enforced in CI" — it is not).
     `rayon::prelude`, `ArraySeed`; unused vars `land`, `m`×3, `wavelengths`,
     `num_angles`, `ok`). Do this as its own commit *before* enabling
     `-D warnings`.
+    **CORRECTION (0.5.5): 25 warnings, not 13.** The extra 12 are four
+    `unused_mut`, one never-read enum field (`IntGap::EdgeMean.0`), one
+    non-snake-case binding, two private-interface warnings (`PyFilmInput`)
+    and four pyo3 `FromPyObject` deprecations. Done in 0.5.5, and two of
+    them were dead *computations*, not dead names.
+  - **What actually shipped as blocking (0.5.6):** `cargo test`,
+    rustc `-D warnings`, `pytest validation` (Windows + Linux),
+    `check_exposure.py`, `check_cie_sync.py`, and a `build_profile() ==
+    "release"` assertion. **`cargo clippy -- -D warnings` and
+    `cargo fmt --check` are ADVISORY**, because the tree has 248 clippy
+    findings and 981 files that differ from rustfmt defaults — neither was
+    in the plan's estimate, and both are large mechanical diffs that must
+    not ride along with the gate itself. Two follow-up items below.
 - job `python` (windows-latest + ubuntu-latest): install Python 3.12 +
   numpy≥2 → `maturin develop --release` → `pytest validation` (post-R2.4
   scope) → `python tools/check_exposure.py` → `python tools/check_cie_sync.py`.
@@ -326,6 +341,38 @@ test by opening a PR with a deliberate failure (e.g. revert one warning fix)
 and watching it gate.
 
 **Effort.** M.
+
+### R2.3a Clippy clean → make the clippy gate blocking
+
+**Discovered by R2.3 (0.5.6).** `cargo clippy --workspace --all-targets`
+reports **248** findings (217 in `navette`, 31 in `navette-py`), of which
+clippy offers to auto-fix ~138. The CI job runs clippy with
+`continue-on-error: true` today.
+
+**Fix design.** Triage in passes, each its own commit, bit-exactness checked
+per ground rule 5: (1) `cargo clippy --fix` for the mechanical ones, reviewed
+hunk by hunk — auto-fixes in numeric code are *not* automatically
+behavior-neutral; (2) hand-fix or `#[allow(...)]`-with-rationale the rest;
+(3) delete `continue-on-error` from the clippy step in `ci.yml`.
+
+**Risk.** M — touches hot physics code. Nothing here is a bug fix, so any
+numeric change is a regression by definition.
+**Effort.** M/L.
+
+### R2.3b rustfmt adoption → make the fmt gate blocking
+
+**Discovered by R2.3 (0.5.6).** `cargo fmt --all --check` reports diffs in
+**981** files — i.e. the tree has never been rustfmt-formatted and the
+codebase's own style differs from rustfmt defaults in places (notably the
+2-space-indented modules under `synthesis/`).
+
+**Decision needed before doing anything:** adopt rustfmt defaults (one
+tree-wide reformat commit, which rewrites `git blame` for the whole crate —
+mitigate with `.git-blame-ignore-revs`), or add a `rustfmt.toml` that encodes
+the existing house style and reformat to *that*. Do not start until this is
+chosen; the two produce very different diffs.
+
+**Effort.** S to do, L to review — hence its own item.
 
 ### R2.4 Parity tests collected; `sys.exit(1)` → skip
 
@@ -523,6 +570,12 @@ high-index substrates understand the rejection region.
 ## 4. Phase 4 — API & packaging completion (P1/P2)
 
 ### R4.1 numpy floor → `numpy>=2.0`
+
+**Note (0.5.6):** `ci.yml`'s `numpy-floor` job is `continue-on-error: true`
+and **expected to fail** — the declared floor `numpy>=1.22.0` cannot install
+on `requires-python = ">=3.12"` (cp312 wheels start at numpy 1.26). This item
+must delete that `continue-on-error` once the floor is raised, or the job
+stays decorative.
 
 **Review:** §7 (wheels built on the numpy-2 C-API cannot load against
 numpy 1.x; `pyproject.toml:30` declares `numpy>=1.22.0`).
