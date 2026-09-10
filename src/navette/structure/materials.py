@@ -453,7 +453,7 @@ class WeaverMaterialProvider:
     if UniSpline is None:  # pragma: no cover
       raise ImportError(
         "Table resampling needs the compiled `navette._interpolate` extension. "
-        "Build it with: maturin develop  # from the repo root"
+        "Build it with: maturin develop --release  # from the repo root"
       )
     spline = UniSpline(
       src_wl, src_data,

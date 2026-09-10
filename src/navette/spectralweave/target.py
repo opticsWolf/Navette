@@ -20,7 +20,7 @@ try:
 except ImportError as exc:  # pragma: no cover - native not built yet
   raise ImportError(
     "Targets need the compiled `navette._spectralweave` extension. "
-    "Build it with: maturin develop  # from the repo root"
+    "Build it with: maturin develop --release  # from the repo root"
   ) from exc
 
 TargetType = Literal["a", "b", "e", "r", "c"]

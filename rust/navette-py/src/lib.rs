@@ -24,7 +24,7 @@ mod spectralweave_optical;
 mod spectralweave_target;
 
 use pyo3::prelude::*;
-use pyo3::wrap_pymodule;
+use pyo3::{wrap_pyfunction, wrap_pymodule};
 
 use crate::color::_color;
 use crate::interpolate::_interpolate;
@@ -38,6 +38,29 @@ use crate::spectralweave::_spectralweave;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Cargo profile this extension was compiled with: `"release"` or `"debug"`.
+///
+/// Exists so a benchmark can refuse to run against an unoptimized build.
+/// This is not a hypothetical: the dev venv once shipped a `maturin develop`
+/// (debug) build for long enough that a whole round of committed timings —
+/// and the conclusions drawn from them — had to be thrown away. A debug
+/// build is several times slower and makes every comparison meaningless,
+/// while looking perfectly healthy from Python.
+///
+/// `debug_assertions` is the profile switch Cargo actually flips (`dev` on,
+/// `release` off), so this reports how the code was *optimized*, which is
+/// what a timing depends on — not the literal `--profile` name.
+///
+/// See `validation/benches/_bench_common.py::require_release`.
+#[pyfunction]
+fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
 /// Aggregate all five engine submodules into `navette._navette`.
 #[pymodule]
 fn _navette(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -47,5 +70,6 @@ fn _navette(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pymodule!(structure::_structure))?;
     m.add_wrapped(wrap_pymodule!(_spectralweave))?;
     m.add_wrapped(wrap_pymodule!(_materials))?;
+    m.add_function(wrap_pyfunction!(build_profile, m)?)?;
     Ok(())
 }

@@ -11,6 +11,19 @@ Usage:  python validation/benches/structure/bench_grid_assert.py [--out FILE]
 Writes JSON {case: {median_ms, min_ms}} to stdout (and FILE if given).
 """
 
+# --- bench preamble (R2.1/R2.2) ------------------------------------------
+# UTF-8 console, repo `src/` on sys.path, and a hard gate against timing a
+# debug build. Must precede any `navette` import.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from _bench_common import bench_provenance, require_release, setup_bench  # noqa: E402
+
+setup_bench()
+require_release()
+# -------------------------------------------------------------------------
+
 import json
 import sys
 import time
@@ -18,7 +31,6 @@ import warnings
 
 import numpy as np
 
-sys.path.insert(0, "src")
 from navette.structure import Navette_Structure, solve_structure
 from navette.structure.models import Layer
 from navette.structure.materials import DictMaterialProvider
@@ -71,7 +83,8 @@ for _ in range(2000):
   c_ts.append((time.perf_counter() - t0) * 1e6)
 c = {"median_us": float(np.median(c_ts)), "min_us": float(np.min(c_ts))}
 
-out = {"A_grid_attached_ms": a, "B_gridless_ms": b, "C_assert_only_us": c}
+out = {"A_grid_attached_ms": a, "B_gridless_ms": b, "C_assert_only_us": c,
+       "_provenance": bench_provenance()}
 print(json.dumps(out, indent=2))
 if "--out" in sys.argv:
   with open(sys.argv[sys.argv.index("--out") + 1], "w") as fh:

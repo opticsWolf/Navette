@@ -3,6 +3,54 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.4] — Build-profile probe + bench guard, UTF-8 benches (R2.1, R2.2, §5.1.1, §17)
+
+### Added
+
+- **`navette.build_profile()`** — reports the Cargo profile the installed
+  extension was compiled with, `"release"` or `"debug"`. A debug build imports
+  and computes correctly but runs several times slower, so nothing detects it
+  by eye; this makes it a one-line check.
+- **`validation/benches/_bench_common.py`** — shared bench preamble.
+  `require_release()` exits rather than time a debug build; `setup_bench()`
+  reconfigures stdout/stderr to UTF-8 and puts the repo's `src/` on
+  `sys.path`; `bench_provenance()` returns the profile/version/platform block
+  now stamped into bench results JSON.
+- All **seven** benches (`smatrix/bench_backside_speed.py`,
+  `structure/bench_grid_assert.py`, `synthesis/bench_refold.py`,
+  `spectralweave/navette_{spectral,target}_bench.py`,
+  `interpolate/1dinterpol_test_bench.py`, `color/bench_validate_color.py`)
+  call the preamble before importing `navette`.
+- `validation/smoke/test_build_profile.py` (12 tests) — asserts the gate
+  refuses `"debug"` and an unbuilt extension, that the package-level accessor
+  matches the native symbol, and that **no bench can be added without
+  `require_release()`**. It deliberately does *not* assert the installed
+  profile: testing against a debug build is fine, *timing* one is not.
+
+### Fixed
+
+- **Benches died with `UnicodeEncodeError` on a cp1252 console** (§17) — the
+  interpolate, target and color benches print `->` arrows and emoji and needed
+  `PYTHONIOENCODING=utf-8` to run at all. `setup_bench()` fixes this at the
+  source; verified by running every bench with the variable unset.
+- Benches that did `sys.path.insert(0, "src")` only worked when launched from
+  the repo root; they now resolve `src/` from `__file__`.
+
+### Changed
+
+- **Every `maturin develop` build instruction now says `--release`** — the
+  README, `navette/__init__.py`, and the sixteen `ImportError` build hints in
+  the wrapper modules. The README carries an explicit warning; following any
+  of the old hints produced exactly the debug build of §5.1.1.
+- Committed bench results (`validation/benches/smatrix/results/*.json`)
+  predate the gate and are of **unknown profile** — `bench_backside_speed.py`'s
+  `A_legacy` case measures ~0.06 ms on a release build against the 0.50 ms
+  recorded there, so those files are almost certainly debug-build numbers and
+  must not be compared against new runs. Noted in `validation/README.md`.
+- `tools/check_exposure.py`: allowlisted `nevot_croce_factors` (internal, via
+  every solve/field/needle path). The lint had been **failing since 0.5.3** —
+  it is not wired into any workflow yet, which is R2.3.
+
 ## [0.5.3] — Névot-Croce: remaining two sites + single source of truth (R1.1, §3.2)
 
 ### Fixed

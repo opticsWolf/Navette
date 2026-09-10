@@ -90,13 +90,21 @@ Navette/
 
 ```powershell
 # Single aggregated native extension (navette._navette, all engines):
-maturin develop
+maturin develop --release
 # checks
 cargo check --workspace
 cargo test --workspace     # everything (needs Python for binding crates)
 cargo test-pure            # pure-Rust gate (no Python needed)
 pytest validation
 ```
+
+> **Always pass `--release`.** Plain `maturin develop` builds with the `dev`
+> profile: the extension imports and computes correctly, but runs several
+> times slower, so every timing taken against it is meaningless. This is not
+> hypothetical — a whole round of committed benchmark results (and the
+> conclusions drawn from them) had to be discarded for exactly this reason.
+> `navette.build_profile()` reports which profile is installed, and the
+> benches under `validation/benches/` exit rather than time a `"debug"` one.
 
 ### Architecture: Rust core, Python addon
 

@@ -64,7 +64,7 @@ try:
 except ImportError as exc:  # pragma: no cover - environment dependent
     raise ImportError(
         "Could not import the compiled `_smatrix` extension. Build the Rust "
-        "crate (e.g. `maturin develop`) so that `_smatrix` is importable."
+        "crate (e.g. `maturin develop --release`) so that `_smatrix` is importable."
     ) from exc
 
 if TYPE_CHECKING:  # pragma: no cover

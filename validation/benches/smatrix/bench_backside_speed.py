@@ -11,13 +11,25 @@ Usage:  python validation/benches/smatrix/bench_backside_speed.py [--out FILE]
 Writes JSON {mask: {median_ms, min_ms}} to stdout (and FILE if given).
 """
 
+# --- bench preamble (R2.1/R2.2) ------------------------------------------
+# UTF-8 console, repo `src/` on sys.path, and a hard gate against timing a
+# debug build. Must precede any `navette` import.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from _bench_common import bench_provenance, require_release, setup_bench  # noqa: E402
+
+setup_bench()
+require_release()
+# -------------------------------------------------------------------------
+
 import json
 import sys
 import time
 
 import numpy as np
 
-sys.path.insert(0, "src")
 from navette.smatrix.smatrix import ScatterMatrix, Request
 
 WAVLS = np.linspace(400.0, 800.0, 40)
@@ -59,6 +71,9 @@ def main():
         masks["B_backside_only"] = Request(backside)
         masks["C_full"] = MASK_A | Request(backside)
     res = {name: bench(m) for name, m in masks.items()}
+    # Stamp the build the numbers came from -- results without it are of
+    # unknown profile and must not be compared against these (R2.1).
+    res["_provenance"] = bench_provenance()
     text = json.dumps(res, indent=1)
     print(text)
     if len(sys.argv) == 3 and sys.argv[1] == "--out":

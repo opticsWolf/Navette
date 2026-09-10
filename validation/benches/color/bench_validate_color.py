@@ -9,6 +9,19 @@ It measures mathematical parity between Navette and Colour-Science, while benchm
 the computational throughput speedup of Navette over Loom.
 """
 
+# --- bench preamble (R2.1/R2.2) ------------------------------------------
+# UTF-8 console, repo `src/` on sys.path, and a hard gate against timing a
+# debug build. Must precede any `navette` import.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from _bench_common import require_release, setup_bench  # noqa: E402
+
+setup_bench()
+require_release()
+# -------------------------------------------------------------------------
+
 import os
 import sys
 import time

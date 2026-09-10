@@ -16,10 +16,12 @@ coverage is thin.
 1. **Release build only.** Every build/test/bench action uses
    `maturin develop --release` (see R2.2). Before any timing claim or any
    fix that touches hot code, verify the installed extension is not the
-   debug build (`_navette.pyd` ≈ 4.5 MB, not 22.8 MB; or `build_profile()`
-   once R2.1 lands).
+   debug build: `python -c "import navette; print(navette.build_profile())"`
+   must print `release` (R2.1, landed 0.5.4). The benches enforce this
+   themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest validation` (355 tests today)
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (450 tests at
+     0.5.4; `PYTHONIOENCODING=utf-8` no longer needed for the benches after R2.2)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
    - Review harnesses: `for f in fd_step1 fd_rchannel color_merit_check garbage_in weaver_race tauc_check kk_validate kk_conv; do python validation/review/$f.py; done` (all must print `ALL OK` unless the item explicitly changes documented behavior)
@@ -224,7 +226,7 @@ be called at all today.
 
 ## 2. Phase 2 — Guard rails: build hygiene, CI, test honesty (P0-enablers)
 
-### R2.1 Build-profile probe + bench guard
+### R2.1 Build-profile probe + bench guard — DONE (0.5.4)
 
 **Review:** §5.1.1 (the venv shipped a debug build; every timing was wrong).
 
@@ -268,11 +270,17 @@ time, not test time).
 
 **Effort.** S.
 
-### R2.2 README + UTF-8 benches
+### R2.2 README + UTF-8 benches — DONE (0.5.4)
 
 - `README.md:93`: `maturin develop` → `maturin develop --release`, with a
   one-line warning that plain `maturin develop` produces a debug build that
   invalidates every benchmark (§5.1.1).
+  **CORRECTION (0.5.4): seventeen sites, not one.** The same instruction is
+  repeated in `navette/__init__.py` and in every wrapper's `ImportError`
+  build hint (`color/`, `interpolate/`, `materials/`, `spectralweave/`,
+  `structure/materials.py`, `smatrix/{needle,smatrix}.py`, and the six
+  `_*.py` shims). A user following any of them landed on the debug build, so
+  fixing only the README would have left the trap in place.
 - Bench scripts: route prints through `_bench_common.setup_bench()` (or add
   `sys.stdout.reconfigure(...)` inline) — fixes the cp1252
   `UnicodeEncodeError` in `1dinterpol_test_bench.py` and the target/color

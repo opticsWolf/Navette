@@ -5,7 +5,7 @@
 Thin wrappers over the private native extension
 ``navette._spectralweave`` built from ``rust/navette/src/spectralweave``::
 
-    maturin develop  # from the repo root
+    maturin develop --release  # from the repo root
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ except ImportError as exc:  # pragma: no cover - native not built yet
   raise ImportError(
     "Could not import the compiled `navette._spectralweave` extension. "
     "Build the Rust crate so it is importable, then retry:\n"
-    "    maturin develop  # from the repo root"
+    "    maturin develop --release  # from the repo root"
   ) from exc
 
 __all__ = [

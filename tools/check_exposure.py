@@ -39,6 +39,9 @@ ALLOWLIST = {
     # optics fast-math (via solve paths)
     "cexp_fast", "csqrt_fast", "grad_nonuniform", "reference_phase",
     "reference_wavenumber",
+    # Nevot-Croce interface factors: shared by all four rtype-5 branches,
+    # reached through every solve/field/needle path (R1.1)
+    "nevot_croce_factors",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",

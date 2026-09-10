@@ -6,7 +6,7 @@ Floater-Hormann, …) with batch support.
 Thin wrapper over the private native extension ``navette._interpolate``
 built from ``rust/navette/src/interpolate``::
 
-    maturin develop  # from the repo root
+    maturin develop --release  # from the repo root
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ except ImportError as exc:  # pragma: no cover - native not built yet
   raise ImportError(
     "Could not import the compiled `navette._interpolate` extension. "
     "Build the Rust crate so it is importable, then retry:\n"
-    "    maturin develop  # from the repo root"
+    "    maturin develop --release  # from the repo root"
   ) from exc
 
 __all__ = ["UniInterpolator"]

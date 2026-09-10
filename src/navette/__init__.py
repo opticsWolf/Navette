@@ -4,7 +4,8 @@ Navette: Weaving the mathematics of light in thin film systems.
 
 Unified Python package. Rust-accelerated subpackages are thin wrappers
 over private native submodules of the single aggregated extension
-``navette._navette`` (built with ``maturin develop`` from the repo root)::
+``navette._navette`` (built with ``maturin develop --release`` from the
+repo root)::
 
 ==================  ========================
 public wrapper      native submodule
@@ -24,7 +25,12 @@ Pure-Python subpackages (no build needed):
 
 Build the Rust extension with::
 
-    maturin develop
+    maturin develop --release
+
+Use ``--release``. Plain ``maturin develop`` produces a *debug* build: it
+imports and computes correctly but runs several times slower, which silently
+invalidates every timing taken against it. ``build_profile()`` reports which
+one is installed, and the benches refuse to run on ``"debug"``.
 
 Wrappers raise a helpful ``ImportError`` (with the exact maturin command)
 when their native module is missing, so ``import navette`` always works.
@@ -42,7 +48,28 @@ from .__about__ import (
   metadata_summary,
 )
 
+
+def build_profile() -> str:
+  """Returns the Cargo profile of the installed extension.
+
+  Either ``"release"`` or ``"debug"``. Imported lazily so that
+  ``import navette`` still succeeds without a built extension.
+
+  A ``"debug"`` build is functionally correct but several times slower, so
+  any benchmark run against one is meaningless -- see
+  ``validation/benches/_bench_common.py::require_release``, which exits
+  rather than produce such numbers.
+
+  Raises:
+    ImportError: If the native extension is not built.
+  """
+  from navette._navette import build_profile as _native_build_profile
+
+  return str(_native_build_profile())
+
+
 __all__ = [
+  "build_profile",
   "__title__",
   "__version__",
   "__description__",

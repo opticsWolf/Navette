@@ -7,7 +7,7 @@ are evaluated by :func:`evaluate`, which dispatches straight to the compiled
 ``navette._materials`` extension (submodule of the aggregated
 ``navette._navette`` module built from the repo root)::
 
-    maturin develop
+    maturin develop --release
 
 No Python kernels remain; every model (including Konstant/Table) is native.
 """
@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-_BUILD_HINT = "maturin develop  # from the repo root"
+_BUILD_HINT = "maturin develop --release  # from the repo root"
 
 _native_mod = None  # loaded lazily so specs import without a built extension
 

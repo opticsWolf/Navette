@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Shim: re-export the ``_interpolate`` submodule of the aggregated extension.
 
-The single ``navette._navette`` native module (built by ``maturin develop``
+The single ``navette._navette`` native module (built by ``maturin develop --release``
 from the repo root) hosts all engines as submodules; this file keeps the
 private ``navette._interpolate`` import path stable and lazily loads the
 extension only when this submodule is imported.
