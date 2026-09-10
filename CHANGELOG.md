@@ -3,6 +3,32 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.7] — CI fixes found by running it (R2.3)
+
+The first live run of `ci.yml` was green on all three blocking jobs (rust,
+python/windows, python/ubuntu) and surfaced two defects in the workflow
+itself. Inspection would not have caught either.
+
+### Fixed
+
+- **The numpy-floor job failed for the wrong reason.** With no cp312 wheel,
+  pip fell back to building numpy 1.22.0 from sdist and died with
+  `BackendUnavailable: Cannot import 'setuptools.build_meta'` — a build-env
+  error that buries the actual finding. It now installs with
+  `--only-binary=:all:` and, on failure, prints the finding as a
+  `::error::`: the declared floor has no wheel for the declared
+  `requires-python`. (Still advisory; R4.1 fixes the floor itself.)
+- **`actions/checkout@v4` and `actions/setup-python@v5` are Node 20**, which
+  the runners now force onto Node 24 with a deprecation warning. Bumped to
+  `@v5` / `@v6` (both `node24`) in `ci.yml` **and** `release.yml`.
+
+### Known gaps
+
+- `release.yml` still pins `actions/upload-artifact@v4` and
+  `download-artifact@v4`. Left alone deliberately: that workflow only runs on
+  a tag, so a major bump there cannot be verified before it matters, and it
+  is the workflow that publishes to PyPI.
+
 ## [0.5.6] — push/PR CI gate (R2.3, §7)
 
 ### Added

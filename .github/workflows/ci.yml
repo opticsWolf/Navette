@@ -42,8 +42,8 @@ jobs:
     name: rust (test + warnings)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
@@ -75,8 +75,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
@@ -116,8 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
@@ -131,8 +131,18 @@ jobs:
           print(re.search(r'"numpy>=([0-9.]+)"', t).group(1))
           PY
           )
-          echo "declared numpy floor: $FLOOR"
-          python -m pip install "numpy==$FLOOR"
+          PYV=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+          echo "declared numpy floor: $FLOOR  (python $PYV)"
+          # --only-binary: a floor that has no wheel for the declared Python
+          # is not a usable floor. Without this, pip falls back to building
+          # the sdist and fails with an unrelated setuptools error that hides
+          # the actual finding.
+          python -m pip install --only-binary=:all: "numpy==$FLOOR" || {
+            echo "::error::numpy==$FLOOR has no wheel for Python $PYV — the"
+            echo "::error::declared floor in pyproject.toml cannot be installed"
+            echo "::error::on the declared requires-python. See R4.1."
+            exit 1
+          }
       - name: import at the floor
         run: |
           python -c "import numpy, navette; print('numpy', numpy.__version__, 'navette', navette.__version__, navette.build_profile())"
