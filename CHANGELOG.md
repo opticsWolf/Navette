@@ -3,6 +3,28 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.2] — energy_conservation() accepts 2-D input (R1.2, §15)
+
+### Fixed
+
+- **`ScatterMatrix.energy_conservation()` no longer raises `TypeError`.** The
+  wrapper feeds 2-D `[n_angles, n_wavs]` arrays to the native
+  `solver_energy_conservation`, which previously accepted only 1-D input, so
+  the advertised API failed on every call. The binding now accepts 2-D, checks
+  shape agreement, and reshapes the elementwise residual back to 2-D; the
+  single-angle path still squeezes to 1-D.
+
+### Added
+
+- `validation/smoke/test_energy_conservation.py`: lossless (~0 residual),
+  absorbing (residual == absorptance, monotone in thickness), 2-D shape, and
+  1-D squeeze coverage.
+
+### Changed
+
+- `test_package_version` validates semver format instead of pinning a literal,
+  so it survives per-item version bumps (release workflow still enforces sync).
+
 ## [0.5.1] — Névot-Croce transmission factor (R1.1, §3.2)
 
 ### Fixed

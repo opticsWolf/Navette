@@ -5,9 +5,13 @@ from __future__ import annotations
 
 
 def test_package_version() -> None:
+  import re
+
   import navette
 
-  assert navette.__version__ == "0.5.0"
+  # Validate format rather than pinning a literal (the version bumps every
+  # remediation item); the release workflow enforces cross-file version sync.
+  assert re.fullmatch(r"\d+\.\d+\.\d+", navette.__version__), navette.__version__
 
 
 def test_structure_imports() -> None:

@@ -365,13 +365,30 @@ fn solver_dispersion_request(
 }
 
 #[pyfunction]
-fn solver_energy_conservation(
-    py: Python<'_>,
-    rs: PyReadonlyArray1<f64>,
-    rp: PyReadonlyArray1<f64>,
-    ts: PyReadonlyArray1<f64>,
-    tp: PyReadonlyArray1<f64>,
-) -> PyResult<Py<PyArray1<f64>>> {
+fn solver_energy_conservation<'py>(
+    py: Python<'py>,
+    rs: PyReadonlyArray2<f64>,
+    rp: PyReadonlyArray2<f64>,
+    ts: PyReadonlyArray2<f64>,
+    tp: PyReadonlyArray2<f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    // R1.2: accept 2-D [n_angles, n_wavs] (what ScatterMatrix.compute produces)
+    // rather than only 1-D, then reshape the elementwise result back to 2-D so
+    // the wrapper's `squeeze=False` path works. energy_conservation is a pure
+    // per-element reduction, so flattening C-contiguous input is exact.
+    let shape = rs.as_array().shape().to_vec();
+    for (name, a) in [
+        ("rp", rp.as_array().shape().to_vec()),
+        ("ts", ts.as_array().shape().to_vec()),
+        ("tp", tp.as_array().shape().to_vec()),
+    ] {
+        if a != shape {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "energy_conservation: array shapes must match rs {:?}, got {} {:?}",
+                shape, name, a
+            )));
+        }
+    }
     let e = navette::smatrix::solver::energy_conservation(
         rs.as_slice()?,
         rp.as_slice()?,
@@ -379,7 +396,8 @@ fn solver_energy_conservation(
         tp.as_slice()?,
     )
     .map_err(pyo3::exceptions::PyValueError::new_err)?;
-    Ok(PyArray::from_vec(py, e).into())
+    let arr = PyArray1::from_vec(py, e);
+    Ok(arr.reshape([shape[0], shape[1]])?)
 }
 
 // ---- core_engine wrapper (verbatim from core) ----
