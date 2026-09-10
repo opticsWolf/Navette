@@ -135,6 +135,13 @@ fn solve_pol_specialized<const IS_S: bool>(
             // (>= 1, -> 1 in the low-contrast limit) so energy is conserved.
             // Applying `f` to t12/t21 (the historical port bug) destroyed up to
             // ~7.5% of transmitted energy at a single interface. See R1.1.
+            //
+            // NOTE: this is a SPECULAR-only model. It conserves energy among the
+            // coherent beams (graded-interface picture) and does NOT represent
+            // diffuse scatter loss. It is only perturbatively unitary: at high
+            // contrast/oblique incidence R+T can exceed 1 by ~1e-3 (valid for
+            // kz*sigma << 1). See RoughnessType docs; scatter-loss option planned
+            // in docs/plans/scatter_loss_plan.md.
             let d = (kz1 - kz2) * sigma;
             let ga = (d * d * 0.5).exp();
             (r12 * f, r21 * f, t12 * ga, t21 * ga)
