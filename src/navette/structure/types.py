@@ -46,9 +46,24 @@ class RoughnessType(IntEnum):
       NEVOT_CROCE is constructed to conserve specular energy: reflection is
       damped by exp(-2*kz1*kz2*sigma^2) and transmission is *enhanced* by
       exp(+((kz1-kz2)*sigma)^2/2) so that R_spec + T_spec = 1 to first order in
-      sigma^2. (It is only perturbatively unitary: at high index contrast and
-      oblique incidence R_spec + T_spec can exceed 1 by ~1e-3 -- a model
-      artifact, valid only for kz*sigma << 1.) The graded types (1-4) instead
+      sigma^2.
+
+      It is only *perturbatively* unitary, and the cancellation is first-order
+      only: it holds for |kz*sigma| << 1 and degrades outside that regime.
+      Typical optical coatings (sigma <~ 5 nm, visible) overshoot by ~1e-4;
+      but the transmission factor grows without bound, so at high contrast and
+      large sigma the model produces flatly unphysical output. Measured, single
+      lossless interface, normal incidence, 550 nm:
+
+        n 1 -> 2.35, sigma = 20 nm:  R+T = 1.0206,  A = 1-R-T = -2.1e-2
+        n 1 -> 4.28, sigma = 20 nm:  T   = 1.0768,  A = 1-R-T = -2.3e-1
+
+      Note the consequences: **T can exceed 1 and the residual absorptance
+      A = 1 - R - T can go negative.** Neither is clamped. Check
+      :meth:`~navette.smatrix.ScatterMatrix.energy_conservation` if you are
+      near the validity edge -- but note it reports |1-R-T|, so an energy
+      *gain* is indistinguishable from absorption by magnitude alone.
+      The graded types (1-4) instead
       damp both coefficients, so R_spec + T_spec < 1, but the deficit is a
       form-factor artifact, not a derived scatter loss.
 

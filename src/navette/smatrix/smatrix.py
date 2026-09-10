@@ -396,8 +396,18 @@ class ScatterMatrix:
     def energy_conservation(self) -> np.ndarray:
         """``max(|1 - Rs - Ts|, |1 - Rp - Tp|)`` per grid point.
 
-        Exact and free — derived from intensities. ~0 for lossless stacks; for
-        absorbing stacks it equals the absorptance and lies in [0, 1].
+        Exact and free — derived from intensities. ~0 for lossless stacks;
+        for absorbing stacks with a physically conserving interface model it
+        equals the absorptance and lies in [0, 1].
+
+        Caveat — this is a magnitude, so it cannot distinguish energy lost
+        from energy gained. NEVOT_CROCE roughness is only perturbatively
+        unitary and can push ``R + T`` above 1 outside its validity range
+        (``|kz*sigma| << 1``), making the true residual *negative*; this method
+        then reports its absolute value, which reads like absorption but is
+        not. Compare against ``A`` from :meth:`absorption` (unclamped, so it
+        carries the sign) when using roughness type 5. See
+        :class:`~navette.structure.types.RoughnessType`.
         """
         out = self.compute(
             _rt_request("u"), squeeze=False

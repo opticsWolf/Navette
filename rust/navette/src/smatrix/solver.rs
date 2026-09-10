@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use super::core_engine::*;
 use super::needle_engine::*;
 use super::optimizer::{char_func, char_func_xy};
-use super::optics_core::{redheffer_product_complex_field_inner, w_function_inner};
+use super::optics_core::{nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner};
 use super::needle_operator::*;
 use super::optics_core::C_NM_PER_FS;
 
@@ -1684,8 +1684,9 @@ pub fn field_prof(
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
             if rtype == 5 {
-                let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
-                (r12 * f, r21 * f, t12 * f, t21 * f)
+                // Névot-Croce — shared factors, see `optics_core`. R1.1.
+                let (f, ga) = nevot_croce_factors(kz1, kz2, sigma);
+                (r12 * f, r21 * f, t12 * ga, t21 * ga)
             } else {
                 let al = w_function_inner(2.0 * kz1 * sigma, rtype);
                 let be = w_function_inner(2.0 * kz2 * sigma, rtype);

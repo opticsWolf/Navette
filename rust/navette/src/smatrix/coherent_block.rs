@@ -11,7 +11,7 @@
 use num_complex::{Complex64, ComplexFloat};
 use std::f64::consts::PI;
 
-use crate::smatrix::optics_core::{cexp_fast, csqrt_fast, redheffer_product_complex_field_inner, w_function_inner};
+use crate::smatrix::optics_core::{cexp_fast, csqrt_fast, nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner};
 
 const POL_S: i32 = 0;
 const LOG_MIN: f64 = 1e-100;
@@ -128,22 +128,10 @@ fn solve_pol_specialized<const IS_S: bool>(
         } else if rtype == 5 {
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
-            let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
-            // Névot-Croce: reflection is damped by the correlated Debye-Waller
-            // factor `f = exp(-2 kz1 kz2 sigma^2)`, but transmission takes the
-            // wavevector-difference factor `ga = exp(+((kz1-kz2) sigma)^2/2)`
-            // (>= 1, -> 1 in the low-contrast limit) so energy is conserved.
-            // Applying `f` to t12/t21 (the historical port bug) destroyed up to
-            // ~7.5% of transmitted energy at a single interface. See R1.1.
-            //
-            // NOTE: this is a SPECULAR-only model. It conserves energy among the
-            // coherent beams (graded-interface picture) and does NOT represent
-            // diffuse scatter loss. It is only perturbatively unitary: at high
-            // contrast/oblique incidence R+T can exceed 1 by ~1e-3 (valid for
-            // kz*sigma << 1). See RoughnessType docs; scatter-loss option planned
-            // in docs/plans/scatter_loss_plan.md.
-            let d = (kz1 - kz2) * sigma;
-            let ga = (d * d * 0.5).exp();
+            // Névot-Croce. Factors come from `optics_core` so all four
+            // interface builders stay bit-identical — see R1.1, where a fix
+            // landed in two of them and silently desynchronised the rest.
+            let (f, ga) = nevot_croce_factors(kz1, kz2, sigma);
             (r12 * f, r21 * f, t12 * ga, t21 * ga)
         } else {
             let kz1 = two_pi_lam * n_curr * cos_curr;
@@ -334,11 +322,8 @@ pub fn solve_coherent_block_fields_dual(
         } else if rtype == 5 {
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
-            let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
-            // Névot-Croce: reflection damped by `f`, transmission compensated by
-            // `ga = exp(+((kz1-kz2) sigma)^2/2)` (energy-conserving). See R1.1.
-            let d = (kz1 - kz2) * sigma;
-            let ga = (d * d * 0.5).exp();
+            // Névot-Croce — shared factors, see `optics_core`. R1.1.
+            let (f, ga) = nevot_croce_factors(kz1, kz2, sigma);
             (f, f, ga)
         } else {
             let kz1 = two_pi_lam * n_curr * cos_curr;

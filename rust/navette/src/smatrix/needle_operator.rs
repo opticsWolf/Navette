@@ -60,8 +60,8 @@ use std::f64::consts::PI;
 
 pub use crate::smatrix::optics_core::cexp_fast;
 use crate::smatrix::optics_core::{
-    cplx, csqrt_fast, redheffer_product_complex_field_inner, redheffer_product_real_inner,
-    w_function_inner, C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN,
+    cplx, csqrt_fast, nevot_croce_factors, redheffer_product_complex_field_inner,
+    redheffer_product_real_inner, w_function_inner, C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN,
 };
 
 /// S-matrix element in the crate-wide convention.
@@ -140,10 +140,13 @@ fn interface_matrix(
     let (r12m, r21m, t12m, t21m) = if rtype == 0 || sigma <= 0.0 {
         (r12, r21, t12, t21)
     } else if rtype == 5 {
+        // Névot-Croce — shared factors, see `optics_core`. Applying the
+        // reflection factor to t12/t21 here (the historical port bug) made the
+        // needle sensitivity inconsistent with the merit it differentiates.
         let kz1 = two_pi_lam * n[i] * cos[i];
         let kz2 = two_pi_lam * n[i + 1] * cos[i + 1];
-        let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
-        (r12 * f, r21 * f, t12 * f, t21 * f)
+        let (f, ga) = nevot_croce_factors(kz1, kz2, sigma);
+        (r12 * f, r21 * f, t12 * ga, t21 * ga)
     } else {
         let kz1 = two_pi_lam * n[i] * cos[i];
         let kz2 = two_pi_lam * n[i + 1] * cos[i + 1];

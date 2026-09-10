@@ -100,6 +100,35 @@ pub fn cexp_fast(z: Complex64) -> Complex64 {
     Complex64::new(e * c, e * s)
 }
 
+/// Névot-Croce (roughness type 5) amplitude factors `(reflection, transmission)`.
+///
+/// SINGLE SOURCE OF TRUTH for the type-5 branch. Every interface builder —
+/// `coherent_block::solve_pol_specialized`,
+/// `coherent_block::solve_coherent_block_fields_dual`,
+/// `solver::field_prof` and `needle_operator::interface_matrix` — must call
+/// this rather than open-coding the exponentials, so a fix cannot land in
+/// some sites and miss others (it did: see R1.1).
+///
+/// * reflection  `f  = exp(−2·kz1·kz2·σ²)`   — correlated Debye-Waller damping
+/// * transmission `ga = exp(+((kz1−kz2)·σ)²/2)` — ≥ 1, → 1 at low contrast
+///
+/// The two are conjugate: to first order in σ² the reflected loss and the
+/// transmitted gain cancel exactly, so `R + T = 1` for a lossless interface.
+///
+/// SPECULAR ONLY. This conserves energy among the coherent beams (graded
+/// interface picture) and models no diffuse scatter. It is only
+/// *perturbatively* unitary — valid for `|kz·σ| ≪ 1`. Outside that regime the
+/// transmission factor overshoots without bound (e.g. n=1→4.28 at σ=20 nm,
+/// λ=550 nm gives T ≈ 1.08 and a negative residual absorptance). See
+/// `RoughnessType` docs and `docs/plans/scatter_loss_plan.md`.
+#[inline(always)]
+pub fn nevot_croce_factors(kz1: Complex64, kz2: Complex64, sigma: f64) -> (Complex64, Complex64) {
+    let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
+    let d = (kz1 - kz2) * sigma;
+    let ga = (d * d * 0.5).exp();
+    (f, ga)
+}
+
 /// Roughness form factor W(q). No Python/PyO3 overhead so it can be called
 /// millions of times from hot loops and inlined by the compiler.
 #[inline(always)]

@@ -90,9 +90,18 @@ Névot-Croce corrects **r** with `exp(−2 kz1 kz2 σ²)` and **t** with
 `exp(±(kz1 − kz2)²σ²/2)` (low-contrast → 1), so transmission must not take
 `f`.
 
-**Where.** Two verbatim sites:
-- `rust/navette/src/smatrix/coherent_block.rs:128-131` (single-pol `solve_pol_specialized`)
-- `rust/navette/src/smatrix/coherent_block.rs:319-323` (dual `solve_coherent_block_fields_dual`, the `rg_t` tuple member)
+**Where.** ~~Two verbatim sites:~~ **CORRECTION (0.5.3): four sites, not two.**
+This inventory was wrong and the 0.5.1 fix was consequently partial — see the
+0.5.3 CHANGELOG entry. Treat every `**Where.**` block in this plan as a lead to
+verify, not a complete list: `grep` for the construct before calling an item done.
+
+- `rust/navette/src/smatrix/coherent_block.rs:128-131` (single-pol `solve_pol_specialized`) — fixed 0.5.1
+- `rust/navette/src/smatrix/coherent_block.rs:319-323` (dual `solve_coherent_block_fields_dual`, the `rg_t` tuple member) — fixed 0.5.1
+- `rust/navette/src/smatrix/solver.rs:1687` (`field_prof`, behind `ScatterMatrix.field_profile()`) — **missed**, fixed 0.5.3
+- `rust/navette/src/smatrix/needle_operator.rs:145` (`interface_matrix`, behind `needle_gradient()` and needle synthesis) — **missed**, fixed 0.5.3
+
+All four now delegate to `optics_core::nevot_croce_factors()`; a source-level
+guard in `validation/smoke/test_rtype5_cross_path.py` fails if a fifth appears.
 
 Current code (both sites):
 ```rust
