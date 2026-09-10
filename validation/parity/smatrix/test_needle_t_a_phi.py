@@ -298,5 +298,14 @@ def main():
     return 0 if ok else 1
 
 
+def test_needle_t_a_phi():
+    """pytest entry point (R2.4).
+
+    Without this the file collected as zero tests: it looked like it was in
+    the suite while asserting nothing.
+    """
+    assert main() == 0, "needle T/A/phi parity vs solver finite differences FAILED"
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -15,7 +15,10 @@ N_LAYERS = 6
 
 numba_imported = False
 try:
-    sys.path.insert(0, os.path.join(PROJECT_ROOT, "loom"))
+    # The numba reference lives beside these scripts in refs/. It was
+    # looked for in a "loom/" directory that does not exist, so the import
+    # always failed and every comparison silently degraded to rust-only.
+    sys.path.insert(0, os.path.join(SCRIPT_DIR, "refs"))
     from loom_matrix import core_engine_photometry_only as numba_func
     numba_imported = True
 except ImportError:
@@ -67,6 +70,33 @@ except ImportError:
                         Rp_out[wav_idx * num_angles + ang_idx] = r_p ** 2
                         Tp_out[wav_idx * num_angles + ang_idx] = t_p ** 2
         return Rs_out, Rp_out, Ts_out, Tp_out
+
+# ---- NEEDS PORT (R2.4a) --------------------------------------------------
+# This script loads a STANDALONE `navette_matrix` extension from
+# `validation/parity/target/release/`. That crate does not exist in this
+# repository -- there is no Cargo.toml for it anywhere -- so the module could
+# never load and the script exited 1 at import, which made pytest raise
+# INTERNALERROR the moment `parity/` was collected.
+#
+# The other five smatrix parity scripts were ported to the aggregated
+# extension (`import navette._smatrix as rust_mod`). These two still need the
+# same treatment, which is real work rather than a path change: the two legacy
+# numba kernels (`core_engine_photometry_only`,
+# `core_engine_rigorous_ellipsometry`) were merged into a single
+# `navette._smatrix.core_engine` driven by a request mask, so porting means
+# mapping the old positional signature onto that mask and comparing the
+# right output slices.
+#
+# Until then: skip loudly and stay visible in the run, instead of exiting.
+sys.path.insert(0, PROJECT_ROOT)
+from _parity import console_utf8, report, require_reference  # noqa: E402
+
+console_utf8()
+require_reference(
+    False,
+    "standalone navette_matrix extension",
+    "NEEDS PORT onto navette._smatrix.core_engine -- see R2.4a",
+)
 
 import importlib.util
 target_dir = os.path.join(OUTPUT_DIR, "target", "release")

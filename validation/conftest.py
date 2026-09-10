@@ -1,19 +1,43 @@
 # -*- coding: utf-8 -*-
 """Pytest collection rules for validation/.
 
-Collected (pytest-style suites):
+Collected:
   smoke/                 - package import surface, no build quirks assumed
   goldens/spectralweave/ - pinned numeric regression tests
+  regression/            - differential/bit-identity suites
+  parity/                - numba-vs-Rust parity (R2.4; see below)
 
-Ignored (standalone scripts with top-level benchmark/parity code that must
-be run explicitly, not imported by pytest):
-  parity/   - numba-vs-Rust parity scripts, e.g.
-              python validation/parity/smatrix/test_w_function.py
-  benches/  - timing scripts, e.g.
-              python validation/benches/spectralweave/navette_spectral_bench.py --quick
+Ignored:
+  benches/               - timing scripts; they hard-exit on a debug build,
+                           which is correct for a bench and wrong for a test
+                           run. Run them explicitly:
+                             python validation/benches/<area>/<script>.py
+  parity/**/refs/        - the numba reference implementations themselves
+  parity/**/gen_*.py     - golden regenerators (they WRITE files)
+
+Why parity/ is collected now (R2.4, review §15)
+-----------------------------------------------
+It was blanket-ignored as "standalone scripts", and that hid the strongest
+oracle in the repo — plus three defects that only surfaced on collection:
+
+  * the numba reference was imported from a `loom/` directory that does not
+    exist, so it never loaded and every comparison scored
+    "PASS (rust-only)" — passing while comparing nothing;
+  * the scripts printed `OUTPUT_STATUS FAIL` and exited 0, so failure was
+    invisible to any caller;
+  * two files called `sys.exit(1)` at import, which turns collection into a
+    pytest INTERNALERROR.
+
+The dual-shaped scripts keep working as `python <file>`; each now also
+exposes a `test_parity()` that asserts the verdict. See `parity/_parity.py`.
 """
 
-collect_ignore = ["parity", "benches"]
+collect_ignore = ["benches"]
+collect_ignore_glob = [
+  "parity/**/refs/*",
+  "parity/**/gen_*.py",
+  "parity/*/golden_mirror.py",
+]
 
 import pytest  # noqa: E402  (fixture support below)
 

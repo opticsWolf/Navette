@@ -9,14 +9,26 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 OUTPUT_DIR = PROJECT_ROOT
 UNIT_NAME = "solve_coherent_block_fields"
 
+# Dual-shaped: runs as a script and is collected by pytest (R2.4).
+sys.path.insert(0, PROJECT_ROOT)
+from _parity import console_utf8, report, require_reference  # noqa: E402
+
+console_utf8()
+
 numba_imported = False
 try:
-    sys.path.insert(0, os.path.join(PROJECT_ROOT, "loom"))
+    # The numba reference lives beside these scripts in refs/. It was
+    # looked for in a "loom/" directory that does not exist, so the import
+    # always failed and every comparison silently degraded to rust-only.
+    sys.path.insert(0, os.path.join(SCRIPT_DIR, "refs"))
     from loom_matrix import solve_coherent_block_fields as numba_func
     POL_S = 0
     numba_imported = True
 except ImportError:
-    print("Note: Original numba version not found. Running rust-only validation.")
+    numba_func = None
+
+require_reference(numba_imported, "numba reference loom_matrix",
+                  "pip install numba; see validation/parity/smatrix/refs/")
 
 # Unified layout: kernels live in navette._smatrix (aggregated extension).
 import navette._smatrix as rust_mod
@@ -184,8 +196,13 @@ if numba_imported and len(all_test_cases) > 0:
     print(f"  Small case (L={small_case['end_idx']-small_case['start_idx']}): speedup = {small_speedup:.2f}x")
     print(f"\nBENCH_RESULT {UNIT_NAME} numba_time_us={numba_mean_us:.1f} rust_time_us={rust_mean_us:.3f} speedup={speedup:.2f}")
 
-if all_pass:
-    print(f"\n{UNIT_NAME}: ALL CORRECTNESS TESTS PASSED")
-else:
-    print(f"\n{UNIT_NAME}: SOME CORRECTNESS TESTS FAILED")
-print(f"OUTPUT_STATUS {'PASS' if all_pass else 'FAIL'}")
+report(UNIT_NAME, all_pass)
+
+
+def test_parity():
+    """pytest entry point: the module body above ran the comparisons."""
+    assert all_pass, f"{UNIT_NAME}: parity against the numba reference FAILED"
+
+
+if __name__ == "__main__":
+    sys.exit(0 if all_pass else 1)

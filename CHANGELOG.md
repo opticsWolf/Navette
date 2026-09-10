@@ -3,6 +3,61 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.8] — Parity tests were passing without comparing anything (R2.4)
+
+`validation/conftest.py` had ignored the whole `parity/` tree, so nobody had
+run those files under pytest. Collecting them was supposed to be a one-line
+change. It uncovered two defects that made five of the seven smatrix parity
+scripts worthless as tests.
+
+### Fixed
+
+- **The numba reference never loaded, and the scripts called that a pass.**
+  Five parity scripts imported `loom_matrix` from `validation/parity/loom/`,
+  a directory that does not exist; the reference actually lives in
+  `validation/parity/smatrix/refs/`. The `except ImportError` branch then
+  scored every comparison `"PASS (rust-only)"` — a green verdict for a run
+  that compared the Rust result against nothing. The import now points at
+  `refs/`, and a genuinely missing reference **skips** instead of passing.
+- **Failure exited 0.** The same scripts printed `OUTPUT_STATUS FAIL` and
+  returned success, so no caller — CI, a shell loop, a human — could gate on
+  them. Each now ends in a shared `report()` verdict, a `test_parity()`
+  assertion for pytest, and `sys.exit(1)` for direct invocation. Verified by
+  injecting a 1e-3 error into `test_w_function.py`: the script exits 1 and
+  pytest reports FAILED.
+- **`test_needle_t_a_phi.py` collected zero tests** — it had a `main()` and
+  no test function. Given a pytest wrapper that asserts `main() == 0`.
+- **Two `core_engine_*` scripts crashed collection** with a module-level
+  `sys.exit(1)`, which pytest reports as INTERNALERROR. They now skip with
+  the real reason (see Known gaps).
+
+### Added
+
+- `validation/parity/_parity.py` — shared preamble for the parity layer:
+  `console_utf8()` (cp1252 consoles choked on `μ`), `require_reference()`
+  (skip under pytest, exit 0 when run directly), and `report()`.
+
+### Changed
+
+- `validation/conftest.py` collects `parity/` and ignores only what is not a
+  test: `benches`, `refs/*` (the reference implementations themselves),
+  `gen_*.py` fixture generators, and `golden_mirror.py`.
+- Suite is now **504 passed, 2 skipped** (was 450). The plan estimated the
+  directory held 11 pytest-style tests; it holds 17 files and 54 tests.
+
+### Known gaps
+
+- **R2.4a**: `test_core_engine_photometry_only.py` and
+  `test_core_engine_rigorous_ellipsometry.py` load a standalone
+  `navette_matrix` extension from `validation/parity/target/release/`. That
+  crate does not exist anywhere in this repository, so the plan's remedy
+  ("document its build step") is not possible — the two files need porting
+  onto `navette._smatrix.core_engine` and its request mask. They are the only
+  whole-engine parity oracles; every other parity file covers one kernel.
+- The `edge_nc` case in `test_solve_coherent_block_fields.py` is
+  self-referential: `refs/loom_matrix.py` was edited in lockstep with the
+  Rust change it is supposed to check independently.
+
 ## [0.5.7] — CI fixes found by running it (R2.3)
 
 The first live run of `ci.yml` was green on all three blocking jobs (rust,

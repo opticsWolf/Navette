@@ -20,8 +20,9 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (450 tests at
-     0.5.4; `PYTHONIOENCODING=utf-8` no longer needed for the benches after R2.2)
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (504 passed +
+     2 skipped at 0.5.8, parity included; `PYTHONIOENCODING=utf-8` no longer
+     needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
    - Review harnesses: `for f in fd_step1 fd_rchannel color_merit_check garbage_in weaver_race tauc_check kk_validate kk_conv; do python validation/review/$f.py; done` (all must print `ALL OK` unless the item explicitly changes documented behavior)
@@ -57,6 +58,7 @@ coverage is thin.
 | R2.3a | clippy clean → blocking gate | P2 | 248 findings in hot code | M (numeric drift) | M–L | §7 |
 | R2.3b | rustfmt adoption → blocking gate | P3 | 981 files; style decision first | S (blame churn) | S/L review | §7 |
 | R2.4 | parity tests collected; `sys.exit` → skip | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
+| R2.4a | port `test_core_engine_*` onto `core_engine` | P1 | only whole-engine parity oracles | M | M | §15 |
 | R2.5 | request-bit + schema sync tests | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
 | R3.1 | `ScatterMatrix` input validation | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
 | R3.2 | needle z-range: debug-assert → error | P1 | release-build garbage | S | S | §21.1 |
@@ -374,7 +376,7 @@ chosen; the two produce very different diffs.
 
 **Effort.** S to do, L to review — hence its own item.
 
-### R2.4 Parity tests collected; `sys.exit(1)` → skip
+### R2.4 Parity tests collected; `sys.exit(1)` → skip — DONE (0.5.8)
 
 **Review:** §15 (`validation/conftest.py` `collect_ignore = ["parity", "benches"]`
 hides 11 pytest-style parity tests — the strongest oracle in the repo; two
@@ -396,6 +398,25 @@ NEEDS-PORT files call `sys.exit(1)` at import → pytest INTERNALERROR).
    `validation/parity/target/release/`) in `validation/README.md`.
 4. Verify the collected count: 355 + 11 (+N skipped) ≈ 366+.
 
+**CORRECTIONS (0.5.8).** Three things the plan did not anticipate, all found
+by actually collecting the directory:
+
+* **The parity comparisons were not running.** The numba reference was
+  imported from `parity/loom/`, which does not exist; the `except ImportError`
+  branch then scored every comparison `"PASS (rust-only)"`. Five "parity"
+  scripts had been passing while comparing nothing. Fixed: the reference loads
+  from `smatrix/refs/loom_matrix.py`, and a missing reference **skips**.
+* **Failure exited 0.** The scripts printed `OUTPUT_STATUS FAIL` and returned
+  success, so no caller could gate on them. Each now ends in
+  `report()` + a `test_parity()` assertion + `sys.exit(1)` for direct runs.
+  Proven by injecting a 1e-3 error: `rc=1` and pytest FAILED.
+* **The standalone `navette_matrix` crate does not exist in this repo**, so
+  step 3's "document its build step" is not possible — there is no such
+  Cargo.toml. The two files skip with the real reason (see R2.4a).
+
+Collected count went 450 → **504 passed + 2 skipped**, i.e. 54 real tests
+that the blanket ignore had been hiding, not the 11 estimated.
+
 **Impact.** The documented run stops silently excluding the best tests.
 
 **Risk.** M — some parity tests may be slow (numba import ~seconds) or
@@ -406,6 +427,31 @@ a comment (whitelist style beats glob style when mixed).
 **Validation.** Existing: the 11 parity tests themselves. New: none needed;
 update `validation/README.md`'s inventory (§6.3 rot) in the same commit.
 
+**Effort.** M.
+
+### R2.4a Port `test_core_engine_*` onto the request-driven `core_engine`
+
+**Discovered by R2.4 (0.5.8).** `parity/smatrix/test_core_engine_photometry_only.py`
+and `test_core_engine_rigorous_ellipsometry.py` load a standalone
+`navette_matrix` extension from `validation/parity/target/release/`. **That
+crate does not exist anywhere in the repository** — there is no Cargo.toml for
+it — so this is a port, not a build step. Both currently skip with that
+reason and are visible in the run.
+
+**Fix design.** The other five smatrix parity scripts were ported by swapping
+the loader for `import navette._smatrix as rust_mod`. These two need more:
+the two legacy numba kernels were merged into a single
+`navette._smatrix.core_engine` driven by a request mask, so the port must map
+the old positional signature onto that mask and compare the correct output
+slices. The numba reference for both still exists in
+`parity/smatrix/refs/loom_matrix.py`, so the oracle is available.
+
+**Impact.** These are the only whole-engine parity oracles — every other
+parity file covers a single kernel. Restoring them closes the largest gap in
+the parity layer.
+
+**Risk.** M — a wrong mask mapping produces a false FAIL, which is the safe
+direction, but debugging it needs care with the ellipsometry channel order.
 **Effort.** M.
 
 ### R2.5 Request-bit and schema sync tests
