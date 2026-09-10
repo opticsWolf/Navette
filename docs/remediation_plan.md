@@ -820,7 +820,15 @@ From §6.3, §18.4, §24.2 (each small; group into 2–3 commits):
    binding when the flag is set, or document; prefer raising, one-line fix);
    KK 80 eV ceiling (§3.5); coverage-rule asymmetry for color demands
    (§20.3); weaver same-key concurrent-write semantics (§22); seed=None RNG
-   asymmetry comment (§9.1).
+   asymmetry comment (§9.1); **`SpectralTarget` class docstring: enumerate
+   the full spectral-label vocabulary including the differential-phase
+   labels `PDts`/`PDtp`** (verified reachable end-to-end and error-guarded
+   during the R4.x review pass; today the class docstring says only
+   "radians (phase)" + a pointer to `docs/spectralweave-target-kinds.md`,
+   while the vocabulary lives in the `synthesis` module docstring — and
+   note the transmission-only scope: `reference_phase` supports `passes=2`
+   for a reflection round trip, but no reflection differential label
+   exists).
 6. SPDX headers — add `// SPDX-License-Identifier: LGPL-3.0-or-later` to
    sources missing them (mechanical; `.py` + `.rs`).
 7. README performance table — re-audit against §5.2 release numbers (some
