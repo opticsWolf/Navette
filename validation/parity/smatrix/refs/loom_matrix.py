@@ -308,13 +308,19 @@ def solve_coherent_block_fields(
             # The most physically rigorous model for Gaussian interfaces.
             # Uses the exact correlation between wavevectors on both sides.
             # Reference: Névot & Croce, Rev. Phys. Appl. 15(3), 761-779 (1980)
+            # NOTE: matches corrected NC physics; intentionally diverges from the
+            # historical pins. Transmission takes the wavevector-difference factor
+            # exp(+((kz1-kz2)σ)²/2), NOT the reflection factor — otherwise energy
+            # is not conserved (up to ~7.5% loss at a single interface). See R1.1.
             kz1 = two_pi_lam * N_curr * cos_curr
             kz2 = two_pi_lam * N_next * cos_next
             nc_factor = np.exp(-2.0 * kz1 * kz2 * sigma * sigma)
+            d = (kz1 - kz2) * sigma
+            nc_t_factor = np.exp(0.5 * d * d)
             r12 *= nc_factor
             r21 *= nc_factor
-            t12 *= nc_factor
-            t21 *= nc_factor
+            t12 *= nc_t_factor
+            t21 *= nc_t_factor
         elif rtype != 0:
             # Form-factor roughness models (types 1-4):
             # Separate attenuation factors for reflection and transmission.

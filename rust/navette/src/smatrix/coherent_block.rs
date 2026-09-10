@@ -129,7 +129,15 @@ fn solve_pol_specialized<const IS_S: bool>(
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
             let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
-            (r12 * f, r21 * f, t12 * f, t21 * f)
+            // Névot-Croce: reflection is damped by the correlated Debye-Waller
+            // factor `f = exp(-2 kz1 kz2 sigma^2)`, but transmission takes the
+            // wavevector-difference factor `ga = exp(+((kz1-kz2) sigma)^2/2)`
+            // (>= 1, -> 1 in the low-contrast limit) so energy is conserved.
+            // Applying `f` to t12/t21 (the historical port bug) destroyed up to
+            // ~7.5% of transmitted energy at a single interface. See R1.1.
+            let d = (kz1 - kz2) * sigma;
+            let ga = (d * d * 0.5).exp();
+            (r12 * f, r21 * f, t12 * ga, t21 * ga)
         } else {
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
@@ -320,7 +328,11 @@ pub fn solve_coherent_block_fields_dual(
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
             let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();
-            (f, f, f)
+            // Névot-Croce: reflection damped by `f`, transmission compensated by
+            // `ga = exp(+((kz1-kz2) sigma)^2/2)` (energy-conserving). See R1.1.
+            let d = (kz1 - kz2) * sigma;
+            let ga = (d * d * 0.5).exp();
+            (f, f, ga)
         } else {
             let kz1 = two_pi_lam * n_curr * cos_curr;
             let kz2 = two_pi_lam * n_next * cos_next;
