@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn merge_adjacent_respects_nk() {
         // Same name, perturbed nk → no merge.
-        let mut a = h(10.0);
+        let a = h(10.0);
         let mut b = h(10.0);
         b.nk = std::sync::Arc::from(vec![Complex64::new(2.5, 0.0); NW]);
         let mut s = stack(vec![a, b]);

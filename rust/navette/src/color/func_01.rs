@@ -77,10 +77,10 @@ mod tests {
     #[test]
     fn round_trip() {
         let xyz_in = [[0.1, 0.2, 0.3], [0.0, 0.0, 0.0], [0.95047, 1.0, 1.08883]];
-        let mut xyY = [[0.0; 3]; 3];
+        let mut xyy = [[0.0; 3]; 3];
         let mut xyz_out = [[0.0; 3]; 3];
-        xyz_to_xyy(&xyz_in, &mut xyY);
-        xyy_to_xyz(&xyY, &mut xyz_out);
+        xyz_to_xyy(&xyz_in, &mut xyy);
+        xyy_to_xyz(&xyy, &mut xyz_out);
         for (i, (a, b)) in xyz_in.iter().zip(xyz_out.iter()).enumerate() {
             for j in 0..3 {
                 assert!((a[j] - b[j]).abs() < 1e-12, "mismatch at [{i}][{j}]");

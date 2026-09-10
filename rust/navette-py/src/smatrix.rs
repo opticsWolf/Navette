@@ -8,14 +8,10 @@ use num_complex::{Complex64, ComplexFloat};
 use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rayon::prelude::*;
-use std::f64::consts::PI;
 
 use navette::smatrix::coherent_block::*;
-use navette::smatrix::needle_engine::{max_disp_order, NREQ_DFOD, NREQ_DGDD, NREQ_DGD, NREQ_DPHI, NREQ_DTOD, NREQ_P, NREQ_P_A, NREQ_P_AB, NREQ_P_MB, NREQ_P_MB_A, NREQ_P_MB_AB, NREQ_P_MB_RB, NREQ_P_MB_T, NREQ_P_MB_TB, NREQ_P_PHI, NREQ_P_RB, NREQ_P_T, NREQ_P_TB};
-use navette::smatrix::needle_operator::*;
+use navette::smatrix::needle_engine::{NREQ_DFOD, NREQ_DGDD, NREQ_DGD, NREQ_DPHI, NREQ_DTOD, NREQ_P, NREQ_P_A, NREQ_P_AB, NREQ_P_MB, NREQ_P_MB_A, NREQ_P_MB_AB, NREQ_P_MB_RB, NREQ_P_MB_T, NREQ_P_MB_TB, NREQ_P_PHI, NREQ_P_RB, NREQ_P_T, NREQ_P_TB};
 use navette::smatrix::optics_core::*;
-use navette::smatrix::optimizer::*;
 
 // ---- roughness / redheffer (trivial, over optics_core) ----
 #[pyfunction]
@@ -428,7 +424,6 @@ pub fn core_engine(
     let sin_theta_slice = sin_theta_arr.as_slice()?;
     let n_stack_slice = n_stack_cache.as_slice()?;
     let num_wavs = wav_slice.len();
-    let num_angles = sin_theta_slice.len();
     let n_layers_us = n_layers as usize;
     let mut layer_major = Vec::with_capacity(n_layers_us * num_wavs);
     for l in 0..n_layers_us {

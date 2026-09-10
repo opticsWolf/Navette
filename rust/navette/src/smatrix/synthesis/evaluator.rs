@@ -218,7 +218,6 @@ impl DesignContext for SmatrixContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smatrix::optics_core::cplx;
     use crate::smatrix::synthesis::structure::LayerSpec;
     use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
 

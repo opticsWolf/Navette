@@ -11,7 +11,7 @@ build-backend = "maturin"
 
 [project]
 name = "navette"
-version = "0.5.4"
+version = "0.5.5"
 description = "A high-performance optical engine utilizing a Scattering Matrix algorithm for stable simulation of light in stratified media."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -34,7 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Single aggregated native extension (navette._navette with all engines).
-# Dev install: maturin develop   (from the repo root)
+# Dev install: maturin develop --release   (from the repo root)
 numba = ["numba>=0.56.0"]
 dev = ["pytest", "maturin>=1.5,<2.0"]
 all = ["numba>=0.56.0", "pytest", "maturin>=1.5,<2.0"]

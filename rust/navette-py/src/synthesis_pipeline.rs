@@ -44,7 +44,9 @@ fn deg_to_sin(angles_deg: &[f64]) -> Vec<f64> {
 // LayerSpec / DesignStack
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "LayerSpec")]
+// `from_py_object`: see the note in config.rs -- explicit opt-in to the
+// derive pyo3 0.28 still generates implicitly for Clone pyclasses.
+#[pyclass(name = "LayerSpec", from_py_object)]
 /// One design-stack layer: material name + nk evaluated on the simulation
 /// grid (see `LayerSpec` in the core). Evaluate materials in Python
 /// (`navette.materials.evaluate`) and pass the array — this class is data.
@@ -176,9 +178,13 @@ pub struct PyDesignStack {
 }
 
 /// One film for `run_design`: evaluated nk + authoring flags.
+///
+/// `pub(crate)` to match `assemble_design`/`run_design`, which take it by
+/// value: a private type in a crate-visible signature is a private-interface
+/// warning, not an encapsulation win.
 #[derive(FromPyObject)]
 #[pyo3(from_item_all)]
-struct PyFilmInput<'a> {
+pub(crate) struct PyFilmInput<'a> {
     name: String,
     nk: numpy::PyReadonlyArray1<'a, Complex64>,
     d_nm: f64,
@@ -210,7 +216,7 @@ pub(crate) fn assemble_design(
     seeds: Vec<(String, String, Vec<Complex64>)>,
     wavelengths: PyReadonlyArray1<'_, f64>,
 ) -> PyResult<(Py<PyDesignStack>, Py<PyDict>)> {
-    use navette::smatrix::synthesis::driver::{ArrayFilm, ArraySeed, assemble_stack};
+    use navette::smatrix::synthesis::driver::{ArrayFilm, assemble_stack};
     let w = wavelengths.as_slice()?;
     let af: Vec<ArrayFilm> = films
         .iter()

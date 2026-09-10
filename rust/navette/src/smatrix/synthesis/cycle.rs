@@ -18,7 +18,7 @@ use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::needle_pass::{
-    build_scan_sites, run_needle_pass, NeedlePassInput, NeedleTargets,
+    build_scan_sites, run_needle_pass, NeedlePassInput,
 };
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{DesignStack, LayerSpec};
@@ -270,6 +270,8 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests build NeedleTargets by hand; the pass returns them.
+    use crate::smatrix::synthesis::needle_pass::NeedleTargets;
     use crate::smatrix::synthesis::merit::{MeritSpec, SimCurves};
     use std::sync::Arc;
 

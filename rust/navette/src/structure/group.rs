@@ -569,7 +569,7 @@ mod tests {
     let mut nover = v.clone();
     nover.as_object_mut().unwrap().remove("schema_version");
     assert!(Group::from_state(&nover).is_err());
-    let mut minimal = json!({"schema_version": 1});
+    let minimal = json!({"schema_version": 1});
     let d = Group::from_state(&minimal).unwrap();
     assert_eq!(d.group_name, "default");
     assert_eq!((d.thick_factor, d.n_factor, d.k_factor), (1.0, 1.0, 1.0));

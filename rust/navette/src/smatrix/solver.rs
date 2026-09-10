@@ -1450,14 +1450,12 @@ pub fn find_minima(
     median_factor: f64,
 ) -> Vec<(f64, f64)> {
     let at = |i: usize, j: usize| flat[i * n_real + j];
-    let mut land_vec: Vec<f64> = flat.to_vec();
-    let land = land_vec.as_slice();
 
     // True median of the landscape (the previous code averaged, which the
     // `median_factor` name and the Python reference (`np.median`) do not).
     // Sentinel 1e30 cells sort to the top and so don't perturb the median,
     // whereas they badly skewed the mean.
-    let mut sorted: Vec<f64> = land_vec.iter().copied().collect();
+    let mut sorted: Vec<f64> = flat.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let len = sorted.len();
     let median = if len == 0 {

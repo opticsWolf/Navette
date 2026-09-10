@@ -24,7 +24,10 @@ fn to_dict(py: Python<'_>, v: serde_json::Value) -> PyResult<Py<PyAny>> {
 
 macro_rules! config_type {
   ($pyname:literal, $cls:ident, $core:ty) => {
-    #[pyclass(name = $pyname)]
+    // `from_py_object` opts in to the FromPyObject derive that pyo3 0.28
+    // still generates automatically for Clone pyclasses but is making
+    // opt-in. Stated explicitly so the behavior does not change under us.
+    #[pyclass(name = $pyname, from_py_object)]
     #[derive(Clone)]
     pub struct $cls {
       inner: $core,

@@ -496,8 +496,8 @@ enum IntGap {
     CentreMean(f64),
     /// Reduced-weight centre form (CenterBand inside).
     InsideMean(f64),
-    /// Edge form at the op mean (Range / CenterBand outside).
-    EdgeMean(f64, f64),
+    /// Edge form: effective half-bandwidth (the mean enters via `d_bar`).
+    EdgeMean(f64),
     /// No sim yet: per-point raw targets, Exact-like weight.
     Conservative,
 }
@@ -578,12 +578,12 @@ fn fold_integral_demand(
             None => IntGap::Conservative,
         },
         ConstraintKind::Above => match opm {
-            Some((m, d_bar)) if d_bar / tol_bar >= 0.0 => IntGap::Skip,
+            Some((_, d_bar)) if d_bar / tol_bar >= 0.0 => IntGap::Skip,
             Some((m, _)) => IntGap::CentreMean(m),
             None => IntGap::Conservative,
         },
         ConstraintKind::Below => match opm {
-            Some((m, d_bar)) if d_bar / tol_bar <= 0.0 => IntGap::Skip,
+            Some((_, d_bar)) if d_bar / tol_bar <= 0.0 => IntGap::Skip,
             Some((m, _)) => IntGap::CentreMean(m),
             None => IntGap::Conservative,
         },
@@ -591,8 +591,8 @@ fn fold_integral_demand(
             let bw_eff = if bw_bar <= 0.0 { tol_bar } else { bw_bar };
             match opm {
                 None => IntGap::Conservative,
-                Some((m, d_bar)) if d_bar.abs() <= bw_eff => IntGap::Skip,
-                Some((m, _)) => IntGap::EdgeMean(m, bw_eff),
+                Some((_, d_bar)) if d_bar.abs() <= bw_eff => IntGap::Skip,
+                Some(_) => IntGap::EdgeMean(bw_eff),
             }
         },
         ConstraintKind::CenterBand => {
@@ -606,7 +606,7 @@ fn fold_integral_demand(
                 match opm {
                     None => IntGap::Conservative,
                     Some((m, d_bar)) if d_bar.abs() <= bw_bar => IntGap::InsideMean(m),
-                    Some((m, _)) => IntGap::EdgeMean(m, bw_bar),
+                    Some(_) => IntGap::EdgeMean(bw_bar),
                 }
             }
         },
@@ -626,7 +626,7 @@ fn fold_integral_demand(
             },
             IntGap::CentreMean(m) => (s_vals[j] - n * (m - t_raw), w_centre / (n * n)),
             IntGap::InsideMean(m) => (s_vals[j] - n * (m - t_raw), w_inside / (n * n)),
-            IntGap::EdgeMean(_, bw_eff) => {
+            IntGap::EdgeMean(bw_eff) => {
                 let g = d_bar.signum() * (d_bar.abs() - bw_eff) / nf;
                 (s_vals[j] - n * g, w_centre / (n * n))
             },
@@ -1441,7 +1441,7 @@ mod tests {
     #[test]
     fn integral_range_skips_inband_mean() {
         // Range integral, band 0.05: mean diff 0.04 → all weights zero.
-        let mut spec = spec_integral(0.0, ConstraintKind::Range);
+        let spec = spec_integral(0.0, ConstraintKind::Range);
         // (spec_integral has empty band → bare-r fallback ±tol = ±0.1;
         // mean diff 0.04 is inside → skip.)
         let sim = sim_rs([0.54, 0.54, 0.54]);

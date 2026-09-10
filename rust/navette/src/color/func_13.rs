@@ -89,8 +89,9 @@ mod tests {
     #[test]
     fn test_constant_spd_gives_neutral() {
         // D65 illuminant integrated with D65 CMF should yield white.
+        // 81 points on the 380..780 nm / 5 nm grid; only the count and the
+        // interval reach the kernel, which integrates on a uniform grid.
         let n = 81;
-        let wavelengths: Vec<f64> = (0..n).map(|i| 380.0 + i as f64 * 5.0).collect();
         // D65 illuminant approximated by constant for test (not accurate).
         let illum: Vec<f64> = vec![1.0; n];
         // D65 colour matching functions (simplified: use constant for test)

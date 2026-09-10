@@ -3,6 +3,43 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.5] — Zero compiler warnings (R2.3 prerequisite, §7)
+
+Prerequisite for the push/PR CI gate: `-D warnings` cannot be enabled while
+the tree emits any. All 25 are gone; the build is warning-free.
+
+The §7 inventory listed 13. `cargo check --workspace --all-targets` finds 25 —
+the extra 12 are four `unused_mut`, one never-read enum field, one
+non-snake-case binding, two private-interface warnings, and four pyo3
+deprecations. As with R1.1's site list, the inventory was a lead, not a census.
+
+### Fixed
+
+- **Two dead computations, not just dead names.** `solver::find_minima` copied
+  the whole landscape into `land_vec` and bound `land` to it; neither was ever
+  read (the median is taken from a second copy). The copy is gone — one fewer
+  full-grid allocation per eigenmode scan. `IntGap::EdgeMean`'s first field
+  (the op mean) was never read either: the edge form uses `d_bar`, re-derived
+  from `opm` at the consumption site. The variant now carries only the
+  bandwidth.
+- Unused imports (`NeedleTargets`, `cplx`, `PI`, `max_disp_order`,
+  `rayon::prelude`, `ArraySeed`, two glob imports), unused bindings (`land`,
+  `m` ×3, `wavelengths`, `num_angles`, `ok`), and four redundant `mut`.
+  `NeedleTargets` is used only by `cycle.rs`'s tests, so it moved into the
+  test module rather than being deleted.
+- `PyFilmInput` was private while appearing in the `pub(crate)` signatures of
+  `assemble_design` and `run_design`; it is now `pub(crate)` to match.
+- pyo3 0.28 deprecation: `#[pyclass]` types deriving `Clone` get an automatic
+  `FromPyObject` that is becoming opt-in. The five `config_type!` classes and
+  `PyLayerSpec` now declare `from_py_object` explicitly, which **preserves
+  today's behavior** rather than silently losing the conversion at the next
+  pyo3 bump.
+
+Behavior-neutral by construction, and verified: eigenmode scan / coarse-minima
+/ landscape checksums are **bit-identical** across the change (three
+resolutions × three median factors, built before and after and diffed), and
+450 pytest + 376 cargo tests pass.
+
 ## [0.5.4] — Build-profile probe + bench guard, UTF-8 benches (R2.1, R2.2, §5.1.1, §17)
 
 ### Added

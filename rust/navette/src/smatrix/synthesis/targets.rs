@@ -892,11 +892,6 @@ mod tests {
 
   #[test]
   fn coordinate_quantities_compile_channels_only() {
-    let ok = |q: &str| {
-      let mut set = color_set();
-      set.color[0].quantity = q.to_string();
-      compile_merit_spec(&set)
-    };
     for q in ["sRGB", "Luv", "XYZ"] {
       let mut set = color_set();
       set.color[0].quantity = q.to_string();
