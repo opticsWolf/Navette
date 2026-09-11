@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: LGPL-3.0-or-later
-"""Input validation for the public solver entry points (R3.1, R3.2).
+"""Input validation for the public solver entry points (R3.1, R3.2, R3.4).
 
 The engine is permissive on purpose -- it is also the optimizer's inner loop.
 Before R3.1 that permissiveness reached the user unfiltered, and
@@ -74,6 +74,14 @@ _REJECT = [
     ("angle_negative", dict(angles=[-30.0]), ["angles", "index 0", "-30.0"]),
     ("angle_radians_out_of_range", dict(angles=[2.0], angles_in_radians=True),
      ["angles", "index 0", "2.0", "rad"]),
+    # R3.4 -- an absorbing *incident* medium. Not a tolerance question: the
+    # branch of cos(theta) is under-determined there, so any value returned is
+    # a guess dressed as a measurement.
+    ("absorbing_incident_medium", dict(layer_indices=_with(_N, 0, 1.52 + 0.05j)),
+     ["layer_indices", "layer 0", "Im(n)", "0.05"]),
+    ("faintly_absorbing_incident_medium",
+     dict(layer_indices=_with(_N, 0, 1.0 + 1e-14j)),
+     ["layer_indices", "layer 0", "Im(n)", "1e-14"]),
 ]
 
 
@@ -106,6 +114,10 @@ _ACCEPT = [
     ("strongly_absorbing_index", dict(layer_indices=_with(_N, 1, 1.2 + 7.5j))),
     ("index_below_one", dict(layer_indices=_with(_N, 1, 0.2 + 3.0j))),
     ("two_dim_index_array", dict(layer_indices=np.repeat(_N[:, None], _WLS.size, axis=1))),
+    # R3.4 refuses the *incident* side only. Absorption anywhere else is
+    # ordinary physics and must stay untouched.
+    ("absorbing_substrate", dict(layer_indices=_with(_N, 3, 1.52 + 0.05j))),
+    ("strongly_absorbing_substrate", dict(layer_indices=_with(_N, 3, 0.9 + 6.5j))),
 ]
 
 
@@ -408,3 +420,65 @@ def test_dop_r_never_exceeds_one():
     assert worst <= 1.0
     # And the clamp is not hiding a channel that never gets near the bound.
     assert worst > 0.99
+
+
+# --------------------------------------------------------------------------
+# R3.4 -- the incident medium
+# --------------------------------------------------------------------------
+
+def test_absorbing_incident_medium_message_explains_itself():
+    """The refusal has to carry its own justification.
+
+    "Layer 0 must have Im(n) == 0" invites the caller to conclude the library
+    is being fussy and to go looking for a flag to turn it off. There isn't
+    one, on purpose, so the message says what breaks: R = |r|^2 is not an
+    energy ratio against an absorbing ambient, and at oblique incidence the
+    transverse wavevector goes complex, which leaves the forward branch of
+    cos(theta) genuinely undetermined rather than merely unnormalized. It also
+    names the two ways out -- absorption on the substrate side, or the native
+    Solver.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _sm(layer_indices=_with(_N, 0, 1.52 + 0.05j))
+    msg = str(excinfo.value)
+    assert msg.isascii(), "the message must survive a cp1252 console"
+    for fragment in ("incident medium", "energy ratio", "inhomogeneous",
+                     "substrate", "Solver"):
+        assert fragment in msg, f"{fragment!r} missing from {msg!r}"
+
+
+def test_only_the_incident_row_is_checked_in_a_2d_index_array():
+    """A per-wavelength index grid must be judged row 0, not in bulk.
+
+    The check reads ``idx2d[0]``; a dispersive absorbing *layer* three rows
+    down shares the array and must not be mistaken for the ambient.
+    """
+    grid = np.repeat(_N[:, None], _WLS.size, axis=1)
+    grid[1, :] = 2.35 + 0.4j          # absorbing interior layer: fine
+    grid[3, :] = 1.52 + 0.02j         # absorbing substrate: fine
+    out = ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG).compute(Request.RS)
+    assert np.all(np.isfinite(np.asarray(out["Rs"], float)))
+
+    # One absorbing wavelength in the ambient row is enough, and the message
+    # names which one.
+    grid[0, 7] = 1.0 + 1e-9j
+    with pytest.raises(ValueError, match="wavelength index 7"):
+        ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG)
+
+
+def test_the_native_solver_is_still_permissive():
+    """The escape hatch R3.1 promised has to actually be open.
+
+    The wrapper refuses; the engine does not. A caller who knows what an
+    absorbing ambient means for their amplitudes can still reach it, which is
+    what makes the refusal a validation layer rather than a lost capability.
+    """
+    from navette._smatrix import Solver, solver_rt_request
+
+    n = _with(_N, 0, 1.52 + 0.05j)
+    idx2d = np.repeat(np.asarray(n, dtype=np.complex128)[:, None], _WLS.size, axis=1)
+    solver = Solver(_WLS, np.asarray(_ANG, dtype=float),
+                    np.ascontiguousarray(idx2d).ravel(), _N.size,
+                    thicknesses=_D)
+    out = solver.solve(solver_rt_request(pol="s"))
+    assert out  # it answers; interpreting the answer is the caller's problem

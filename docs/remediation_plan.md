@@ -63,7 +63,7 @@ coverage is thin.
 | R3.1 | `ScatterMatrix` input validation | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
 | R3.2 | needle z-range: debug-assert → error | P1 | release-build garbage | S | S | §21.1 |
 | R3.3 | eigenmode `char_func`/`refine_mode` bound | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
-| R3.4 | Absorbing incident medium accepted in silence — **NEW (found 0.6.17)** | P1 | `n[0] = 1.52 + 0.062i` constructs and solves; `R = |r|²` is not an energy ratio there, so `Rs` reaches 86 and `Rp` goes negative with no warning. Decide: refuse, warn, or define R against the incident-medium Poynting flux | M (a refusal breaks any caller doing it deliberately) | S–M | §21.2, R6.2 corrections |
+| ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21)** | P1 | refused at the `ScatterMatrix` surface; the branch rule consolidated behind one documented `forward_branch`. The third option (renormalize against the incident Poynting flux) turned out not to exist — the input is under-determined, not under-normalized | M (a refusal breaks any caller doing it deliberately) | S–M | §21.2, R6.2 corrections |
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
@@ -812,6 +812,104 @@ high-index substrates understand the rejection region.
 ---
 
 ## 4. Phase 4 — API & packaging completion (P1/P2)
+
+### R3.4 Absorbing incident medium accepted in silence — DONE (0.6.21)
+
+**Review:** §21.2 / R6.2 corrections. `ScatterMatrix` with
+`n[0] = 1.52 + 0.062i` constructed and solved without a word; `Rs` reached 86
+and `Rp` went negative.
+
+**Fix design.**
+1. Refuse `Im(n[0]) != 0` at construction, beside the four R3.1 validators.
+   Exact test, no tolerance, no opt-out flag — R3.1 already established the
+   native `Solver` as the documented permissive path, so the capability is not
+   lost, only the silent wrong answer.
+2. Consolidate the five copies of the `cos(theta)` branch rule behind one
+   documented `optics_core::forward_branch`, bit-for-bit unchanged, so that the
+   reason the rule is *not* extended lives in one place instead of nowhere.
+3. Leave the exit side alone. An absorbing substrate is well posed:
+   `t_fwd`/`t_back` already normalize by `Re(y)` ratios
+   (`coherent_block.rs:185-197`), so `T` stays an energy ratio.
+
+**Impact.** The last P1 silent-wrong-answer path in the wrapper. Nothing in
+the suite used an absorbing ambient (691 pytest + 454 cargo unchanged), and
+the numerical core is bit-identical — fingerprint
+`30d96909…3c6c` before and after.
+
+**Risk.** M — a refusal breaks any caller doing it deliberately. Answered by
+the native-`Solver` escape hatch, and pinned by a test that exercises it.
+
+**Validation.**
+- **New — Rust:** four tests in `optics_core.rs` pinning `forward_branch`
+  against the exact inline expression the five sites carried (a signed-zero
+  sweep across all four quadrants, compared on `to_bits()`), that `n` is
+  ignored *and* that a case where an `Im(n*cos)` rule would disagree really
+  exists, identity for the propagating / evanescent / exactly-critical real
+  ambient, and the claim that an absorbing layer under a real ambient never
+  reaches the flip at all.
+- **New — Python:** two reject rows and two accept rows in
+  `validation/smoke/test_input_validation.py`, plus three tests: the message
+  carries its own justification and is ASCII; only row 0 of a 2-D index grid is
+  judged (an absorbing interior layer and substrate in the same array stay
+  legal, and the offending *wavelength* index is named); and the native
+  `Solver` is still permissive.
+- **New — review harness:** four cases in `validation/review/garbage_in.py`
+  (absorbing ambient, ambient at `k = 1e-14`, absorbing substrate, absorbing
+  interior layer).
+
+**Effort.** S–M.
+
+**CORRECTIONS (0.6.21).**
+
+* **The plan offered three options; only two of them existed.** "Refuse, warn,
+  or define R against the incident-medium Poynting flux" reads like a
+  normalization choice, and it is not. Against an absorbing ambient the total
+  Poynting flux on the incident side carries an interference term between the
+  incident and reflected waves that does not separate into "in" and "out" — so
+  there is no reference flux to divide by. Worse, at oblique incidence
+  `kx = k0 n0 sin(theta)` is complex, the incident wave is inhomogeneous, and
+  a real angle of incidence does not say *which* inhomogeneous wave it is: the
+  planes of constant phase and constant amplitude come apart and the angle
+  names only the first. The input is under-determined, not under-normalized.
+  No amount of renormalization recovers a number, so "define R against the
+  incident-medium Poynting flux" was struck rather than implemented.
+
+* **Two attempts to "fix" the branch instead of refusing both made it worse,
+  and that is the evidence for refusing.** The obvious repair is to decide the
+  branch on `Im(n*cos) >= 0` (forward decay of `kz`) rather than
+  `Im(cos) >= 0`. Attempt 1 did exactly that: it made the result *consistent*
+  and settled on `Rs = 417.6` at every `k`, which is consistent nonsense.
+  Attempt 2 added a `1e-12` relative tie-break, which was correct only up to
+  `k = 1e-12` and then reverted to attempt 1's answer. Both moved the
+  bit-exactness fingerprint. The rule was restored to `Im(cos) >= 0` and the
+  reasoning written into `forward_branch`'s doc comment, where the ignored `n`
+  parameter now exists specifically to hold the explanation of why it is
+  ignored.
+
+* **The measurement that settles it.** At *normal* incidence the failure is
+  smooth and looks like a normalization bug: `R + T` = 1.000053 at `k = 1e-3`,
+  1.0096 at `k = 0.1`, 1.44 at `k = 1`. At *oblique* incidence it is erratic —
+  deterministic and batch-independent, but alternating between `Rs = 0.0024`
+  and `Rs = 417` as `k` moves over 1e-16…1e-2, with no monotonicity. The cause
+  is that `r0 = nsin * (1/n0)` should be exactly `sin(theta)` and instead
+  carries a rounding residue of order 1e-31 whose sign depends on how `1/n0`
+  rounded; the branch test reads that residue and inverts `Re(cos)` from
+  +0.9848 to −0.9848. That is why the refusal has no tolerance band: `k` of
+  1e-14 already flips it.
+
+* **Three of the eight branch sites were deliberately left alone.** The
+  `cos_inc` computations in `core_engine.rs` and `spacer_tau` have their flip
+  neutralized by the `max(0, Im β)` clamp immediately following, and
+  `solver.rs:2084` is the eigenmode `n_eff` path — a different question with a
+  different correct answer. Folding them in would have been a behaviour change
+  dressed as a cleanup.
+
+* **Out of scope, found on the way.** `src/navette/_smatrix.pyi` (shipped
+  0.6.20) documented `Solver.indices` as wav-major; the Rust parameter is named
+  `indices_layer_major` and `Solver::from_raw` transposes it into the wav-major
+  cache. The *other* buffers in that file (`n_stack_cache`) really are
+  wav-major, which is how the header generalization went wrong. Both the header
+  and the `Solver` docstring corrected here.
 
 ### R4.1 numpy floor → `numpy>=2.0` — DONE (0.6.3)
 

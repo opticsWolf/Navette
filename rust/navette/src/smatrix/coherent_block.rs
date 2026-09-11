@@ -12,7 +12,7 @@
 use num_complex::{Complex64, ComplexFloat};
 use std::f64::consts::PI;
 
-use crate::smatrix::optics_core::{cexp_fast, csqrt_fast, nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner};
+use crate::smatrix::optics_core::{cexp_fast, csqrt_fast, forward_branch, nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner};
 
 const POL_S: i32 = 0;
 const LOG_MIN: f64 = 1e-100;
@@ -90,8 +90,7 @@ fn solve_pol_specialized<const IS_S: bool>(
     let mut cos_curr = {
         let r0 = nsin_fi * inv_n_slice[start_idx];
         let v = Complex64::new(1.0, 0.0) - r0 * r0;
-        let c = csqrt_fast(v);
-        if c.im < 0.0 { -c } else { c }
+        forward_branch(csqrt_fast(v), n_slice[start_idx])
     };
     let mut y_curr = admittance::<IS_S>(n_curr, cos_curr);
     let y_first = y_curr;
@@ -106,8 +105,7 @@ fn solve_pol_specialized<const IS_S: bool>(
         let cos_next = {
             let rr = nsin_fi * inv_n_slice[i_next];
             let v = Complex64::new(1.0, 0.0) - rr * rr;
-            let c = csqrt_fast(v);
-            if c.im < 0.0 { -c } else { c }
+            forward_branch(csqrt_fast(v), n_next)
         };
         let y_next = admittance::<IS_S>(n_next, cos_next);
 
@@ -272,8 +270,7 @@ pub fn solve_coherent_block_fields_dual(
     let mut cos_curr = {
         let r0 = nsin_fi * inv_n_slice[start_idx];
         let v = Complex64::new(1.0, 0.0) - r0 * r0;
-        let c = csqrt_fast(v);
-        if c.im < 0.0 { -c } else { c }
+        forward_branch(csqrt_fast(v), n_slice[start_idx])
     };
 
     #[inline(always)]
@@ -305,8 +302,7 @@ pub fn solve_coherent_block_fields_dual(
         let cos_next = {
             let rr = nsin_fi * inv_n_slice[i_next];
             let v = Complex64::new(1.0, 0.0) - rr * rr;
-            let c = csqrt_fast(v);
-            if c.im < 0.0 { -c } else { c }
+            forward_branch(csqrt_fast(v), n_next)
         };
 
         let ys_next = admittance(true, n_next, cos_next);

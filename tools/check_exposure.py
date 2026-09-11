@@ -40,6 +40,11 @@ ALLOWLIST = {
     # optics fast-math (via solve paths)
     "cexp_fast", "csqrt_fast", "grad_nonuniform", "reference_phase",
     "reference_wavenumber",
+    # forward branch of cos(theta): the single source of truth for the branch
+    # cut, called from coherent_block (4 sites) and needle_operator (R3.4).
+    # Deliberately not bound -- a caller who could pick the branch themselves
+    # would be picking the physics, which is exactly what the wrapper refuses.
+    "forward_branch",
     # Nevot-Croce interface factors: shared by all four rtype-5 branches,
     # reached through every solve/field/needle path (R1.1)
     "nevot_croce_factors",

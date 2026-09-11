@@ -4,8 +4,11 @@
 # rust/navette-py over the navette Rust crate).
 #
 # Wavelengths are nanometres, thicknesses nanometres, angles degrees unless a
-# parameter says otherwise. Index arrays are wav-major flat: layer `j` at
-# wavelength `i` lives at `i * n_layers + j`.
+# parameter says otherwise. The `n_stack_cache` buffers are wav-major flat:
+# layer `j` at wavelength `i` lives at `i * n_layers + j`. `Solver.__init__` is
+# the exception -- its `indices` is layer-major (`layer * n_wavs + wav`), which
+# is what a C-contiguous `(n_layers, n_wavs)` array ravels to; the Rust side
+# transposes it into the wav-major cache.
 #
 # Kept in sync with the PyO3 registration list by tools/check_pyi_sync.py.
 from __future__ import annotations
@@ -204,7 +207,8 @@ class Solver:
     """A stack, held so it can be solved repeatedly without rebuilding the
     index cache.
 
-    `indices` is wav-major flat (`i * n_layers + j`). `angles` are degrees
+    `indices` is layer-major flat (`layer * n_wavs + wav`), i.e. exactly a
+    C-contiguous `(n_layers, n_wavs)` array raveled. `angles` are degrees
     unless `angles_in_radians`.
     """
 

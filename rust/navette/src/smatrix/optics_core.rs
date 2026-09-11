@@ -91,6 +91,52 @@ pub fn csqrt_fast(z: Complex64) -> Complex64 {
     }
 }
 
+/// Pick the forward branch of `cos theta`: the wave that does not grow in +z.
+///
+/// SINGLE SOURCE OF TRUTH for the branch cut. [`csqrt_fast`] returns the
+/// principal root; this decides whether to keep it. Five call sites carried
+/// this four-line test copied out — both `coherent_block` solvers, front
+/// interface and interior, plus `needle_operator::cos_from_nsin` — and it is
+/// subtle enough to deserve one home.
+///
+/// The rule is `Im(cos) >= 0`, bit-for-bit what those five copies did. For a
+/// real incident index that is exactly the physical condition `Im(kz) >= 0`
+/// with `kz = n*cos`: for real `n > 0` the two tests share a sign. Absorbing
+/// *layers* are handled correctly and never even reach the flip — `nsin/n` has
+/// negative imaginary part, so `1 - (nsin/n)^2` has positive imaginary part,
+/// so `Im cos > 0` already.
+///
+/// `n` is taken and ignored. It is here because the obvious "improvement" is
+/// to test `Im(n*cos)` instead, and the parameter is where the reason not to
+/// lives.
+///
+/// **The rule is not extended to cover a complex incident index, and that is
+/// not an oversight** (R3.4). With `n0` complex the transverse wavevector
+/// `kx = k0*n0*sin(theta)` is complex, the wave is inhomogeneous, and "does
+/// not grow in +z" stops being the right criterion at all: a transparent layer
+/// under an absorbing ambient legitimately grows along z while decaying along
+/// x. Which root is forward then depends on the inhomogeneity of the incident
+/// wave, and a real angle of incidence does not specify it. The input is
+/// under-determined, not merely awkward to normalize — so the Python surface
+/// refuses it rather than picking a root, and this stays the simple rule for
+/// the well-posed case.
+///
+/// Measured before that refusal existed, on the permissive native path: for a
+/// complex ambient the test is not just wrong, it is *undecidable*. `nsin/n0`
+/// should be exactly real; what comes back carries a rounding residue of order
+/// 1e-31 whose sign depends on how `1/n0` rounded, and flipping on it inverts
+/// `Re cos` from +0.985 to -0.985. A 2-layer stack at 10 degrees gave `Rs`
+/// alternating between 0.0024 and 417 as `k_ambient` moved 1e-16 -> 1e-2, with
+/// no monotonicity, because the flip tracked rounding rather than physics.
+#[inline(always)]
+pub fn forward_branch(cos_theta: Complex64, _n: Complex64) -> Complex64 {
+    if cos_theta.im < 0.0 {
+        -cos_theta
+    } else {
+        cos_theta
+    }
+}
+
 /// Fast complex exponential. Same formula as `num_complex`
 /// (`e^re · (cos im, sin im)`) but via a single `sin_cos`, which shares the
 /// argument reduction between sine and cosine.
@@ -281,5 +327,110 @@ mod tests {
         // Wavenumber × D × passes reconstructs the phase.
         let kz = reference_wavenumber(500.0, 1.5, 10.0);
         assert!((1.0 * kz * 100.0 - reference_phase(500.0, 1.5, 10.0, 100.0, 1.0)).abs() < 1e-15);
+    }
+
+    /// The exact expression the five call sites carried before R3.4
+    /// consolidated them. Kept here as the oracle: `forward_branch` must be
+    /// this, bit for bit, forever.
+    fn old_inline_rule(c: Complex64) -> Complex64 {
+        if c.im < 0.0 {
+            -c
+        } else {
+            c
+        }
+    }
+
+    /// `cos` from `nsin` the way the sites compute it, without the branch.
+    fn raw_cos(nsin: Complex64, n: Complex64) -> Complex64 {
+        let r0 = nsin / n;
+        csqrt_fast(Complex64::new(1.0, 0.0) - r0 * r0)
+    }
+
+    #[test]
+    fn forward_branch_is_the_old_inline_rule_bit_for_bit() {
+        // A deterministic sweep over the quadrants, including the signed
+        // zeros and the exactly-real and exactly-imaginary axes, since the
+        // rule branches on `im < 0.0` and -0.0 is NOT < 0.0.
+        let parts = [-3.25_f64, -1.0, -1e-300, -0.0, 0.0, 1e-300, 1.0, 3.25];
+        for &re in &parts {
+            for &im in &parts {
+                let c = Complex64::new(re, im);
+                for &n in &[
+                    Complex64::new(1.0, 0.0),
+                    Complex64::new(1.52, 0.0),
+                    Complex64::new(2.35, 0.8),
+                    Complex64::new(-1.0, -1.0),
+                ] {
+                    let got = forward_branch(c, n);
+                    let want = old_inline_rule(c);
+                    assert_eq!(got.re.to_bits(), want.re.to_bits(), "re c={c} n={n}");
+                    assert_eq!(got.im.to_bits(), want.im.to_bits(), "im c={c} n={n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forward_branch_ignores_the_index_argument() {
+        // `n` is taken and ignored on purpose (see the doc comment). Pin it,
+        // so that "improving" the rule to test `Im(n*cos)` cannot slip in
+        // unnoticed: for n = 2.35 + 0.8i the two rules genuinely disagree.
+        let c = Complex64::new(0.7, 0.1);
+        let n_real = Complex64::new(1.52, 0.0);
+        let n_cplx = Complex64::new(2.35, 0.8);
+        assert_eq!(forward_branch(c, n_real), forward_branch(c, n_cplx));
+        // And there really is a case where the two rules disagree, so the
+        // assertion above is not vacuous: for cos = -1 + 0.1i the current rule
+        // keeps it (Im cos > 0) while an Im(n*cos) rule would flip it
+        // (2.35*0.1 + 0.8*(-1) < 0).
+        let c2 = Complex64::new(-1.0, 0.1);
+        assert!(c2.im > 0.0);
+        assert!((n_cplx * c2).im < 0.0);
+        assert_eq!(forward_branch(c2, n_cplx), c2);
+    }
+
+    #[test]
+    fn forward_branch_is_identity_for_a_real_ambient() {
+        // Propagating: 30 deg from n0 = 1.0 into n = 1.5. `cos` is real and
+        // positive, nothing to flip.
+        let nsin = Complex64::new(30.0_f64.to_radians().sin(), 0.0);
+        let c = raw_cos(nsin, Complex64::new(1.5, 0.0));
+        assert_eq!(c.im, 0.0);
+        assert!(c.re > 0.0);
+        assert_eq!(forward_branch(c, Complex64::new(1.5, 0.0)), c);
+
+        // Evanescent: total internal reflection, 60 deg from n0 = 1.5 into
+        // n = 1.0. `cos` is purely imaginary and the principal root already
+        // has the decaying sign.
+        let nsin_tir = Complex64::new(1.5 * 60.0_f64.to_radians().sin(), 0.0);
+        let c_tir = raw_cos(nsin_tir, Complex64::new(1.0, 0.0));
+        assert!(c_tir.re.abs() < 1e-15, "c_tir={c_tir}");
+        assert!(c_tir.im > 0.0, "c_tir={c_tir}");
+        assert_eq!(forward_branch(c_tir, Complex64::new(1.0, 0.0)), c_tir);
+
+        // Exactly critical: nsin == n, so `cos` is exactly zero. +0.0 is not
+        // < 0.0, so the branch leaves it alone rather than producing -0.0.
+        let c_crit = raw_cos(Complex64::new(1.0, 0.0), Complex64::new(1.0, 0.0));
+        assert_eq!(c_crit, Complex64::new(0.0, 0.0));
+        let out = forward_branch(c_crit, Complex64::new(1.0, 0.0));
+        assert_eq!(out.re.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(out.im.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn absorbing_layers_under_a_real_ambient_never_reach_the_flip() {
+        // The claim in the doc comment: with a real ambient, `1 - (nsin/n)^2`
+        // has positive imaginary part for any absorbing layer, so the
+        // principal square root is already forward and the flip is dead code.
+        // Checked across the angle range and three decades of k.
+        for &deg in &[0.0_f64, 10.0, 30.0, 45.0, 60.0, 75.0, 89.0] {
+            let nsin = Complex64::new(1.0 * deg.to_radians().sin(), 0.0);
+            for &k in &[1e-6_f64, 1e-3, 0.05, 0.5, 3.0] {
+                let n = Complex64::new(2.35, k);
+                let c = raw_cos(nsin, n);
+                assert!(c.im >= 0.0, "deg={deg} k={k} c={c}");
+                assert_eq!(forward_branch(c, n), c, "deg={deg} k={k}");
+            }
+        }
     }
 }

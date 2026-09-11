@@ -3,6 +3,87 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.21] — An absorbing incident medium is refused, not approximated (R3.4)
+
+`ScatterMatrix(layer_indices=[1.52 + 0.062j, ...])` used to construct and solve
+without a word. It returned `Rs = 86` and a negative `Rp`. The remediation plan
+offered three ways out — refuse, warn, or renormalize `R` against the
+incident-medium Poynting flux — and the third one turned out not to exist.
+
+Against an absorbing ambient the total Poynting flux on the incident side
+carries an interference term between the incident and reflected waves that does
+not separate into "in" and "out", so there is no reference flux to divide by.
+At oblique incidence it is worse than a missing normalization: `kx = k0 n0
+sin(theta)` goes complex, the incident wave is inhomogeneous, and a real angle
+of incidence does not say *which* inhomogeneous wave it is — the planes of
+constant phase and constant amplitude come apart and the angle names only the
+first. The input is under-determined. So it is refused.
+
+### Changed
+
+- **`ScatterMatrix` refuses `Im(n[0]) != 0`** — exact test, no tolerance band,
+  no opt-out flag. The message names the offending wavelength index and value,
+  says what breaks, and points at the two ways out: put the absorbing medium on
+  the substrate side (fully supported and unchanged), or drive the native
+  `navette._smatrix.Solver`, which R3.1 already established as the documented
+  permissive path. Absorbing interior layers and absorbing *substrates* are
+  untouched — `t_fwd`/`t_back` normalize by `Re(y)` ratios, so `T` stays an
+  energy ratio on the exit side.
+- **The `cos(theta)` branch rule now has one home**, `optics_core::forward_branch`,
+  replacing five byte-identical inline copies in `coherent_block.rs` (four) and
+  `needle_operator::cos_from_nsin`. The rule itself is unchanged, bit for bit;
+  what is new is a doc comment recording why it is *not* extended to cover a
+  complex incident index, and an ignored `n` parameter that exists to hold that
+  explanation where the obvious "improvement" would be written.
+- Three further branch sites were deliberately left alone: `cos_inc` in
+  `core_engine.rs` and in `spacer_tau` have their flip neutralized by the
+  `max(0, Im beta)` clamp that immediately follows, and `solver.rs:2084` is the
+  eigenmode `n_eff` path — a different question with a different right answer.
+
+### Fixed
+
+- `src/navette/_smatrix.pyi` (new in 0.6.20) documented `Solver.indices` as
+  wav-major. It is layer-major — `layer * n_wavs + wav`, what a C-contiguous
+  `(n_layers, n_wavs)` array ravels to; the Rust parameter is literally named
+  `indices_layer_major`, and `Solver::from_raw` transposes it into the wav-major
+  cache. The `n_stack_cache` buffers elsewhere in that file really are
+  wav-major, which is how the file-header generalization went wrong. Both
+  corrected.
+
+### Tests
+
+- `optics_core.rs` — four tests. `forward_branch` is pinned against the exact
+  inline expression the five sites carried, compared on `to_bits()` across a
+  signed-zero sweep of all four quadrants (`-0.0` is not `< 0.0`, and the rule
+  depends on that). One pins that `n` is ignored *and* exhibits a case where an
+  `Im(n*cos)` rule would genuinely disagree, so the assertion is not vacuous.
+  One covers the propagating, evanescent and exactly-critical real ambient.
+  The last checks the doc comment's claim that an absorbing layer under a real
+  ambient never reaches the flip at all.
+- `validation/smoke/test_input_validation.py` — two reject rows (`k = 0.05` and
+  `k = 1e-14`; there is no tolerance because 1e-14 was already enough to flip
+  the branch), two accept rows (absorbing and strongly absorbing substrates),
+  and three tests: the message carries its own justification and is ASCII, only
+  row 0 of a 2-D index grid is judged and the offending wavelength index is
+  named, and the native `Solver` escape hatch is still open.
+- `validation/review/garbage_in.py` — four cases recording the new verdicts.
+
+### Measured
+
+- Normal incidence degrades *smoothly*, which is why it read as a
+  normalization bug: `R + T` = 1.000053 at `k = 1e-3`, 1.0096 at `k = 0.1`,
+  1.44 at `k = 1`.
+- Oblique incidence is erratic. Deterministic and batch-independent, but `Rs`
+  at 10 degrees alternates between 0.0024 and 417 as `k` moves over
+  1e-16…1e-2, with no monotonicity — because `r0 = nsin * (1/n0)` should be
+  exactly `sin(theta)` and instead carries a rounding residue of order 1e-31
+  whose sign decides the branch, inverting `Re(cos)` from +0.9848 to -0.9848.
+- Two attempts to repair the branch rather than refuse (`Im(n*cos) >= 0`, then
+  the same with a 1e-12 relative tie-break) both produced *consistent* nonsense
+  — `Rs = 417.6` at every `k` — and both moved the bit-exactness fingerprint.
+  Reverted; the core is byte-identical to 0.6.20
+  (`30d9690992cfa8e9ebfd8a6b03b5d62a7cd511952d3bc50dd3fff9c18ade3c6c`).
+
 ## [0.6.20] — Stubs for the other two engines, and a guard so they stay true (R6.5)
 
 `_materials` was the only stubbed submodule, so IDE completion and any type

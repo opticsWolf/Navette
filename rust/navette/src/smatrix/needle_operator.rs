@@ -61,7 +61,7 @@ use std::f64::consts::PI;
 
 pub use crate::smatrix::optics_core::cexp_fast;
 use crate::smatrix::optics_core::{
-    cplx, csqrt_fast, nevot_croce_factors, redheffer_product_complex_field_inner,
+    cplx, csqrt_fast, forward_branch, nevot_croce_factors, redheffer_product_complex_field_inner,
     redheffer_product_real_inner, w_function_inner, C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN,
 };
 
@@ -73,12 +73,8 @@ pub type S4 = (Complex64, Complex64, Complex64, Complex64);
 pub fn cos_from_nsin(nsin_fi: Complex64, n: Complex64) -> Complex64 {
     let r0 = nsin_fi / n;
     let v = cplx(1.0, 0.0) - r0 * r0;
-    let c = csqrt_fast(v);
-    if c.im < 0.0 {
-        -c
-    } else {
-        c
-    }}
+    forward_branch(csqrt_fast(v), n)
+}
 
 /// Wave admittance: s-pol y = n·cosθ, p-pol y = n/cosθ (matches func_3).
 #[inline(always)]

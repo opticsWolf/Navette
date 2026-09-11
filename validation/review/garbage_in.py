@@ -11,6 +11,13 @@ R3.1 turned the ScatterMatrix cases into construction-time errors and R3.2
 the needle ones, so the script now asserts an expected verdict per case and
 exits non-zero when one drifts.
 
+R3.4 added one more: an absorbing *incident* medium used to solve happily
+and return a reflectance that was not a reflectance (R + T past 1 at normal
+incidence, and at 10 deg an `Rs` alternating between 0.0024 and 417 as the
+ambient `k` moved 1e-16 -> 1e-2, because the branch of `cos(theta)` was being
+decided by a 1e-31 rounding residue). Absorption on the *substrate* side is
+fine and stays silent-clean.
+
 Verdicts: `raises` | `silent-clean` | `NaN-in-output`.
 """
 
@@ -84,6 +91,22 @@ run("negative thickness (already known, S19)", "raises",
 run("NaN thickness", "raises",
     lambda: ScatterMatrix(N, np.array([0.0, 120.0, np.nan, 80.0, 0.0]),
                           wavelengths=WLS, angles=[30.0]).compute(Request.RS))
+run("absorbing incident medium (R3.4)", "raises",
+    lambda: ScatterMatrix(np.array([1.0+0.05j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
+                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+    note="R = |r|^2 is not an energy ratio there, and the forward branch is under-determined")
+run("barely absorbing incident medium k=1e-14", "raises",
+    lambda: ScatterMatrix(np.array([1.0+1e-14j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
+                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+    note="no tolerance: 1e-14 was already enough to flip the branch")
+run("absorbing substrate", "silent-clean",
+    lambda: ScatterMatrix(np.array([1.0+0j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0.05j]),
+                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+    note="T is normalized by Re(y); the exit side is well posed")
+run("absorbing interior layer", "silent-clean",
+    lambda: ScatterMatrix(np.array([1.0+0j, 2.35+0.4j, 1.46+0j, 2.10+0j, 1.52+0j]),
+                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+    note="the ordinary case; 1-(nsin/n)^2 never reaches the branch flip")
 run("huge thickness 1e9 nm", "silent-clean",
     lambda: ScatterMatrix(N, np.array([0.0, 120.0, 1e9, 80.0, 0.0]),
                           wavelengths=WLS, angles=[30.0]).compute(Request.RS), note="no upper cap by design")
