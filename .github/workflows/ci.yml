@@ -9,16 +9,19 @@
 #   * tools/check_exposure.py         (README claims it is "enforced in CI" —
 #                                      as of this workflow that is finally true)
 #   * tools/check_cie_sync.py
+#   * dependency floors               (R4.1: a floor with no wheel is fiction)
 #   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
 #
 # What is ADVISORY (continue-on-error) and why:
 #   * cargo clippy  — 248 findings on the current tree
 #   * cargo fmt     — 981 files differ from rustfmt defaults
-#   * numpy floor   — declared floor cannot install on the declared Python
 # Both are tracked as their own items. Turning either blocking means landing
 # a large mechanical diff first; doing it inside this commit would bury the
 # gate itself. A gate that cannot go green teaches people to ignore CI, so
 # these report without failing until that work lands.
+#
+# The `dependency-floors` job was advisory until R4.1 (0.6.3) fixed the floors
+# it was failing on. It is blocking now.
 
 name: ci
 
@@ -103,46 +106,63 @@ jobs:
       - name: embedded CIE tables match sources
         run: python tools/check_cie_sync.py
 
-  numpy-floor:
-    # Guards the declared floor: the version in `pyproject.toml` must
-    # actually install and import, or the floor is fiction.
+  dependency-floors:
+    # A declared floor is a promise: "this package works with at least this
+    # version". Before R4.1 every floor in pyproject.toml was fiction --
+    # numpy 1.22, scipy 1.8, PyYAML 6.0 and numba 0.56 all predate cp312
+    # wheels, while requires-python says >=3.12. Nothing could have installed
+    # that combination.
     #
-    # ADVISORY today, and expected to fail: the declared floor is
-    # `numpy>=1.22.0` while `requires-python` is `>=3.12`, and numpy gained
-    # cp312 wheels only at 1.26. R4.1 raises the floor to `numpy>=2.0`;
-    # **that item must also delete the `continue-on-error` below**, at which
-    # point this job starts doing its job.
-    name: numpy floor (advisory until R4.1)
+    # So this job does not check one dependency by name. It reads every
+    # `>=` floor out of pyproject.toml, pins them ALL at once, and runs the
+    # suite against that. Checking numpy alone would have let the other three
+    # stay broken behind a green check.
+    name: dependency floors
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
+          # Deliberately the LOWEST supported Python, not the newest: the
+          # floors have to hold where they are hardest to satisfy.
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: install against the declared numpy floor
+
+      - name: build and install the package
+        run: python -m pip install -e ".[dev]"
+
+      - name: pin every declared floor
         run: |
-          python -m pip install -e .
-          FLOOR=$(python - <<'PY'
-          import re, pathlib
-          t = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          print(re.search(r'"numpy>=([0-9.]+)"', t).group(1))
+          python - <<'PY' > floors.txt
+          import pathlib, re, tomllib
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          project = data["project"]
+          specs = list(project.get("dependencies", []))
+          specs += project.get("optional-dependencies", {}).get("numba", [])
+          for spec in specs:
+              m = re.match(r"^([A-Za-z0-9_.\-]+)\s*>=\s*([0-9][0-9A-Za-z.]*)", spec)
+              if m:
+                  print(f"{m.group(1)}=={m.group(2)}")
           PY
-          )
-          PYV=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-          echo "declared numpy floor: $FLOOR  (python $PYV)"
-          # --only-binary: a floor that has no wheel for the declared Python
-          # is not a usable floor. Without this, pip falls back to building
-          # the sdist and fails with an unrelated setuptools error that hides
-          # the actual finding.
-          python -m pip install --only-binary=:all: "numpy==$FLOOR" || {
-            echo "::error::numpy==$FLOOR has no wheel for Python $PYV — the"
-            echo "::error::declared floor in pyproject.toml cannot be installed"
-            echo "::error::on the declared requires-python. See R4.1."
+          echo "pinning:"; cat floors.txt
+          # --only-binary: a floor with no wheel for the declared Python is
+          # not a usable floor. Without this, pip falls back to the sdist and
+          # dies with an unrelated build error that hides the real finding.
+          python -m pip install --only-binary=:all: -r floors.txt || {
+            echo "::error::the declared floors in pyproject.toml do not install"
+            echo "::error::together on Python ${{ env.PYTHON_VERSION }} as wheels."
+            echo "::error::A floor that cannot be installed is not a floor. See R4.1."
             exit 1
           }
-      - name: import at the floor
-        run: |
-          python -c "import numpy, navette; print('numpy', numpy.__version__, 'navette', navette.__version__, navette.build_profile())"
+          python -m pip check
+
+      - name: report what is actually installed
+        run: python -m pip list
+
+      - name: the suite must pass at the floor
+        # Importing is not enough: a floor that imports but breaks a kernel is
+        # still a lie. The whole suite runs in seconds, and pinning the numba
+        # extra above means the parity layer compares against its reference
+        # here rather than skipping.
+        run: python -m pytest validation -q

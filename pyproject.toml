@@ -11,7 +11,7 @@ build-backend = "maturin"
 
 [project]
 name = "navette"
-version = "0.6.2"
+version = "0.6.3"
 description = "A high-performance optical engine utilizing a Scattering Matrix algorithm for stable simulation of light in stratified media."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -26,18 +26,32 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Physics",
   "Intended Audience :: Science/Research",
 ]
+# Floors are real: every one of these must have a wheel for the *lowest*
+# supported Python (requires-python above), and they must install together.
+# ci.yml's `numpy-floor` job pins all of them at once and imports the result.
+#
+# Two independent floors meet here, and they are not the same thing:
+#   * py312-abi3   -- the extension's Python ABI floor (the `abi3-py312`
+#                     feature); one wheel serves 3.12 and every later 3.x.
+#   * numpy-2 C-API -- the `numpy` Rust crate (0.28) compiles against the
+#                     numpy 2 C-API and makes no abi3-style promise of its
+#                     own. A wheel built that way cannot load against numpy
+#                     1.x, whatever the Python ABI says.
+# Hence `numpy>=2.0`, which is also the first numpy with cp312 wheels other
+# than 1.26. scipy 1.13 is the first release supporting numpy 2 that also
+# ships cp312; PyYAML 6.0 predates cp312 entirely.
 dependencies = [
-  "numpy>=1.22.0",
-  "scipy>=1.8.0",
-  "pyyaml>=6.0",
+  "numpy>=2.0",
+  "scipy>=1.13.0",
+  "pyyaml>=6.0.1",
 ]
 
 [project.optional-dependencies]
 # Single aggregated native extension (navette._navette with all engines).
 # Dev install: maturin develop --release   (from the repo root)
-numba = ["numba>=0.56.0"]
+numba = ["numba>=0.61.0"]
 dev = ["pytest", "maturin>=1.5,<2.0"]
-all = ["numba>=0.56.0", "pytest", "maturin>=1.5,<2.0"]
+all = ["numba>=0.61.0", "pytest", "maturin>=1.5,<2.0"]
 
 [project.urls]
 Homepage = "https://github.com/opticsWolf/Navette"

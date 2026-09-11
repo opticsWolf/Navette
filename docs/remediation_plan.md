@@ -713,7 +713,7 @@ high-index substrates understand the rejection region.
 
 ## 4. Phase 4 — API & packaging completion (P1/P2)
 
-### R4.1 numpy floor → `numpy>=2.0`
+### R4.1 numpy floor → `numpy>=2.0` — DONE (0.6.3)
 
 **Note (0.5.6):** `ci.yml`'s `numpy-floor` job is `continue-on-error: true`
 and **expected to fail** — the declared floor `numpy>=1.22.0` cannot install
@@ -732,6 +732,25 @@ py312-abi3 *and* numpy-2-API — document both floors next to each other.
 (testing against numpy 1.x verifies the *rejection*, not needed).
 
 **Risk/Effort.** S.
+
+**CORRECTIONS (0.6.3).**
+
+* **It was not one floor, it was all four.** `requires-python` is `>=3.12`
+  and no declared floor has a cp312 wheel: numpy 1.22 (first cp312: 1.26),
+  scipy 1.8 (1.11.2), PyYAML 6.0 (6.0.1), numba 0.56 (0.60.0). Raised to
+  `numpy>=2.0`, `scipy>=1.13.0` (first with both numpy-2 support and cp312),
+  `pyyaml>=6.0.1`, `numba>=0.61.0`. Fixing numpy alone and *then* making the
+  gate blocking would have shipped three known-broken floors behind a green
+  check.
+* **The CI job no longer names numpy.** It reads every `>=` floor from
+  `pyproject.toml`, pins them together, runs `pip check`, and runs the full
+  suite on the lowest supported Python. A by-name check is what let the other
+  three hide.
+* `continue-on-error` deleted, as this item required; job renamed
+  `numpy-floor` -> `dependency-floors`.
+* Verified locally on Python 3.12.13 before pushing: floors install as wheels,
+  `pip check` clean, PEP 517 build is a release build, `pytest validation` =
+  631 passed / 2 skipped — identical to the dev environment.
 
 ### R4.2 Color gradients on the Python needle path
 

@@ -3,6 +3,55 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.3] — Every dependency floor was fiction (R4.1)
+
+`requires-python = ">=3.12"`, and **not one** of the declared floors has a
+cp312 wheel:
+
+| declared | first cp312 wheel | now |
+|---|---|---|
+| `numpy>=1.22.0` | 1.26.0 | `numpy>=2.0` |
+| `scipy>=1.8.0` | 1.11.2 | `scipy>=1.13.0` |
+| `pyyaml>=6.0` | 6.0.1 | `pyyaml>=6.0.1` |
+| `numba>=0.56.0` (extra) | 0.60.0 | `numba>=0.61.0` |
+
+A floor is a promise that the package works with at least that version. These
+could not be installed at all on the Python the project declares.
+
+### Fixed
+
+- **`numpy>=2.0`** — the floor R4.1 named. Two independent floors meet in this
+  package and they are not the same thing: the extension is `abi3-py312` (one
+  wheel for 3.12 and every later 3.x), while the `numpy` Rust crate (0.28)
+  compiles against the numpy **2** C-API and makes no abi3-style promise of
+  its own. A wheel built that way cannot load against numpy 1.x whatever the
+  Python ABI says. Both floors are now documented next to each other in
+  `pyproject.toml`.
+- **`scipy>=1.13.0`** — the first scipy that both supports numpy 2 and ships
+  cp312 wheels. Beyond R4.1's stated scope; found while making the gate
+  blocking, and the same one-line defect.
+- **`pyyaml>=6.0.1`**, **`numba>=0.61.0`** (extra) — same.
+
+### Changed
+
+- **`ci.yml`'s floor job is blocking, and no longer checks numpy by name.**
+  It reads *every* `>=` floor out of `pyproject.toml`, pins them all at once
+  with `--only-binary=:all:`, runs `pip check`, and then runs the full suite
+  against that combination on the **lowest** supported Python. Checking numpy
+  alone would have left three broken floors behind a green check — which is
+  exactly how they survived. Renamed `numpy-floor` -> `dependency-floors`.
+- The job now runs the whole suite rather than importing. A floor that imports
+  but breaks a kernel is still a lie, and pinning the numba extra means the
+  parity layer compares against its reference there instead of skipping.
+
+### Verified
+
+Locally, before pushing, on a clean Python 3.12.13 venv: the four floors
+install together as wheels, `pip check` is clean, the PEP 517 build produces a
+**release** extension, and `pytest validation` gives **631 passed, 2 skipped**
+at `numpy 2.0.0 / scipy 1.13.0 / pyyaml 6.0.1 / numba 0.61.0` — identical to
+the development environment.
+
 ## [0.6.2] — Eigenmode search is boxed, and says when it found nothing (R3.3)
 
 `char_func` is `|1/r(n_eff)|^2`, so a pole drives it to zero — but so does
