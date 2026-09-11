@@ -144,15 +144,24 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.11-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.12-*.whl (single wheel, all engines)
 ```
+
+#### Optimizer backends
+
+`LmConfig(optimizer=...)` chooses which least-squares solver runs.
+`navette._smatrix.available_optimizers()` reports what the installed wheel
+actually has; a name it lacks is refused with the rebuild command, never
+quietly replaced by a different solver.
+
+| Name | What it is |
+|---|---|
+| `"builtin"` (default) | This crate's bounded Levenberg-Marquardt: QR step solve, gain-ratio damping, analytic Jacobian. Bounds are enforced by vetoing and clamping the solved step, so a thickness **may finish exactly on a bound** — which is how the synthesis loop learns a film wants removing. |
+| `"trf"` | Trust-region reflective (Branch-Coleman-Li), the reference method for *bounded* least squares and the same algorithm as `scipy.optimize.least_squares(method="trf")`. Hand-rolled, no dependency, always available. Bounds enter the subproblem rather than clipping its answer, so a boundary optimum is handled by construction — but its iterates are strictly interior, so it stops one ULP short of a bound instead of on it. `lambda_*` and `damping` do nothing here. |
 
 #### Optional cargo features
 
-Off by default, so a standard wheel pulls no extra dependencies. A build
-without one still *knows* the name and refuses it with the rebuild command
-rather than silently running something else; `navette._smatrix.
-available_optimizers()` reports what the installed wheel actually has.
+Off by default, so a standard wheel pulls no extra dependencies.
 
 | Feature | What it adds |
 |---|---|

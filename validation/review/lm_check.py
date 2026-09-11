@@ -31,6 +31,24 @@ Three parts:
      run must report convergence, and the merit must not be worse than where
      it started.
 
+  D. **The TRF backend against scipy TRF** (R4.6). Parts A-C compare two
+     *different* algorithms and can only ask for the same optimum.
+     `optimizer="trf"` is the same algorithm as the oracle -- same Coleman-Li
+     scaling, same three candidate steps, same More subproblem -- so D asks
+     for more: the same *optimum*, not merely the same merit, from the same
+     start, including on a problem whose optimum sits on a bound. This is the
+     tightest comparison in the plan (1e-9 relative on the cost, 1e-4 nm on
+     the thicknesses), and it is tight because the two are supposed to be the
+     same method, not because the problems are easy.
+
+     It is not exact, and the reason is worth stating: the two solvers
+     difference the merit differently. Navette hands TRF an analytic Jacobian
+     (R4.5) and falls back to central differences; scipy's default is a
+     forward difference. Different Jacobians give slightly different iterates
+     that stop at slightly different points inside the same ftol basin. 1e-4
+     nm is a tenth of a picometre -- four orders below anything a deposition
+     controller can act on, and six below the wavelengths involved.
+
 Run explicitly:  python validation/review/lm_check.py
 Exit code 0 = all comparisons within tolerance.
 """
@@ -47,7 +65,7 @@ from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
 from navette.synthesis import build_merit_spec
 from navette.synthesis.pipeline import stack_from_layers
-from navette._smatrix import LmConfig, SmatrixContext
+from navette._smatrix import LmConfig, SmatrixContext, available_optimizers
 
 # The engine's own defaults for a thickness optimization.
 CLAMP_MIN = 2.0
@@ -107,9 +125,10 @@ def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
 
 
 def run_engine(spec, wl, angles, layers, names, x0, clamp_max,
-               max_iterations=200):
+               max_iterations=200, optimizer="builtin"):
     ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max,
-                         LmConfig(max_iterations=max_iterations))
+                         LmConfig(max_iterations=max_iterations,
+                                  optimizer=optimizer))
     stack, _ = stack_from_layers(
         [(m, float(d)) for (m, _), d in zip(layers, x0)], wl, {}, names=names)
     cost, report = ctx.optimize_thicknesses_report(stack)
@@ -311,10 +330,127 @@ def part_c():
           close(again, after, rel=1e-9, abs_=1e-12), f"{after:.10g} -> {again:.10g}")
 
 
+# ---------------------------------------------------------------------------
+# D. The TRF backend against the algorithm it is a port of
+# ---------------------------------------------------------------------------
+
+def part_d():
+    print("--- D. optimizer='trf' vs scipy least_squares(method='trf') ---")
+    if "trf" not in available_optimizers():
+        check("D: the trf backend is compiled in", False,
+              f"available: {available_optimizers()}")
+        return
+    print("  Same algorithm on both sides, so the bar is the optimum itself")
+    print("  and not merely the merit. Both solvers start from the same point")
+    print("  with the same bounds; scipy runs at its own defaults except for")
+    print("  the tolerances, which are tightened to match ours.")
+
+    wl = np.linspace(450.0, 750.0, 13)
+    angles = np.array([0.0])
+    spec = thin_film_problem(wl, angles)
+
+    starts = [
+        ("two films", [(2.35, 60.0), (1.46, 95.0)]),
+        ("three films", [(2.35, 80.0), (1.46, 140.0), (2.10, 70.0)]),
+    ]
+    for label, films in starts:
+        layers = [(MaterialSpec("Konstant", dict(n=n)), d) for n, d in films]
+        names = [f"L{i}" for i in range(len(films))]
+        x0 = [d for _, d in films]
+
+        # Anchor on a local optimum and start both a few nm away, exactly as
+        # A1 does: a shared basin is a precondition for comparing optima at
+        # all, whatever the algorithm.
+        anchor, _, _ = run_scipy(spec, wl, angles, layers, names, x0, CLAMP_MAX)
+        perturbed = np.clip(anchor + np.array([3.0, -3.0, 2.0][:len(x0)]),
+                            5.0, CLAMP_MAX - 5.0)
+
+        sx, scost, sp = run_scipy(spec, wl, angles, layers, names,
+                                  perturbed, CLAMP_MAX)
+        ex, ecost, erep = run_engine(spec, wl, angles, layers, names,
+                                     perturbed, CLAMP_MAX,
+                                     max_iterations=FAR_ITERS,
+                                     optimizer="trf")
+        print(f"    [{label}]  from {np.round(perturbed, 3)}")
+        print(f"       trf   : cost {ecost:.12g}  x {np.round(ex, 8)}"
+              f"  [{erep['backend']}, {erep['termination']},"
+              f" {erep['iterations']} iters]")
+        print(f"       scipy : cost {scost:.12g}  x {np.round(sx, 8)}"
+              f"  nfev={sp.nfev} status={sp.status}")
+
+        check(f"D/{label}: the report names the backend that ran",
+              erep["backend"] == "trf", erep["backend"])
+        check(f"D/{label}: cost parity", close(ecost, scost, rel=1e-9, abs_=1e-14),
+              f"{ecost:.12g} vs {scost:.12g}")
+        sx_kept = sx[sx > 1e-6]
+        if sx_kept.size != ex.size:
+            check(f"D/{label}: optimum parity", False,
+                  f"film counts differ: engine {ex.size}, scipy {sx_kept.size}")
+        else:
+            dev = float(np.max(np.abs(ex - sx_kept)))
+            check(f"D/{label}: optimum parity", dev < 1e-4,
+                  f"max |dx| = {dev:.3e} nm")
+
+    print("  D2. a bound-active optimum, which is what TRF is for")
+    print("      -- part B could only check scipy against a hand-written pin,")
+    print("      because there is no Python entry point that hands the engine")
+    print("      an arbitrary residual closure. These are thin-film merits")
+    print("      instead. A single low-index film on glass improves the AR")
+    print("      demand monotonically up to its quarter wave (~103 nm here),")
+    print("      so clamping it at 50 nm puts the optimum ON the clamp -- the")
+    print("      case the built-in's veto+clamp is weakest on. The same film")
+    print("      with room to reach 103 nm is the interior control.")
+
+    for label, clamp, start in [("upper bound active", 50.0, 10.0),
+                                ("interior optimum", 1000.0, 40.0)]:
+        layers = [(MaterialSpec("Konstant", dict(n=1.38)), start)]
+        names = ["L"]
+        sx, scost, _ = run_scipy(spec, wl, angles, layers, names, [start], clamp)
+        ex, ecost, erep = run_engine(spec, wl, angles, layers, names, [start],
+                                     clamp, max_iterations=FAR_ITERS,
+                                     optimizer="trf")
+        if ex.size != 1:
+            check(f"D2/{label}: the film survived the removal sweep", False,
+                  f"{ex.size} films back from the engine")
+            continue
+        on_bound = abs(sx[0] - clamp) < 1e-9
+        print(f"    [{label}]  clamp {clamp}  ->  trf {ex[0]:.10f}  "
+              f"scipy {sx[0]:.10f}"
+              f"{'  (scipy is on the bound)' if on_bound else ''}"
+              f"  [{erep['termination']}]")
+        check(f"D2/{label}: cost parity", close(ecost, scost, rel=1e-9, abs_=1e-14),
+              f"{ecost:.12g} vs {scost:.12g}")
+        check(f"D2/{label}: optimum parity", abs(ex[0] - sx[0]) < 1e-4,
+              f"|dx| = {abs(ex[0] - sx[0]):.3e} nm")
+        if label == "upper bound active":
+            check("D2: the bound is genuinely active", on_bound,
+                  f"scipy stopped at {sx[0]:.10f} of {clamp}")
+            check("D2: trf stays strictly inside the box",
+                  0.0 < ex[0] < clamp, f"{ex[0]!r} vs (0, {clamp})")
+
+    print("  D3. the two bounded backends disagree only where the contract")
+    print("      says they may: the built-in may land exactly on a bound,")
+    print("      trf one ULP short of it. Same optimum either way.")
+    layers = [(MaterialSpec("Konstant", dict(n=1.38)), 10.0)]
+    bx, bcost, _ = run_engine(spec, wl, angles, layers, ["L"], [10.0], 50.0,
+                              max_iterations=FAR_ITERS)
+    tx, tcost, _ = run_engine(spec, wl, angles, layers, ["L"], [10.0], 50.0,
+                              max_iterations=FAR_ITERS, optimizer="trf")
+    print(f"    builtin {bx[0]:.12f}   trf {tx[0]:.12f}   clamp 50.0")
+    check("D3: both backends find the same boundary optimum",
+          abs(bx[0] - tx[0]) < 1e-4, f"|dx| = {abs(bx[0] - tx[0]):.3e} nm")
+    check("D3: and the same merit there",
+          close(bcost, tcost, rel=1e-9, abs_=1e-14), f"{bcost:.12g} vs {tcost:.12g}")
+    check("D3: the builtin is allowed to land exactly on the bound",
+          bx[0] <= 50.0, f"{bx[0]!r}")
+    check("D3: trf is not", tx[0] < 50.0, f"{tx[0]!r}")
+
+
 def main():
     part_a()
     part_b()
     part_c()
+    part_d()
     print("ALL OK" if not FAILURES else f"FAILURES: {FAILURES}")
     return 1 if FAILURES else 0
 

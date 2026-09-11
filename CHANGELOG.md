@@ -3,6 +3,61 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.12] — The method the docs have been naming (R4.6)
+
+`thick_opt.rs` has said since the rewrite that it replaces
+`scipy.optimize.least_squares(method="trf")`. What it implements is a
+Levenberg-Marquardt that keeps `lb ≤ x ≤ ub` by vetoing and clamping the step
+it already solved — bounds applied after the fact, to a step computed as
+though they were not there. `synthesis::trf` is the method that sentence was
+naming: trust-region reflective (Branch-Coleman-Li), where the bounds enter
+the subproblem.
+
+Hand-rolled, no new dependency, no cargo feature — so `optimizer="trf"` works
+on a standard wheel. The built-in stays the default.
+
+### Added
+
+- **`LmConfig(optimizer="trf")`** — trust-region reflective. The trust region
+  is reshaped every iteration by the Coleman-Li scaling `D = diag(√v)`, `v`
+  being the distance to the bound the anti-gradient points at, and each step
+  is the best of three candidates: the trust-region step cut back to the first
+  bound it hits, that step **reflected** off the bound, and the constrained
+  Cauchy step.
+- **`synthesis::trf::trust_region_reflective`** — same signature and same
+  `LmResult` as the built-in LM, so the two are interchangeable behind
+  `run_optimizer`. The subproblem is Moré's, solved from the augmented QR
+  R4.4b already built rather than from an SVD; the Newton recurrence on the
+  secular equation is identical term for term.
+- **`lm_check.py` part D** — the scipy comparison this repository could not
+  make before. Parts A–C compare two *different* algorithms and can only ask
+  for the same optimum; D is the same algorithm on both sides, so it asks for
+  the same answer: costs to 1e-9 relative, thicknesses to 1e-4 nm, including
+  on a merit whose optimum sits **on** the clamp. This also closes R4.4d's
+  deferred "parametrize over every enabled backend" row.
+- **`OptimizerBackend::feature()` is public** — the Python binding was
+  carrying its own copy of the backend→cargo-feature mapping for its rebuild
+  hint, which is the kind of pair that drifts.
+
+### Known
+
+- **TRF never returns a thickness exactly on a bound.** Its iterates must stay
+  strictly interior — that is what keeps the Coleman-Li scaling
+  differentiable — so where the built-in returns `50.0` it returns
+  `49.999999999986834`, at an identical merit. The removal sweep compares
+  against `clamp_min`, so a film driven to the bound is still removed, but a
+  caller testing `x == ub` will be disappointed. This is the reason TRF is not
+  made the default here.
+- **`lambda_init`, `lambda_up`, `lambda_down`, `damping` and
+  `gtol_scale_invariant` do nothing on this backend.** They are
+  Levenberg-Marquardt settings; the trust-region radius plays their role and
+  is not user-settable, exactly as in scipy.
+- **The plan's algorithm sketch for this item described a different method**
+  (a frozen MINPACK column-norm `D`, and "2-D subspace minimization" — which
+  is scipy's sparse `tr_solver`, not its reflections). Both corrected in
+  `docs/remediation_plan.md`; following either would have cost the scipy
+  oracle that makes the item checkable.
+
 ## [0.6.11] — The two whole-engine parity oracles are back (R2.4a)
 
 `parity/smatrix/test_core_engine_photometry_only.py` and

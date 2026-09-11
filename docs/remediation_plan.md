@@ -68,7 +68,7 @@ coverage is thin.
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; **item B (R4.4c) DONE (0.6.10)** — seam + `minpack_lm` behind `opt-minpack-lm`; the two argmin solvers (R4.4c-argmin) remain open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
-| R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
+| ~~R4.6~~ | TRF backend (trust-region-reflective) — **DONE (0.6.12)** | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat — `optimizer="trf"`, 10/10 breaks caught | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
 | R5.3 | `core_engine` emit path (discovered by R2.4a) | **P2** | the rewrite is 0.5–0.65× the numba kernel it replaced | M (must stay bit-identical) | M–L | §5, R2.4a |
@@ -1166,7 +1166,9 @@ tests. What the plan did not say, or said differently:
   backend" is not done here: on a default build there is exactly one enabled
   backend, so the harness would parametrize over a single row and assert
   nothing new. It belongs with the first CI job that builds the feature —
-  noted under R4.4d rather than silently dropped.
+  noted under R4.4d rather than silently dropped. **Closed by R4.6 (0.6.12)**:
+  `trf` needs no cargo feature, so `lm_check.py` part D is that second row and
+  it runs on every build.
 
 #### R4.4d Validation
 
@@ -1325,7 +1327,7 @@ and the bench gate reports which path ran.
   seam, and a TRF backend gets the analytic Jacobian for free by taking the
   same argument.
 
-### R4.6 TRF backend — trust-region-reflective, the bounded-LS reference method
+### R4.6 TRF backend — trust-region-reflective, the bounded-LS reference method — DONE (0.6.12)
 
 **Review/context.** `thick_opt.rs`'s own docstring says it replaces scipy `least_squares(method="trf")` — the Rust rewrite dropped to a simpler clamped LM, and the clamp is exactly the weak point R4.4b item 3 patches. TRF (Branch–Coleman–Li 1999) is the reference bounded-LS method: bounds enter the trust-region subproblem (scaled space + reflection steps), iterates stay strictly interior, and boundary optima are handled by construction — the existing corner/boundary cargo cases are precisely where clamp-LM is weakest.
 
@@ -1341,6 +1343,85 @@ and the bench gate reports which path ran.
 **Risk & mitigation.** The largest algorithmic lift in the R4.4 family (Cauchy point + reflection logic are fiddly): mitigated by (a) scipy-as-oracle in `lm_check.py`, (b) reuse of QR + gain-ratio pieces, (c) backend-equivalence tests, (d) bench gate; shipped behind the backend enum — built-in stays default until TRF demonstrably wins on real refold workloads.
 
 **Effort.** L. **Sequencing:** after R4.4b (QR + gain-ratio) and R4.5 (analytic J).
+
+**CORRECTIONS / NOTES (0.6.12) — shipped, and the plan's algorithm sketch was
+not TRF.** `synthesis/trf.rs` implements `scipy.optimize._lsq.trf.trf_bounds`
+with `tr_solver="exact"`, reachable as `LmConfig(optimizer="trf")`. Every
+piece of the fix design landed except the two in item 2 that described a
+different method:
+
+* **The scaling matrix is Coleman-Li, not "column-norm, frozen,
+  MINPACK-style".** Those are two different matrices doing two different
+  jobs, and the plan conflated them. `D = diag(√v)` where `v` is the
+  *distance to the bound the anti-gradient points at* — recomputed every
+  iteration, because the whole method is that the trust region changes shape
+  as the iterate approaches a bound. MINPACK's column-norm diagonal is
+  scipy's `x_scale`, an orthogonal user-facing knob whose default is 1, and
+  it is fixed at 1 here because `LmConfig` has no field for it. Freezing a
+  column-norm `D` and calling it TRF would have produced a clipped
+  trust-region method with none of the boundary behaviour the item is for —
+  and it would have cost the scipy oracle, which is the item's own
+  validation plan.
+* **"2-D subspace minimization with reflections" is two unrelated things.**
+  The 2-D subspace (indefinite dogleg) is scipy's `tr_solver="lsmr"`, for
+  sparse Jacobians of millions of rows; the dense default is
+  `tr_solver="exact"`, the Moré subproblem the item's own point 2 already
+  asks for. Reflections are not part of either solver — they are in
+  `select_step`, which scores three candidates (the trust-region step cut
+  back to the first bound it hits, that step **reflected** off the bound, and
+  the constrained Cauchy step) and takes the best. Thickness Jacobians are
+  dense with one column per film, so `"exact"` is both the right choice and
+  the one the oracle runs.
+* **The QR reuse the item hoped for is real, and replaces the SVD.** scipy
+  solves the subproblem from an SVD of the augmented Jacobian. Moré's
+  algorithm actually needs only `p(α)` and the `‖q‖` with `Rαᵀq = p`, and the
+  augmented QR from R4.4b supplies both from one factorization — the Newton
+  recurrence on the secular equation is then identical term for term. The
+  single place the two part company is the rank test: scipy compares σ_min to
+  σ_max, this compares `min|Rᵢᵢ|` to `max|Rᵢᵢ|`, which brackets it. A
+  borderline call changes which branch seeds `α`, not the answer. So R4.4b
+  was not wasted work, for the reason the plan gave.
+* **Point 4 holds, and it is visible.** The clipped-prediction caveat does
+  not exist here: the predicted reduction is computed for the feasible step
+  that was actually taken. `lm_check.py` D2 runs a merit whose optimum is
+  *on* the clamp; both bounded backends find it and agree to 1e-11 nm.
+* **There is one contract difference, and it goes the other way.** TRF's
+  iterates must stay *strictly* interior — that is what keeps `v`
+  differentiable — so it returns a thickness one ULP short of the bound where
+  the built-in returns the bound itself (49.999999999986834 against 50.0, a
+  13-femtometre gap at an identical merit). The removal sweep compares
+  against `clamp_min`, so a film still gets removed; a caller testing
+  `x == ub` would be surprised. Documented in the module, the Python
+  docstring and the README, and asserted in both test layers. It is also why
+  making TRF the *default* is not automatic, and is not done here.
+* **`x_scale` and `stepbound` stay unexposed** for the same reason
+  `stepbound` did in R4.4c: a knob that does nothing on the default backend
+  is a support question, not a feature.
+* **Ten deliberate breaks, all ten caught** — Coleman-Li removed, the `dv`
+  sign flipped so `C` goes negative, the reflection candidate disabled, the
+  `theta` step-back removed, `φ'` sign-flipped in the secular equation, the
+  step left in hat space, the half-cost conversion dropped, the radius never
+  shrinking, the gain-ratio guard dropped from the ftol test, and the
+  curvature diagonal `C` dropped from the augmented system. Worth recording
+  *which* layer caught them: eight fell to the cargo tests, but the
+  **reflection candidate and the `theta` step-back were caught only by
+  `lm_check.py`** — and those two are exactly what separates TRF from a
+  trust-region method that clips. Without the scipy oracle this item would
+  have shipped with its defining feature untested.
+* **R4.4d's remaining row is now done.** "Parametrize `lm_check.py` over every
+  enabled backend" was deferred in 0.6.10 because a default build had one
+  backend and the harness would have asserted nothing new. `trf` needs no
+  feature, so part D is that parametrization and it runs everywhere.
+* **The comparison is tolerance-level, not exact, and the reason is
+  recorded.** Costs agree to 1e-9 relative; thicknesses to 1e-4 nm. The two
+  solvers difference the merit differently — Navette hands TRF the analytic
+  Jacobian (R4.5) and falls back to central differences, scipy's default is a
+  forward difference — so the iterates diverge slightly inside the same ftol
+  basin. 1e-4 nm is a tenth of a picometre.
+* **What this does not change.** `builtin` remains the default and no pinned
+  optimum moved: the whole suite passes unchanged, and the bit-exactness
+  fingerprint is untouched (TRF is opt-in and no existing call site selects
+  it).
 
 ---
 

@@ -54,6 +54,12 @@ pub enum OptimizerBackend {
     /// the ecosystem's reference LM, behind `opt-minpack-lm`. Unbounded: runs
     /// on the interior reparametrization.
     MinpackLm,
+    /// Trust-region reflective (Branch-Coleman-Li), the reference method for
+    /// *bounded* least squares and the one `thick_opt`'s docs have been
+    /// naming since the rewrite (`synthesis::trf`, R4.6). Hand-rolled, so it
+    /// is always available; bounds enter the subproblem rather than clipping
+    /// its answer.
+    Trf,
 }
 
 impl OptimizerBackend {
@@ -62,6 +68,7 @@ impl OptimizerBackend {
         match self {
             OptimizerBackend::BuiltinLm => "builtin",
             OptimizerBackend::MinpackLm => "minpack_lm",
+            OptimizerBackend::Trf => "trf",
         }
     }
 
@@ -71,8 +78,9 @@ impl OptimizerBackend {
         match s {
             "builtin" => Ok(OptimizerBackend::BuiltinLm),
             "minpack_lm" => Ok(OptimizerBackend::MinpackLm),
+            "trf" => Ok(OptimizerBackend::Trf),
             other => Err(format!(
-                "unknown optimizer backend {other:?} (expected one of: builtin, minpack_lm)"
+                "unknown optimizer backend {other:?} (expected one of: builtin, minpack_lm, trf)"
             )),
         }
     }
@@ -82,20 +90,26 @@ impl OptimizerBackend {
         match self {
             OptimizerBackend::BuiltinLm => true,
             OptimizerBackend::MinpackLm => cfg!(feature = "opt-minpack-lm"),
+            OptimizerBackend::Trf => true,
         }
     }
 
     /// Whether the backend honours `lb`/`ub` natively, or has to be wrapped
     /// in [`IntervalMap`] and therefore ends strictly inside the box.
     pub fn bounds_are_native(self) -> bool {
-        matches!(self, OptimizerBackend::BuiltinLm)
+        matches!(self, OptimizerBackend::BuiltinLm | OptimizerBackend::Trf)
     }
 
-    /// The cargo feature that supplies this backend, if any.
-    fn feature(self) -> Option<&'static str> {
+    /// The cargo feature that supplies this backend, if any. `None` for the
+    /// two that are always compiled in.
+    ///
+    /// Public because the Python binding builds its own rebuild hint and a
+    /// second copy of this mapping is exactly the kind of pair that drifts.
+    pub fn feature(self) -> Option<&'static str> {
         match self {
             OptimizerBackend::BuiltinLm => None,
             OptimizerBackend::MinpackLm => Some("opt-minpack-lm"),
+            OptimizerBackend::Trf => None,
         }
     }
 
@@ -119,8 +133,8 @@ impl OptimizerBackend {
 /// The list is the whole enum, not the compiled-in subset — pair it with
 /// [`OptimizerBackend::is_available`] to answer "what can this build run?",
 /// which is the question a caller has before it picks one.
-pub const ALL_BACKENDS: [OptimizerBackend; 2] =
-    [OptimizerBackend::BuiltinLm, OptimizerBackend::MinpackLm];
+pub const ALL_BACKENDS: [OptimizerBackend; 3] =
+    [OptimizerBackend::BuiltinLm, OptimizerBackend::MinpackLm, OptimizerBackend::Trf];
 
 /// The names this build can actually run. `["builtin"]` on a standard build.
 pub fn available_backends() -> Vec<&'static str> {
@@ -320,6 +334,12 @@ where
         OptimizerBackend::BuiltinLm => {
             levenberg_marquardt_with(residuals, jacobian, x0, lb, ub, cfg)
                 .map(|r| OptimizerResult::from_lm(r, backend))
+        },
+        OptimizerBackend::Trf => {
+            crate::smatrix::synthesis::trf::trust_region_reflective(
+                residuals, jacobian, x0, lb, ub, cfg,
+            )
+            .map(|r| OptimizerResult::from_lm(r, backend))
         },
         OptimizerBackend::MinpackLm => {
             #[cfg(feature = "opt-minpack-lm")]

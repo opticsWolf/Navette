@@ -649,7 +649,7 @@ fn normal_equation_step(
 /// No column pivoting: every system this module factors is either J itself
 /// (where a rank-deficient column is handled by the damping) or an augmented
 /// `[R; √λD]` that is full rank by construction.
-fn householder_qr_in_place(
+pub(crate) fn householder_qr_in_place(
     a: &mut [f64],
     b: &mut [f64],
     rows: usize,
@@ -710,7 +710,12 @@ fn householder_qr_in_place(
 
 /// Back-substitute the upper-triangular leading n×n block of a row-major
 /// matrix with row stride `n`.
-fn back_substitute(a: &[f64], b: &[f64], n: usize, out: &mut [f64]) -> Result<(), String> {
+pub(crate) fn back_substitute(
+    a: &[f64],
+    b: &[f64],
+    n: usize,
+    out: &mut [f64],
+) -> Result<(), String> {
     for i in (0..n).rev() {
         let mut s = b[i];
         for j in (i + 1)..n {

@@ -605,6 +605,16 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///   ``opt-minpack-lm`` cargo feature. Unbounded, so it runs on an interior
 ///   reparametrization and its optima are *strictly inside* the box. A
 ///   reference to compare against, not a replacement.
+/// * ``"trf"`` -- trust-region reflective (Branch-Coleman-Li), the reference
+///   method for *bounded* least squares and the one this module's docs have
+///   been naming since the rewrite. Hand-rolled, so always available. Bounds
+///   enter the subproblem instead of clipping its answer, which is where the
+///   built-in's veto+clamp is weakest; it is the same algorithm as
+///   ``scipy.optimize.least_squares(method="trf")`` and is checked against
+///   it. Its iterates stay *strictly* interior, so a thickness lands one ULP
+///   off a bound rather than on it -- the removal sweep compares against
+///   ``clamp_min``, so a film still gets removed, but ``x == 0.0`` will not
+///   hold. ``lambda_*`` and ``damping`` do nothing on this backend.
 ///
 /// Naming a backend the wheel was not built with raises ``ValueError`` with
 /// the rebuild command -- never a silent fall back to a different solver.
@@ -672,10 +682,7 @@ impl PyLmConfig {
                     "`maturin develop --release --features {}`"
                 ),
                 optimizer,
-                match backend {
-                    OptimizerBackend::MinpackLm => "opt-minpack-lm",
-                    OptimizerBackend::BuiltinLm => "",
-                }
+                backend.feature().unwrap_or("")
             )));
         }
         Ok(PyLmConfig {

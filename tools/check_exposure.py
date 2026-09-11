@@ -72,6 +72,10 @@ ALLOWLIST = {
     # traits, so there is nothing to bind. `available_optimizers` is the part
     # a caller actually needs and it is bound.
     "run_optimizer",
+    # Same story one level down: `trust_region_reflective` is the `Trf`
+    # arm of that dispatch, reachable from Python as
+    # `LmConfig(optimizer="trf")`. It takes the same two Rust traits.
+    "trust_region_reflective",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",
