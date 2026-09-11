@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Loom: Weaving the mathematics of light in thin film systems
+Navette: Weaving the mathematics of light in thin film systems
 Copyright (c) 2026 opticsWolf
 
 SPDX-License-Identifier: LGPL-3.0-or-later

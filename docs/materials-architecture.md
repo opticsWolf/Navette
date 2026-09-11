@@ -1,4 +1,13 @@
-# Loom — Rust core + thin Python wrapper: architecture
+# Navette — Rust core + thin Python wrapper: architecture
+
+> **Naming.** The project is **Navette**; *Loom* was its internal name while
+> this page was written, and the page keeps it below. The mapping is
+> mechanical: `loom` → `navette` for the project, `loom-core`/`loom._core` →
+> the `navette` engine crate, `loom-py` → `navette-py` (which builds
+> `navette._navette`). Where a name below belongs to the **numba reference
+> implementation** — `loom_colorengine.py`, `loom_matrix.py`, the `refs/`
+> oracles — it is not drift and is left alone: those files really are called
+> that, and the parity tests import them by name.
 
 ## TL;DR recommendation
 

@@ -1,4 +1,17 @@
-# Loom Matrix — Rust Review, Optimization & Verification
+# Navette S-matrix — Rust Review, Optimization & Verification
+
+> **Naming.** The project is **Navette**; *Loom* was its internal name while
+> this page was written, and the page keeps it below. The mapping is
+> mechanical: `loom` → `navette` for the project, `loom-core`/`loom._core` →
+> the `navette` engine crate, `loom-py` → `navette-py` (which builds
+> `navette._navette`). Where a name below belongs to the **numba reference
+> implementation** — `loom_colorengine.py`, `loom_matrix.py`, the `refs/`
+> oracles — it is not drift and is left alone: those files really are called
+> that, and the parity tests import them by name.
+
+The subject is the engine now at `rust/navette/src/smatrix/`; *Loom Matrix* was
+its name at review time. `loom_matrix.py` and `test_loom.py` below are the
+numba reference and its harness, and keep their names.
 
 ## 1. Summary
 

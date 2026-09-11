@@ -34,6 +34,30 @@ NormalizationMode = Literal["auto", "linear", "log", "phase", "complex"]
 class SpectralTarget:
     """One constraint curve: value vs wavelength at fixed angle.
 
+    ``spectral`` + ``polarization`` name the curve. The vocabulary is::
+
+        spectral:      R | T | A        reflectance / transmittance / absorptance
+                       RB | TB | AB     the same, from the BACK side
+                       PDts | PDtp      transmitted differential phase
+        polarization:  s | p | u        u = unpolarized (the s/p mean)
+
+    giving ``Rs``…``Au``, ``RBs``…``ABu``, and the two differential labels.
+    Any other pair raises at construction. ``A`` is derived as 1 − R − T on
+    the shared grid, so a missing companion curve fails the whole key group.
+
+    ``PDts``/``PDtp`` are the exception to the grid above: the label already
+    encodes its polarization (``PDts`` is s, ``PDtp`` is p — a mismatch
+    raises), it forces ``phase=True`` and raw-radian normalization, and it
+    demands the coating-INDUCED phase, i.e. ``arg(t)`` minus the equivalent
+    incidence-medium slab. **Transmission only.** The machinery carries a
+    ``passes`` factor and ``reference_phase`` handles ``passes=2`` for a
+    reflection round trip, but no reflection differential label exists, so
+    there is no ``PDrs``/``PDrp`` to reach for. Absolute-phase targets on
+    ``R``/``T`` with ``phase=True`` are unaffected and stay available.
+    See ``docs/spectralweave-target-kinds.md`` for the sign convention
+    (the reference is ``+kD``, the conjugate of Macleod) and the needle
+    ``gain_shift_phi`` bookkeeping.
+
     Kinds ``e``/``a``/``b`` are exact/above/below; ``r`` is a hard range box
     (zero merit inside ±``band``, quadratic exceedance outside) and ``c`` a
     soft center box (reduced ``(d/band)^2`` inside, exceedance + 1 outside).

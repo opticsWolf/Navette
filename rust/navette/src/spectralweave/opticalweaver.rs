@@ -7,6 +7,26 @@
 //! input curves across frames (with an LRU-cached distribution plan) and
 //! re-assembles continuous curves on demand. All state is `Arc` + interior
 //! mutability, so weavers are cheap to clone and share across threads.
+//!
+//! # Concurrency: what the locking does and does not promise
+//!
+//! Sharing a weaver across threads is safe and tested (8 threads, 320 mixed
+//! `unweave` / `get_weaved` / `invalidate_cache` operations, no exceptions and
+//! no torn reads; LRU plan eviction under deliberate thrash rebuilds
+//! bit-exactly). The guarantee has one edge worth naming:
+//!
+//! * **Locking is per frame, not per key.** A long curve is written as one
+//!   fragment per frame it spans. Each fragment write takes that frame's lock,
+//!   so a reader never sees a half-written fragment -- but the set of writes
+//!   making up one `unweave` is *not* one transaction.
+//! * **Two threads writing the SAME key concurrently therefore interleave**,
+//!   last-writer-wins per fragment. The reassembled curve can be thread A on
+//!   the first frames and thread B on the rest: a curve nobody wrote. No lock
+//!   is violated and nothing reports it.
+//! * Distinct keys are fully independent, which is the intended usage (one key
+//!   per simulation step). If two threads genuinely must target one key,
+//!   serialise them outside the weaver -- there is no internal key lock to
+//!   reach for.
 
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};

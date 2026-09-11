@@ -16,6 +16,22 @@
 //!
 //! The plan, grid size and pad length are computed once behind a `OnceLock`,
 //! mirroring the Python module-level precompute.
+//!
+//! # Modelling limits, both silent
+//!
+//! * **The grid stops at 80 eV** ([`GRID_MAX`], from [`GRID_MIN`] = 0.01 eV).
+//!   Beyond it the interpolation **clamps** rather than extrapolates, so a UBF
+//!   or Cody-Lorentz model queried in the EUV or X-ray range returns the 80 eV
+//!   value with no warning. 80 eV is 15.5 nm; every optical and near-UV use of
+//!   this code sits far inside the grid, which is exactly why the ceiling is
+//!   easy to forget.
+//! * **Near-resonance accuracy is about 1 %**, and refining the quadrature does
+//!   not close it. Measured 0.07-1.1 % against an analytic Lorentz KK pair
+//!   (`validation/review/kk_conv.py`, `kk_validate.py`), worst at a sharp
+//!   resonance. That is the price of taking eps_1 from the FFT-KK on this grid
+//!   for consistency across KK models, rather than from the closed-form
+//!   Jellison-Modine expression, which is deliberately not implemented (see
+//!   [`crate::materials::tauc_lorentz`]). A documented tradeoff, not an error.
 
 use std::sync::{Arc, OnceLock};
 

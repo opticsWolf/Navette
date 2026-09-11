@@ -1,7 +1,19 @@
-# loom_color
+# navette::color — design notes
 
-Rust rewrite (parity port) of the **Loom Unified Color Engine**
+Rust rewrite (parity port) of the **Unified Color Engine**
 (`loom_colorengine.py`, "Gold Master", LGPL-3.0, opticsWolf).
+
+> **Naming.** The project is **Navette**; *Loom* was its internal name while
+> this page was written, and the page keeps it below. The mapping is
+> mechanical: `loom` → `navette` for the project, `loom-core`/`loom._core` →
+> the `navette` engine crate, `loom-py` → `navette-py` (which builds
+> `navette._navette`). Where a name below belongs to the **numba reference
+> implementation** — `loom_colorengine.py`, `loom_matrix.py`, the `refs/`
+> oracles — it is not drift and is left alone: those files really are called
+> that, and the parity tests import them by name.
+
+The module shipped as `navette::color` (`rust/navette/src/color/`), bound as
+`navette._color`; `loom_color` was the working name on this page.
 
 ## Module map (renumbered `func_01`–`func_15`)
 | Module   | Conversion / metric                         |

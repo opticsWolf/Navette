@@ -76,7 +76,7 @@ coverage is thin.
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
 | ~~R6.2~~ | small physics nits batch — **DONE (0.6.17)** | P3 | DOP_R clamped (fingerprint moved), τ̂ docstring fixed, Sellmeier domain guard added; the `+0.0` turned out to be load-bearing and stays (see corrections) | S | S | §3.3, §19.3 |
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
-| R6.4 | docs/hygiene batch — **items 1,2,3,6 DONE (0.6.18)**; 4,5,7 open | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, both stale docs closed | S | M | §6.3, §24.2, §18.4 |
+| ~~R6.4~~ | ~~docs/hygiene batch~~ — **DONE** (items 1,2,3,6 in 0.6.18; 4,5,7 in 0.6.19) | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, four stale docs closed, `extrap='error'` now errors | S | M | §6.3, §24.2, §18.4 |
 | R6.5 | `.pyi` stubs for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
 | R6.6 | Rename `color/func_NN.rs` → descriptive module names | P3 | readability; the mod.rs doc comment is currently the only decoder ring | S (internal paths only) | S–M | §11 |
 
@@ -1928,7 +1928,7 @@ Only with benches before/after (per-call overhead is the risk); abort if
 
 **Effort.** L.
 
-### R6.4 Docs & hygiene batch — items 1, 2, 3, 6 DONE (0.6.18)
+### R6.4 Docs & hygiene batch — DONE (0.6.18 + 0.6.19)
 
 From §6.3, §18.4, §24.2 (each small; group into 2–3 commits):
 1. `validation/README.md` — refresh the inventory (post-R2.4 counts,
@@ -2003,6 +2003,58 @@ decision, so they ride a separate increment.
   1 skipped; ten review harnesses exit 0; fingerprint unchanged at
   `30d96909…3c6c`; `check_exposure` 217/102; `check_cie_sync` OK; `bench_refold`
   ALL OK.
+
+**CORRECTIONS / NOTES (0.6.19) — items 4, 5 and 7, which close R6.4.**
+
+* **Item 5 contained a bug, not a doc line. The review's description of it was
+  also wrong.** It reads "`extrap='error'` NaN footgun … returns NaN + an
+  internal flag". There is no flag. `evaluate` returned an array of NaN and
+  nothing else, so a caller who did not test `isnan` got a plausible result
+  with holes in it. Taking the plan's own preference ("prefer raising"),
+  `UniInterpolator::evaluate` is now `-> Result<Array2<f64>, String>` and the
+  binding raises `ValueError`. Not the promised one-line fix: making it
+  fallible touches both callers. It is still the right shape — a parallel
+  `evaluate_checked` would have left the silent-NaN path reachable from Rust,
+  and there are only two callers to update. The refusal is one pass up front,
+  so the per-point kernels keep their NaN branch and stay branch-free.
+* **New finding while testing it: `"linear"` extrapolation is two rules, not
+  one.** Hermite methods leave along the endpoint derivative, secant methods
+  along the end chord — 52 vs 46 at `x = 4` on `y = x³` knots 0..3 — and
+  scipy's `PchipInterpolator`, which continues the end cubic, matches neither.
+  The module doc said only "extends the end secant", true of three of the five
+  methods. Documented and pinned by a test. (§10 says the same — "extends
+  linearly from the end secants" — so if its 11× divergence figure was measured
+  on `pchip`, the line it diverged from was not the one named. The harness for
+  that measurement is not in the tree, so which method it used cannot be
+  recovered; the conclusion is unaffected either way, since all three rules
+  disagree.)
+* **Item 4 (naming) is four places, not a sweep.** The rest of the "Loom" hits
+  name the numba reference implementation — `loom_colorengine.py`,
+  `loom_matrix.py`, `loom_unispline.py`, `validation/**/refs/` — which the
+  parity tests import by name. The plan allowed a full rename "only if it stays
+  a sed"; it does not, so the three plan-era docs are retitled with a mapping
+  note and the four `config/*.py` headers corrected, and the reference files
+  keep their names. Also fixed: `materials-implementation.md` pointed at
+  `LOOM_RUST_ARCHITECTURE.md`, which has never existed in this repository (the
+  page it meant was renamed from `ARCHITECTURE.md` in `c68914a`).
+* **Item 7: there was no performance table to re-audit.** The README's
+  "performance" section was a qualitative feature table — adjectives, no
+  numbers. Added the §5.2 release measurements with the bench script named
+  beside each row, updated where R5.1/R5.2/R5.3 moved them (the rigorous
+  request is 1.1–1.8× the numba kernel now, not the 0.4–0.5× of 0.6.13), and
+  kept the two unflattering caveats visible. The build profile was already
+  stamped in three places, so that half of the item was already done.
+* **Item 5's remaining lines** — Bradford row-vector convention, the KK 80 eV
+  clamp plus the ~1 % near-resonance ε₁ residual, the colour-vs-pointwise
+  coverage asymmetry, weaver same-key write semantics, `seed=None`, and the
+  `SpectralTarget` label vocabulary including `PDts`/`PDtp` and its
+  transmission-only scope — are all in place. The coverage item is worth the
+  emphasis it got: the two subsystems answer a grid mismatch in opposite ways,
+  both correctly.
+* **Verification.** cargo test 454 workspace / 459 `opt-minpack-lm` / 463
+  `opt-argmin` / 468 both; clippy clean under `-D warnings`; pytest 691 passed,
+  1 skipped; ten review harnesses exit 0; `bench_refold` ALL OK; `check_exposure`
+  217/102; `check_cie_sync` OK; fingerprint unchanged at `30d96909…3c6c`.
 
 ### R6.5 `.pyi` stubs for `_smatrix` / `_spectralweave`
 

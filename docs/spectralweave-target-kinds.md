@@ -294,6 +294,17 @@ else must be an explicit table (no registry to drift).
   (deliberate: narrow-window twins use this on purpose). A typo'd table
   range therefore yields a finite, plausible, wrong merit; when a demand
   looks dead, check table-vs-sim coverage first.
+  **This is the opposite of the pointwise rule, and the asymmetry is the
+  porter trap.** A pointwise `SpectralTarget` whose grid does not line up
+  with the sim grid is *interpolated* onto it (aligned fast path, else a
+  two-pointer linear interpolation), so every target point still scores; a
+  colour demand whose tables do not line up is *narrowed*, so the points
+  outside the overlap silently score nothing. Same mismatch, two different
+  answers. Both are right for their own maths — an interpolated illuminant
+  or CMF table would quietly change the colorimetry, which is why the
+  colour path refuses to guess — but code ported from the pointwise side on
+  the assumption that "the grids get sorted out" gets a narrower integral
+  and no warning. Empty overlap is the one case that errors.
 - **Needle fold (Option B):** each demand deposits its analytic gradient
   g(point) = dF/dcurve (weight, residual, and the U-curve half included)
   into the `grad_r`/`grad_t` buckets — not a (target, weight) pair. `Ru`

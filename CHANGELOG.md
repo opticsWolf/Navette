@@ -3,6 +3,105 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.19] — The doc-line batch, and the one line in it that was a bug (R6.4, part 2)
+
+R6.4's remaining three items. Six of the seven doc lines were exactly that —
+lines. The seventh, `extrap='error'`, turned out to describe behaviour nobody
+would want, so it is a code change.
+
+### Fixed
+
+- **`extrap="error"` now errors.** It returned an array of NaN. The review
+  reported "NaN plus an internal flag"; there is no flag — the NaN was the
+  whole signal, and a caller who did not check `isnan` got a plausible-looking
+  result with holes in it. `UniInterpolator::evaluate` is now
+  `-> Result<Array2<f64>, String>`, refusing once up front with the offending
+  index, its value, and the knot range; the binding raises `ValueError`.
+
+  Made fallible rather than added as a parallel `evaluate_checked` because
+  there are exactly two callers — the binding and `WeaverMaterialProvider` —
+  so the honest signature is cheap, and it leaves no silent-NaN path for Rust
+  callers either. The check is one pass before evaluating, not per point, so
+  the inner kernels stay branch-free; the other two extrapolation modes cannot
+  fail and pay nothing. Out-of-range NaN still exists *inside* the per-point
+  kernel, which has nowhere to report to, and can no longer reach a caller.
+
+### Documented
+
+- **`"linear"` extrapolation is two different rules, and neither is scipy's.**
+  Found while writing the test for the above. Hermite methods (`pchip`,
+  `makima`) leave the knot range along the **endpoint derivative** they already
+  computed — C¹ with the curve; secant methods (`linear`, `sprague`,
+  `floater_hormann`) leave along the **end chord**. On `y = x³` sampled at
+  0..3 that is 52 versus 46 at `x = 4`. scipy's `PchipInterpolator` continues
+  the end *cubic* and matches neither. All three are defensible; assuming they
+  agree is the trap. Pinned by `linear_extrapolation_means_two_different_lines`.
+  Also recorded that derivatives are analytic only for `pchip` — the rest use a
+  central difference with `h = 1e-6 · span`.
+- **Bradford is row-vector**: `adapted = xyz @ M`, the transpose of the
+  textbook column form. Writing the textbook `M @ xyz` in numpy does not raise;
+  it returns a plausible, wrong colour.
+- **The KK grid stops at 80 eV and clamps past it** — no extrapolation, no
+  warning, so a UBF or Cody–Lorentz model queried in the EUV returns the 80 eV
+  value. Also: near-resonance ε₁ accuracy is ~1 % (measured 0.07–1.1 % against
+  an analytic Lorentz KK pair) and refining the quadrature does not close it,
+  because ε₁ is deliberately the FFT-KK result on this grid rather than the
+  closed-form Jellison–Modine expression.
+- **The colour coverage rule is the opposite of the pointwise one.** A
+  `SpectralTarget` whose grid does not line up with the sim grid is
+  *interpolated* onto it, so every point still scores; a colour demand whose
+  tables do not line up is *narrowed*, so points outside the overlap silently
+  score nothing. Both are right for their own mathematics — interpolating an
+  illuminant or CMF table would quietly change the colorimetry — but code
+  ported from the pointwise side on the assumption that the grids get sorted
+  out gets a narrower integral and no warning. Empty overlap still errors.
+- **Weaver concurrency: per-frame locking is not per-key transactionality.**
+  Two threads writing the *same* key interleave, last-writer-wins per fragment,
+  so the reassembled curve can be thread A on the first frames and thread B on
+  the rest — a curve nobody wrote. Distinct keys are fully independent, which is
+  the intended one-key-per-step usage. No internal key lock exists to reach for.
+- **`seed=None` is deliberately asymmetric**: errors on takes the thread RNG
+  (the caller asked for randomness and did not pin it, so the run does not
+  pretend to be reproducible); errors off takes a seeded(0) RNG nothing draws
+  from.
+- **`SpectralTarget` now carries the label vocabulary** — `R`/`T`/`A`,
+  `RB`/`TB`/`AB` crossed with `s`/`p`/`u`, plus the differential-phase labels
+  `PDts`/`PDtp`. Those two encode their own polarization, force raw-radian
+  phase normalization, and are **transmission only**: `reference_phase`
+  supports `passes = 2` for a reflection round trip but no reflection
+  differential label exists, so there is no `PDrs`/`PDrp` to reach for.
+
+### Changed
+
+- **Naming drift resolved in favour of Navette**, in the four places it was
+  real: `docs/materials-architecture.md`, `docs/plans/color/README.md` and
+  `docs/plans/smatrix/REVIEW.md` are retitled and carry a mapping note, and the
+  `src/navette/config/*.py` headers no longer say "Loom". Every remaining
+  mention of Loom names the **numba reference implementation** —
+  `loom_colorengine.py`, `loom_matrix.py`, `loom_unispline.py`, the `refs/`
+  oracles — which really are called that and which the parity tests import by
+  name. Renaming those would have broken imports to fix a cosmetic complaint.
+  Also fixed a pointer to `LOOM_RUST_ARCHITECTURE.md`, a filename that has
+  never existed in this repository.
+- **The README has measured numbers instead of adjectives.** A table of the
+  §5.2 release-build results with the bench script beside each row, and the two
+  caveats kept visible: small grids are dispatch-bound and still behind the
+  numba kernel, and `bench_refold` never exercises the needle *insertion* path.
+
+### Added
+
+- Five `UniInterpolator` tests in a module that had none of its own: in-range
+  queries never fail in any mode, `error` mode errors where it used to return
+  NaN, the other two modes still extend and clamp, an empty query is not an
+  error even in `error` mode, and the two-lines extrapolation finding above.
+
+### Known
+
+- Bit-identity held: the differential fingerprint is unchanged at
+  `30d96909…3c6c`, all ten review harnesses exit 0, both parity oracles pass.
+- `extrap="error"` is a behaviour change for anyone who was relying on the NaN
+  return. No caller in this repository was.
+
 ## [0.6.18] — Hygiene: the archive, the headers, and two docs that lied (R6.4, part 1)
 
 No behaviour change; the solve fingerprint is unmoved at `30d96909…3c6c`. Four

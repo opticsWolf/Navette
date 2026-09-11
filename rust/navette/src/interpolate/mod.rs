@@ -12,6 +12,29 @@
 //!/`"fh"` (barycentric rational, degree `d`), and `"linear"`.
 //! `deriv` selects value (0) or first-derivative output where the method
 //! supports it. Out-of-range queries follow [`ExtrapMode`].
+//!
+//! # Two things a scipy user needs to know
+//!
+//! **Extrapolation is not scipy's, and it is not one rule either.** `"linear"`
+//! leaves the knot range along a straight line in every method, but which
+//! straight line depends on the method:
+//!
+//! * `pchip` and `makima` use the **endpoint derivative** the method already
+//!   computed, so the extension is C¹ with the curve. For `y = x³` sampled at
+//!   0..3 that is slope 25 at the right end, giving 52 at `x = 4`.
+//! * `linear`, `sprague` and `floater_hormann` use the **end secant** through
+//!   the last two knots — 19 on the same data, giving 46 at `x = 4`.
+//!
+//! scipy's `PchipInterpolator` does neither: it continues the end *cubic*, so
+//! it curves away from both. The divergence is large immediately (roughly 11×
+//! relative on a random walk just outside the range) and grows. A workflow
+//! ported from scipy that queries beyond its data will not reproduce, and the
+//! interpolator is not the thing that is wrong.
+//!
+//! **Derivatives are analytic only for pchip.** `makima`, `floater_hormann`
+//! and `sprague` differentiate by central difference with `h = 1e-6 · span`,
+//! which is ample for GD-style post-processing and is not the place to look
+//! for the last few digits.
 
 use ndarray017::{Array1, Array2};
 use rayon::prelude::*;
@@ -147,7 +170,43 @@ impl UniInterpolator {
     /// the kernel take the faster sorted path). Single-signal grids above
     /// `PAR_TARGET_THRESHOLD` points split across threads; multi-signal
     /// batches parallelise over rows.
-    pub fn evaluate(&self, tgt_x: &[f64], deriv: usize, sorted_hint: Option<bool>) -> Array2<f64> {
+    ///
+    /// Returns `Err` only under `extrap = "error"`, and only when a query point
+    /// is outside the knot range — which is the entire point of that mode. The
+    /// other two modes cannot fail. Checked once before evaluating rather than
+    /// per point, so the inner kernels stay branch-free on the common path.
+    pub fn evaluate(
+        &self,
+        tgt_x: &[f64],
+        deriv: usize,
+        sorted_hint: Option<bool>,
+    ) -> Result<Array2<f64>, String> {
+        if self.extrap == ExtrapMode::Error {
+            self.refuse_out_of_range(tgt_x)?;
+        }
+        Ok(self.evaluate_inner(tgt_x, deriv, sorted_hint))
+    }
+
+    /// First query point outside `[x[0], x[n-1]]`, as an error naming it.
+    fn refuse_out_of_range(&self, tgt_x: &[f64]) -> Result<(), String> {
+        let lo = self.x[0];
+        let hi = self.x[self.x.len() - 1];
+        for (i, &xi) in tgt_x.iter().enumerate() {
+            if xi < lo || xi > hi || xi.is_nan() {
+                return Err(format!(
+                    "extrap='error': target point {i} is {xi}, outside the knot range                      [{lo}, {hi}]. Use extrap='linear' or 'clamp' to extend past the                      data, or restrict the query grid."
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn evaluate_inner(
+        &self,
+        tgt_x: &[f64],
+        deriv: usize,
+        sorted_hint: Option<bool>,
+    ) -> Array2<f64> {
         let n_tgt = tgt_x.len();
         let n_signals = self.y.nrows();
         let mut out = Array2::<f64>::zeros((n_signals, n_tgt));
@@ -301,7 +360,11 @@ fn is_sorted_slice(data: &[f64]) -> bool {
 // =============================================================================
 
 #[inline]
-/// Out-of-range value under `extrap`: linear extension, clamp, or NaN+flag for `Error`.
+/// Out-of-range value under `extrap`: linear extension, clamp, or NaN.
+///
+/// `Error` produces NaN *here* because this is a per-point inline kernel with
+/// nowhere to report to; the refusal happens once, up front, in
+/// [`UniInterpolator::evaluate`]. Nothing reaches a caller with this NaN in it.
 fn extrap_value(
     xi: f64,
     x: &[f64],
@@ -846,3 +909,73 @@ fn calc_fh_weights(x: &Array1<f64>, d: usize) -> Array1<f64> {
 // -------------------------------------------------------------------------
 // Module initialisation
 // -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(extrap: &str) -> UniInterpolator {
+        // y = 2x on [0, 3], so every mode's answer is easy to state exactly.
+        let x = Array1::from_vec(vec![0.0, 1.0, 2.0, 3.0]);
+        let y = Array2::from_shape_vec((1, 4), vec![0.0, 2.0, 4.0, 6.0]).unwrap();
+        UniInterpolator::new(x, y, false, "linear", false, 3, extrap).unwrap()
+    }
+
+    #[test]
+    fn in_range_queries_never_fail_in_any_mode() {
+        for m in ["linear", "clamp", "error"] {
+            let got = line(m).evaluate(&[0.0, 1.5, 3.0], 0, None).unwrap();
+            assert_eq!(got.row(0).to_vec(), vec![0.0, 3.0, 6.0], "mode {m}");
+        }
+    }
+
+    #[test]
+    fn error_mode_errors_instead_of_returning_nan() {
+        // The whole finding (review §10): "error" mode used to hand back a
+        // quiet NaN, which is the one outcome a caller who asked for "error"
+        // has said they do not want.
+        let e = line("error").evaluate(&[1.0, 4.0], 0, None).unwrap_err();
+        assert!(e.contains("extrap='error'"), "{e}");
+        assert!(e.contains("target point 1"), "the offender must be named: {e}");
+        assert!(e.contains("[0, 3]"), "the valid range must be named: {e}");
+        // Below the range too, not just above.
+        assert!(line("error").evaluate(&[-0.5], 0, None).is_err());
+        // And NaN is out of range by definition -- it cannot be interpolated.
+        assert!(line("error").evaluate(&[f64::NAN], 0, None).is_err());
+    }
+
+    #[test]
+    fn the_other_two_modes_still_extend_and_clamp() {
+        let lin = line("linear").evaluate(&[-1.0, 4.0], 0, None).unwrap();
+        assert_eq!(lin.row(0).to_vec(), vec![-2.0, 8.0]);
+        let cl = line("clamp").evaluate(&[-1.0, 4.0], 0, None).unwrap();
+        assert_eq!(cl.row(0).to_vec(), vec![0.0, 6.0]);
+    }
+
+    #[test]
+    fn an_empty_query_is_not_an_error_even_in_error_mode() {
+        let got = line("error").evaluate(&[], 0, None).unwrap();
+        assert_eq!(got.shape(), &[1, 0]);
+    }
+
+    #[test]
+    fn linear_extrapolation_means_two_different_lines() {
+        // Pins the module doc note. Knots on y = x^3 over [0, 3]:
+        //   * Hermite methods leave along the endpoint derivative pchip
+        //     computed (25), so x = 4 gives 27 + 25 = 52 -- C1 with the curve.
+        //   * Secant methods leave along the last chord, (27 - 8)/1 = 19, so
+        //     x = 4 gives 46.
+        // scipy's PchipInterpolator continues the end *cubic* and agrees with
+        // neither. None of the three is wrong; the trap is assuming they match.
+        let x = Array1::from_vec(vec![0.0, 1.0, 2.0, 3.0]);
+        let y = Array2::from_shape_vec((1, 4), vec![0.0, 1.0, 8.0, 27.0]).unwrap();
+        let mk = |m: &str| {
+            UniInterpolator::new(x.clone(), y.clone(), false, m, false, 3, "linear")
+                .unwrap()
+                .evaluate(&[4.0], 0, None)
+                .unwrap()[[0, 0]]
+        };
+        assert!((mk("pchip") - 52.0).abs() < 1e-12, "pchip: {}", mk("pchip"));
+        assert!((mk("linear") - 46.0).abs() < 1e-12, "linear: {}", mk("linear"));
+    }
+}

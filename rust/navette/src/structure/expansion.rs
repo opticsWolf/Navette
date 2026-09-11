@@ -128,6 +128,14 @@ pub fn expand(
   }
 
   // ---- Phase 2: emission in traversal order (RNG draws here). ----
+  //
+  // `seed = None` is deliberately asymmetric, and the asymmetry is the honest
+  // reading of the request rather than an oversight:
+  //   * errors ON  -> the thread RNG. The caller asked for randomness and did
+  //     not pin it, so the run is genuinely not reproducible and does not
+  //     pretend to be by silently seeding itself with a constant.
+  //   * errors OFF -> a seeded(0) RNG that nothing ever draws from. Cheaper
+  //     than making the field an Option, and it cannot reach the output.
   let mut rng = match opts.seed {
     Some(s) => AnyRng::Seeded(Box::new(StdRng::seed_from_u64(s))),
     None if opts.apply_errors => AnyRng::Thread(rand::rng()),

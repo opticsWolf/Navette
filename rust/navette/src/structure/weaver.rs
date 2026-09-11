@@ -193,7 +193,13 @@ impl<B: WovenBackend> WeaverProvider<B> {
       "linear",
     )
     .map_err(|e| format!("WeaverMaterialProvider: resample {key_repr}: {e}"))?;
-    Ok(Some(spline.evaluate(&self.target, 0, None).row(0).to_vec()))
+    // Built with extrap="linear" just above, so this cannot fail; mapped
+    // rather than unwrapped so a future change of that literal is a compile
+    // error's worth of honesty instead of a panic.
+    let vals = spline
+      .evaluate(&self.target, 0, None)
+      .map_err(|e| format!("WeaverMaterialProvider: resample {key_repr}: {e}"))?;
+    Ok(Some(vals.row(0).to_vec()))
   }
 }
 

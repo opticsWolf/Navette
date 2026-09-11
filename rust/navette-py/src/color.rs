@@ -438,8 +438,13 @@ fn adapt<'py>(
     Ok(out_arr)
 }
 
-/// Row-vector Bradford matrix: `adapted = white @ M`. Returns a (3, 3) array.
-/// 3x3 Bradford adaptation matrix between two white points (row-vector convention).
+/// 3x3 Bradford adaptation matrix between two white points. Returns (3, 3).
+///
+/// **Row-vector convention**, i.e. `adapted = xyz @ M`. This is the transpose
+/// of the textbook column-convention Bradford matrix, and the engine applies it
+/// that way throughout. Lifting it into numpy and writing the textbook
+/// `M @ xyz` does not raise -- it returns a plausible, wrong colour. Use
+/// `xyz @ M`, or transpose once on the way out.
 #[pyfunction]
 fn calc_transform_matrix<'py>(py: Python<'py>, src_white: [f64; 3], dst_white: [f64; 3]) -> Bound<'py, PyArray2<f64>> {
     let m = navette::color::func_08::calc_transform_matrix(&src_white, &dst_white);

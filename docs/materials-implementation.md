@@ -1,7 +1,8 @@
 # Navette materials — Rust port (implementation status)
 
 This is the working implementation of the architecture in
-`LOOM_RUST_ARCHITECTURE.md`. The optical-dispersion numerics of `navette`
+`docs/materials-architecture.md` (`LOOM_RUST_ARCHITECTURE.md` in earlier
+drafts). The optical-dispersion numerics of `navette`
 (formerly *loom*) now live in a pure-Rust core, exposed to Python through a
 thin PyO3 binding, with the original class API preserved.
 

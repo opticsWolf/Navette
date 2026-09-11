@@ -83,7 +83,11 @@ impl UniInterpolator {
         let tgt = target_x
             .as_slice()
             .map_err(|_| PyValueError::new_err("target_x must be contiguous"))?;
-        let out = py.detach(|| self.inner.evaluate(tgt, deriv, sorted_hint));
+        // extrap="error" now raises instead of returning a quiet array of NaN
+        // (R6.4 / review §10).
+        let out = py
+            .detach(|| self.inner.evaluate(tgt, deriv, sorted_hint))
+            .map_err(PyValueError::new_err)?;
         if self.inner.is_batch() {
             Ok(out.into_pyarray(py).into_any())
         } else {

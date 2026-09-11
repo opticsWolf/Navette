@@ -17,6 +17,28 @@ As a Principal Performance Engineer, you need tools that scale. Navette is built
 - **Memory Efficiency**: Collapses multi-layer stacks into a compact global S-matrix to minimize cache misses.
     
 
+**Measured, not claimed.** All numbers below are `--release` builds on a
+32-core Windows box, taken by the scripts named beside them under
+`validation/benches/`; each of those scripts refuses to run against a `debug`
+build (see the profile note under *Getting started*). "vs numba" compares
+against the numba reference implementation this engine replaced.
+
+| What | Measured | Script |
+|---|---|---|
+| Full observable mask, 40 lambda x 3 theta, 5 layers (complex amplitudes + dispersion) | **0.164 ms** median -- ~1.4 us per point for *every* channel | `bench_backside_speed` |
+| Rigorous 12-channel request, 6 layers, 20 000 / 60 000 points | **1.68 ms / 4.02 ms**, i.e. **1.1-1.8x the numba kernel** | `bench_core_engine_scaling.py` |
+| Photometric 4-channel request, same grid sizes | **1.50 ms / 3.70 ms** | `bench_core_engine_scaling.py` |
+| pchip interpolation, 1 M points | **1.22 ms** (1.2 ns/pt) vs 1.59 ms numba; accuracy identical (~1e-14 vs analytic) on both sides | `1dinterpol_test_bench` |
+| dE76 / dE94 / CMC / DIN99 / dE2000 batches | **23-36x faster** than the reference, at exact parity with `colour-science` including black/white/near-black rows | `bench_validate_color` |
+| Weaver `set_data` / `get_weaved` / `unweave_cached` | **1.5-7.8x** the Python reference across small and mid grids | `navette_spectral_bench` |
+| Batch `unweave_collection` | **1.15-2.29x** faster than before R5.1; still the one path that can trail the reference at extreme key counts | `navette_spectral_bench` |
+| One LM thickness optimize (synthesis), with needle re-fold | **2.1 ms**, re-fold **9.1 %** overhead | `bench_refold` |
+| Structure grid assert | **0.9 us** | `bench_grid_assert` |
+
+Two caveats kept deliberately visible: small grids (under ~2 000 points) are
+dispatch-bound and still behind the numba kernel, and `bench_refold` does not
+exercise the needle *insertion* path, which is the expensive part of synthesis.
+
 ### 3. Partial Coherence Support
 
 Real-world systems often involve thick substrates (like a 1mm glass slide) where phase information is lost. Navette features a **Hybrid Coherence Engine**:
@@ -144,7 +166,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.18-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.19-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends
