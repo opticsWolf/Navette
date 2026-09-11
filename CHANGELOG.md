@@ -3,6 +3,89 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.7] — The LM stops squaring its own condition number (R4.4b)
+
+The bounded Levenberg-Marquardt behind every thickness optimization solved the
+**normal equations** — `(JᵀJ + λ·diag(JᵀJ))δ = −Jᵀr` — which squares the
+condition number of `J`. Thin-film stacks with correlated layers are exactly
+where `JᵀJ` goes singular, and the λ-floor was what kept bailing the solve out
+(review §3.6). The damping semantics are unchanged; how the step is obtained
+is not.
+
+Work item A of R4.4. Backend selection and the optional argmin-ecosystem
+solvers (R4.4c) are a separate item; the built-in stays the only backend.
+
+### Changed
+
+- **The damped step is solved by QR.** The step is now the least-squares
+  solution of the augmented system `[J; √λ·D] δ ≈ [−r; 0]`, whose condition
+  number is the square root of the normal-equation matrix's. It is the *same*
+  step — `RᵀR = JᵀJ` exactly — obtained from the square roots. Following
+  MINPACK's `qrsolv` structure, `J` is factored once per iteration (m·n²) and
+  each λ trial then costs a 2n×n QR (n³), so the per-iteration work does not
+  grow; building `JᵀJ` is gone entirely, since only its diagonal was ever
+  needed. Unpivoted Householder: the damped system is full rank for every
+  λ > 0 with a floored `D`, so pivoting would add rank diagnostics, not
+  solvability. The normal-equation solve survives as the fallback when the
+  factorization degenerates, and as the oracle the QR is cross-checked
+  against.
+- **Damping is Nielsen's gain ratio**, not a fixed ×5 / ÷3 ladder: ρ = actual
+  over predicted reduction; on acceptance λ ← λ·max(⅓, 1−(2ρ−1)³) and ν ← 2,
+  on rejection λ ← λ·ν and ν ← 2ν. The old ladder is kept as
+  `LmDamping::Fixed` (`damping="fixed"` from Python) so the two can be
+  compared on the same problem.
+- **The predicted reduction is computed for the step actually taken.** The
+  bound veto and clamp rewrite δ *after* it is solved. Scoring it with the
+  full LM step's prediction overstates what the model promised whenever a
+  bound is active, so ρ comes out too small — over-damping, and premature
+  ftol exits right at the boundary. This is the one place a naive MINPACK port
+  goes wrong, and it is pinned by a test that fails with ρ = 0.049 instead of
+  1.0 on an exactly-linear clamped problem.
+- **ftol needs both reductions** (MINPACK semantics): actual *and* predicted
+  relative reduction below `ftol`. A step clipped by a bound can deliver very
+  little while the model still sees plenty of room — small progress is not the
+  same fact as no progress left.
+- **gtol gained the scale-invariant form**, `cos∠(J·e_j, r) ≤ gtol`, alongside
+  the existing ‖Jᵀr‖∞ test (`gtol_scale_invariant`, default on;
+  `gtol_scale_invariant=False` from Python restores the old behaviour alone).
+  ‖Jᵀr‖∞ answers a different question after a parameter is rescaled — nm
+  versus µm — and the cosine answers the same one. They are different notions
+  of stationarity and can exit at different points on flat valleys.
+
+### Added
+
+- **`LmResult.gain_ratio`** — ρ of the last accepted step, against the
+  prediction for the step actually taken. NaN when nothing was accepted. A
+  diagnostic, not a control: it tells a synthesis stalling at its bounds apart
+  from one that is finished.
+- **`validation/review/lm_check.py`** — the scipy parity §18.2 says the plan
+  docs have been claiming and nobody had reproduced. Runs
+  `SmatrixContext.optimize_thicknesses` and
+  `scipy.optimize.least_squares(method="trf")` over the *same* residual system
+  and bounds, plus the cargo tests' pinned optima recomputed by scipy.
+  `validation/smoke/test_lm_parity.py` is the subset CI runs.
+- **Fourteen cargo tests** in `thick_opt.rs`, including the two the plan names
+  as the guards that make the port trustworthy: the QR-vs-normal-equations
+  step cross-check (rel ≤ 1e-8 where both are valid, and a Vandermonde case
+  where the QR is measurably better), and the clipped-step prediction.
+
+### Notes
+
+- Two corrections to R4.4d, both found by running it:
+  - **Cost parity from a far start is not a well-posed criterion.**
+    Reflectance against thickness is oscillatory, so two local solvers started
+    far from an optimum legitimately land in different basins. The harness
+    compares them where the basin is unambiguous, and asserts the basin-free
+    properties (improvement, stationarity) on the far starts.
+  - **The QR's advantage is conditional, and the harness says so.** At the λ
+    the solver starts from, Marquardt damping regularizes `JᵀJ` enough that
+    the two formulations are indistinguishable. The QR matters where λ has
+    decayed towards nothing near a good optimum — precisely where the last
+    digits are decided.
+- No behaviour changed in the S-matrix engine: the bit-exactness fingerprint
+  is unchanged. `bench_refold` reports one LM optimize at 2.0 ms against the
+  2.1 ms baseline.
+
 ## [0.6.6] — The clippy gate is blocking (R2.3a)
 
 CI ran `cargo clippy` from 0.6.0 onward, but with `continue-on-error: true`

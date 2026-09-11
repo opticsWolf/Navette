@@ -29,7 +29,7 @@ use navette::smatrix::synthesis::cycle::{ContrastMap, NeedleCycleConfig};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
 use navette::smatrix::synthesis::structure::{DesignStack, LayerSpec};
-use navette::smatrix::synthesis::thick_opt::LmConfig;
+use navette::smatrix::synthesis::thick_opt::{LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
 
@@ -573,6 +573,16 @@ fn wrap_layer(l: LayerSpec) -> PyLayerSpec {
 
 #[pyclass(name = "LmConfig", from_py_object)]
 /// Bounded Levenberg-Marquardt knobs (see `LmConfig` in the core).
+///
+/// ``damping`` selects how the damping parameter moves between trial steps:
+///
+/// * ``"gain_ratio"`` (default) -- Nielsen/MINPACK, lambda scaled by how well
+///   the linear model predicted the reduction the step actually delivered;
+/// * ``"fixed"`` -- the x``lambda_up`` / /``lambda_down`` ladder used before
+///   0.6.7, kept so the two can be compared on the same problem.
+///
+/// ``lambda_up`` still governs both modes' error ladder (a failed step solve
+/// or a failed residual evaluation); ``lambda_down`` applies to ``"fixed"``.
 #[derive(Clone)]
 pub struct PyLmConfig {
     inner: LmConfig,
@@ -582,7 +592,8 @@ pub struct PyLmConfig {
 impl PyLmConfig {
     #[new]
     #[pyo3(signature = (max_iterations=200, max_evals=100_000, ftol=1e-12, xtol=1e-12,
-                        gtol=1e-10, lambda_init=1e-3, lambda_up=5.0, lambda_down=3.0))]
+                        gtol=1e-10, lambda_init=1e-3, lambda_up=5.0, lambda_down=3.0,
+                        damping="gain_ratio", gtol_scale_invariant=true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_iterations: usize,
@@ -593,6 +604,8 @@ impl PyLmConfig {
         lambda_init: f64,
         lambda_up: f64,
         lambda_down: f64,
+        damping: &str,
+        gtol_scale_invariant: bool,
     ) -> PyResult<Self> {
         for (name, v) in [("ftol", ftol), ("xtol", xtol), ("gtol", gtol),
                           ("lambda_init", lambda_init), ("lambda_up", lambda_up),
@@ -604,6 +617,15 @@ impl PyLmConfig {
         if max_iterations == 0 || max_evals == 0 {
             return Err(PyValueError::new_err("max_iterations/max_evals must be > 0"));
         }
+        let damping = match damping {
+            "gain_ratio" => LmDamping::GainRatio,
+            "fixed" => LmDamping::Fixed,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "damping must be 'gain_ratio' or 'fixed', got {other:?}"
+                )))
+            },
+        };
         Ok(PyLmConfig {
             inner: LmConfig {
                 max_iterations,
@@ -614,12 +636,17 @@ impl PyLmConfig {
                 lambda_init,
                 lambda_up,
                 lambda_down,
+                damping,
+                gtol_scale_invariant,
             },
         })
     }
 
     fn __repr__(&self) -> String {
-        format!("LmConfig(max_iterations={}, ftol={:.1e})", self.inner.max_iterations, self.inner.ftol)
+        format!(
+            "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?})",
+            self.inner.max_iterations, self.inner.ftol, self.inner.damping
+        )
     }
 }
 

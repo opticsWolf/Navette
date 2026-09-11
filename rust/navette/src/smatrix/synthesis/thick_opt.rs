@@ -9,8 +9,33 @@
 //! MeritSpec (Phase 4+).
 //!
 //! Algorithm notes:
-//!   * Classic Marquardt scaling: solve (JᵀJ + λ·diag(JᵀJ)) δ = −Jᵀr, with
-//!     diag floored so flat directions do not stall the step.
+//!   * **The damped step is solved by QR, not by the normal equations.**
+//!     Marquardt scaling is unchanged — the step still satisfies
+//!     (JᵀJ + λ·D²) δ = −Jᵀr with D² = diag(JᵀJ) floored — but it is obtained
+//!     as the least-squares solution of the augmented system
+//!     `[J; √λ·D] δ ≈ [−r; 0]`, whose condition number is the square root of
+//!     the normal-equation matrix's. Thin-film stacks with correlated layers
+//!     are exactly where JᵀJ goes singular and the λ-floor has to bail the
+//!     solve out (review §3.6). `J` is factored ONCE per iteration (m·n²) and
+//!     each λ trial then costs a 2n×n QR (n³), the MINPACK `qrsolv` structure.
+//!     `solve_symmetric` survives as the fallback when the QR degenerates,
+//!     and as the cross-check oracle in the tests.
+//!   * **Damping is Nielsen's gain ratio** (`LmDamping::GainRatio`, default),
+//!     not a fixed ×5/÷3 ladder: ρ = actual/predicted reduction; on acceptance
+//!     λ ← λ·max(1/3, 1−(2ρ−1)³) and ν ← 2, on rejection λ ← λ·ν and ν ← 2ν.
+//!     `LmDamping::Fixed` keeps the old ladder for comparison.
+//!   * **The predicted reduction is computed for the step actually taken.**
+//!     The bound veto+clamp below rewrites δ *after* it is solved; scoring it
+//!     with the full LM step's prediction would overstate the model's promise
+//!     whenever a bound is active, making ρ too small — over-damping and early
+//!     ftol exits right at the boundary. Prediction uses `trial − x`.
+//!   * **ftol needs both reductions** (MINPACK semantics): actual *and*
+//!     predicted relative reduction ≤ ftol. An actual reduction alone can be
+//!     small because the step was clipped, not because the optimum is near.
+//!   * **gtol has a scale-invariant form** (`gtol_scale_invariant`, default
+//!     on): cos∠(J·e_j, r) ≤ gtol, alongside the scale-dependent ‖Jᵀr‖∞ test.
+//!     They are different notions of stationarity and can exit at different
+//!     points on flat, noise-dominated valleys.
 //!   * Central-difference Jacobian, per-column step h_j = ∛ε·max(|x_j|, 1),
 //!     evaluated RAYON-PARALLEL across columns (the film-synthesis system
 //!     costs one full TMM solve per evaluation — columns dominate runtime).
@@ -18,6 +43,8 @@
 //!     active bound, then the trial point is clamped into [lb, ub] (mirrors
 //!     ClampedNeedleSynthesizer's optimizer-bounds + post-clamp contract;
 //!     removal of sub-min layers stays the CALLER's job, as in Python).
+//!     Neither MINPACK nor the argmin ecosystem's LM has bounds at all; this
+//!     contract is Navette's own and is deliberately preserved.
 
 use rayon::prelude::*;
 
@@ -39,10 +66,32 @@ pub struct LmConfig {
     pub gtol: f64,
     /// Initial damping λ.
     pub lambda_init: f64,
-    /// λ multiplier on rejected steps.
+    /// λ multiplier on rejected steps (`LmDamping::Fixed`, and both modes'
+    /// error ladder: a failed solve or a failed residual evaluation).
     pub lambda_up: f64,
-    /// λ divisor on accepted steps.
+    /// λ divisor on accepted steps (`LmDamping::Fixed` only).
     pub lambda_down: f64,
+    /// How λ moves between trials. See `LmDamping`.
+    pub damping: LmDamping,
+    /// Also test the scale-invariant gradient criterion cos∠(J·e_j, r) ≤ gtol
+    /// beside ‖Jᵀr‖∞ < gtol. The two are different notions of stationarity:
+    /// the angle form does not change its mind when a parameter is rescaled,
+    /// which ‖Jᵀr‖∞ does.
+    pub gtol_scale_invariant: bool,
+}
+
+/// How the damping parameter λ is updated between trial steps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LmDamping {
+    /// Nielsen's gain ratio (MINPACK-style), the default. ρ = actual reduction
+    /// over the reduction the linear model predicted for the step actually
+    /// taken; λ shrinks in proportion to how well the model did, and grows
+    /// geometrically (ν, doubling) while it keeps failing.
+    #[default]
+    GainRatio,
+    /// The fixed ×`lambda_up` / ÷`lambda_down` ladder this module used before
+    /// 0.6.7. Kept so the two can be compared on the same problem.
+    Fixed,
 }
 
 impl Default for LmConfig {
@@ -56,17 +105,21 @@ impl Default for LmConfig {
             lambda_init: 1e-3,
             lambda_up: 5.0,
             lambda_down: 3.0,
+            damping: LmDamping::GainRatio,
+            gtol_scale_invariant: true,
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LmTermination {
-    /// ‖Jᵀr‖∞ < gtol.
+    /// ‖Jᵀr‖∞ < gtol, or — when `gtol_scale_invariant` is set — the residual
+    /// is orthogonal to every Jacobian column to within gtol.
     Gradient,
     /// Relative step below xtol.
     Step,
-    /// Relative cost improvement below ftol.
+    /// Actual *and* predicted relative cost improvement below ftol, or no
+    /// further step could improve the cost at all.
     Cost,
     /// max_iterations reached.
     MaxIterations,
@@ -82,6 +135,16 @@ pub struct LmResult {
     pub iterations: usize,
     pub evals: usize,
     pub termination: LmTermination,
+    /// ρ of the last accepted step: the reduction actually obtained over the
+    /// reduction the linear model predicted **for the step actually taken**
+    /// (after the bound veto and clamp). ≈ 1 means the model described the
+    /// step well; ≪ 1 means the step outran the linearization. NaN when no
+    /// step was ever accepted.
+    ///
+    /// A diagnostic, not a control: it is what `LmDamping::GainRatio` steers
+    /// λ by, surfaced so a synthesis that stalls at its bounds can be told
+    /// apart from one that is simply finished.
+    pub gain_ratio: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,13 +202,21 @@ where
     }
 
     let mut cost = evaluate(&x, &mut buf_r)?;
-    let mut jac = vec![0.0f64; buf_r.len() * n]; // row-major m×n
-    let mut jtj = vec![0.0f64; n * n];
+    let m = buf_r.len();
+    let mut jac = vec![0.0f64; m * n]; // row-major m×n
+    let mut qrj = vec![0.0f64; m * n]; // scratch copy the QR destroys
+    let mut qtr = vec![0.0f64; m]; // Qᵀr (only the leading n matter)
     let mut jtr = vec![0.0f64; n];
+    let mut col_sq = vec![0.0f64; n]; // ‖J·e_j‖² == diag(JᵀJ)
+    let mut d_scale = vec![0.0f64; n]; // √(floored diag(JᵀJ))
+    let mut r_tri = vec![0.0f64; n * n]; // upper-triangular R from J = QR
     let mut delta = vec![0.0f64; n];
+    let mut applied = vec![0.0f64; n];
     let mut trial = vec![0.0f64; n];
 
     let mut lambda = cfg.lambda_init;
+    let mut nu = 2.0f64; // Nielsen's rejection multiplier, reset on acceptance
+    let mut gain_ratio = f64::NAN;
     let mut termination: Option<LmTermination> = None;
     let mut iteration = 0usize;
 
@@ -154,53 +225,68 @@ where
         build_jacobian(residuals, &x, &mut jac)
             .map(|added| evals.set(evals.get() + added))?;
 
-        // ---- g = Jᵀr, A = JᵀJ ----
-        let m = buf_r.len();
+        // ---- g = Jᵀr and the column norms, in one pass ----
+        // diag(JᵀJ) is all of JᵀJ this solver needs: the Marquardt scaling
+        // uses the diagonal, and the step comes from a QR of J itself.
         jtr.fill(0.0);
-        jtj.fill(0.0);
+        col_sq.fill(0.0);
         for i in 0..m {
             let ri = buf_r[i];
             let row = &jac[i * n..(i + 1) * n];
             for j in 0..n {
                 jtr[j] += row[j] * ri;
-                let jr = row[j];
-                for k in j..n {
-                    jtj[j * n + k] += jr * row[k];
-                }
+                col_sq[j] += row[j] * row[j];
             }
         }
         for j in 0..n {
-            for k in 0..j {
-                jtj[j * n + k] = jtj[k * n + j];
-            }
+            d_scale[j] = col_sq[j].max(1e-14).sqrt();
         }
 
-        // Gradient convergence on the current point.
+        // ---- gradient convergence on the current point ----
         let g_inf = jtr.iter().fold(0.0f64, |a, &v| a.max(v.abs()));
         if g_inf < cfg.gtol {
             termination = Some(LmTermination::Gradient);
             break;
         }
+        if cfg.gtol_scale_invariant
+            && gradient_cosine(&jtr, &col_sq, cost.sqrt()) <= cfg.gtol
+        {
+            termination = Some(LmTermination::Gradient);
+            break;
+        }
+
+        // ---- factor J once; each λ trial is then a 2n×n solve ----
+        qrj.copy_from_slice(&jac);
+        qtr.copy_from_slice(&buf_r);
+        let have_qr = householder_qr_in_place(&mut qrj, &mut qtr, m, n).is_ok();
+        if have_qr {
+            r_tri.fill(0.0);
+            for i in 0..n {
+                r_tri[i * n + i..(i + 1) * n].copy_from_slice(&qrj[i * n + i..(i + 1) * n]);
+            }
+        }
 
         // ---- damped-step loop: escalate λ until some step is accepted ----
         let mut accepted = false;
-        let mut stalled = true;
         for _damping_try in 0..40 {
             if evals.get() >= cfg.max_evals {
                 break;
             }
-            // A = JᵀJ + λ·diag(max(diag(JᵀJ), floor))
-            let mut a = jtj.clone();
-            for j in 0..n {
-                let dj = jtj[j * n + j].abs().max(1e-14);
-                a[j * n + j] = jtj[j * n + j] + lambda * dj;
-            }
 
-            // Solve Aδ = −g.
-            match solve_symmetric(&a, &neg(&jtr), &mut delta) {
-                Ok(()) => {}
-                Err(_) => {
+            // Step: (JᵀJ + λ·D²)δ = −Jᵀr, solved as least squares on
+            // [R; √λ·D]δ ≈ [−Qᵀr; 0]. RᵀR = JᵀJ exactly, so this is the same
+            // step the normal equations define, at half the condition number.
+            let solved = have_qr
+                && solve_damped_step(&r_tri, &qtr[..n], &d_scale, lambda, &mut delta).is_ok();
+            if !solved {
+                // Degenerate factorization: fall back to the normal equations
+                // (damping makes JᵀJ + λD² positive definite for λ > 0, so
+                // this usually succeeds), and only then escalate λ.
+                if normal_equation_step(&jac, &jtr, &d_scale, lambda, m, n, &mut delta).is_err() {
                     lambda *= cfg.lambda_up;
+                    if lambda > 1e18 {
+                        break;
+                    }
                     continue;
                 }
             }
@@ -215,8 +301,9 @@ where
                     delta[j] = 0.0;
                 }
                 trial[j] = (x[j] + delta[j]).clamp(lb[j], ub[j]);
+                applied[j] = trial[j] - x[j];
             }
-            if trial.iter().zip(&x).all(|(t, v)| (t - v).abs() == 0.0) {
+            if applied.iter().all(|d| *d == 0.0) {
                 // Purely-zero step: all coordinates pinned. Try raising λ to
                 // escape coupling once, else declare stall.
                 if lambda > 1e18 {
@@ -225,6 +312,10 @@ where
                 lambda *= cfg.lambda_up;
                 continue;
             }
+
+            // The model's promise for the step we are ACTUALLY taking, not
+            // for the one the solve returned. See the module note.
+            let predicted = predicted_reduction(&jac, &jtr, &applied, m, n);
 
             let new_cost = match evaluate(&trial, &mut buf_t) {
                 Ok(c) => c,
@@ -235,39 +326,62 @@ where
             };
 
             if new_cost < cost {
-                // Relative-improvement check BEFORE swapping buffers.
-                let rel_improve = (cost - new_cost) / cost.abs().max(1e-300);
+                let actual = cost - new_cost;
+                let denom = cost.abs().max(1e-300);
+                let rel_actual = actual / denom;
+                let rel_pred = predicted / denom;
+
                 std::mem::swap(&mut buf_r, &mut buf_t);
                 std::mem::swap(&mut x, &mut trial);
                 cost = new_cost;
-                lambda /= cfg.lambda_down;
                 accepted = true;
-                stalled = false;
 
-                if rel_improve < cfg.ftol {
+                gain_ratio = if predicted > 0.0 { actual / predicted } else { f64::NAN };
+
+                match cfg.damping {
+                    LmDamping::GainRatio if predicted > 0.0 => {
+                        let rho = gain_ratio;
+                        lambda *= (1.0 - (2.0 * rho - 1.0).powi(3)).max(1.0 / 3.0);
+                        nu = 2.0;
+                    },
+                    // A non-positive prediction means the linear model did not
+                    // expect this step to help, yet the cost fell: the model is
+                    // stale rather than over-confident, so shrink λ the plain
+                    // way instead of dividing by a meaningless ρ.
+                    _ => lambda /= cfg.lambda_down,
+                }
+
+                if ftol_converged(rel_actual, rel_pred, cfg.ftol) {
                     termination = Some(LmTermination::Cost);
                 }
                 break;
             }
-            lambda *= cfg.lambda_up;
+
+            match cfg.damping {
+                LmDamping::GainRatio => {
+                    lambda *= nu;
+                    nu *= 2.0;
+                },
+                LmDamping::Fixed => lambda *= cfg.lambda_up,
+            }
             if lambda > 1e18 {
                 break;
             }
         }
 
         if !accepted {
-            termination = Some(if stalled {
-                LmTermination::Stalled
-            } else {
-                LmTermination::Cost
-            });
+            // Every trial in the ladder failed to lower the cost. Whether that
+            // is a degenerate system or an optimum pinned against its bounds,
+            // no further step exists from here.
+            termination = Some(LmTermination::Stalled);
             break;
         }
         if termination.is_some() {
             break;
         }
 
-        // Step-size convergence: ‖Δx‖ ≤ xtol·(xtol + ‖x‖).
+        // Step-size convergence: ‖Δx‖ ≤ xtol·(xtol + ‖x‖). `trial` holds the
+        // previous point (the accept path swapped the two).
         let dx_norm: f64 = x
             .iter()
             .zip(&trial)
@@ -293,7 +407,215 @@ where
         iterations: iteration,
         evals: evals.get(),
         termination: termination.unwrap_or(LmTermination::MaxIterations),
+        gain_ratio,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Step solve
+// ---------------------------------------------------------------------------
+
+/// MINPACK's ftol test: the step is a convergence signal only when the
+/// reduction it delivered *and* the reduction the model predicted for it are
+/// both below `ftol`.
+///
+/// The old rule looked at the actual reduction alone. A step clipped by a
+/// bound, or one taken while λ is still large, can deliver very little while
+/// the model still sees plenty of room — small progress is not the same fact
+/// as no progress left. Requiring both is what distinguishes them.
+///
+/// A negative prediction never converges: the model did not expect this step
+/// to help at all, so its silence says nothing about how near the optimum is.
+fn ftol_converged(rel_actual: f64, rel_pred: f64, ftol: f64) -> bool {
+    rel_actual < ftol && (0.0..ftol).contains(&rel_pred)
+}
+
+/// The largest cos∠(J·e_j, r) = |(Jᵀr)_j| / (‖J·e_j‖·‖r‖) over the columns.
+///
+/// MINPACK's scale-invariant stationarity measure. Unlike ‖Jᵀr‖∞ it does not
+/// change when a parameter -- hence its Jacobian column -- is rescaled, so it
+/// means the same thing for thicknesses carried in nanometres as in
+/// micrometres. Zero is perfect stationarity: the residual is orthogonal to
+/// every direction the parameters can move in.
+///
+/// `col_sq` is diag(JᵀJ). A zero column carries no direction and is skipped
+/// rather than dividing by zero; an empty residual (‖r‖ = 0) is an exact fit,
+/// reported as 0 so the caller terminates.
+fn gradient_cosine(jtr: &[f64], col_sq: &[f64], r_norm: f64) -> f64 {
+    if !(r_norm > 0.0) {
+        return 0.0;
+    }
+    jtr.iter().zip(col_sq).fold(0.0f64, |acc, (&g, &cs)| {
+        let cn = cs.sqrt();
+        if cn > 0.0 { acc.max(g.abs() / (cn * r_norm)) } else { acc }
+    })
+}
+
+/// Reduction the linear model r(x+δ) ≈ r + Jδ predicts for `step`, in the
+/// same units as `cost` (which is ‖r‖², not ½‖r‖²):
+/// ‖r‖² − ‖r + Jδ‖² = −2·(Jᵀr)ᵀδ − ‖Jδ‖².
+///
+/// `step` is the step after the bound veto and clamp, so this is what the
+/// gain ratio and the ftol test are entitled to compare against.
+fn predicted_reduction(jac: &[f64], jtr: &[f64], step: &[f64], m: usize, n: usize) -> f64 {
+    let mut jd_sq = 0.0;
+    for i in 0..m {
+        let row = &jac[i * n..(i + 1) * n];
+        let mut s = 0.0;
+        for j in 0..n {
+            s += row[j] * step[j];
+        }
+        jd_sq += s * s;
+    }
+    let gd: f64 = jtr.iter().zip(step).map(|(g, d)| g * d).sum();
+    -2.0 * gd - jd_sq
+}
+
+/// Solve `[R; √λ·D] δ ≈ [−Qᵀr; 0]` in least squares, R upper-triangular n×n.
+///
+/// Equivalent to (RᵀR + λD²)δ = −Rᵀ(Qᵀr), i.e. (JᵀJ + λD²)δ = −Jᵀr, but
+/// formed from the square roots. The augmented matrix has full rank for every
+/// λ > 0 with a floored D, so no pivoting is needed to make it solvable --
+/// pivoting would only add rank diagnostics.
+fn solve_damped_step(
+    r_tri: &[f64],
+    qtr: &[f64],
+    d_scale: &[f64],
+    lambda: f64,
+    out: &mut [f64],
+) -> Result<(), String> {
+    let n = qtr.len();
+    let rows = 2 * n;
+    let mut a = vec![0.0f64; rows * n];
+    for i in 0..n {
+        a[i * n + i..(i + 1) * n].copy_from_slice(&r_tri[i * n + i..(i + 1) * n]);
+    }
+    let sqrt_lambda = lambda.sqrt();
+    for j in 0..n {
+        a[(n + j) * n + j] = sqrt_lambda * d_scale[j];
+    }
+    let mut b = vec![0.0f64; rows];
+    for i in 0..n {
+        b[i] = -qtr[i];
+    }
+    householder_qr_in_place(&mut a, &mut b, rows, n)?;
+    back_substitute(&a, &b, n, out)
+}
+
+/// The pre-0.6.7 step: build JᵀJ, damp its diagonal, solve the normal
+/// equations. Retained as the fallback when the QR degenerates, and as the
+/// oracle the QR path is cross-checked against in the tests.
+fn normal_equation_step(
+    jac: &[f64],
+    jtr: &[f64],
+    d_scale: &[f64],
+    lambda: f64,
+    m: usize,
+    n: usize,
+    out: &mut [f64],
+) -> Result<(), String> {
+    let mut a = vec![0.0f64; n * n];
+    for i in 0..m {
+        let row = &jac[i * n..(i + 1) * n];
+        for j in 0..n {
+            let jr = row[j];
+            for k in j..n {
+                a[j * n + k] += jr * row[k];
+            }
+        }
+    }
+    for j in 0..n {
+        for k in 0..j {
+            a[j * n + k] = a[k * n + j];
+        }
+    }
+    for j in 0..n {
+        a[j * n + j] += lambda * d_scale[j] * d_scale[j];
+    }
+    solve_symmetric(&a, &neg(jtr), out)
+}
+
+/// Householder QR of a row-major `rows`×`n` matrix (`rows` >= `n`), in place.
+/// R lands in the upper triangle of the first `n` rows; the same reflections
+/// are applied to `b` (length `rows`), so `b[..n]` becomes the head of Qᵀb.
+///
+/// No column pivoting: every system this module factors is either J itself
+/// (where a rank-deficient column is handled by the damping) or an augmented
+/// `[R; √λD]` that is full rank by construction.
+fn householder_qr_in_place(
+    a: &mut [f64],
+    b: &mut [f64],
+    rows: usize,
+    n: usize,
+) -> Result<(), String> {
+    if rows < n {
+        return Err("householder_qr: fewer rows than columns".into());
+    }
+    let mut v = vec![0.0f64; rows];
+    for k in 0..n {
+        let mut norm_sq = 0.0;
+        for i in k..rows {
+            norm_sq += a[i * n + k] * a[i * n + k];
+        }
+        // `!(x > 0.0)` rejects NaN as well as zero; see the crate-level
+        // clippy note in lib.rs.
+        if !(norm_sq > 0.0) || !norm_sq.is_finite() {
+            return Err("householder_qr: degenerate or non-finite column".into());
+        }
+        let norm = norm_sq.sqrt();
+        let akk = a[k * n + k];
+        // Reflect away from akk so v[k] is formed without cancellation.
+        let alpha = if akk >= 0.0 { -norm } else { norm };
+        for i in k..rows {
+            v[i] = a[i * n + k];
+        }
+        v[k] -= alpha;
+        let vtv: f64 = (k..rows).map(|i| v[i] * v[i]).sum();
+        a[k * n + k] = alpha;
+        for i in (k + 1)..rows {
+            a[i * n + k] = 0.0;
+        }
+        if vtv <= 0.0 {
+            // The column was already alpha*e_k; the reflection is the identity.
+            continue;
+        }
+        for j in (k + 1)..n {
+            let mut s = 0.0;
+            for i in k..rows {
+                s += v[i] * a[i * n + j];
+            }
+            let f = 2.0 * s / vtv;
+            for i in k..rows {
+                a[i * n + j] -= f * v[i];
+            }
+        }
+        let mut s = 0.0;
+        for i in k..rows {
+            s += v[i] * b[i];
+        }
+        let f = 2.0 * s / vtv;
+        for i in k..rows {
+            b[i] -= f * v[i];
+        }
+    }
+    Ok(())
+}
+
+/// Back-substitute the upper-triangular leading n×n block of a row-major
+/// matrix with row stride `n`.
+fn back_substitute(a: &[f64], b: &[f64], n: usize, out: &mut [f64]) -> Result<(), String> {
+    for i in (0..n).rev() {
+        let mut s = b[i];
+        for j in (i + 1)..n {
+            s -= a[i * n + j] * out[j];
+        }
+        let d = a[i * n + i];
+        if d.abs() < 1e-300 || !d.is_finite() {
+            return Err("back_substitute: singular triangular factor".into());
+        }
+        out[i] = s / d;
+    }
+    Ok(())
 }
 
 fn neg(v: &[f64]) -> Vec<f64> {
@@ -671,5 +993,431 @@ mod tests {
         // flip is never set, so it must succeed cleanly instead.
         let res = levenberg_marquardt(&f, &[1.0], &[-1.0], &[1.0], &cfg_fast());
         assert!(res.is_ok());
+    }
+
+    // ----------------------------------------------------------------------
+    // R4.4b internals: the two guards that make the MINPACK port trustworthy
+    // ----------------------------------------------------------------------
+
+    /// A deterministic, reproducible matrix generator (no `rand` dependency).
+    fn lcg(seed: &mut u64) -> f64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*seed >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+    }
+
+    /// `jac` (m x n row-major), `r` (m) -> the pieces both step solvers need.
+    fn step_inputs(jac: &[f64], r: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut jtr = vec![0.0; n];
+        let mut col_sq = vec![0.0; n];
+        for i in 0..m {
+            for j in 0..n {
+                jtr[j] += jac[i * n + j] * r[i];
+                col_sq[j] += jac[i * n + j] * jac[i * n + j];
+            }
+        }
+        let d_scale = col_sq.iter().map(|c| c.max(1e-14).sqrt()).collect();
+        (jtr, d_scale)
+    }
+
+    /// The QR path, driven exactly as `levenberg_marquardt` drives it.
+    fn qr_step(jac: &[f64], r: &[f64], d_scale: &[f64], lambda: f64, m: usize, n: usize)
+        -> Vec<f64>
+    {
+        let mut qrj = jac.to_vec();
+        let mut qtr = r.to_vec();
+        householder_qr_in_place(&mut qrj, &mut qtr, m, n).expect("QR of a full-rank J");
+        let mut r_tri = vec![0.0; n * n];
+        for i in 0..n {
+            r_tri[i * n + i..(i + 1) * n].copy_from_slice(&qrj[i * n + i..(i + 1) * n]);
+        }
+        let mut out = vec![0.0; n];
+        solve_damped_step(&r_tri, &qtr[..n], d_scale, lambda, &mut out).expect("damped solve");
+        out
+    }
+
+    /// The damped linear least-squares objective the step is supposed to
+    /// minimize: ||J d + r||^2 + lambda*||D d||^2. Lower is a better step,
+    /// whichever way it was obtained.
+    fn step_objective(jac: &[f64], r: &[f64], d_scale: &[f64], lambda: f64,
+                      step: &[f64], m: usize, n: usize) -> f64 {
+        let mut acc = 0.0;
+        for i in 0..m {
+            let mut s = r[i];
+            for j in 0..n {
+                s += jac[i * n + j] * step[j];
+            }
+            acc += s * s;
+        }
+        for j in 0..n {
+            let dj = d_scale[j] * step[j];
+            acc += lambda * dj * dj;
+        }
+        acc
+    }
+
+    #[test]
+    fn qr_step_reproduces_the_normal_equation_step_when_well_conditioned() {
+        // The cheapest strong guard against a linear-algebra bug: on a
+        // well-conditioned system the two formulations define the SAME step,
+        // so the new solve must reproduce the old one to near machine
+        // precision. Anywhere it does not, one of them is wrong.
+        let (m, n) = (40usize, 5usize);
+        let mut seed = 0x5EED_1234u64;
+        let jac: Vec<f64> = (0..m * n).map(|_| lcg(&mut seed)).collect();
+        let r: Vec<f64> = (0..m).map(|_| lcg(&mut seed)).collect();
+        let (jtr, d_scale) = step_inputs(&jac, &r, m, n);
+
+        for &lambda in &[1e-6, 1e-3, 1.0, 1e3] {
+            let qr = qr_step(&jac, &r, &d_scale, lambda, m, n);
+            let mut legacy = vec![0.0; n];
+            normal_equation_step(&jac, &jtr, &d_scale, lambda, m, n, &mut legacy)
+                .expect("legacy solve");
+
+            let scale = qr.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+            assert!(scale > 0.0, "lambda={lambda}: degenerate test, step is exactly zero");
+            let dev = qr.iter().zip(&legacy).fold(0.0f64, |a, (p, q)| a.max((p - q).abs()));
+            assert!(dev / scale < 1e-8, "lambda={lambda}: rel dev {}", dev / scale);
+        }
+
+        // Non-degeneracy, checked where the step is largest: heavy damping
+        // shrinks it towards zero by design, so a blanket size floor would
+        // fail for the wrong reason.
+        let lightly_damped = qr_step(&jac, &r, &d_scale, 1e-6, m, n);
+        assert!(lightly_damped.iter().fold(0.0f64, |a, v| a.max(v.abs())) > 1e-2);
+    }
+
+    #[test]
+    fn qr_step_beats_the_normal_equations_when_the_columns_are_correlated() {
+        // Why the QR is there at all (review S3.6). A Vandermonde J has a
+        // condition number the normal equations square; thin-film stacks with
+        // correlated layers are the same situation. The step is defined as the
+        // minimizer of ||J d + r||^2 + lambda*||D d||^2, so that objective --
+        // not agreement with the old code -- is the referee here.
+        let (m, n) = (40usize, 14usize);
+        let mut jac = vec![0.0; m * n];
+        for i in 0..m {
+            let t = i as f64 / (m - 1) as f64;
+            let mut p = 1.0;
+            for j in 0..n {
+                jac[i * n + j] = p;
+                p *= t;
+            }
+        }
+        let mut seed = 0xC0FFEEu64;
+        let r: Vec<f64> = (0..m).map(|_| lcg(&mut seed)).collect();
+        let (jtr, d_scale) = step_inputs(&jac, &r, m, n);
+        // The regime where it matters: lambda has decayed to near nothing, as
+        // gain-ratio damping makes it do near a good optimum -- exactly where
+        // step accuracy decides the last digits. At the lambda the solver
+        // starts from, the Marquardt term regularizes J^T J enough that the
+        // two formulations are indistinguishable; the advantage is not that
+        // one is always better, it is that the QR does not collapse when the
+        // damping stops covering for it.
+        let lambda = 1e-16;
+
+        let qr = qr_step(&jac, &r, &d_scale, lambda, m, n);
+        let mut legacy = vec![0.0; n];
+        normal_equation_step(&jac, &jtr, &d_scale, lambda, m, n, &mut legacy)
+            .expect("legacy solve");
+
+        let o_qr = step_objective(&jac, &r, &d_scale, lambda, &qr, m, n);
+        let o_legacy = step_objective(&jac, &r, &d_scale, lambda, &legacy, m, n);
+        assert!(o_qr <= o_legacy, "QR step {o_qr} is worse than legacy {o_legacy}");
+        // And the gap is real, not round-off: this is the regression the
+        // condition-squaring critique predicts.
+        assert!(o_qr < o_legacy * (1.0 - 1e-4),
+                "no measurable advantage: qr={o_qr} legacy={o_legacy}");
+    }
+
+    #[test]
+    fn a_clipped_step_is_scored_by_its_own_prediction() {
+        // The trap in a naive MINPACK port. The bound veto+clamp rewrites the
+        // step AFTER it is solved; scoring it with the full step's predicted
+        // reduction overstates what the model promised, so rho comes out too
+        // small -- over-damping and premature ftol exits at the boundary.
+        let (m, n) = (12usize, 3usize);
+        let mut seed = 0xBEEF_0001u64;
+        let jac: Vec<f64> = (0..m * n).map(|_| lcg(&mut seed)).collect();
+        let r: Vec<f64> = (0..m).map(|_| lcg(&mut seed)).collect();
+        let (jtr, d_scale) = step_inputs(&jac, &r, m, n);
+        let full = qr_step(&jac, &r, &d_scale, 1e-3, m, n);
+
+        // Component 1 vetoed by an active bound; the rest survive.
+        let mut clipped = full.clone();
+        clipped[1] = 0.0;
+
+        let p_full = predicted_reduction(&jac, &jtr, &full, m, n);
+        let p_clip = predicted_reduction(&jac, &jtr, &clipped, m, n);
+        assert!(p_full > 0.0, "the LM step must predict a reduction: {p_full}");
+        assert!(p_clip < p_full,
+                "clipping removed a descent component but the prediction did \
+                 not shrink: full={p_full} clipped={p_clip}");
+        assert!(p_clip > 0.0, "the surviving components still descend: {p_clip}");
+
+        // The clipped step is still a descent step on the true residual.
+        let mut cost0 = 0.0;
+        let mut cost1 = 0.0;
+        for i in 0..m {
+            let mut s = 0.0;
+            for j in 0..n {
+                s += jac[i * n + j] * clipped[j];
+            }
+            cost0 += r[i] * r[i];
+            cost1 += (r[i] + s) * (r[i] + s);
+        }
+        assert!(cost1 < cost0, "clipped step does not reduce the model cost");
+    }
+
+    #[test]
+    fn bound_active_run_still_converges_to_the_boundary_optimum() {
+        // The end-to-end half of the test above: an unconstrained optimum
+        // outside the box, so a bound is active on every accepted step and the
+        // clipped-prediction path is exercised by the driver itself.
+        let f = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            out.push(x[0] - 5.0);
+            out.push(x[1] + 5.0);
+            out.push(0.25 * (x[0] - x[1]));
+            Ok(())
+        };
+        let res = levenberg_marquardt(&f, &[0.5, 0.5], &[0.0, 0.0], &[1.0, 1.0], &cfg_precise())
+            .expect("bounded run");
+        assert!((res.x[0] - 1.0).abs() < 1e-9, "x0 = {}", res.x[0]);
+        assert!((res.x[1] - 0.0).abs() < 1e-9, "x1 = {}", res.x[1]);
+        // (1, 0) gives residuals (-4, 5, 0.25): 16 + 25 + 0.0625.
+        assert!((res.cost - 41.0625).abs() < 1e-9, "cost = {}", res.cost);
+    }
+
+    #[test]
+    fn gain_ratio_and_the_fixed_ladder_find_the_same_optimum() {
+        // Damping controls the PATH, not the answer. Iteration counts are
+        // reported, not pinned (R4.4d): they are allowed to differ.
+        let xs = [0.0_f64, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0];
+        let ys: Vec<f64> = xs.iter().map(|t| 2.5 * (-0.7 * t).exp()).collect();
+        let f = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            for (&t, &y) in xs.iter().zip(&ys) {
+                out.push(x[0] * (-x[1] * t).exp() - y);
+            }
+            Ok(())
+        };
+        let bounds_lo = [0.1, 0.1];
+        let bounds_hi = [10.0, 5.0];
+
+        let run = |damping| {
+            levenberg_marquardt(
+                &f,
+                &[1.0, 0.2],
+                &bounds_lo,
+                &bounds_hi,
+                &LmConfig { damping, ..cfg_precise() },
+            )
+            .expect("run")
+        };
+        let gain = run(LmDamping::GainRatio);
+        let fixed = run(LmDamping::Fixed);
+
+        assert!((gain.x[0] - 2.5).abs() < 1e-6 && (gain.x[1] - 0.7).abs() < 1e-6,
+                "gain-ratio optimum {:?}", gain.x);
+        assert!((gain.x[0] - fixed.x[0]).abs() < 1e-6
+                && (gain.x[1] - fixed.x[1]).abs() < 1e-6,
+                "{:?} vs {:?}", gain.x, fixed.x);
+    }
+
+    #[test]
+    fn the_gradient_cosine_does_not_move_when_a_column_is_rescaled() {
+        // The criterion itself, in isolation. Carrying a thickness in
+        // micrometres instead of nanometres scales its Jacobian column, and
+        // with it |(J^T r)_j| -- so ||J^T r||_inf answers a different question
+        // after the change of units. The cosine answers the same one.
+        let col_sq = [4.0_f64, 9.0, 1.0];
+        let jtr = [0.02_f64, 0.3, 0.005];
+        let r_norm = 5.0;
+        let base = gradient_cosine(&jtr, &col_sq, r_norm);
+
+        // Column 1 in units 1000x smaller: its norm and its gradient entry
+        // both scale by 1000.
+        let scaled_cs = [4.0_f64, 9.0 * 1e6, 1.0];
+        let scaled_g = [0.02_f64, 0.3 * 1e3, 0.005];
+        let scaled = gradient_cosine(&scaled_g, &scaled_cs, r_norm);
+
+        assert!((base - scaled).abs() <= 1e-15 * base, "{base} vs {scaled}");
+        // ...whereas the scale-dependent measure moved by three orders.
+        let inf_base = jtr.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        let inf_scaled = scaled_g.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        assert!(inf_scaled > inf_base * 100.0, "the contrast this test exists for is gone");
+    }
+
+    #[test]
+    fn the_gradient_cosine_handles_the_degenerate_inputs() {
+        // An exact fit is stationary by definition -- and must not divide by
+        // ||r|| = 0. A zero column contributes no direction at all.
+        assert_eq!(gradient_cosine(&[1.0, 2.0], &[1.0, 1.0], 0.0), 0.0);
+        assert_eq!(gradient_cosine(&[1.0, 2.0], &[1.0, 1.0], f64::NAN), 0.0);
+        assert_eq!(gradient_cosine(&[5.0, 0.0], &[0.0, 4.0], 1.0), 0.0);
+    }
+
+    #[test]
+    fn a_badly_scaled_problem_converges_to_the_same_fit_either_way() {
+        // End to end: fit the same line twice, once with the slope carried in
+        // units 10^4 times smaller. The optimum is a property of the problem,
+        // not of the units, and neither gradient criterion may change it.
+        let xs = [0.0_f64, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let ys = [1.0_f64, 3.1, 4.9, 7.2, 8.9, 11.1];
+        let scale = 1e4;
+
+        let plain = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            for (&t, &y) in xs.iter().zip(&ys) {
+                out.push(x[0] * t + x[1] - y);
+            }
+            Ok(())
+        };
+        let scaled = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            for (&t, &y) in xs.iter().zip(&ys) {
+                out.push((x[0] / scale) * t + x[1] - y);
+            }
+            Ok(())
+        };
+
+        for invariant in [true, false] {
+            let cfg = LmConfig { gtol_scale_invariant: invariant, ..cfg_precise() };
+            let a = levenberg_marquardt(&plain, &[0.0, 0.0], &[-1e3, -1e3], &[1e3, 1e3], &cfg)
+                .expect("plain");
+            let b = levenberg_marquardt(&scaled, &[0.0, 0.0], &[-1e7, -1e7], &[1e7, 1e7], &cfg)
+                .expect("scaled");
+            assert!((a.x[0] - b.x[0] / scale).abs() < 1e-6,
+                    "invariant={invariant}: {} vs {}", a.x[0], b.x[0] / scale);
+            assert!((a.x[1] - b.x[1]).abs() < 1e-6,
+                    "invariant={invariant}: {} vs {}", a.x[1], b.x[1]);
+            assert!((a.cost - b.cost).abs() / a.cost < 1e-9,
+                    "invariant={invariant}: {} vs {}", a.cost, b.cost);
+        }
+    }
+
+    #[test]
+    fn the_scale_invariant_gradient_test_can_be_switched_off() {
+        // It is a config flag, not a hard-wired change of contract: the
+        // scale-dependent ||J^T r||_inf test stays available on its own.
+        let xs = [0.0_f64, 1.0, 2.0, 3.0];
+        let f = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            for &t in &xs {
+                out.push(x[0] * t + x[1] - (2.0 * t - 1.0));
+            }
+            Ok(())
+        };
+        for invariant in [true, false] {
+            let cfg = LmConfig { gtol_scale_invariant: invariant, ..cfg_precise() };
+            let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-10.0, -10.0], &[10.0, 10.0], &cfg)
+                .expect("run");
+            assert!((res.x[0] - 2.0).abs() < 1e-8 && (res.x[1] + 1.0).abs() < 1e-8,
+                    "invariant={invariant}: {:?}", res.x);
+        }
+    }
+
+    #[test]
+    fn ftol_needs_both_reductions_not_just_the_one_that_happened() {
+        // The rule, in isolation. No end-to-end case is pinned here on
+        // purpose: which problems separate the two rules depends on the
+        // damping path, so a run-level assertion would be pinning a
+        // coincidence. What the release changes is the predicate.
+        let ftol = 1e-6;
+
+        // Both small: converged, and this is the only case that is.
+        assert!(ftol_converged(1e-9, 1e-9, ftol));
+        // Delivered little, but the model still promises a lot -- the case
+        // the old actual-only rule mistook for convergence.
+        assert!(!ftol_converged(1e-9, 1e-2, ftol));
+        // Delivered a lot: not converged either way.
+        assert!(!ftol_converged(1e-2, 1e-9, ftol));
+        assert!(!ftol_converged(1e-2, 1e-2, ftol));
+        // The model did not expect the step to help; its silence is not
+        // evidence about the optimum.
+        assert!(!ftol_converged(1e-9, -1e-9, ftol));
+        // Exactly at the threshold is not below it.
+        assert!(!ftol_converged(ftol, 0.0, ftol));
+        assert!(!ftol_converged(0.0, ftol, ftol));
+    }
+
+    #[test]
+    fn a_clamped_step_reports_the_gain_ratio_of_the_step_it_took() {
+        // The wiring half of `a_clipped_step_is_scored_by_its_own_prediction`.
+        // The optimum here is (100, -50) and the box is [0,1]^2, so the very
+        // first LM step overshoots by two orders and is CLAMPED -- the applied
+        // step is a small fraction of the solved one. The problem is linear,
+        // so the model is exact for whatever step is actually taken: rho must
+        // be 1. Scoring the clamped step with the full step's prediction gives
+        // rho ~ 1e-2 instead, which is how the driver would over-damp itself
+        // into crawling along a boundary.
+        let ts = [0.0_f64, 1.0, 2.0, 3.0, 4.0];
+        let f = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            for &t in &ts {
+                out.push(x[0] * t + x[1] - (100.0 * t - 50.0));
+            }
+            Ok(())
+        };
+        let res = levenberg_marquardt(&f, &[0.5, 0.5], &[0.0, 0.0], &[1.0, 1.0], &cfg_precise())
+            .expect("clamped run");
+        assert_eq!(res.x, vec![1.0, 1.0], "the corner nearest the optimum");
+        assert!((res.gain_ratio - 1.0).abs() < 1e-6,
+                "rho = {} for an exact linear model; the prediction was not \
+                 taken for the clamped step", res.gain_ratio);
+    }
+
+    #[test]
+    fn the_gain_ratio_is_nan_when_nothing_was_accepted() {
+        // Starting at the optimum: the gradient test fires before any step.
+        let f = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            out.push(x[0]);
+            out.push(x[1]);
+            Ok(())
+        };
+        let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-1.0, -1.0], &[1.0, 1.0], &cfg_fast())
+            .expect("run");
+        assert_eq!(res.termination, LmTermination::Gradient);
+        assert!(res.gain_ratio.is_nan(), "gain_ratio = {}", res.gain_ratio);
+    }
+
+    #[test]
+    fn householder_qr_refuses_a_zero_or_non_finite_column() {
+        // The fallback to the normal equations hangs off this Err; a QR that
+        // quietly returned NaNs would poison every step after it.
+        let mut a = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0];
+        let mut b = vec![1.0, 1.0, 1.0];
+        assert!(householder_qr_in_place(&mut a, &mut b, 3, 2).is_err());
+
+        let mut a = vec![1.0, f64::NAN, 2.0, 1.0, 3.0, 1.0];
+        let mut b = vec![1.0, 1.0, 1.0];
+        assert!(householder_qr_in_place(&mut a, &mut b, 3, 2).is_err());
+
+        let mut a = vec![1.0, 1.0];
+        let mut b = vec![1.0];
+        assert!(householder_qr_in_place(&mut a, &mut b, 1, 2).is_err(),
+                "fewer rows than columns is not a factorable system");
+    }
+
+    #[test]
+    fn a_rank_deficient_jacobian_still_produces_a_step() {
+        // Two identical columns: J^T J is singular, and the QR of J itself
+        // fails on the second column. Damping is what rescues the system, and
+        // the driver must fall through to the normal equations rather than
+        // stall. (Physically: two layers the merit cannot tell apart.)
+        let f = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            out.clear();
+            for t in 0..6 {
+                let t = t as f64;
+                out.push((x[0] + x[1]) * t - 3.0 * t);
+            }
+            Ok(())
+        };
+        let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-10.0, -10.0], &[10.0, 10.0],
+                                      &cfg_fast())
+            .expect("degenerate run");
+        assert!((res.x[0] + res.x[1] - 3.0).abs() < 1e-6,
+                "sum {} should reach 3", res.x[0] + res.x[1]);
     }
 }

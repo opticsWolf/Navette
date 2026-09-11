@@ -66,7 +66,7 @@ coverage is thin.
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
-| R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | synthesis robustness on ill-conditioned stacks | M (pinned optima may shift) | M–L | §3.6, §18.2 |
+| R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; item B (R4.4c) open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | 2n→1 solver sweeps per LM iteration; removes the FD noise floor; benefits every backend | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
@@ -938,7 +938,7 @@ clone — API drift; opaque `Length mismatch` from deep inside native).
 
 Three consequences drive the design: (1) the condition-squaring critique applies to the current built-in — the reference avoids it via pivoted QR; (2) "add argmin" buys the framework plus extra algorithms, **not** LM — the LM reference is the `levenberg-marquardt` crate; (3) both references are unbounded — Navette's bounds contract must be preserved on the default path and wrapped explicitly on alternative backends.
 
-#### R4.4b Work item A — harden the built-in LM (default backend, zero new dependencies)
+#### R4.4b Work item A — harden the built-in LM (default backend, zero new dependencies) — DONE (0.6.7)
 
 1. **QR step solve.** Replace `solve_symmetric(&a, &neg(&jtr), &mut delta)` (thick_opt.rs:373) with a QR solve of the damped augmented system `[J; √λ·D]δ ≈ [−r; 0]` (D = the same diag-scaled Marquardt weights, keeping the current 1e-14 flooring semantics). Two scoping facts: (a) the damped augmentation is **always full-rank for λ > 0** (`[J;√λD]ᵀ[J;√λD] = JᵀJ + λD² ≻ 0`), so pivoting is a *stability/diagnostic* feature, not a mathematical necessity — a plain unpivoted Householder QR (~80 lines) already eliminates the condition-squaring problem, while column-pivoted QR (~200 lines, permutation bookkeeping, dropped-column → zero-step-component mapping) additionally detects and degrades gracefully through degenerate columns (pivot-driven column drop) instead of relying on the current λ-escalation retry after solve failure — which remains as fallback either way. Scope decision: start unpivoted, add pivoting only if the rank-diagnostics are actually needed; (b) whatever the flavor, add the **QR-vs-legacy cross-check cargo test**: on well-conditioned problems the new step solve must reproduce the old normal-equations step to high precision (rel ≤ 1e-8 on δ) — the cheapest strong guard against linear-algebra implementation bugs.
 2. **Gain-ratio damping update** (MINPACK, replaces fixed ×5/÷3): ρ = actual/predicted reduction; accept when ρ > 0; on acceptance λ ← λ·max(1/3, 1−(2ρ−1)³), ν ← 2; on rejection λ ← λ·ν with ν ← 2ν. Fewer residual evaluations near the optimum, better behavior on correlated layers.
@@ -946,6 +946,64 @@ Three consequences drive the design: (1) the condition-squaring critique applies
 4. **MINPACK termination semantics.** ftol: require **both** actual and predicted reductions ≤ ftol (currently actual-only), with "predicted" understood per item 3. gtol: add the scale-invariant angle criterion (cos∠(Jeᵢ, r) ≤ gtol) alongside the existing ‖Jᵀr‖∞ test (config flag `gtol_scale_invariant: bool`, default true for new configs; the scale-dependent check stays available). Note the two criteria are *different notions of stationarity*: the angle test can exit at a different point than the norm test on flat, noise-dominated valleys — expected, but document it.
 5. **Eval accounting can drift either way.** Gain-ratio damping typically reduces evals near the optimum, but the ν-doubling rejection path can burn more evals than the fixed ×5 ladder on adversarial steps. Net effect is empirical — the `bench_refold` gate is the arbiter, not intuition.
 6. **Keep unchanged:** the bound veto+clamp contract (documented as Navette's bounds semantics — neither reference has bounds), the FD rayon Jacobian, and the `LmTermination` variants (map new conditions onto existing values where possible to avoid API churn; extend only if a new reason is genuinely distinct).
+
+**CORRECTIONS / NOTES (0.6.7).** Item A shipped as written -- QR step solve
+(unpivoted, as the scoping decision allowed), gain-ratio damping,
+clipped-step prediction, MINPACK ftol, scale-invariant gtol, bounds contract
+and FD Jacobian untouched. What the plan did not say:
+
+* **The QR replaces the JᵀJ build outright, not just the solve.** Only
+  diag(JᵀJ) is still needed (Marquardt scaling, and the column norms the
+  scale-invariant gtol divides by), and that is one m·n pass. Building the
+  full n×n product every iteration is gone. `J` is factored once per iteration
+  and each λ trial is a 2n×n QR -- MINPACK's `qrsolv` structure. Factoring the
+  augmented (m+n)×n system per λ trial, which is the obvious reading of item
+  1, would have been O(m·n²) *per trial* and a real regression.
+* **The QR's advantage is conditional, and the test says which condition.**
+  At the λ the solver starts from, the Marquardt term regularizes JᵀJ enough
+  that the two formulations agree to the last digits; the difference appears
+  when λ has decayed towards nothing near a good optimum (a Vandermonde J at
+  n = 14, λ = 1e-16: the QR step's objective is 0.8 % lower). The claim the
+  cross-check pins is therefore "never worse, and better where the damping
+  stops covering", not "always better".
+* **Item 3's prescription is not quite right, and the right rule is simpler.**
+  The plan says to recompute the prediction "on the surviving components",
+  which handles the veto but not the *clamp* -- a step from an interior point
+  that overshoots a bound is shortened, not zeroed. The prediction is computed
+  for `trial − x`, which is both cases at once.
+* **A unit test of the prediction was not enough to pin the wiring.** Swapping
+  the clipped step for the unclipped one in the driver left all of it green.
+  `LmResult` therefore gained `gain_ratio` (a standard LM diagnostic, useful
+  in its own right for telling a bound-stalled synthesis from a finished one),
+  and a driver-level test asserts ρ = 1 on an exactly-linear clamped problem.
+  That test fails with ρ = 0.049 under the swap.
+* **Item 4's ftol change could not be pinned end to end either.** No problem
+  tried separated the two rules by a run-level observable -- which rule fires
+  depends on the damping path, so an end-to-end assertion would have pinned a
+  coincidence. The predicate is extracted (`ftol_converged`) and tested
+  directly instead.
+* **R4.4d's cost-parity criterion is not well posed as written.** Reflectance
+  against thickness is oscillatory: from a distant start the engine and scipy
+  land in different local minima, and on one of the three cases tried the
+  engine's was the *better* one. `lm_check.py` compares them where the basin
+  is unambiguous (anchor on scipy's answer, perturb, start both there) and
+  asserts the basin-free properties on the far starts.
+* **Part of R4.4d is structurally impossible and should stay that way.**
+  Running "the bounded problems from the cargo tests through both" needs a
+  Python entry point for the LM over an arbitrary residual closure; the FD
+  Jacobian is rayon-parallel, so a Python callback would take the GIL inside
+  every worker. The harness checks scipy against the *pinned constants* in
+  those tests instead -- which is what the item is actually for: the pins were
+  written by hand and the solver agrees with them by construction.
+* **`LmConfig` gained two fields** (`damping`, `gtol_scale_invariant`), both
+  with the new behaviour as the default, and both exposed on `LmConfig` in
+  Python. `lambda_up` still drives the error ladder in both damping modes;
+  `lambda_down` applies to `Fixed` and to the accept path when the model
+  predicted no reduction.
+* **No pinned optimum moved.** All 11 pre-existing `thick_opt` cargo tests and
+  the whole Python suite passed unchanged, so the §8 golden protocol had
+  nothing to triage. `bench_refold`: one LM optimize 2.0 ms against the 2.1 ms
+  baseline.
 
 #### R4.4c Work item B — backend selection + optional ecosystem solvers (feature-gated)
 
