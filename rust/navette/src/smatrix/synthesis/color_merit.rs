@@ -19,14 +19,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::common::{xyz_to_lab, REF_WHITE_D65};
 use crate::color::common::xyz_to_srgb;
-use crate::color::func_02::{lab_to_lch, lch_to_lab};
-use crate::color::func_03::xyz_to_luv;
-use crate::color::func_12::lab_to_din99;
-use crate::color::func_04::xyz_to_oklab;
-use crate::color::func_08::adapt;
-use crate::color::func_01::xyz_to_xyy;
-use crate::color::func_09::delta_e_76_single;
-use crate::color::func_16::delta_e_2000_single;
+use crate::color::lch::{lab_to_lch, lch_to_lab};
+use crate::color::luv::xyz_to_luv;
+use crate::color::din99::lab_to_din99;
+use crate::color::oklab_xyz::xyz_to_oklab;
+use crate::color::bradford::adapt;
+use crate::color::xyy::xyz_to_xyy;
+use crate::color::delta_e_76::delta_e_76_single;
+use crate::color::delta_e_2000::delta_e_2000_single;
 
 /// P1: Lab | XyY. P2 adds LCh | Oklab | Y (scalar) — refused in `new`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,7 +316,7 @@ fn resample(tbl_wl: &[f64], tbl: &[f64], x: f64) -> Option<f64> {
 /// Integration workspace: resampled tables on the covered sim points +
 /// the forward-difference Δλ weights. On a uniform fully-covered grid the
 /// weights are a constant interval and the sums below reproduce
-/// `func_13` summation op-for-op (R1 pins this).
+/// `spectral_srgb` summation op-for-op (R1 pins this).
 struct XyzWorkspace {
   /// Covered sim indices (ascending) parallel to dw/e_res/cmf_res.
   idx: Vec<usize>,
@@ -443,7 +443,7 @@ pub(crate) fn color_of_xyz(
     }
     ColorQuantity::Oklab => {
       // Oklab is D65-defined: Bradford-adapt non-D65 XYZ first via the
-      // same `adapt` the bindings (and func_13) use — no clipping, so
+      // same `adapt` the bindings (and spectral_srgb) use — no clipping, so
       // the FD gradient keeps the smooth map.
       let mut adapted = [[0.0; 3]];
       adapt(&[*xyz], white, &REF_WHITE_D65, false, &mut adapted);
@@ -912,11 +912,11 @@ mod tests {
     let mut lab = [[0.0; 3]];
     xyz_to_lab(&[xyz], &d.white, &mut lab);
     let mut lch = [[0.0; 3]];
-    crate::color::func_02::lab_to_lch(&lab, &mut lch);
+    crate::color::lch::lab_to_lch(&lab, &mut lch);
     assert_eq!(color_of_xyz(&xyz, &d.white, ColorQuantity::LCh).unwrap(), lch[0]);
     // ΔE path converts the LCh ref to Lab (roundtrip identity pins it).
     let mut back = [[0.0; 3]];
-    crate::color::func_02::lch_to_lab(&[lch[0]], &mut back);
+    crate::color::lch::lch_to_lab(&[lch[0]], &mut back);
     for i in 0..3 {
       assert!((back[0][i] - lab[0][i]).abs() < 1e-12);
     }
@@ -930,7 +930,7 @@ mod tests {
     let mut adapted = [[0.0; 3]];
     adapt(&[xyz], &d.white, &REF_WHITE_D65, false, &mut adapted);
     let mut ok = [[0.0; 3]];
-    crate::color::func_04::xyz_to_oklab(&adapted, &mut ok);
+    crate::color::oklab_xyz::xyz_to_oklab(&adapted, &mut ok);
     assert_eq!(color_of_xyz(&xyz, &d.white, ColorQuantity::Oklab).unwrap(), ok[0]);
     // Full Bradford path (clearly non-D65 toy white): maps onto D65 to
     // rounding. (Near-D65 whites take adapt's copy short-circuit instead —
@@ -950,7 +950,7 @@ mod tests {
     // demand relevance; kernel and oracle agree bitwise regardless
     // (proven via the bound `_color` twins in R3).
     let mut wok = [[0.0; 3]];
-    crate::color::func_04::xyz_to_oklab(&[REF_WHITE_D65], &mut wok);
+    crate::color::oklab_xyz::xyz_to_oklab(&[REF_WHITE_D65], &mut wok);
     assert!((wok[0][0] - 1.0).abs() < 3e-6, "{wok:?}");
     assert!(wok[0][1].abs() < 3e-4 && wok[0][2].abs() < 3e-4, "{wok:?}");
   }
@@ -1166,7 +1166,7 @@ mod tests {
     let mut lab = [[0.0; 3]];
     xyz_to_lab(&[xyz], &white, &mut lab);
     let mut d99 = [[0.0; 3]];
-    crate::color::func_12::lab_to_din99(&lab, 1.0, 1.0, &mut d99);
+    crate::color::din99::lab_to_din99(&lab, 1.0, 1.0, &mut d99);
     assert_eq!(color_of_xyz(&xyz, &white, ColorQuantity::Din99).unwrap(), d99[0]);
     // Whiteness/yellowness closed forms, bitwise vs hand evaluation.
     let [w, tw] = cie_whiteness(&xyz, &white);

@@ -229,14 +229,14 @@ fn set_strict_ieee(enabled: bool) {
     // Provided solely for drop-in API parity with Python.
 }
 
-// ---- func_01: XYZ <-> xyY ----------------------------------------------
+// ---- xyy: XYZ <-> xyY ----------------------------------------------
 
 /// CIE XYZ to xyY chromaticity: [x, y, Y]. Black maps to zeros.
 #[pyfunction(name = "XYZ_to_xyY")]
 fn xyz_to_xyy<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyz)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_01::xyz_to_xyy(inp, out_slice);
+    navette::color::xyy::xyz_to_xyy(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -245,18 +245,18 @@ fn xyz_to_xyy<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResult
 fn xyy_to_xyz<'py>(py: Python<'py>, xyy: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyy)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_01::xyy_to_xyz(inp, out_slice);
+    navette::color::xyy::xyy_to_xyz(inp, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_02: Lab <-> LCh ----------------------------------------------
+// ---- lch: Lab <-> LCh ----------------------------------------------
 
 /// CIELAB to cylindrical CIELCh: [L, C, h] with hue in [0, 360) degrees.
 #[pyfunction(name = "Lab_to_LCHab")]
 fn lab_to_lch<'py>(py: Python<'py>, lab: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&lab)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_02::lab_to_lch(inp, out_slice);
+    navette::color::lch::lab_to_lch(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -265,11 +265,11 @@ fn lab_to_lch<'py>(py: Python<'py>, lab: PyReadonlyArray2<'py, f64>) -> PyResult
 fn lch_to_lab<'py>(py: Python<'py>, lch: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&lch)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_02::lch_to_lab(inp, out_slice);
+    navette::color::lch::lch_to_lab(inp, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_03: XYZ <-> CIELUV (illuminant defaults to D65) ---------------
+// ---- luv: XYZ <-> CIELUV (illuminant defaults to D65) ---------------
 
 /// CIE XYZ to CIELUV. `illuminant` reference white, defaults to D65.
 #[pyfunction(name = "XYZ_to_Luv")]
@@ -282,7 +282,7 @@ fn xyz_to_luv<'py>(
     let inp = as_slice3(&xyz)?;
     let illum = illuminant.unwrap_or(REF_WHITE_D65);
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_03::xyz_to_luv(inp, &illum, out_slice);
+    navette::color::luv::xyz_to_luv(inp, &illum, out_slice);
     Ok(out_arr)
 }
 
@@ -297,18 +297,18 @@ fn luv_to_xyz<'py>(
     let inp = as_slice3(&luv)?;
     let illum = illuminant.unwrap_or(REF_WHITE_D65);
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_03::luv_to_xyz(inp, &illum, out_slice);
+    navette::color::luv::luv_to_xyz(inp, &illum, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_04: XYZ <-> Oklab --------------------------------------------
+// ---- oklab_xyz: XYZ <-> Oklab --------------------------------------------
 
 /// CIE XYZ to Oklab (direct cone-response matrices).
 #[pyfunction(name = "XYZ_to_Oklab")]
 fn xyz_to_oklab<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyz)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_04::xyz_to_oklab(inp, out_slice);
+    navette::color::oklab_xyz::xyz_to_oklab(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -317,18 +317,18 @@ fn xyz_to_oklab<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResu
 fn oklab_to_xyz<'py>(py: Python<'py>, lab: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&lab)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_04::oklab_to_xyz(inp, out_slice);
+    navette::color::oklab_xyz::oklab_to_xyz(inp, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_05: sRGB <-> Oklab (legacy) ----------------------------------
+// ---- oklab_srgb: sRGB <-> Oklab (legacy) ----------------------------------
 
 /// sRGB to Oklab via the legacy sRGB matrices.
 #[pyfunction(name = "sRGB_to_Oklab")]
 fn srgb_to_oklab<'py>(py: Python<'py>, rgb: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&rgb)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_05::srgb_to_oklab(inp, out_slice);
+    navette::color::oklab_srgb::srgb_to_oklab(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -337,16 +337,16 @@ fn srgb_to_oklab<'py>(py: Python<'py>, rgb: PyReadonlyArray2<'py, f64>) -> PyRes
 fn oklab_to_srgb<'py>(py: Python<'py>, lab: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&lab)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_05::oklab_to_srgb(inp, out_slice);
+    navette::color::oklab_srgb::oklab_to_srgb(inp, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_06: CIE 1964 U*V*W* ------------------------------------------
+// ---- uvw1964: CIE 1964 U*V*W* ------------------------------------------
 
 /// CIE 1960 (u, v) chromaticity of an XYZ illuminant.
 #[pyfunction]
 fn white_point_uv1960(illuminant: [f64; 3]) -> (f64, f64) {
-    navette::color::func_06::white_point_uv1960(&illuminant)
+    navette::color::uvw1964::white_point_uv1960(&illuminant)
 }
 
 /// CIE XYZ to CIE 1964 U*V*W*. `illuminant` reference white, defaults to D65.
@@ -355,9 +355,9 @@ fn white_point_uv1960(illuminant: [f64; 3]) -> (f64, f64) {
 fn xyz_to_uvw<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>, illuminant: Option<[f64; 3]>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyz)?;
     let illum = illuminant.unwrap_or(REF_WHITE_D65);
-    let (un, vn) = navette::color::func_06::white_point_uv1960(&illum);
+    let (un, vn) = navette::color::uvw1964::white_point_uv1960(&illum);
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_06::xyz_to_uvw(inp, un, vn, out_slice);
+    navette::color::uvw1964::xyz_to_uvw(inp, un, vn, out_slice);
     Ok(out_arr)
 }
 
@@ -367,20 +367,20 @@ fn xyz_to_uvw<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>, illuminant:
 fn uvw_to_xyz<'py>(py: Python<'py>, uvw: PyReadonlyArray2<'py, f64>, illuminant: Option<[f64; 3]>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&uvw)?;
     let illum = illuminant.unwrap_or(REF_WHITE_D65);
-    let (un, vn) = navette::color::func_06::white_point_uv1960(&illum);
+    let (un, vn) = navette::color::uvw1964::white_point_uv1960(&illum);
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_06::uvw_to_xyz(inp, un, vn, out_slice);
+    navette::color::uvw1964::uvw_to_xyz(inp, un, vn, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_07: CIE 1960 UCS & chromaticity ------------------------------
+// ---- ucs1960: CIE 1960 UCS & chromaticity ------------------------------
 
 /// CIE XYZ to CIE 1960 UCS.
 #[pyfunction(name = "XYZ_to_UCS")]
 fn xyz_to_ucs<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyz)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_07::xyz_to_ucs(inp, out_slice);
+    navette::color::ucs1960::xyz_to_ucs(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -389,7 +389,7 @@ fn xyz_to_ucs<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResult
 fn ucs_to_xyz<'py>(py: Python<'py>, ucs: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&ucs)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_07::ucs_to_xyz(inp, out_slice);
+    navette::color::ucs1960::ucs_to_xyz(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -398,7 +398,7 @@ fn ucs_to_xyz<'py>(py: Python<'py>, ucs: PyReadonlyArray2<'py, f64>) -> PyResult
 fn xyz_to_ucs_uv<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyz)?;
     let (out_arr, out_slice) = new_out2(py, inp.len());
-    navette::color::func_07::xyz_to_ucs_uv(inp, out_slice);
+    navette::color::ucs1960::xyz_to_ucs_uv(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -407,7 +407,7 @@ fn xyz_to_ucs_uv<'py>(py: Python<'py>, xyz: PyReadonlyArray2<'py, f64>) -> PyRes
 fn uv1976_to_xy<'py>(py: Python<'py>, uvp: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice2(&uvp)?;
     let (out_arr, out_slice) = new_out2(py, inp.len());
-    navette::color::func_07::uv1976_to_xy(inp, out_slice);
+    navette::color::ucs1960::uv1976_to_xy(inp, out_slice);
     Ok(out_arr)
 }
 
@@ -416,11 +416,11 @@ fn uv1976_to_xy<'py>(py: Python<'py>, uvp: PyReadonlyArray2<'py, f64>) -> PyResu
 fn uv1960_to_xy<'py>(py: Python<'py>, uv: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice2(&uv)?;
     let (out_arr, out_slice) = new_out2(py, inp.len());
-    navette::color::func_07::uv1960_to_xy(inp, out_slice);
+    navette::color::ucs1960::uv1960_to_xy(inp, out_slice);
     Ok(out_arr)
 }
 
-// ---- func_08: Bradford chromatic adaptation ----------------------------
+// ---- bradford: Bradford chromatic adaptation ----------------------------
 
 /// Bradford chromatic adaptation between white points. Set `clip_negative` to clamp tiny negatives.
 #[pyfunction(name = "chromatic_adaptation_VonKries")]
@@ -434,7 +434,7 @@ fn adapt<'py>(
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let inp = as_slice3(&xyz)?;
     let (out_arr, out_slice) = new_out3(py, inp.len());
-    navette::color::func_08::adapt(inp, &src_white, &dst_white, clip_negative, out_slice);
+    navette::color::bradford::adapt(inp, &src_white, &dst_white, clip_negative, out_slice);
     Ok(out_arr)
 }
 
@@ -447,12 +447,12 @@ fn adapt<'py>(
 /// `xyz @ M`, or transpose once on the way out.
 #[pyfunction]
 fn calc_transform_matrix<'py>(py: Python<'py>, src_white: [f64; 3], dst_white: [f64; 3]) -> Bound<'py, PyArray2<f64>> {
-    let m = navette::color::func_08::calc_transform_matrix(&src_white, &dst_white);
+    let m = navette::color::bradford::calc_transform_matrix(&src_white, &dst_white);
     let flat: Vec<f64> = m.iter().flat_map(|r| r.iter().copied()).collect();
     Array2::from_shape_vec((3, 3), flat).expect("3x3").into_pyarray(py)
 }
 
-// ---- func_09..12 & 16: Delta-E metrics (return 1-D arrays) -------------
+// ---- Delta-E metrics: 76 / 94 / CMC / DIN99 / 2000 (1-D arrays) --------
 
 /// CIEDE2000 colour difference with k_L/k_C/k_H weights (or `textiles` preset). Broadcasts 1-vs-N.
 #[pyfunction(name = "delta_E_CIE2000")]
@@ -463,7 +463,7 @@ fn delta_e_2000<'py>(py: Python<'py>, lab1: PyReadonlyArray2<'py, f64>, lab2: Py
     let b = as_slice3(&lab2)?;
     let (kl, kc, kh) = if textiles { (2.0, 1.0, 1.0) } else { (k_L, k_C, k_H) };
     check_broadcast(a, b)?;
-    Ok(navette::color::func_16::delta_e_2000(a, b, kl, kc, kh).into_pyarray(py))
+    Ok(navette::color::delta_e_2000::delta_e_2000(a, b, kl, kc, kh).into_pyarray(py))
 }
 
 /// CIE 1976 colour difference (Euclidean distance in CIELAB). Broadcasts 1-vs-N.
@@ -472,7 +472,7 @@ fn delta_e_76<'py>(py: Python<'py>, lab1: PyReadonlyArray2<'py, f64>, lab2: PyRe
     let a = as_slice3(&lab1)?;
     let b = as_slice3(&lab2)?;
     check_broadcast(a, b)?;
-    Ok(navette::color::func_09::delta_e_76(a, b).into_pyarray(py))
+    Ok(navette::color::delta_e_76::delta_e_76(a, b).into_pyarray(py))
 }
 
 /// CIE 1994 colour difference (lab1 is the reference). `textiles` selects the textile weights. Broadcasts 1-vs-N.
@@ -482,12 +482,12 @@ fn delta_e_94<'py>(py: Python<'py>, lab1: PyReadonlyArray2<'py, f64>, lab2: PyRe
     let a = as_slice3(&lab1)?;
     let b = as_slice3(&lab2)?;
     let p = if textiles {
-        navette::color::func_10::De94Params::TEXTILES
+        navette::color::delta_e_94::De94Params::TEXTILES
     } else {
-        navette::color::func_10::De94Params::GRAPHIC
+        navette::color::delta_e_94::De94Params::GRAPHIC
     };
     check_broadcast(a, b)?;
-    Ok(navette::color::func_10::delta_e_94(a, b, p).into_pyarray(py))
+    Ok(navette::color::delta_e_94::delta_e_94(a, b, p).into_pyarray(py))
 }
 
 /// CMC(l:c) colour difference with lightness/chroma weights `pl`/`pc` (acceptability 2.0/1.0). Broadcasts 1-vs-N.
@@ -497,7 +497,7 @@ fn delta_e_cmc<'py>(py: Python<'py>, lab1: PyReadonlyArray2<'py, f64>, lab2: PyR
     let a = as_slice3(&lab1)?;
     let b = as_slice3(&lab2)?;
     check_broadcast(a, b)?;
-    Ok(navette::color::func_11::delta_e_cmc(a, b, pl, pc).into_pyarray(py))
+    Ok(navette::color::delta_e_cmc::delta_e_cmc(a, b, pl, pc).into_pyarray(py))
 }
 
 /// DIN99 colour difference. `textiles` selects the textile weights. Broadcasts 1-vs-N.
@@ -508,10 +508,10 @@ fn delta_e_din99<'py>(py: Python<'py>, lab1: PyReadonlyArray2<'py, f64>, lab2: P
     let b = as_slice3(&lab2)?;
     let (ke, kch) = if textiles { (2.0, 0.5) } else { (1.0, 1.0) };
     check_broadcast(a, b)?;
-    Ok(navette::color::func_12::delta_e_din99(a, b, ke, kch).into_pyarray(py))
+    Ok(navette::color::din99::delta_e_din99(a, b, ke, kch).into_pyarray(py))
 }
 
-// ---- func_13: spectral pipeline ----------------------------------------
+// ---- spectral_srgb: spectral pipeline ----------------------------------------
 
 /// Integrate an SPD against CMFs and an illuminant to sRGB in [0, 1]; optionally Bradford-adapt to D65.
 #[pyfunction(name = "spectral_to_sRGB")]
@@ -527,11 +527,11 @@ fn spectral_to_srgb<'py>(
     let spd = as_slice1(&spd)?;
     let cmfs = as_slice3(&cmfs)?;
     let illum = as_slice1(&illum)?;
-    let rgb = navette::color::func_13::spectral_to_srgb(spd, cmfs, illum, interval, apply_adaptation);
+    let rgb = navette::color::spectral_srgb::spectral_to_srgb(spd, cmfs, illum, interval, apply_adaptation);
     Ok(rgb.to_vec().into_pyarray(py))
 }
 
-// ---- func_14: photometry engine ----------------------------------------
+// ---- photometry: photometry engine ----------------------------------------
 
 /// Photometry engine holding V-lambda and V-prime curves plus efficacy constants.
 ///
@@ -539,7 +539,7 @@ fn spectral_to_srgb<'py>(
 /// `km_p`/`km_s` efficacies in lm/W), then integrate SPDs to luminous flux.
 #[pyclass(name = "PhotometryEngine")]
 struct PyPhotometry {
-    inner: navette::color::func_14::PhotometryEngine,
+    inner: navette::color::photometry::PhotometryEngine,
 }
 
 #[pymethods]
@@ -554,7 +554,7 @@ impl PyPhotometry {
         km_s: f64,
     ) -> PyResult<Self> {
         Ok(PyPhotometry {
-            inner: navette::color::func_14::PhotometryEngine::with_constants(
+            inner: navette::color::photometry::PhotometryEngine::with_constants(
                 as_slice1(&v_photopic)?.to_vec(),
                 as_slice1(&v_scotopic)?.to_vec(),
                 km_p,
@@ -568,9 +568,9 @@ impl PyPhotometry {
     #[pyo3(signature = (spd, vision="photopic", m=1.0, interval=1.0))]
     fn calculate_flux(&self, spd: PyReadonlyArray1<'_, f64>, vision: &str, m: f64, interval: f64) -> PyResult<f64> {
         let v = match vision.to_ascii_lowercase().as_str() {
-            "photopic" => navette::color::func_14::Vision::Photopic,
-            "scotopic" => navette::color::func_14::Vision::Scotopic,
-            "mesopic" => navette::color::func_14::Vision::Mesopic,
+            "photopic" => navette::color::photometry::Vision::Photopic,
+            "scotopic" => navette::color::photometry::Vision::Scotopic,
+            "mesopic" => navette::color::photometry::Vision::Mesopic,
             other => return Err(PyValueError::new_err(format!("unknown vision '{other}'"))),
         };
         Ok(self.inner.calculate_flux(as_slice1(&spd)?, v, m, interval))
@@ -640,7 +640,7 @@ pub fn _color(m: &Bound<'_, PyModule>) -> PyResult<()> {
         srgb_to_luv, luv_to_srgb, srgb_to_xy_y, xy_y_to_srgb,
         clip_absolute, set_strict_ieee,
 
-        // func_01 to func_07
+        // base conversions: xyy .. ucs1960
         xyz_to_xyy, xyy_to_xyz,
         lab_to_lch, lch_to_lab,
         xyz_to_luv, luv_to_xyz,
@@ -649,13 +649,13 @@ pub fn _color(m: &Bound<'_, PyModule>) -> PyResult<()> {
         white_point_uv1960, xyz_to_uvw, uvw_to_xyz,
         xyz_to_ucs, ucs_to_xyz, xyz_to_ucs_uv, uv1976_to_xy, uv1960_to_xy,
 
-        // func_08 (Bradford)
+        // bradford
         adapt, calc_transform_matrix,
 
-        // func_09 to func_12 & 16 (Metrics)
+        // Delta-E metrics
         delta_e_2000, delta_e_76, delta_e_94, delta_e_cmc, delta_e_din99,
 
-        // func_13 (Spectral)
+        // spectral_srgb
         spectral_to_srgb,
 
         // tables (CIE reference data)

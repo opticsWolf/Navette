@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_12.rs
+// src/color/din99.rs
 //! DIN99 colour difference (DIN 6176).
 //!
 //! The DIN99 colour space is a Euclideanisation of CIELAB via a 16° rotation
@@ -100,7 +100,7 @@ pub fn delta_e_din99_single(lab1: &[f64; 3], lab2: &[f64; 3], ke: f64, kch: f64)
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_12::delta_e_din99;
+/// use navette::color::din99::delta_e_din99;
 /// let refs = [[50.0, 0.0, 0.0]];
 /// let samples = [[55.0, 0.0, 0.0]];
 /// let de = delta_e_din99(&refs, &samples, 1.0, 1.0);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_03.rs
+// src/color/luv.rs
 //! XYZ ↔ CIELUV conversions (CIE 1976 L*u*v*).
 //!
 //! This color space is useful for emitted light and white‑point estimation.
@@ -16,7 +16,7 @@ use crate::color::common::{lab_f, lab_f_inv, xyz_to_uv_prime, REF_WHITE_D65};
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_03::xyz_to_luv;
+/// use navette::color::luv::xyz_to_luv;
 /// use navette::color::common::REF_WHITE_D65;
 /// // The reference white maps to L* = 100, u* = v* = 0 exactly. We feed the
 /// // crate's own D65 constant (which tracks colour-science, not loom's rounded
@@ -46,7 +46,7 @@ pub fn xyz_to_luv(xyz: &[[f64; 3]], illuminant: &[f64; 3], out: &mut [[f64; 3]])
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_03::luv_to_xyz;
+/// use navette::color::luv::luv_to_xyz;
 /// use navette::color::common::REF_WHITE_D65;
 /// let luv = [[100.0, 0.0, 0.0]];
 /// let mut xyz = [[0.0; 3]];

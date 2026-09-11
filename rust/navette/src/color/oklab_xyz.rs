@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_04.rs
+// src/color/oklab_xyz.rs
 //! Oklab colour space – direct XYZ pipeline.
 //!
 //! Uses the standard Oklab matrices (M1: XYZ → LMS, M2: LMS^(1/3) → Lab).
@@ -19,12 +19,12 @@ use crate::color::matrices::{
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_04::xyz_to_oklab;
+/// use navette::color::oklab_xyz::xyz_to_oklab;
 /// let xyz = [[0.95047, 1.00000, 1.08883]]; // D65 white
 /// let mut oklab = [[0.0; 3]];
 /// xyz_to_oklab(&xyz, &mut oklab);
 /// // White point maps to L ≈ 1.0, a = b ≈ 0. Not bit-exact: the published
-/// // Oklab matrices leave D65 at L≈0.9999998, a≈-1e-5 (same rounding as func_05).
+/// // Oklab matrices leave D65 at L≈0.9999998, a≈-1e-5 (same rounding as oklab_srgb).
 /// assert!((oklab[0][0] - 1.0).abs() < 1e-4);
 /// assert!(oklab[0][1].abs() < 1e-4);
 /// ```
@@ -47,7 +47,7 @@ pub fn xyz_to_oklab(xyz: &[[f64; 3]], out: &mut [[f64; 3]]) {
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_04::oklab_to_xyz;
+/// use navette::color::oklab_xyz::oklab_to_xyz;
 /// let oklab = [[1.0, 0.0, 0.0]];
 /// let mut xyz = [[0.0; 3]];
 /// oklab_to_xyz(&oklab, &mut xyz);

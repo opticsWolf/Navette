@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_13.rs
+// src/color/spectral_srgb.rs
 //! Spectral pipeline: convert a spectral power distribution to sRGB.
 //!
 //! This module integrates an SPD with CIE 1931 colour matching functions
@@ -10,7 +10,7 @@
 //! reflecting diffuser yields Y = 1.
 
 use crate::color::common::{xyz_to_srgb, REF_WHITE_D65};
-use crate::color::func_08::adapt;
+use crate::color::bradford::adapt;
 
 /// Convert a spectral power distribution to a single sRGB colour.
 ///

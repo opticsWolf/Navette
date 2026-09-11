@@ -78,7 +78,7 @@ coverage is thin.
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
 | ~~R6.4~~ | ~~docs/hygiene batch~~ — **DONE** (items 1,2,3,6 in 0.6.18; 4,5,7 in 0.6.19) | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, four stale docs closed, `extrap='error'` now errors | S | M | §6.3, §24.2, §18.4 |
 | ~~R6.5~~ | ~~`.pyi` stubs~~ — **DONE (0.6.20)**, plus a two-pass CI guard for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
-| R6.6 | Rename `color/func_NN.rs` → descriptive module names | P3 | readability; the mod.rs doc comment is currently the only decoder ring | S (internal paths only) | S–M | §11 |
+| ~~R6.6~~ | Rename `color/func_NN.rs` → descriptive module names — **DONE (0.6.22)** | P3 | 16 files renamed, 207 references rewritten; the decoder ring survives as a migration table in `color/mod.rs` and `docs/plans/color/README.md` | S (internal paths only) | S–M | §11 |
 
 Recommended execution order = the phase order below. R1.1 and R1.2 come
 first despite the CI item being "enabling": the physics bug is the single
@@ -2196,7 +2196,7 @@ recur — the same pattern as `check_cie_sync.py`.
   1 skipped; `check_pyi_sync` OK (3 stubbed, 3 known gaps); `check_exposure`
   217/102; `check_cie_sync` OK; fingerprint unchanged at `30d96909…3c6c`.
 
-### R6.6 Rename `color/func_NN.rs` → descriptive module names
+### R6.6 Rename `color/func_NN.rs` → descriptive module names — DONE (0.6.22)
 
 **Review:** §11 (the color catalog is organized as `func_01`–`func_16` after the original port task numbering).
 
@@ -2235,6 +2235,44 @@ recur — the same pattern as `check_cie_sync.py`.
 **Validation.** Existing: `cargo test --workspace` (376 — the color units live in `#[cfg(test)]` inside the renamed files and move with them), `pytest validation` (355 — Python surface must be bit-identical), `check_exposure.py`, color benches untouched. New: none required — this is a pure rename; the verification is the unchanged-suite run plus the zero-remaining-`func_` grep.
 
 **Effort.** S–M.
+
+**CORRECTIONS (0.6.22).**
+
+* **The proposed mapping was used unchanged.** All sixteen names, and the
+  sixteen `git mv`s, went through as written.
+
+* **The `smatrix/optics_core.rs` grep hit was the coincidence the plan
+  suspected.** It reads `func_0/func_1/func_2/func_4` — single-digit, and the
+  *numba reference implementation's* module names, not the color catalog. The
+  same numbering appears eleven more times in `needle_operator.rs` and once in
+  `core_engine.rs`, all left alone. Choosing a two-digit `func_NN` pattern for
+  the rewrite made the distinction mechanical rather than a judgement call, and
+  the surviving single-digit hits are now called out in `color/mod.rs` so the
+  next reader does not have to re-derive it.
+
+* **A blanket sed would have produced six nonsense comments**, all of them
+  prose *ranges* rather than module paths: `func_01–func_05 core`,
+  `func_09..12 & 16: Delta-E metrics`, `func_01 to func_07`, `func_08
+  (Bradford)`, `func_09 to func_12 & 16 (Metrics)`, `func_13 (Spectral)`. These
+  were rewritten by hand first, into descriptive prose that does not depend on
+  the numbering at all.
+
+* **`tools/check_exposure.py` did not key on module paths** — its allowlist is
+  function names only, so it passed untouched (218 pub fns, 103 allowlisted).
+  The plan flagged this as a thing to check; it turned out to be a non-event.
+
+* **Two things the plan did not list.** The 16 files each carried a stale
+  `// src/func_NN.rs` path header on line 2, which the rename would have turned
+  into an equally wrong `// src/xyy.rs`; corrected to `// src/color/<name>.rs`.
+  And `docs/plans/color/README.md`'s module map was missing `func_16` entirely
+  (it was headed "renumbered `func_01`–`func_15`"); the replacement table has
+  all sixteen rows.
+
+* **Verification.** Zero remaining two-digit `func_NN` hits in `rust/`. The
+  bit-exactness fingerprint is unchanged at `30d96909…3c6c`, 698 pytest, 458+22+15
+  cargo, 15 doc tests, clippy clean under `-D warnings`, all ten review
+  harnesses green, `check_exposure` / `check_cie_sync` / `check_pyi_sync` all OK.
+
 
 ---
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_05.rs
+// src/color/oklab_srgb.rs
 //! Oklab colour space – legacy sRGB pipeline.
 //!
 //! This module provides conversions between sRGB and Oklab using the original
@@ -7,7 +7,7 @@
 //! the first matrix.  The output is display‑referred (clipped to [0,1]).
 //!
 //! **Note:** For a more general pipeline that starts from CIE XYZ, use
-//! `func_04::xyz_to_oklab` / `oklab_to_xyz`.
+//! `oklab_xyz::xyz_to_oklab` / `oklab_to_xyz`.
 
 use crate::color::common::{clip01, gamma_srgb, inverse_gamma_srgb, mat3_mul_vec, signed_pow};
 use crate::color::matrices::{
@@ -25,7 +25,7 @@ use crate::color::matrices::{
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_05::srgb_to_oklab;
+/// use navette::color::oklab_srgb::srgb_to_oklab;
 /// let srgb = [[0.5, 0.5, 0.5]];   // neutral grey
 /// let mut oklab = [[0.0; 3]];
 /// srgb_to_oklab(&srgb, &mut oklab);
@@ -66,7 +66,7 @@ pub fn srgb_to_oklab(rgb: &[[f64; 3]], out: &mut [[f64; 3]]) {
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_05::oklab_to_srgb;
+/// use navette::color::oklab_srgb::oklab_to_srgb;
 /// let oklab = [[0.5, 0.0, 0.0]];   // neutral grey
 /// let mut srgb = [[0.0; 3]];
 /// oklab_to_srgb(&oklab, &mut srgb);

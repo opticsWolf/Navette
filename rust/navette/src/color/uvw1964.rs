@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_06.rs
+// src/color/uvw1964.rs
 //! CIE 1964 U*V*W* colour space.
 //!
 //! This space transforms XYZ (D65‑relative, range [0,1]) into a uniform

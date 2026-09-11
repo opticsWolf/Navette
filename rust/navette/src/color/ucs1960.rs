@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_07.rs
+// src/color/ucs1960.rs
 //! CIE 1960 UCS (linear UVW tristimulus) and chromaticity conversions.
 //!
 //! This module provides four kernels:

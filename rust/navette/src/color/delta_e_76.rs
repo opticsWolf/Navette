@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_09.rs
+// src/color/delta_e_76.rs
 //! Delta E 76 – Euclidean distance in CIELAB.
 
 /// Single-pair CIE 1976 colour difference: Euclidean distance in CIELAB.
@@ -27,7 +27,7 @@ pub fn delta_e_76_single(lab1: &[f64; 3], lab2: &[f64; 3]) -> f64 {
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_09::delta_e_76;
+/// use navette::color::delta_e_76::delta_e_76;
 /// let refs = [[50.0, 0.0, 0.0]];
 /// let samples = [[55.0, 0.0, 0.0], [60.0, 0.0, 0.0]];
 /// let de = delta_e_76(&refs, &samples);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_10.rs
+// src/color/delta_e_94.rs
 //! Delta E 94 – CIE 1994 colour difference.
 //!
 //! This metric is **asymmetric**: the first argument (`lab1`) is treated as the
@@ -90,7 +90,7 @@ pub fn delta_e_94_single(lab1: &[f64; 3], lab2: &[f64; 3], params: De94Params) -
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_10::{delta_e_94, De94Params};
+/// use navette::color::delta_e_94::{delta_e_94, De94Params};
 /// let refs = [[50.0, 0.0, 0.0]];
 /// let samples = [[55.0, 0.0, 0.0], [60.0, 0.0, 0.0]];
 /// let de = delta_e_94(&refs, &samples, De94Params::GRAPHIC);

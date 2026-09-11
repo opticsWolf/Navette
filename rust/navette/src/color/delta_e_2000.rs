@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_16.rs
+// src/color/delta_e_2000.rs
 //! CIEDE2000 Color Difference.
 
 use crate::color::common::DEG2RAD;

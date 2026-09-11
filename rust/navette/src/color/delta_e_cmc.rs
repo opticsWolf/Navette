@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_11.rs
+// src/color/delta_e_cmc.rs
 //! Delta E CMC(l:c) – CMC colour difference formula (1984).
 //!
 //! This metric is **asymmetric**: the first argument (`lab1`) is the reference
@@ -95,7 +95,7 @@ pub fn delta_e_cmc_single(lab1: &[f64; 3], lab2: &[f64; 3], pl: f64, pc: f64) ->
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_11::delta_e_cmc;
+/// use navette::color::delta_e_cmc::delta_e_cmc;
 /// let refs = [[50.0, 10.0, 5.0]];
 /// let samples = [[52.0, 11.0, 6.0]];
 /// let de = delta_e_cmc(&refs, &samples, 2.0, 1.0);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_01.rs
+// src/color/xyy.rs
 //! XYZ ↔ xyY conversions (CIE 1931 chromaticity + luminance).
 //!
 //! Black‑pixel convention: zero‑luminance pixels map to all zeros
@@ -13,7 +13,7 @@
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_01::xyz_to_xyy;
+/// use navette::color::xyy::xyz_to_xyy;
 /// let xyz = [[0.95047, 1.00000, 1.08883]]; // D65 white
 /// let mut xyY = [[0.0; 3]];
 /// xyz_to_xyy(&xyz, &mut xyY);
@@ -43,7 +43,7 @@ pub fn xyz_to_xyy(xyz: &[[f64; 3]], out: &mut [[f64; 3]]) {
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_01::xyy_to_xyz;
+/// use navette::color::xyy::xyy_to_xyz;
 /// let xyY = [[0.3127, 0.3290, 1.0]];
 /// let mut xyz = [[0.0; 3]];
 /// xyy_to_xyz(&xyY, &mut xyz);

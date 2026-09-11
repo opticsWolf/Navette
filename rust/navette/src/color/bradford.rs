@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_08.rs
+// src/color/bradford.rs
 //! Chromatic adaptation using the Bradford transform (CIE 1994).
 //!
 //! The Bradford method transforms XYZ tristimulus values from a source

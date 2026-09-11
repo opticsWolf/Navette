@@ -3,6 +3,47 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.22] — The color catalog gets its names back (R6.6)
+
+`rust/navette/src/color/` held sixteen files called `func_01.rs` through
+`func_16.rs` — the port-task numbering, frozen into the filenames. The only
+decoder ring was a doc-comment list in `mod.rs`, which meant every
+`use crate::color::func_11::...` in the tree was a lookup.
+
+### Changed
+
+- **16 modules renamed**, 207 references rewritten:
+  `func_01`→`xyy`, `func_02`→`lch`, `func_03`→`luv`,
+  `func_04`→`oklab_xyz`, `func_05`→`oklab_srgb`, `func_06`→`uvw1964`,
+  `func_07`→`ucs1960`, `func_08`→`bradford`, `func_09`→`delta_e_76`,
+  `func_10`→`delta_e_94`, `func_11`→`delta_e_cmc`, `func_12`→`din99`,
+  `func_13`→`spectral_srgb`, `func_14`→`photometry`, `func_15`→`shapes`,
+  `func_16`→`delta_e_2000`. Done with `git mv`, so `git log --follow` still
+  walks each file's history.
+- **The decoder ring is kept, pointing the other way.** `color/mod.rs` and
+  `docs/plans/color/README.md` both carry an old→new migration table, so a
+  `func_NN` reference in a commit message, a port record, or §11 of the code
+  review still resolves. The dated documents (`docs/plans/color/func_NN_*.md`,
+  the review's catalog) keep their original names on purpose.
+- Six comments that named *ranges* of modules (`func_01–func_05 core`,
+  `func_09..12 & 16: Delta-E metrics`, and four more) were rewritten into prose
+  that does not depend on the numbering.
+- The stale `// src/func_NN.rs` path header on line 2 of each file is now
+  `// src/color/<name>.rs`.
+
+### Unchanged
+
+- No public API moves — the Python bindings call functions, not module paths.
+  `check_exposure.py` keys on function names and passed untouched.
+- The single-digit `func_0`–`func_5` references in `smatrix/` are a *different*
+  numbering (the numba reference implementation's modules, imported by name by
+  the parity tests) and were deliberately left alone. `color/mod.rs` now says
+  so, so the distinction does not have to be re-derived.
+- Bit-exactness fingerprint
+  `30d9690992cfa8e9ebfd8a6b03b5d62a7cd511952d3bc50dd3fff9c18ade3c6c`,
+  698 pytest, 458 + 22 + 15 cargo, 15 doc tests, clippy clean, ten review
+  harnesses green.
+
 ## [0.6.21] — An absorbing incident medium is refused, not approximated (R3.4)
 
 `ScatterMatrix(layer_indices=[1.52 + 0.062j, ...])` used to construct and solve

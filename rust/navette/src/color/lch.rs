@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_02.rs
+// src/color/lch.rs
 //! CIELAB ↔ CIELCh conversions (cylindrical representation).
 //!
 //! Chroma is Euclidean distance `hypot(a, b)`. Hue is computed in degrees
@@ -14,7 +14,7 @@ use crate::color::common::{DEG2RAD, RAD2DEG};
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_02::lab_to_lch;
+/// use navette::color::lch::lab_to_lch;
 /// let lab = [[50.0, 10.0, 5.0]];
 /// let mut lch = [[0.0; 3]];
 /// lab_to_lch(&lab, &mut lch);
@@ -41,7 +41,7 @@ pub fn lab_to_lch(lab: &[[f64; 3]], out: &mut [[f64; 3]]) {
 ///
 /// # Examples
 /// ```
-/// use navette::color::func_02::lch_to_lab;
+/// use navette::color::lch::lch_to_lab;
 /// let lch = [[50.0, 10.0, 30.0]];
 /// let mut lab = [[0.0; 3]];
 /// lch_to_lab(&lch, &mut lab);

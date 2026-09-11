@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// src/func_14.rs
+// src/color/photometry.rs
 //! Photometry engine: photopic, scotopic, and mesopic luminous flux.
 //!
 //! This module provides a high‑performance calculator for luminous flux

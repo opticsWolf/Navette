@@ -196,7 +196,7 @@ pub fn clip01(v: f64) -> f64 {
 }
 
 // -----------------------------------------------------------------------------
-// Base conversions (the engine's func_01–func_05 core)
+// Base conversions (the xyy / lch / luv / oklab_xyz / oklab_srgb core)
 // -----------------------------------------------------------------------------
 
 /// sRGB → XYZ. When `clip` is set, encoded RGB is clamped to `[0,1]` first

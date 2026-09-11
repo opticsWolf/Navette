@@ -4,7 +4,7 @@
 //!
 //! This module implements the runtime broadcast logic required by Delta‑E
 //! functions (1 reference vs N samples, or N vs 1). The `map_pairs` function
-//! is re‑exported by `func_15` for shape handling.
+//! is re‑exported by `shapes` for shape handling.
 
 use rayon::prelude::*;
 

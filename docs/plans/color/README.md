@@ -15,24 +15,35 @@ Rust rewrite (parity port) of the **Unified Color Engine**
 The module shipped as `navette::color` (`rust/navette/src/color/`), bound as
 `navette._color`; `loom_color` was the working name on this page.
 
-## Module map (renumbered `func_01`–`func_15`)
-| Module   | Conversion / metric                         |
-|----------|---------------------------------------------|
-| func_01  | XYZ ↔ xyY                                    |
-| func_02  | Lab ↔ LCh                                    |
-| func_03  | XYZ ↔ CIELUV                                 |
-| func_04  | XYZ ↔ Oklab (direct-XYZ matrices)            |
-| func_05  | sRGB ↔ Oklab (legacy sRGB-baked matrices)    |
-| func_06  | CIE 1964 U*V*W*                              |
-| func_07  | CIE 1960 UCS & chromaticity                  |
-| func_08  | Bradford chromatic adaptation                |
-| func_09  | Delta E 76                                   |
-| func_10  | Delta E 94 (`De94Params`)                    |
-| func_11  | Delta E CMC(l:c)                             |
-| func_12  | DIN99                                        |
-| func_13  | spectral pipeline (SPD → sRGB)               |
-| func_14  | photometry engine                            |
-| func_15  | shape handling & broadcasting (`map_pairs`)  |
+## Module map
+
+The port-task numbering `func_01`–`func_16` became descriptive filenames in
+0.6.22 (R6.6). The **Was** column is the decoder ring: the port records on this
+page and its siblings (`func_NN_*.md`) are dated documents and keep their
+original names, as does the `func_01–16` catalog in §11 of the code review.
+
+| Module            | Was      | Conversion / metric                       |
+|-------------------|----------|-------------------------------------------|
+| `xyy`             | func_01  | XYZ ↔ xyY                                   |
+| `lch`             | func_02  | Lab ↔ LCh                                   |
+| `luv`             | func_03  | XYZ ↔ CIELUV                                |
+| `oklab_xyz`       | func_04  | XYZ ↔ Oklab (direct-XYZ matrices)           |
+| `oklab_srgb`      | func_05  | sRGB ↔ Oklab (legacy sRGB-baked matrices)   |
+| `uvw1964`         | func_06  | CIE 1964 U*V*W*                             |
+| `ucs1960`         | func_07  | CIE 1960 UCS & chromaticity                 |
+| `bradford`        | func_08  | Bradford chromatic adaptation               |
+| `delta_e_76`      | func_09  | Delta E 76                                  |
+| `delta_e_94`      | func_10  | Delta E 94 (`De94Params`)                   |
+| `delta_e_cmc`     | func_11  | Delta E CMC(l:c)                            |
+| `din99`           | func_12  | DIN99                                       |
+| `spectral_srgb`   | func_13  | spectral pipeline (SPD → sRGB)              |
+| `photometry`      | func_14  | photometry engine                           |
+| `shapes`          | func_15  | shape handling & broadcasting (`map_pairs`) |
+| `delta_e_2000`    | func_16  | CIEDE2000                                   |
+
+The single-digit `func_0`–`func_5` that appear in `smatrix/` are the *numba
+reference implementation's* module names — a different numbering, imported by
+name by the parity tests, and untouched by this rename.
 
 The foundational sRGB↔XYZ and XYZ↔Lab conversions plus transfer functions live
 in `common.rs`; generated matrices in `matrices.rs`.
@@ -43,7 +54,7 @@ cargo build
 cargo test     # 55 unit + 15 parity + 15 doc tests, all pass
 ```
 Parity vs the Python reference: worst-case deviation anywhere is **2.5e-14**
-(func_03 CIELUV), otherwise mostly exactly 0 — machine precision.
+(`luv`, CIELUV), otherwise mostly exactly 0 — machine precision.
 
 ### Optional `parallel` feature (rayon)
 `rayon-core` 1.13 needs `rustc >= 1.80`. Built/tested on rustc/cargo **1.75**
