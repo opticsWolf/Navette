@@ -59,6 +59,13 @@ ALLOWLIST = {
     "build_scan_sites", "cleanup_design", "remove_thin_layers",
     "inflate_design", "qwot_nm", "qwot_to_thickness", "round_to_qwot",
     "thickness_to_qwot", "levenberg_marquardt",
+    # analytic-Jacobian internals (R4.5): reachable from Python through the
+    # `jacobian="analytic"` LM path and `optimize_thicknesses_report`, never
+    # as standalone entry points. `levenberg_marquardt_with` needs a
+    # `JacobianSource`, which is a Rust trait; `assemble_jacobian` and
+    # `deposit_channel` are the two halves' seam, exercised by the cargo
+    # cross-check against finite differences.
+    "levenberg_marquardt_with", "assemble_jacobian", "deposit_channel",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

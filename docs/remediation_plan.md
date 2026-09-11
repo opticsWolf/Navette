@@ -67,7 +67,7 @@ coverage is thin.
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; item B (R4.4c) open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
-| R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | **increment i (merit rows) DONE (0.6.8)**; increment ii (deposits + J assembly) open | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
+| ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
@@ -1028,7 +1028,7 @@ and FD Jacobian untouched. What the plan did not say:
 
 ---
 
-### R4.5 Analytic Jacobian for the refold optimizer — assemble J from the verified deposit chain — increment i DONE (0.6.8)
+### R4.5 Analytic Jacobian for the refold optimizer — assemble J from the verified deposit chain — DONE (0.6.8 + 0.6.9)
 
 **Review:** §3.6 (`build_jacobian` is central-difference: **2·n full residual evaluations per LM iteration**, thick_opt.rs:305 called at :160), §19.1 (the analytic chain is independently verified: fold evaluator 2e-16, end-to-end gradient 2e-8–7e-7 vs solver FD, dispersion ladder bit-exact), §20.2 (the deposit machinery exists in the Rust fold).
 
@@ -1105,6 +1105,69 @@ and FD Jacobian untouched. What the plan did not say:
   number wherever the row is evaluated, so that pair pins the interpolation
   weights and nothing else. The test now also runs `Log`, which pins the point
   the derivative is taken *at*.
+
+**CORRECTIONS / NOTES (0.6.9) — increment ii, and R4.5 is DONE.** Items 1, 3,
+4 and 5 shipped: per-point deposits, a materialized m×n J, `jacobian =
+"analytic" | "fd"` with analytic the default, and the determinism contract.
+Both required tests exist (the per-element cross-check and the coverage test),
+and the bench gate reports which path ran.
+
+* **The thickness derivative did not need new solver work — it is the needle
+  operator with the needle material set to the host's own index.** Growing
+  film *j* by δ is inserting a slab of *n_j* inside layer *j*: r₁₂ = 0, so ρ̂
+  vanishes and τ̂ = iβ_j is the bare propagation slope. `needle_slopes4_ddz`
+  then differentiates the whole block through the same dual-number
+  composition, which is why the first run of the cross-check agreed with
+  finite differences to ~1e-9 without a single correction. The plan's item 1
+  says "already produced by the sweep — no new solver work, reuse the pass";
+  that is right about the *machinery* and wrong about the cost (below).
+* **The impact estimate is too optimistic and should be restated.** "2n solver
+  sweeps → 1 per LM iteration" is not what happens: the deposits need a
+  `StackFields` decomposition per point *and* polarization, so an analytic
+  iteration is about **three** sweeps against **2n + 1** for the differenced
+  one. Measured at ten films, iteration for iteration: **1.7× wall-clock and
+  16× fewer residual evaluations**. The evaluation ratio keeps growing with n;
+  the wall-clock ratio approaches ~(2n+1)/3. The claim that does hold in full
+  is the second one — the columns are exact, with no difference noise near the
+  optimum.
+* **A residual row reads a LIST of curve values, which is what made the split
+  worth it** (see the 0.6.8 note). The assembly therefore accumulates per row
+  and the absorption case (two channels) is its own test.
+* **Item 4's "analytic the default when deposit coverage exists" is decided
+  per run, not per build.** `JacobianSource::fill` answers `Ok(None)` for a
+  spec with uncovered rows and the driver differences that iteration —
+  visibly, via `LmResult::analytic_jacobians`. Declining and *failing* are
+  separate: a source that errors aborts the run, because a Jacobian that
+  cannot be built is a different fact from one that does not apply.
+* **Which path ran is now observable rather than inferred.**
+  `LmResult::analytic_jacobians` and the new
+  `SmatrixContext::optimize_thicknesses_report` (bound as
+  `optimize_thicknesses_report`) exist because the plan's "update the bench to
+  assert which jacobian path ran" is not possible otherwise — a timing cannot
+  tell a fast analytic run from a silent fallback. The report also carries
+  `termination` and `gain_ratio`, which is what the correction below needed.
+* **No pinned optimum moved.** The whole cargo suite and the whole Python
+  suite pass unchanged with analytic as the default, so risk (a)'s §8 triage
+  had nothing to triage. The bit-exactness fingerprint is unchanged:
+  `simulate_with_deposits` shares the sweep with `simulate` and returns the
+  same bits, which is itself a test.
+* **A correction to `validation/review/lm_check.py`, found by this change.**
+  Part A2's "the engine's answer is a fixed point of itself" was, on the
+  far-start cases, testing the iteration cap: at the default 200 iterations
+  both solvers are still crawling, and a run that stopped on
+  `MAX_ITERATIONS_REACHED` has not claimed a stationary point. The analytic
+  path exposed it by taking a different route through the same flat valley
+  (a few parts in 10⁵ behind at iteration 200). The harness now gives those
+  cases room and checks the termination criterion explicitly; with room, both
+  paths converge to the same cost and both are fixed points.
+* **Eight deliberate breaks, all caught**: the T deposit losing its flux
+  factor, differentiating the forward amplitude instead of the backward one,
+  the film index not offset past the ambient, the factor of two in d|z|²/dd,
+  the needle taking the ambient's index instead of the host's, a transposed J,
+  a row keeping only its last term, and the coverage gate removed.
+* **What R4.6 inherits.** TRF consumes the same `J` — `JacobianSource` is the
+  seam, and a TRF backend gets the analytic Jacobian for free by taking the
+  same argument.
 
 ### R4.6 TRF backend — trust-region-reflective, the bounded-LS reference method
 

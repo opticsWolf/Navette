@@ -78,6 +78,26 @@ pub struct LmConfig {
     /// the angle form does not change its mind when a parameter is rescaled,
     /// which ‖Jᵀr‖∞ does.
     pub gtol_scale_invariant: bool,
+    /// Where the Jacobian comes from, when the caller has an analytic one to
+    /// offer. Honoured by whoever supplies the `JacobianSource` — the driver
+    /// itself only ever has the residual closure, so a run with no source is
+    /// finite-difference regardless.
+    pub jacobian: JacobianMode,
+}
+
+/// Which Jacobian the thickness optimizer should use.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum JacobianMode {
+    /// The analytic Jacobian when the problem is fully covered by it, and
+    /// central differences for the rows it cannot express (phase targets,
+    /// color demands). The default: exact where it applies, and it costs a
+    /// constant number of solver sweeps instead of 2n.
+    #[default]
+    Analytic,
+    /// Central differences throughout — the pre-0.6.9 behaviour, kept as the
+    /// cross-check oracle and as the escape hatch if an analytic chain is
+    /// ever suspected.
+    Fd,
 }
 
 /// How the damping parameter λ is updated between trial steps.
@@ -107,7 +127,33 @@ impl Default for LmConfig {
             lambda_down: 3.0,
             damping: LmDamping::GainRatio,
             gtol_scale_invariant: true,
+            jacobian: JacobianMode::Analytic,
         }
+    }
+}
+
+/// An analytic Jacobian the driver can ask for instead of differencing.
+///
+/// Kept as a trait rather than a closure because the driver holds it across
+/// rayon-parallel residual evaluations: `Sync` is the requirement, and a
+/// named trait makes it one the compiler states rather than one the caller
+/// discovers.
+pub trait JacobianSource: Sync {
+    /// Fill `jac` row-major (m×n) with ∂r_i/∂x_j at `x` and return `m`.
+    ///
+    /// `Ok(None)` means "not this problem" — the driver falls back to central
+    /// differences for that iteration, which is how a spec with rows the
+    /// analytic chain cannot express still runs.
+    fn fill(&self, x: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String>;
+}
+
+/// The absence of one. `levenberg_marquardt` is `levenberg_marquardt_with`
+/// against this.
+pub struct NoJacobian;
+
+impl JacobianSource for NoJacobian {
+    fn fill(&self, _x: &[f64], _jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
+        Ok(None)
     }
 }
 
@@ -145,6 +191,13 @@ pub struct LmResult {
     /// λ by, surfaced so a synthesis that stalls at its bounds can be told
     /// apart from one that is simply finished.
     pub gain_ratio: f64,
+    /// How many of the run's Jacobians came from the analytic source. `0` is
+    /// a fully differenced run; anything else means the source supplied at
+    /// least that many. Note it counts Jacobian *builds*, which is one more
+    /// than `iterations` when the run ends on the gradient test — the last
+    /// Jacobian is what proved the point was stationary. The bench asserts on
+    /// this rather than inferring the path from a timing.
+    pub analytic_jacobians: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +218,28 @@ pub fn levenberg_marquardt<F>(
 ) -> Result<LmResult, String>
 where
     F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
+{
+    levenberg_marquardt_with(residuals, None::<&NoJacobian>, x0, lb, ub, cfg)
+}
+
+/// As [`levenberg_marquardt`], with an analytic Jacobian the driver prefers
+/// over central differences whenever the source supplies one.
+///
+/// The source is asked once per iteration, at the current `x`. Declining
+/// (`Ok(None)`) costs nothing but the fallback; erroring aborts the run, on
+/// the grounds that a Jacobian that cannot be built is a different fact from
+/// one that does not apply.
+pub fn levenberg_marquardt_with<F, J>(
+    residuals: &F,
+    jacobian: Option<&J>,
+    x0: &[f64],
+    lb: &[f64],
+    ub: &[f64],
+    cfg: &LmConfig,
+) -> Result<LmResult, String>
+where
+    F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
+    J: JacobianSource + ?Sized,
 {
     let n = x0.len();
     if n == 0 {
@@ -220,10 +295,30 @@ where
     let mut termination: Option<LmTermination> = None;
     let mut iteration = 0usize;
 
+    let mut analytic_jacobians = 0usize;
+
     while iteration < cfg.max_iterations {
-        // ---- Jacobian (rayon across columns, central differences) ----
-        build_jacobian(residuals, &x, &mut jac)
-            .map(|added| evals.set(evals.get() + added))?;
+        // ---- Jacobian: the analytic source if it has one for this x,
+        //      otherwise rayon across columns with central differences ----
+        let supplied = match jacobian {
+            Some(src) => src.fill(&x, &mut jac)?,
+            None => None,
+        };
+        match supplied {
+            Some(rows) => {
+                if rows != m || jac.len() != m * n {
+                    return Err(format!(
+                        "levenberg_marquardt: analytic jacobian is {rows}×{} where the                          residual vector is {m} long",
+                        if rows == 0 { 0 } else { jac.len() / rows.max(1) }
+                    ));
+                }
+                analytic_jacobians += 1;
+            },
+            None => {
+                build_jacobian(residuals, &x, &mut jac)
+                    .map(|added| evals.set(evals.get() + added))?;
+            },
+        }
 
         // ---- g = Jᵀr and the column norms, in one pass ----
         // diag(JᵀJ) is all of JᵀJ this solver needs: the Marquardt scaling
@@ -408,6 +503,7 @@ where
         evals: evals.get(),
         termination: termination.unwrap_or(LmTermination::MaxIterations),
         gain_ratio,
+        analytic_jacobians,
     })
 }
 
@@ -1419,5 +1515,172 @@ mod tests {
             .expect("degenerate run");
         assert!((res.x[0] + res.x[1] - 3.0).abs() < 1e-6,
                 "sum {} should reach 3", res.x[0] + res.x[1]);
+    }
+
+    // -- R4.5 increment ii: the analytic-Jacobian hook ----------------------
+    mod analytic_hook {
+        use super::*;
+
+        // r_i(x) = a_i·x0 + b_i·x1² − y_i, over ten rows. Nonlinear in x1,
+        // so the Jacobian genuinely moves between iterations, and exact:
+        // ∂r_i/∂x0 = a_i, ∂r_i/∂x1 = 2·b_i·x1.
+        const A: [f64; 10] = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1];
+        const B: [f64; 10] = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0, 1.15, 1.3, 1.45];
+
+        fn y_of(x: &[f64]) -> Vec<f64> {
+            (0..10).map(|i| A[i] * x[0] + B[i] * x[1] * x[1]).collect()
+        }
+
+        fn problem(y: Vec<f64>) -> impl Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync {
+            move |x: &[f64], out: &mut Vec<f64>| {
+                out.clear();
+                for i in 0..10 {
+                    out.push(A[i] * x[0] + B[i] * x[1] * x[1] - y[i]);
+                }
+                Ok(())
+            }
+        }
+
+        struct Exact;
+        impl JacobianSource for Exact {
+            fn fill(&self, x: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
+                jac.clear();
+                for i in 0..10 {
+                    jac.push(A[i]);
+                    jac.push(2.0 * B[i] * x[1]);
+                }
+                Ok(Some(10))
+            }
+        }
+
+        struct Declines;
+        impl JacobianSource for Declines {
+            fn fill(&self, _x: &[f64], _jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
+                Ok(None)
+            }
+        }
+
+        struct WrongShape;
+        impl JacobianSource for WrongShape {
+            fn fill(&self, _x: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
+                jac.clear();
+                jac.resize(14, 0.5);
+                Ok(Some(7))
+            }
+        }
+
+        struct Explodes;
+        impl JacobianSource for Explodes {
+            fn fill(&self, _x: &[f64], _jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
+                Err("no deposits for this stack".into())
+            }
+        }
+
+        fn run<J: JacobianSource>(src: Option<&J>) -> LmResult {
+            let truth = [3.0, 1.6];
+            let f = problem(y_of(&truth));
+            levenberg_marquardt_with(
+                &f,
+                src,
+                &[0.5, 0.4],
+                &[-10.0, -10.0],
+                &[10.0, 10.0],
+                &LmConfig::default(),
+            )
+            .unwrap()
+        }
+
+        #[test]
+        fn an_exact_jacobian_and_a_differenced_one_reach_the_same_optimum() {
+            // The point of the hook: the same solve, from a better J. The
+            // answers agree to well inside the difference noise, and the
+            // analytic run never calls the residual for a Jacobian probe —
+            // which is where the 2n evaluations went.
+            let a = run(Some(&Exact));
+            let b = run(None::<&NoJacobian>);
+            // One build per iteration, plus the final one that proved the
+            // gradient test — nothing in this run was differenced.
+            assert!(a.analytic_jacobians >= a.iterations, "{a:?}");
+            assert_eq!(b.analytic_jacobians, 0);
+            for j in 0..2 {
+                assert!((a.x[j] - b.x[j]).abs() < 1e-6, "{:?} vs {:?}", a.x, b.x);
+            }
+            assert!(a.cost < 1e-18 && b.cost < 1e-18, "{} / {}", a.cost, b.cost);
+            // The difference is exactly the 2n = 4 probes per Jacobian the
+            // analytic run does not make.
+            assert!(
+                b.evals >= a.evals + 4 * a.analytic_jacobians,
+                "analytic {} evals / {} jacobians, differenced {} evals",
+                a.evals, a.analytic_jacobians, b.evals
+            );
+        }
+
+        #[test]
+        fn a_source_that_declines_leaves_the_run_exactly_as_it_was() {
+            // `Ok(None)` is the fallback contract: a spec the analytic chain
+            // cannot express must still optimize, by differences, with no
+            // trace of the attempt in the answer.
+            let a = run(Some(&Declines));
+            let b = run(None::<&NoJacobian>);
+            assert_eq!(a.analytic_jacobians, 0);
+            assert_eq!(a.evals, b.evals);
+            assert_eq!(a.iterations, b.iterations);
+            for j in 0..2 {
+                assert_eq!(a.x[j].to_bits(), b.x[j].to_bits());
+            }
+        }
+
+        #[test]
+        fn a_jacobian_of_the_wrong_shape_is_refused_not_used() {
+            // A source that disagrees with the residual vector about m is a
+            // bug in the source; reading it as a Jacobian would corrupt the
+            // step silently.
+            let truth = [3.0, 1.6];
+            let f = problem(y_of(&truth));
+            let err = levenberg_marquardt_with(
+                &f,
+                Some(&WrongShape),
+                &[0.5, 0.4],
+                &[-10.0, -10.0],
+                &[10.0, 10.0],
+                &LmConfig::default(),
+            )
+            .unwrap_err();
+            assert!(err.contains("analytic jacobian"), "{err}");
+        }
+
+        #[test]
+        fn a_source_that_errors_aborts_rather_than_quietly_differencing() {
+            // Declining and failing are different facts. A failure means the
+            // caller believed it had a Jacobian and was wrong — silently
+            // carrying on would hide it behind a slower run.
+            let truth = [3.0, 1.6];
+            let f = problem(y_of(&truth));
+            let err = levenberg_marquardt_with(
+                &f,
+                Some(&Explodes),
+                &[0.5, 0.4],
+                &[-10.0, -10.0],
+                &[10.0, 10.0],
+                &LmConfig::default(),
+            )
+            .unwrap_err();
+            assert_eq!(err, "no deposits for this stack");
+        }
+
+        #[test]
+        fn the_plain_entry_point_asks_for_no_jacobian_at_all() {
+            let truth = [3.0, 1.6];
+            let f = problem(y_of(&truth));
+            let r = levenberg_marquardt(
+                &f,
+                &[0.5, 0.4],
+                &[-10.0, -10.0],
+                &[10.0, 10.0],
+                &LmConfig::default(),
+            )
+            .unwrap();
+            assert_eq!(r.analytic_jacobians, 0);
+        }
     }
 }

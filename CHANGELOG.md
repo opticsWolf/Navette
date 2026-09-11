@@ -3,6 +3,97 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.9] — The thickness optimizer stops guessing its own Jacobian (R4.5, increment ii)
+
+`build_jacobian` was central differences: **2n full residual evaluations per
+LM iteration**, each one a complete solver sweep over the angle × wavelength
+grid, and each column carrying the difference noise that matters most exactly
+where it hurts — small steps near an optimum (review §3.6). The Jacobian is
+now assembled analytically:
+
+```text
+    J[i,k] = Σ_terms  ∂r_i/∂(curve value) · ∂(curve value)/∂d_k
+```
+
+with the left factor from 0.6.8's `MeritSpec::curve_sensitivity` and the right
+from the same solver sweep that produces the curves. Analytic is the default;
+`jacobian="fd"` restores the differences.
+
+**No pinned optimum moved** — the whole cargo and Python suites pass unchanged,
+so the §8 golden protocol had nothing to triage — and the S-matrix engine's
+bit-exactness fingerprint is unchanged.
+
+### Changed
+
+- **`LmConfig.jacobian`** (`"analytic"` default, `"fd"`) chooses the path. The
+  analytic one applies when every residual row is covered by the sensitivity
+  chain; a spec with a phase target or a color demand declines *per run* and
+  is differenced, so the setting is a preference, not a promise.
+- **The thickness derivative is the needle operator with the needle material
+  set to the host's own index.** Growing film *j* by δ is inserting a slab of
+  *n_j* inside layer *j*: r₁₂ vanishes, ρ̂ with it, and τ̂ = iβ_j is the bare
+  propagation slope. The existing dual-number composition `U ⊗ N ⊗ L` then
+  differentiates the whole block through the same Redheffer star product the
+  forward solver uses — every multiple-reflection path included, no
+  hand-expanded algebra, and no way for the derivative to drift from the value
+  it differentiates. Intensities follow the solver's own `finalize`: R = |r_f|²
+  and T = |t_back|²·f_back, with the boundary-admittance factor constant under
+  a film thickness and riding outside the derivative.
+
+### Added
+
+- **`SmatrixContext::simulate_with_deposits`** — the simulate that also reads
+  off ∂(Rs, Rp, Ts, Tp)/∂(thickness) per grid point. The curves come back
+  bit-identical to `simulate`'s, which is a test, not a hope.
+- **`synthesis::jacobian`** — `CurveDeposits` and `assemble_jacobian`, the seam
+  where the two halves meet. J is materialized m×n with per-destination writes
+  and a fixed accumulation order per row: no cross-point reduction, nothing
+  whose order depends on scheduling (§13).
+- **`SmatrixContext.optimize_thicknesses_report(stack)`** → `(merit, report)`,
+  with `iterations`, `evals`, `cost`, `termination`, `gain_ratio` and
+  **`analytic_jacobians`** — how many of the run's Jacobians came from the
+  analytic chain. Which path ran is now something a caller can *ask*, rather
+  than infer from a timing; the bench and the fallback tests assert on it.
+- **`levenberg_marquardt_with`** and the `JacobianSource` trait. A source may
+  supply a Jacobian, decline (`Ok(None)` → difference this iteration), or fail
+  (`Err` → abort). Declining and failing are deliberately different: a source
+  that believed it had a Jacobian and was wrong should not hide behind a
+  slower run.
+- **Cargo tests** — the per-element analytic-vs-FD cross-check the plan names
+  as required (deposits against `simulate` differenced in thickness space, and
+  the assembled J against `residuals` differenced the same way: worst relative
+  deviation ~1e-9), the coverage test at the seam the optimizer uses, the
+  absorption two-channel row, and five driver-level tests of the hook.
+- **`validation/smoke/test_analytic_jacobian.py`** — the end-to-end half, CI's
+  subset: the two modes reach the same optimum, the report says which ran, a
+  phase demand falls back and says so.
+- **`bench_refold.py`** grew a Jacobian section. At ten films, iteration for
+  iteration: **1.7× wall-clock, 16× fewer residual evaluations**.
+
+### Notes
+
+- **The speedup is not 2n, and the plan's estimate needs correcting.** Building
+  the deposits costs one `StackFields` decomposition per point *and*
+  polarization, so an analytic iteration is roughly three solver sweeps rather
+  than one — against 2n + 1 for the differenced one. That is 1.7× at n = 10,
+  not 20×. What does scale as promised is the residual evaluation count (16×
+  fewer at n = 10, and it keeps growing with the stack) and, more importantly,
+  the noise: the columns are exact.
+- **`validation/review/lm_check.py`'s A2 stationarity check was testing the
+  iteration cap.** At the default 200 iterations, both solvers are still
+  crawling on the far-start cases — a run that stopped on `MaxIterations` has
+  not claimed a stationary point, so asserting one of it says nothing about
+  the optimizer. The harness now gives those cases room to converge and checks
+  the termination criterion explicitly. (The analytic path is what exposed
+  this: it takes a different path through the same flat valley and was a few
+  parts in 10⁵ behind at iteration 200. With room, both converge to the same
+  cost and both are fixed points.)
+- Eight deliberate breaks, all caught: the T deposit losing its flux factor,
+  differentiating the forward amplitude instead of the backward one, the film
+  index not offset past the ambient, the factor of two in d|z|²/dd, the needle
+  taking the ambient's index instead of the host's, a transposed J, a row
+  keeping only its last term, and the coverage gate removed.
+
 ## [0.6.8] — Every residual row can say what it depends on (R4.5, increment i)
 
 The merit half of the analytic Jacobian. `MeritSpec` can now report, for each

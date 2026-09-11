@@ -47,7 +47,7 @@ from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
 from navette.synthesis import build_merit_spec
 from navette.synthesis.pipeline import stack_from_layers
-from navette._smatrix import SmatrixContext
+from navette._smatrix import LmConfig, SmatrixContext
 
 # The engine's own defaults for a thickness optimization.
 CLAMP_MIN = 2.0
@@ -57,6 +57,9 @@ CLAMP_MAX = 1000.0
 # and then the parameter count differs between the two solvers and there is
 # nothing left to compare. Removal is Navette's contract, not the LM's.
 NO_REMOVAL_MIN = 1e-9
+# Far-start cases need more than the 200-iteration default to converge; see
+# the note in part A2.
+FAR_ITERS = 2000
 
 FAILURES = []
 
@@ -103,12 +106,15 @@ def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
     return sp.x.copy(), float(np.sum(sp.fun ** 2)), sp
 
 
-def run_engine(spec, wl, angles, layers, names, x0, clamp_max):
-    ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max)
+def run_engine(spec, wl, angles, layers, names, x0, clamp_max,
+               max_iterations=200):
+    ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max,
+                         LmConfig(max_iterations=max_iterations))
     stack, _ = stack_from_layers(
         [(m, float(d)) for (m, _), d in zip(layers, x0)], wl, {}, names=names)
-    cost = ctx.optimize_thicknesses(stack)
-    return np.array([f["thickness"] for f in stack.films()]), float(cost)
+    cost, report = ctx.optimize_thicknesses_report(stack)
+    return (np.array([f["thickness"] for f in stack.films()]), float(cost),
+            report)
 
 
 def part_a():
@@ -147,7 +153,7 @@ def part_a():
 
         sx, scost, sp = run_scipy(spec, wl, angles, layers, names,
                                   perturbed, CLAMP_MAX)
-        ex, ecost = run_engine(spec, wl, angles, layers, names,
+        ex, ecost, _ = run_engine(spec, wl, angles, layers, names,
                                perturbed, CLAMP_MAX)
 
         print(f"    [{label}]  from {np.round(perturbed, 3)}")
@@ -183,8 +189,15 @@ def part_a():
         x0 = [d for _, d in films]
 
         sx, scost, _ = run_scipy(spec, wl, angles, layers, names, x0, CLAMP_MAX)
-        ex, ecost = run_engine(spec, wl, angles, layers, names, x0, CLAMP_MAX)
-        _, ecost2 = run_engine(spec, wl, angles, layers, names, ex, CLAMP_MAX)
+        # Far starts need room. At the default 200 iterations both solvers
+        # are still crawling on these problems -- a run that stopped on
+        # MAX_ITERATIONS has not claimed a stationary point, so asserting one
+        # of it would be testing the iteration cap, not the optimizer. Give
+        # it enough to converge, and say below which criterion it used.
+        ex, ecost, erep = run_engine(spec, wl, angles, layers, names, x0,
+                                     CLAMP_MAX, max_iterations=FAR_ITERS)
+        _, ecost2, _ = run_engine(spec, wl, angles, layers, names, ex,
+                                  CLAMP_MAX, max_iterations=FAR_ITERS)
 
         ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, CLAMP_MAX)
         st0, _ = stack_from_layers(layers, wl, {}, names=names)
@@ -192,10 +205,14 @@ def part_a():
 
         same_basin = close(ecost, scost, rel=1e-6, abs_=1e-12)
         print(f"    [{label}]  start {cost0:.6g}  ->  engine {ecost:.8g}  "
-              f"scipy {scost:.8g}  {'(same basin)' if same_basin else '(different basins)'}")
+              f"scipy {scost:.8g}  {'(same basin)' if same_basin else '(different basins)'}"
+              f"  [{erep['termination']} in {erep['iterations']} iters, "
+              f"{erep['analytic_jacobians']} analytic J]")
 
         check(f"A2/{label}: engine improved on its start", ecost < cost0,
               f"{ecost:.6g} < {cost0:.6g}")
+        check(f"A2/{label}: engine converged rather than running out of room",
+              erep["termination"] != "MaxIterations", erep["termination"])
         check(f"A2/{label}: engine answer is stationary",
               ecost2 >= ecost - 1e-6 * max(abs(ecost), 1e-12),
               f"re-run {ecost2:.10g} vs {ecost:.10g}")

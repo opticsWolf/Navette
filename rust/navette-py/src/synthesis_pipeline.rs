@@ -29,7 +29,7 @@ use navette::smatrix::synthesis::cycle::{ContrastMap, NeedleCycleConfig};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
 use navette::smatrix::synthesis::structure::{DesignStack, LayerSpec};
-use navette::smatrix::synthesis::thick_opt::{LmConfig, LmDamping};
+use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
 
@@ -593,7 +593,8 @@ impl PyLmConfig {
     #[new]
     #[pyo3(signature = (max_iterations=200, max_evals=100_000, ftol=1e-12, xtol=1e-12,
                         gtol=1e-10, lambda_init=1e-3, lambda_up=5.0, lambda_down=3.0,
-                        damping="gain_ratio", gtol_scale_invariant=true))]
+                        damping="gain_ratio", gtol_scale_invariant=true,
+                        jacobian="analytic"))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_iterations: usize,
@@ -606,6 +607,7 @@ impl PyLmConfig {
         lambda_down: f64,
         damping: &str,
         gtol_scale_invariant: bool,
+        jacobian: &str,
     ) -> PyResult<Self> {
         for (name, v) in [("ftol", ftol), ("xtol", xtol), ("gtol", gtol),
                           ("lambda_init", lambda_init), ("lambda_up", lambda_up),
@@ -626,6 +628,15 @@ impl PyLmConfig {
                 )))
             },
         };
+        let jacobian = match jacobian {
+            "analytic" => JacobianMode::Analytic,
+            "fd" => JacobianMode::Fd,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "jacobian must be 'analytic' or 'fd', got {other:?}"
+                )))
+            },
+        };
         Ok(PyLmConfig {
             inner: LmConfig {
                 max_iterations,
@@ -638,14 +649,16 @@ impl PyLmConfig {
                 lambda_down,
                 damping,
                 gtol_scale_invariant,
+                jacobian,
             },
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?})",
-            self.inner.max_iterations, self.inner.ftol, self.inner.damping
+            "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?}, jacobian={:?})",
+            self.inner.max_iterations, self.inner.ftol, self.inner.damping,
+            self.inner.jacobian
         )
     }
 }
@@ -860,6 +873,42 @@ impl PySmatrixContext {
             move || inner.optimize_thicknesses(st)
         })
         .map_err(PyValueError::new_err)
+    }
+
+    /// `optimize_thicknesses`, plus the solver's own account of the run.
+    ///
+    /// Returns `(merit, report)`. `report` is `None` when the stack had no
+    /// optimize-flagged films (nothing was solved). Otherwise a dict:
+    /// `iterations`, `evals` (residual evaluations, Jacobian probes
+    /// included), `cost` (Σr² at the optimum), `termination`, `gain_ratio`
+    /// (ρ of the last accepted step, NaN if none was), and
+    /// `analytic_jacobians` — how many of the run's Jacobians came from the
+    /// analytic chain rather than central differences. Zero means the run was
+    /// differenced throughout, whether by configuration (`jacobian="fd"`) or
+    /// because the spec has rows the analytic chain cannot express.
+    fn optimize_thicknesses_report(
+        &mut self,
+        py: Python<'_>,
+        stack: &mut PyDesignStack,
+    ) -> PyResult<(f64, Option<Py<PyDict>>)> {
+        let (mf, rep) = py
+            .detach({
+                let inner = &mut self.inner;
+                let st = &mut stack.inner;
+                move || inner.optimize_thicknesses_report(st)
+            })
+            .map_err(PyValueError::new_err)?;
+        let Some(r) = rep else {
+            return Ok((mf, None));
+        };
+        let d = PyDict::new(py);
+        d.set_item("iterations", r.iterations)?;
+        d.set_item("evals", r.evals)?;
+        d.set_item("cost", r.cost)?;
+        d.set_item("termination", format!("{:?}", r.termination))?;
+        d.set_item("gain_ratio", r.gain_ratio)?;
+        d.set_item("analytic_jacobians", r.analytic_jacobians)?;
+        Ok((mf, Some(d.unbind())))
     }
 }
 

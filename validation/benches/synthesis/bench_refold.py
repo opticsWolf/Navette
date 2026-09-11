@@ -32,7 +32,8 @@ from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
 from navette.synthesis import build_merit_spec, build_needle_targets
 from navette.synthesis.pipeline import run_needle, stack_from_layers
-from navette._smatrix import NeedleCycleConfig, PipelineConfig, SmatrixContext
+from navette._smatrix import (LmConfig, NeedleCycleConfig, PipelineConfig,
+                              SmatrixContext)
 
 WL = np.array([900., 1000., 1100.])
 ANGS = np.array([0.0])
@@ -119,6 +120,56 @@ def main():
     print(f"  one LM opt:    {dt_opt * 1e3:8.3f} ms")
     print(f"  re-fold / LM:  {(dt_sim + dt_fold) / dt_opt * 100:.1f}%")
     check("refold_cheaper_than_opt", dt_sim + dt_fold < dt_opt)
+
+
+    print("--- jacobian: analytic vs central differences (10 films) ---")
+    # The 1-film problem above cannot show this: n = 1 means the differenced
+    # Jacobian costs 2 residual evaluations, and there is nothing to save.
+    # The deep stack is where the 2n scaling lives.
+    n_films = 10
+    deep = [(MaterialSpec("Konstant", dict(n=2.30 if i % 2 == 0 else 1.46)),
+             90.0 + 7.0 * i) for i in range(n_films)]
+    names = [f"L{i}" for i in range(n_films)]
+    tc2 = TargetCollection()
+    tc2.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R",
+                           kind="e", weight=1.0))
+    spec2 = build_merit_spec(tc2)
+
+    def timed_opt(mode, repeats=3):
+        best, rep_best = float("inf"), None
+        for _ in range(repeats):
+            st, _ = stack_from_layers(deep, WL, {}, names=names)
+            c = SmatrixContext(spec2, ANGS, WL,
+                               lm=LmConfig(jacobian=mode, max_iterations=60))
+            t0 = time.perf_counter()
+            mf, rep = c.optimize_thicknesses_report(st)
+            dt = time.perf_counter() - t0
+            if dt < best:
+                best, rep_best, mf_best = dt, rep, mf
+        return best, rep_best, mf_best
+
+    dt_an, rep_an, mf_an = timed_opt("analytic")
+    dt_fd, rep_fd, mf_fd = timed_opt("fd")
+    for label, dt, rep, mf in (("analytic", dt_an, rep_an, mf_an),
+                               ("fd      ", dt_fd, rep_fd, mf_fd)):
+        print(f"  {label}: {dt * 1e3:8.2f} ms  mf={mf:.6e}  "
+              f"iters={rep['iterations']:3d}  evals={rep['evals']:5d}  "
+              f"analytic_J={rep['analytic_jacobians']:3d}")
+    print(f"  speedup: {dt_fd / dt_an:.2f}x   evals: "
+          f"{rep_fd['evals'] / max(rep_an['evals'], 1):.1f}x fewer")
+    print("  (iteration-capped on both sides: this is a cost-per-iteration "
+          "comparison — the merits differ because an exact Jacobian takes a "
+          "different path, not because one solver is wrong)")
+    # Which path ran is asserted, not inferred from the timing: a silent
+    # fallback would show up here as a fast run that never used the chain.
+    check("analytic_path_ran", rep_an["analytic_jacobians"] > 0,
+          f"analytic_jacobians={rep_an['analytic_jacobians']}")
+    check("fd_path_differenced", rep_fd["analytic_jacobians"] == 0,
+          f"analytic_jacobians={rep_fd['analytic_jacobians']}")
+    check("analytic_costs_fewer_evals", rep_an["evals"] < rep_fd["evals"],
+          f"{rep_an['evals']} vs {rep_fd['evals']}")
+    check("analytic_not_slower", dt_an <= dt_fd,
+          f"{dt_an * 1e3:.2f} ms vs {dt_fd * 1e3:.2f} ms")
 
     print("ALL OK" if not FAILURES else f"MISMATCH {FAILURES}")
     return 1 if FAILURES else 0
