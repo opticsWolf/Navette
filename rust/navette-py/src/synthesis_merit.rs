@@ -269,7 +269,14 @@ pub(crate) fn rotate_rows(rows: Vec<Complex64>, rot: Vec<Complex64>) -> PyResult
 
 /// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major).
 /// Returns a dict with `r/t/a/rb/tb/ab` pairs plus `phi0..phi3` (one pair
-/// per S-matrix channel — emit one `P_PHI` call per used channel).
+/// per S-matrix channel — emit one `P_PHI` call per used channel), plus
+/// `grads_r`/`grads_t`: the Option-B color buckets (`dF/dcurve` per
+/// angle-major point, weight/residual/U-curve-half already folded in).
+/// They are NOT a target/weight pair — pass them straight to
+/// `needle_gradient`'s `grads_r`/`grads_t`, which deposits them into the
+/// `P` / `P_T` channels. All-zero when the spec has no color demands.
+/// Omitting them is what made the documented Python fold →
+/// `needle_gradient` flow return a silent-zero color gradient (R4.2).
 #[pyfunction]
 #[pyo3(signature = (spec, angles, wavelengths, sim=None))]
 pub fn build_needle_targets(
@@ -300,6 +307,8 @@ pub fn build_needle_targets(
     pair(py, "rb", nt.rb)?;
     pair(py, "tb", nt.tb)?;
     pair(py, "ab", nt.ab)?;
+    d.set_item("grads_r", PyArray::from_vec(py, nt.grad_r))?;
+    d.set_item("grads_t", PyArray::from_vec(py, nt.grad_t))?;
     for (i, p) in nt.phi.into_iter().enumerate() {
         // Exact dM/dD correction for differential demands (0.0 otherwise):
         // subtract from the assembled P_PHI gradient (see `needle_gradient`

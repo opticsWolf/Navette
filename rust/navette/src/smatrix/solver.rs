@@ -276,6 +276,10 @@ impl Solver {
   /// Needle-operator gradients over the solver's own grid and stack.
   /// Per-point target/weight inputs are scalars (broadcast) or full
   /// angle-major vectors; `None` means target 0 / weight 1.
+  ///
+  /// `grads_r`/`grads_t` are the Option-B color buckets (`dF/dcurve` per
+  /// point, from `build_needle_targets`), not a target/weight pair; they
+  /// default to 0 and are deposited into `P` / `P_T`.
   #[allow(clippy::too_many_arguments)]
   pub fn needle_gradient(
     &self,
@@ -297,6 +301,8 @@ impl Solver {
     weights_rb: Option<&[f64]>,
     targets_ab: Option<&[f64]>,
     weights_ab: Option<&[f64]>,
+    grads_r: Option<&[f64]>,
+    grads_t: Option<&[f64]>,
     start_idx: usize,
     end_idx: Option<usize>,
     channel: usize,
@@ -331,6 +337,8 @@ impl Solver {
       weights_rb,
       targets_ab,
       weights_ab,
+      grads_r,
+      grads_t,
       start_idx,
       end_idx,
       channel,
@@ -721,6 +729,8 @@ pub fn needle_gradient(
     weights_rb: Option<&[f64]>,
     targets_ab: Option<&[f64]>,
     weights_ab: Option<&[f64]>,
+    grads_r: Option<&[f64]>,
+    grads_t: Option<&[f64]>,
     start_idx: usize,
     end_idx: Option<usize>,
     channel: usize,
@@ -876,6 +886,45 @@ pub fn needle_gradient(
     let target_ab_of = |k: usize| tgt_ab.as_ref().map(|t| t[k]).unwrap_or(0.0);
     let weight_ab_of = |k: usize| wgt_ab.as_ref().map(|t| t[k]).unwrap_or(1.0);
 
+    // ---- R4.2: Option-B color gradient buckets ----------------------------
+    // `grads_r`/`grads_t` are NOT a (target, weight) pair: each entry is the
+    // chain-rule factor g = dF/dcurve for one solver point, already carrying
+    // the demand's weight, its current residual and the U-curve half. They
+    // ride the R and T channels, exactly as `needle_pass::needle_pass_scan`
+    // adds them into its single accumulator, so a caller that folds a color
+    // demand in Python gets the same number the native pipeline computes.
+    //
+    // Default 0.0, not 1.0: absent color demands must deposit nothing.
+    let grd_r = load_pair(&grads_r, "grads_r")?;
+    let grd_t = load_pair(&grads_t, "grads_t")?;
+    let grad_r_of = |k: usize| grd_r.as_ref().map(|g| g[k]).unwrap_or(0.0);
+    let grad_t_of = |k: usize| grd_t.as_ref().map(|g| g[k]).unwrap_or(0.0);
+    // A color bucket can only be deposited onto a channel that is being
+    // computed. Dropping it silently would reproduce the very bug this
+    // exists to fix -- a color demand optimized against, with no error and
+    // a gradient of zero -- so say so instead. An all-zero array is not a
+    // demand and passes: callers hand the fold's arrays through unfiltered.
+    let any_nonzero = |v: &Option<Vec<f64>>| {
+        v.as_ref().is_some_and(|a| a.iter().any(|&x| x != 0.0))
+    };
+    if any_nonzero(&grd_r) && !want_p {
+        return Err(String::from(
+            "grads_r carries non-zero color deposits but NREQ_P was not requested; the R-channel gradient they belong to is not being computed"
+        ));
+    }
+    if any_nonzero(&grd_t) && !want_pt {
+        return Err(String::from(
+            "grads_t carries non-zero color deposits but NREQ_P_T was not requested; the T-channel gradient they belong to is not being computed"
+        ));
+    }
+    for (name, v) in [("grads_r", &grd_r), ("grads_t", &grd_t)] {
+        if let Some(a) = v {
+            if let Some(i) = a.iter().position(|x| !x.is_finite()) {
+                return Err(format!("{name}[{i}] is not finite ({})", a[i]));
+            }
+        }
+    }
+
     // Incoherent flags only needed for the multiblock path.
     let want_any_pmb =
         want_pmb || want_pmb_t || want_pmb_a || want_pmb_tb || want_pmb_rb || want_pmb_ab;
@@ -987,17 +1036,40 @@ pub fn needle_gradient(
                             lam, nsin_fi, pol,
                         );
                         if want_p {
-                            o.p[pi] = Some(p_coherent_from_fields(
+                            let mut v = p_coherent_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c, tgt_k, wgt_k,
                                 thicknesses, start_idx, idx_end, z_grid,
-                            ));
+                            );
+                            // Color deposit onto the same channel. Zero-skip
+                            // is the native pattern (needle_pass.rs:889): a
+                            // color-free call pays one float compare a point.
+                            let g = grad_r_of(k);
+                            if g != 0.0 {
+                                for (zi, c) in p_coherent_grad_r_from_fields(
+                                    &fields, nsin_fi, lam, pol, np_c, g,
+                                    thicknesses, start_idx, idx_end, z_grid,
+                                ).into_iter().enumerate() {
+                                    v[zi] += c;
+                                }
+                            }
+                            o.p[pi] = Some(v);
                         }
                         if want_pt {
-                            o.pt[pi] = Some(p_coherent_t_from_fields(
+                            let mut v = p_coherent_t_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c,
                                 target_t_of(k), weight_t_of(k),
                                 thicknesses, start_idx, idx_end, z_grid,
-                            ));
+                            );
+                            let g = grad_t_of(k);
+                            if g != 0.0 {
+                                for (zi, c) in p_coherent_grad_t_from_fields(
+                                    &fields, nsin_fi, lam, pol, np_c, g,
+                                    thicknesses, start_idx, idx_end, z_grid,
+                                ).into_iter().enumerate() {
+                                    v[zi] += c;
+                                }
+                            }
+                            o.pt[pi] = Some(v);
                         }
                         if want_pa {
                             o.pa[pi] = Some(p_coherent_a_from_fields(
@@ -1987,7 +2059,7 @@ mod tests {
         &[10.0, 50.0, 90.0],
         NREQ_P,
         None, None, None, None, None, None, None, None, None, None, None, None,
-        None, None, None,
+        None, None, None, None, None,
         0, Some(2), 0, true, true, None, 0.0,
       )
       .unwrap();

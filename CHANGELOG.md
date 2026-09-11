@@ -3,6 +3,84 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.4] — Color demands were optimized against zero in Python (R4.2)
+
+The documented Python needle flow is `build_needle_targets` →
+`needle_gradient`. Every pointwise demand came through it correctly. A
+**color** demand — Lab/DE2000, White, Yellow, dominant wavelength — came
+through as a gradient of exactly zero, with no warning and no error.
+
+A color demand integrates the whole spectrum into one residual, so it has no
+per-point target to fold into the `r`/`t` (target, weight) pairs. The native
+fold emits its analytic `dF/dcurve` per solver point instead
+(`NeedleTargets.grad_r`/`grad_t`), and `needle_pass.rs` adds those into the
+same accumulator as the pointwise terms. But the **Python** dict from
+`build_needle_targets` dropped both arrays, and `needle_gradient` had no
+argument that could have accepted them — so the folded `r` pair was all
+zeros, the engine faithfully returned zero, and a caller assembling their own
+needle cycle in Python optimized a color demand against nothing.
+
+Not a crash and not a wrong shape: a silent wrong-optimizer. `run_design` was
+never affected — it folds and deposits entirely inside Rust.
+
+### Added
+
+- **`build_needle_targets` returns `"grads_r"` / `"grads_t"`** — flat `na*nw`
+  f64 arrays, the same angle-major layout as the target/weight pairs. They are
+  *not* a (target, weight) pair: each entry is the chain-rule factor
+  `g = dF/dcurve` for one solver point, with the demand's weight, its current
+  residual and the U-curve half already folded in. All-zero for a spec with no
+  color demands, so passing them unconditionally is safe.
+- **`needle_gradient` accepts `grads_r` / `grads_t`** (Python keyword, PyO3
+  method, and the free `needle_engine` entry), deposited into `P` and `P_T`
+  respectively via the existing `p_coherent_grad_r_from_fields` /
+  `p_coherent_grad_t_from_fields` kernels — the same kernels, with the same
+  zero-skip, that `needle_pass.rs:889-896` calls. The native internal path is
+  untouched; its cargo tests still pin the deposit semantics.
+- **A non-zero bucket handed to a channel that is not being computed is an
+  error**, naming the missing bit. Dropping it silently would be this same bug
+  wearing a new hat. An all-zero array is not a demand and passes, because the
+  fold hands both arrays through unfiltered. Non-finite entries are rejected by
+  index, matching the R3.1/R3.2 convention.
+- `validation/review/color_grad_python.py` (new, 24 checks, exits 1 on drift)
+  and `validation/smoke/test_color_needle_python.py` (new, 13 tests — the part
+  CI runs).
+
+### Changed
+
+- `navette.synthesis`'s module docstring — the documented flow — now shows the
+  color branch with a worked two-channel call, and says outright that omitting
+  the two kwargs loses the color contribution.
+- The Part C comment in `validation/review/color_merit_check.py` no longer
+  describes the Python dict as omitting the buckets; it now says why that
+  harness deliberately keeps hand-assembling the chain rule (it is the oracle
+  the new harness is checked against, so it must not consume the engine's
+  own answer).
+
+### Evidence
+
+`grads_r` vs a central-difference `dF/dR` on the sim row: max relative
+deviation **7.1e-10** across all 31 points. The deposit against the pointwise
+kernel driven to the same scalar (`g·P_ref/(2R)`, the two differ only in one
+factor): **2.3e-15 … 3.1e-15** — 1e-12 is a real bound here, not a rounded
+1e-6. End to end, `dF/d(thickness)` through the Python path against a
+thickness FD of the merit, for all three layers: **1.6e-8 … 1.7e-7**; against
+`color_merit_check.py`'s hand-assembled chain rule: **8.3e-16 … 9.4e-16**.
+Superposition `P(pointwise + color) = P(pointwise) + P(color)` is bit-exact.
+
+Teeth proven by disabling the R deposit and rebuilding: 2 of the 13 smoke
+tests and 10 of the 24 harness checks fail; restored and re-verified.
+
+### Known gaps
+
+- Only the front R and T channels carry color buckets — that is the native
+  fold's own v1 scope (`CurveId::Ru`/`Tu` take the ÷2 U-curve half; the back
+  siblings and absorption fold nothing). The Python path now mirrors exactly
+  what the native path computes, no more.
+- The deposit rides `P`/`P_T`, so a color demand requires those bits. That is
+  a real constraint, now stated in an error rather than discovered by a
+  gradient that quietly reads zero.
+
 ## [0.6.3] — Every dependency floor was fiction (R4.1)
 
 `requires-python = ">=3.12"`, and **not one** of the declared floors has a

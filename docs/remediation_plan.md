@@ -20,12 +20,12 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (631 passed +
-     2 skipped at 0.6.2, parity included; `PYTHONIOENCODING=utf-8` no longer
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (644 passed +
+     2 skipped at 0.6.4, parity included; `PYTHONIOENCODING=utf-8` no longer
      needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
-   - Review harnesses: `for f in fd_step1 fd_rchannel color_merit_check garbage_in weaver_race tauc_check kk_validate kk_conv; do python validation/review/$f.py; done` (all must print `ALL OK` unless the item explicitly changes documented behavior)
+   - Review harnesses: `for f in fd_step1 fd_rchannel color_merit_check color_grad_python garbage_in weaver_race tauc_check kk_validate kk_conv; do python validation/review/$f.py; done` (all must print `ALL OK` unless the item explicitly changes documented behavior)
 3. **One item = one commit** (or a small series), message referencing the
    item ID and the review section. Never mix behavior changes with refactors.
 4. **Behavior changes are releases.** Fixes that alter numerical results
@@ -64,7 +64,7 @@ coverage is thin.
 | R3.2 | needle z-range: debug-assert → error | P1 | release-build garbage | S | S | §21.1 |
 | R3.3 | eigenmode `char_func`/`refine_mode` bound | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
-| R4.2 | color gradients on Python needle path | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
+| R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` | P1 | shipped example broken | S | S | §6.2 |
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | synthesis robustness on ill-conditioned stacks | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | 2n→1 solver sweeps per LM iteration; removes the FD noise floor; benefits every backend | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
@@ -752,7 +752,7 @@ py312-abi3 *and* numpy-2-API — document both floors next to each other.
   `pip check` clean, PEP 517 build is a release build, `pytest validation` =
   631 passed / 2 skipped — identical to the dev environment.
 
-### R4.2 Color gradients on the Python needle path
+### R4.2 Color gradients on the Python needle path — DONE (0.6.4)
 
 **Review:** §20.2 (Rust fold computes `grad_r`/`grad_t` deposit buckets;
 `build_needle_targets`' Python dict omits them; `needle_gradient` has no
@@ -794,6 +794,46 @@ deposit semantics — they must not move).
   new file preferred to keep harnesses single-purpose.
 
 **Effort.** M.
+
+**CORRECTIONS/NOTES (0.6.4).**
+
+* **There is no "fold accumulation" in `needle_gradient` to add into.** Step 2
+  says to "add the deposit terms into the fold accumulation exactly as the
+  native pipeline does". `needle_pass.rs` accumulates every quantity into ONE
+  `acc` per depth; `solver::needle_gradient` instead returns a separate map
+  per channel (`P_s`, `P_T_s`, …) and leaves the summing to the caller. The
+  deposits therefore go into `P` (from `grads_r`) and `P_T` (from `grads_t`)
+  respectively — which reproduces the native total exactly once the caller
+  sums the channels it asked for, and is the only placement that keeps the
+  existing output contract.
+* **The binding change is in the core, not only in `navette-py`.** Step 2
+  names `rust/navette-py/src/smatrix.rs`, but the needle entry there is a
+  thin forwarder; the arguments had to be added to
+  `navette::smatrix::solver::needle_gradient` (free fn *and* the `Solver`
+  method) and threaded through **both** PyO3 entries — the `Solver.needle_gradient`
+  method, which is what `src/navette/smatrix/needle.py` actually calls, and
+  the free `needle_engine` function. The plan mentions only one.
+* **A non-zero bucket with no matching request bit is now an error.** The plan
+  did not say what happens when a caller passes `grads_r` without `NREQ_P`.
+  Dropping it would reproduce this item's own bug — a color demand optimized
+  against nothing, silently — so it raises, naming the missing bit. An
+  all-zero array passes: the fold hands both arrays through unfiltered and
+  callers must not have to filter them.
+* **The 1e-12 oracle in the Validation block is not the native pipeline.** No
+  native entry point returns a raw `P` profile to Python (`NeedlePipeline.run`
+  runs a whole synthesis), so "agreement with the native pipeline's gradient
+  ≤ 1e-12" is not directly measurable. Two tighter equalities stand in, and
+  both hold at 1e-15: the deposit equals the *pointwise* kernel driven to the
+  same scalar (`g·P_ref/(2R)` — the two kernels differ in exactly one factor,
+  so this pins the kernel, the channel and the depth row), and the end-to-end
+  chain matches `color_merit_check.py`'s hand-assembled rule.
+* **`color_merit_check.py` Part C stays hand-assembled on purpose.** It is the
+  oracle, so it must not consume the buckets it is meant to check. Only its
+  stale "the PYTHON fold dict omits them" comment changed.
+* A pytest file was added alongside the required review harness
+  (`validation/smoke/test_color_needle_python.py`): the review harnesses are
+  not run by CI, and a fix guarded only by something nobody runs is the R4.1
+  failure mode again.
 
 ### R4.3 Fix and continuously execute `examples/`
 

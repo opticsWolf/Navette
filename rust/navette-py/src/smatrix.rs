@@ -244,7 +244,7 @@ impl PySolver {
             .field_profile(n_eff, pol, wavelength, wav_index, points_per_layer)
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
-    #[pyo3(signature = (needle_n_per_wav, z_grid, requested, incoherent_flags=None, targets_r=None, weights_r=None, targets_t=None, weights_t=None, targets_a=None, weights_a=None, targets_phi=None, weights_phi=None, targets_tb=None, weights_tb=None, targets_rb=None, weights_rb=None, targets_ab=None, weights_ab=None, start_idx=0, end_idx=None, channel=0, calc_s=true, calc_p=true, host_mask=None, gain_shift_phi=0.0))]
+    #[pyo3(signature = (needle_n_per_wav, z_grid, requested, incoherent_flags=None, targets_r=None, weights_r=None, targets_t=None, weights_t=None, targets_a=None, weights_a=None, targets_phi=None, weights_phi=None, targets_tb=None, weights_tb=None, targets_rb=None, weights_rb=None, targets_ab=None, weights_ab=None, grads_r=None, grads_t=None, start_idx=0, end_idx=None, channel=0, calc_s=true, calc_p=true, host_mask=None, gain_shift_phi=0.0))]
     #[allow(clippy::too_many_arguments)]
     fn needle_gradient(
         &self,
@@ -267,6 +267,8 @@ impl PySolver {
         weights_rb: Option<PyReadonlyArray1<f64>>,
         targets_ab: Option<PyReadonlyArray1<f64>>,
         weights_ab: Option<PyReadonlyArray1<f64>>,
+        grads_r: Option<PyReadonlyArray1<f64>>,
+        grads_t: Option<PyReadonlyArray1<f64>>,
         start_idx: usize,
         end_idx: Option<usize>,
         channel: usize,
@@ -300,6 +302,8 @@ impl PySolver {
             t(&weights_a), t(&targets_phi), t(&weights_phi), t(&targets_tb),
             t(&weights_tb), t(&targets_rb), t(&weights_rb), t(&targets_ab), t(&weights_ab),
         );
+        // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
+        let (gr, gt) = (t(&grads_r), t(&grads_t));
         let sol = py
             .detach(|| {
                 self.inner.needle_gradient(
@@ -307,7 +311,7 @@ impl PySolver {
                     tr.as_deref(), wr.as_deref(), tt.as_deref(), wt.as_deref(),
                     ta.as_deref(), wa.as_deref(), tp.as_deref(), wp.as_deref(),
                     ttb.as_deref(), wtb.as_deref(), trb.as_deref(), wrb.as_deref(),
-                    tab.as_deref(), wab.as_deref(),
+                    tab.as_deref(), wab.as_deref(), gr.as_deref(), gt.as_deref(),
                     start_idx, end_idx, channel, calc_s, calc_p, hm.as_deref(),
                     gain_shift_phi,
                 )
@@ -465,6 +469,7 @@ pub fn core_engine(
     targets_phi=None, weights_phi=None,
     targets_tb=None, weights_tb=None, targets_rb=None, weights_rb=None,
     targets_ab=None, weights_ab=None,
+    grads_r=None, grads_t=None,
     start_idx=0, end_idx=None, channel=0,
     calc_s=true, calc_p=true, host_mask=None
 ))]
@@ -496,6 +501,8 @@ pub fn needle_engine<'py>(
     weights_rb: Option<PyReadonlyArray1<f64>>,
     targets_ab: Option<PyReadonlyArray1<f64>>,
     weights_ab: Option<PyReadonlyArray1<f64>>,
+    grads_r: Option<PyReadonlyArray1<f64>>,
+    grads_t: Option<PyReadonlyArray1<f64>>,
     start_idx: usize,
     end_idx: Option<usize>,
     channel: usize,
@@ -537,6 +544,8 @@ pub fn needle_engine<'py>(
         t(&weights_a), t(&targets_phi), t(&weights_phi), t(&targets_tb),
         t(&weights_tb), t(&targets_rb), t(&weights_rb), t(&targets_ab), t(&weights_ab),
     );
+    // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
+    let (gr, gt) = (t(&grads_r), t(&grads_t));
     let sol = py
         .detach(|| {
             core_needle(
@@ -545,7 +554,7 @@ pub fn needle_engine<'py>(
                 tr.as_deref(), wr.as_deref(), tt.as_deref(), wt.as_deref(),
                 ta.as_deref(), wa.as_deref(), tp.as_deref(), wp.as_deref(),
                 ttb.as_deref(), wtb.as_deref(), trb.as_deref(), wrb.as_deref(),
-                tab.as_deref(), wab.as_deref(),
+                tab.as_deref(), wab.as_deref(), gr.as_deref(), gt.as_deref(),
                 start_idx, end_idx, channel, calc_s, calc_p, hm.as_deref(), 0.0,
             )
         })

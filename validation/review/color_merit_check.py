@@ -197,9 +197,10 @@ for i in (10, 22):
 
 # --------------------------------- Part C: end-to-end through the solver
 print("=== Part C: end-to-end dF/dtheta with color-only spec ===")
-# The native fold computes color grad buckets (grad_r/grad_t) internally but
-# the PYTHON fold dict omits them (review S20 finding). Assemble the chain
-# independently: dF/dtheta = sum_i 2*res*g_i*(dR_i/dtheta), with
+# Assembled independently of the engine's own color buckets, on purpose:
+# this is the oracle `color_grad_python.py` checks the (since R4.2, present)
+# grads_r/grads_t path against, so it must not consume them.
+# dF/dtheta = sum_i 2*res*g_i*(dR_i/dtheta), with
 # g_i = d(residual)/dR_i (FD on the sim row, Part B) and
 # dR_i/dtheta = P_i/R_i (needle R channel: P_i = R_i * dR_i/ddelta at w=1,t=0).
 res0 = float(np.asarray(spec.residuals(sim_of(RS)))[0])

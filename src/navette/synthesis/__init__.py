@@ -14,6 +14,38 @@ the thickness optimizer and the needle fold), and builds native
     merit = spec.merit(sim, 1e6)
     folded = build_needle_targets(spec, angles, wl, sim)  # needle inputs
 
+``folded`` carries one ``{"targets", "weights"}`` pair per quantity
+(``r``/``t``/``a``/``rb``/``tb``/``ab``, plus ``phi0..phi3`` with a
+``gain_shift``), which feed ``needle_gradient``'s matching keywords::
+
+    from navette.smatrix.needle import needle_gradient, NeedleRequest
+
+    g = needle_gradient(stack, needle_n, z_grid, NeedleRequest.P,
+                        targets_r=folded["r"]["targets"],
+                        weights_r=folded["r"]["weights"])
+
+**Color demands take one extra step.** A color demand (Lab/DE2000, White,
+Yellow, dominant wavelength, ...) integrates the whole spectrum into a
+single residual, so it has no per-point target — it folds instead to
+``folded["grads_r"]`` / ``folded["grads_t"]``, the analytic ``dF/dcurve``
+per solver point. Those are separate keyword arguments, and leaving them
+out yields a gradient with the color contribution silently missing::
+
+    g = needle_gradient(stack, needle_n, z_grid,
+                        NeedleRequest.P | NeedleRequest.P_T,
+                        targets_r=folded["r"]["targets"],
+                        weights_r=folded["r"]["weights"],
+                        targets_t=folded["t"]["targets"],
+                        weights_t=folded["t"]["weights"],
+                        grads_r=folded["grads_r"],     # <- color, R channel
+                        grads_t=folded["grads_t"])     # <- color, T channel
+
+The deposits land in ``P_*`` and ``P_T_*`` respectively, so the returned
+arrays are the complete gradient of the pointwise **and** color demands —
+the same sum ``run_design``'s native pass computes internally. Both arrays
+are all-zero for a spec with no color demands, so passing them
+unconditionally is safe.
+
 Spectral-label mapping (``(spectral, polarization)`` → CurveId):
 
 ===========  ===============================

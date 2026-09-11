@@ -126,6 +126,8 @@ def needle_gradient(
     weights_rb: Union[float, Sequence[float], np.ndarray, None] = None,
     targets_ab: Union[float, Sequence[float], np.ndarray, None] = None,
     weights_ab: Union[float, Sequence[float], np.ndarray, None] = None,
+    grads_r: Union[float, Sequence[float], np.ndarray, None] = None,
+    grads_t: Union[float, Sequence[float], np.ndarray, None] = None,
     gain_shift_phi: float = 0.0,
     start_idx: int = 0,
     end_idx: Optional[int] = None,
@@ -161,6 +163,21 @@ def needle_gradient(
         (back-reflectance ``|r_back|²``).
     targets_ab / weights_ab : same layout, for ``P_AB``/``P_MB_AB``
         (back-absorptance ``1 − Rb − Tb``).
+    grads_r / grads_t : None, scalar, or (n_angles·n_wavs,) array
+        Option-B **color** buckets, taken verbatim from
+        ``build_needle_targets``' ``"grads_r"`` / ``"grads_t"`` entries.
+        Unlike every pair above these are not (target, weight): each entry
+        is the chain-rule factor ``g = dF/dcurve`` for one solver point,
+        already carrying the demand's weight, its current residual and the
+        U-curve half. They are added into the ``P`` and ``P_T`` outputs
+        respectively — the same single accumulation the native pipeline
+        performs — so ``P_s`` from a color fold is the full color gradient,
+        not an R-target gradient with the color part missing.
+
+        Default ``None`` deposits nothing. A non-zero ``grads_r`` without
+        ``P`` requested (or ``grads_t`` without ``P_T``) is an error, not a
+        silent drop: that silent drop is exactly what this argument exists
+        to fix.
     start_idx, end_idx : int
         Coherent sub-block confinement; ``end_idx`` is the *index* of the
         terminating medium (default: last layer). Hosts must lie strictly
@@ -221,6 +238,8 @@ def needle_gradient(
         weights_rb=_vec(weights_rb, np.float64),
         targets_ab=_vec(targets_ab, np.float64),
         weights_ab=_vec(weights_ab, np.float64),
+        grads_r=_vec(grads_r, np.float64),
+        grads_t=_vec(grads_t, np.float64),
         start_idx=int(start_idx),
         end_idx=None if end_idx is None else int(end_idx),
         channel=int(channel),
