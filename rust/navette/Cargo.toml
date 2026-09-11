@@ -21,6 +21,11 @@ default = []
 # not compiled in is an error with a rebuild hint, never a silent fallback.
 # Both crates are MIT, which is compatible with this crate's LGPL-3.0-or-later.
 opt-minpack-lm = ["dep:levenberg-marquardt", "dep:nalgebra"]
+# The argmin ecosystem's Gauss-Newton and trust-region solvers. Shares
+# `nalgebra` with the feature above via argmin-math's `nalgebra_0_34` backend,
+# so enabling both pulls one linear-algebra crate, not two. argmin is
+# MIT/Apache-2.0 dual-licensed; both are compatible with LGPL-3.0-or-later.
+opt-argmin = ["dep:argmin", "dep:argmin-math", "dep:nalgebra"]
 
 [dependencies]
 rayon = { workspace = true }
@@ -40,11 +45,19 @@ serde_json = "1"
 rand = "0.9"
 rand_distr = "0.5"
 # --- optional optimizer backends (see [features]) --------------------------
-# The argmin ecosystem's reference LM (MINPACK lmdif-derived, MIT). Pinned to
-# the nalgebra major it was built against so an argmin backend added later can
-# share the same one.
+# The `levenberg-marquardt` crate's reference LM (MINPACK lmdif-derived, MIT).
+# Pinned to the nalgebra major it was built against so the argmin backends
+# below share the same one.
 levenberg-marquardt = { version = "0.15", optional = true }
 nalgebra = { version = "0.34", optional = true }
+# argmin's Gauss-Newton and trust-region solvers. default-features off: the
+# default pulls `rand`, which neither backend uses.
+argmin = { version = "0.11", default-features = false, optional = true }
+# `nalgebra_v0_34` is the impl module; `nalgebra_0_34` alone is only the
+# optional-dependency feature cargo generates and pulls in no trait impls.
+argmin-math = { version = "0.5", default-features = false, features = [
+  "nalgebra_v0_34",
+], optional = true }
 
 [dev-dependencies]
 # .npy reading for golden-parity tests. default-features=false avoids the

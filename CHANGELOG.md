@@ -3,6 +3,56 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.16] — The two argmin backends, and what they are worth (R4.4c-argmin)
+
+The last row left open under R4.4: `OptimizerBackend::ArgminGaussNewton` and
+`ArgminTrustRegion`, behind a new `opt-argmin` cargo feature. Both are
+reference points rather than candidates, and the interesting part of this
+release is the measurement, not the plumbing.
+
+### Added
+
+- **`opt-argmin`** (off by default): `LmConfig(optimizer="argmin_gauss_newton")`
+  and `"argmin_trust_region"`. Both unbounded, so both run on the same
+  `IntervalMap` reparametrization `minpack_lm` uses — the map and the chain
+  rule on the analytic Jacobian are shared, not re-derived. The feature reuses
+  `nalgebra` through `argmin-math`'s `nalgebra_v0_34` backend, so enabling it
+  alongside `opt-minpack-lm` pulls one linear-algebra crate, not two.
+- **`OptimizerBackend::runs_to_max_iterations()`** — true for the argmin trust
+  region alone. argmin's `TrustRegion::terminate` returns `NotTerminated`
+  unconditionally: it has no convergence test, so `max_iterations` is its only
+  exit and `MaxIterations` is its normal outcome, not a failure. A caller
+  reading the termination reason needs that declared rather than inferred.
+- **Part E of `validation/review/lm_check.py`**, skipped unless the wheel was
+  built with the feature: the two backends on the same three refold starts the
+  rest of the harness uses, against scipy.
+- Ten cargo tests across both backends (interior optimum, box containment,
+  cost convention, error propagation, analytic-Jacobian precedence, and the
+  two failure modes below), plus name round-tripping and feature-hint coverage
+  now driven from `ALL_BACKENDS` rather than a hand-kept list.
+
+### Known — measured, on `validation/review/lm_check.py`'s refold starts
+
+| backend | two films | two films, far | three films |
+|---|---|---|---|
+| `trf` | 8 evals | 21 evals | 32 evals |
+| `argmin_trust_region` | 218 evals | 224 evals | 393 evals |
+| `argmin_gauss_newton` | refuses | refuses | 201 evals, cost 2690.8 vs 2670.0 |
+
+- **`argmin_trust_region` is correct and expensive.** It reaches the same
+  optimum as scipy on all three starts (agreement 1e-13 to 1e-9) and pays
+  7–27× `trf`'s evaluation count to do it, because it cannot stop early.
+- **`argmin_gauss_newton` is not usable on this problem class.** The undamped
+  step is `(JᵀJ)⁻¹Jᵀr`, so a singular `JᵀJ` makes it undefined — and a film
+  driven toward zero thickness, or a bound the interior map has flattened, is
+  enough to produce one. It refuses two of the three starts; on the third it
+  runs to the iteration cap without converging. The refusal now carries a
+  message that says which of those happened and names a damped backend to use
+  instead, rather than surfacing argmin's bare "Non-invertible matrix".
+- Neither backend changes anything on a default build: `available_optimizers()`
+  still returns `["builtin", "trf"]`, and naming one the wheel lacks is still a
+  `ValueError` with the rebuild command.
+
 ## [0.6.15] — The derive pass is no longer the serial half (R5.2)
 
 R5.3's scaling bench made the gate for this item concrete: after the

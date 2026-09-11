@@ -16,6 +16,7 @@ default = []
 # Forward the engine's optional optimizer backends so a wheel can be built
 # with one: `maturin develop --release --features opt-minpack-lm`.
 opt-minpack-lm = ["navette/opt-minpack-lm"]
+opt-argmin = ["navette/opt-argmin"]
 
 [dependencies]
 navette = { workspace = true }

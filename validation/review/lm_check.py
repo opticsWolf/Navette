@@ -49,6 +49,17 @@ Three parts:
      nm is a tenth of a picometre -- four orders below anything a deposition
      controller can act on, and six below the wavelengths involved.
 
+  E. **The optional argmin backends** (R4.4c-argmin), skipped unless the
+     wheel was built with `--features opt-argmin`. These two are reference
+     points rather than candidates, and E pins what they actually do on the
+     refold problem class: argmin's trust region finds the same optimum as
+     scipy but always runs to `max_iterations` -- it has no convergence test
+     of its own -- and costs several times TRF's evaluation count for it;
+     argmin's undamped Gauss-Newton refuses two of the three starts outright,
+     because a film driven toward zero thickness makes `J^T J` singular and
+     the step undefined. Both are properties of the algorithms, asserted here
+     so a future version changing either is noticed rather than assumed.
+
 Run explicitly:  python validation/review/lm_check.py
 Exit code 0 = all comparisons within tolerance.
 """
@@ -446,11 +457,98 @@ def part_d():
     check("D3: trf is not", tx[0] < 50.0, f"{tx[0]!r}")
 
 
+# ---------------------------------------------------------------------------
+# E. The optional argmin backends, on the problem class they claim to serve
+# ---------------------------------------------------------------------------
+
+# The three refold starts parts A/D use, reused here so the comparison is
+# against numbers this harness already trusts.
+ARGMIN_CASES = [
+    ("two films", [(2.35, 60.0), (1.46, 95.0)], [3.0, -3.0]),
+    ("two films, far", [(2.35, 200.0), (1.46, 30.0)], [3.0, -3.0]),
+    ("three films", [(2.35, 80.0), (1.46, 140.0), (2.10, 70.0)], [3.0, -3.0, 2.0]),
+]
+
+
+def part_e():
+    print("--- E. the argmin backends (R4.4c-argmin) ---")
+    have = available_optimizers()
+    if "argmin_trust_region" not in have:
+        print("  opt-argmin not compiled in -- skipping "
+              "(rebuild with `--features opt-argmin` to run part E)")
+        print(f"  available: {have}")
+        return
+
+    print("  These two are reference points, not candidates. E asserts what")
+    print("  they actually do rather than that they are good: the trust")
+    print("  region finds the right optimum and pays for it in evaluations")
+    print("  because argmin's TrustRegion has no convergence test at all,")
+    print("  and the undamped Gauss-Newton either refuses the problem or")
+    print("  fails to converge on it. Both are properties of the algorithms;")
+    print("  the harness exists so a future version changing either one is")
+    print("  noticed rather than assumed.")
+
+    wl = np.linspace(450.0, 750.0, 13)
+    angles = np.array([0.0])
+    spec = thin_film_problem(wl, angles)
+
+    gn_refusals = 0
+    for label, films, kick in ARGMIN_CASES:
+        layers = [(MaterialSpec("Konstant", dict(n=n)), d) for n, d in films]
+        names = [f"L{i}" for i in range(len(films))]
+        x0 = [d for _, d in films]
+        anchor, scost, _ = run_scipy(spec, wl, angles, layers, names, x0, CLAMP_MAX)
+        start = list(np.clip(anchor + np.array(kick), NO_REMOVAL_MIN, CLAMP_MAX))
+
+        tx, tcost, trep = run_engine(spec, wl, angles, layers, names, start,
+                                     CLAMP_MAX, optimizer="trf")
+
+        # E1/E2/E3 -- the trust region.
+        ax, acost, arep = run_engine(spec, wl, angles, layers, names, start,
+                                     CLAMP_MAX, optimizer="argmin_trust_region")
+        print(f"  {label}: scipy {scost:.10g} | trf {tcost:.10g} "
+              f"({trep['evals']} evals) | argmin_tr {acost:.10g} "
+              f"({arep['evals']} evals, {arep['termination']})")
+        check(f"E1/{label}: argmin_trust_region reaches the same optimum",
+              close(acost, scost, rel=1e-6, abs_=1e-12),
+              f"{acost:.12g} vs {scost:.12g}")
+        check(f"E2/{label}: and always reports MaxIterations",
+              arep["termination"] == "MaxIterations", arep["termination"])
+        check(f"E3/{label}: at several times trf's evaluation count",
+              arep["evals"] > 4 * trep["evals"],
+              f"{arep['evals']} vs {trep['evals']}")
+
+        # E4 -- the undamped Gauss-Newton. Allowed to refuse, allowed to fall
+        # short; not allowed to do either silently or to claim convergence it
+        # did not reach.
+        try:
+            gx, gcost, grep = run_engine(spec, wl, angles, layers, names, start,
+                                         CLAMP_MAX, optimizer="argmin_gauss_newton")
+        except ValueError as e:
+            gn_refusals += 1
+            msg = str(e)
+            print(f"    argmin_gn refused: {msg[:60]}...")
+            check(f"E4/{label}: the refusal names the cause and a way out",
+                  "singular" in msg and "trf" in msg, msg[:80])
+        else:
+            converged = grep["termination"] != "MaxIterations"
+            print(f"    argmin_gn {gcost:.10g} ({grep['evals']} evals, "
+                  f"{grep['termination']})")
+            check(f"E4/{label}: it does not claim convergence at a worse cost",
+                  (not converged) or close(gcost, scost, rel=1e-6, abs_=1e-12),
+                  f"{grep['termination']} at {gcost:.12g} vs {scost:.12g}")
+
+    check("E4: the singular-Jacobian path is live on this problem class",
+          gn_refusals >= 1,
+          f"{gn_refusals} of {len(ARGMIN_CASES)} starts refused")
+
+
 def main():
     part_a()
     part_b()
     part_c()
     part_d()
+    part_e()
     print("ALL OK" if not FAILURES else f"FAILURES: {FAILURES}")
     return 1 if FAILURES else 0
 

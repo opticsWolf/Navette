@@ -60,6 +60,23 @@ pub enum OptimizerBackend {
     /// is always available; bounds enter the subproblem rather than clipping
     /// its answer.
     Trf,
+    /// argmin's textbook Gauss-Newton: solve `(JᵀJ)⁻¹Jᵀr` and take the whole
+    /// step, with no damping and no line search. Behind `opt-argmin`.
+    /// Unbounded, so it runs on the interior reparametrization.
+    ///
+    /// Present as a *baseline*, not as a recommendation: it is the algorithm
+    /// every damped method is a repair of, and on an ill-conditioned refold it
+    /// behaves accordingly. See the module docs on what that costs.
+    ArgminGaussNewton,
+    /// argmin's general-purpose trust region (Steihaug subproblem), driven on
+    /// the Gauss-Newton model `∇ = Jᵀr`, `H ≈ JᵀJ`. Behind `opt-argmin`.
+    /// Unbounded.
+    ///
+    /// A general minimizer rather than a least-squares one: it takes a scalar
+    /// cost with a gradient and a Hessian, which is why the least-squares
+    /// structure has to be assembled into those by hand here. It also has **no
+    /// convergence test of its own** — see [`OptimizerBackend::runs_to_max_iterations`].
+    ArgminTrustRegion,
 }
 
 impl OptimizerBackend {
@@ -69,6 +86,8 @@ impl OptimizerBackend {
             OptimizerBackend::BuiltinLm => "builtin",
             OptimizerBackend::MinpackLm => "minpack_lm",
             OptimizerBackend::Trf => "trf",
+            OptimizerBackend::ArgminGaussNewton => "argmin_gauss_newton",
+            OptimizerBackend::ArgminTrustRegion => "argmin_trust_region",
         }
     }
 
@@ -79,8 +98,11 @@ impl OptimizerBackend {
             "builtin" => Ok(OptimizerBackend::BuiltinLm),
             "minpack_lm" => Ok(OptimizerBackend::MinpackLm),
             "trf" => Ok(OptimizerBackend::Trf),
+            "argmin_gauss_newton" => Ok(OptimizerBackend::ArgminGaussNewton),
+            "argmin_trust_region" => Ok(OptimizerBackend::ArgminTrustRegion),
             other => Err(format!(
-                "unknown optimizer backend {other:?} (expected one of: builtin, minpack_lm, trf)"
+                "unknown optimizer backend {other:?} (expected one of: builtin, \
+                 minpack_lm, trf, argmin_gauss_newton, argmin_trust_region)"
             )),
         }
     }
@@ -91,7 +113,23 @@ impl OptimizerBackend {
             OptimizerBackend::BuiltinLm => true,
             OptimizerBackend::MinpackLm => cfg!(feature = "opt-minpack-lm"),
             OptimizerBackend::Trf => true,
+            OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
+                cfg!(feature = "opt-argmin")
+            },
         }
+    }
+
+    /// Whether the backend stops only when it runs out of iterations.
+    ///
+    /// True for [`OptimizerBackend::ArgminTrustRegion`] alone: argmin's
+    /// `TrustRegion` returns `NotTerminated` unconditionally, so the only
+    /// exits are `max_iterations` and a target cost. Every other backend here
+    /// has ftol/xtol/gtol tests. A caller reading `iterations` back to ask
+    /// "did it converge?" needs to know which kind it asked for, and a run
+    /// that reports `MaxIterations` from this backend is its normal exit, not
+    /// a failure.
+    pub fn runs_to_max_iterations(self) -> bool {
+        matches!(self, OptimizerBackend::ArgminTrustRegion)
     }
 
     /// Whether the backend honours `lb`/`ub` natively, or has to be wrapped
@@ -110,6 +148,9 @@ impl OptimizerBackend {
             OptimizerBackend::BuiltinLm => None,
             OptimizerBackend::MinpackLm => Some("opt-minpack-lm"),
             OptimizerBackend::Trf => None,
+            OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
+                Some("opt-argmin")
+            },
         }
     }
 
@@ -133,8 +174,13 @@ impl OptimizerBackend {
 /// The list is the whole enum, not the compiled-in subset — pair it with
 /// [`OptimizerBackend::is_available`] to answer "what can this build run?",
 /// which is the question a caller has before it picks one.
-pub const ALL_BACKENDS: [OptimizerBackend; 3] =
-    [OptimizerBackend::BuiltinLm, OptimizerBackend::MinpackLm, OptimizerBackend::Trf];
+pub const ALL_BACKENDS: [OptimizerBackend; 5] = [
+    OptimizerBackend::BuiltinLm,
+    OptimizerBackend::MinpackLm,
+    OptimizerBackend::Trf,
+    OptimizerBackend::ArgminGaussNewton,
+    OptimizerBackend::ArgminTrustRegion,
+];
 
 /// The names this build can actually run. `["builtin"]` on a standard build.
 pub fn available_backends() -> Vec<&'static str> {
@@ -280,13 +326,13 @@ impl IntervalMap {
 ///
 /// Compiled in only where something uses it: the unbounded backends, and the
 /// tests that pin it against differences taken in `u` directly.
-#[cfg(any(test, feature = "opt-minpack-lm"))]
+#[cfg(any(test, feature = "opt-minpack-lm", feature = "opt-argmin"))]
 struct MappedJacobian<'a, J: ?Sized> {
     inner: &'a J,
     map: &'a IntervalMap,
 }
 
-#[cfg(any(test, feature = "opt-minpack-lm"))]
+#[cfg(any(test, feature = "opt-minpack-lm", feature = "opt-argmin"))]
 impl<J: JacobianSource + ?Sized> JacobianSource for MappedJacobian<'_, J> {
     fn fill(&self, u: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
         let x = self.map.to_bounded(u);
@@ -347,6 +393,17 @@ where
                 minpack::run(residuals, jacobian, x0, lb, ub, cfg)
             }
             #[cfg(not(feature = "opt-minpack-lm"))]
+            {
+                let _ = (residuals, jacobian, x0, lb, ub);
+                Err(backend.unavailable())
+            }
+        },
+        OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
+            #[cfg(feature = "opt-argmin")]
+            {
+                argmin_backends::run(backend, residuals, jacobian, x0, lb, ub, cfg)
+            }
+            #[cfg(not(feature = "opt-argmin"))]
             {
                 let _ = (residuals, jacobian, x0, lb, ub);
                 Err(backend.unavailable())
@@ -539,6 +596,282 @@ mod minpack {
 }
 
 // ---------------------------------------------------------------------------
+// argmin ecosystem backends (feature `opt-argmin`)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "opt-argmin")]
+mod argmin_backends {
+    use super::super::thick_opt::build_jacobian;
+    use super::*;
+    use argmin::core::{
+        CostFunction, Error as ArgminError, Executor, Gradient, Hessian, Jacobian as ArgminJacobian,
+        Operator, State, TerminationReason, TerminationStatus,
+    };
+    use argmin::solver::gaussnewton::GaussNewton;
+    use argmin::solver::trustregion::{Steihaug, TrustRegion};
+    use nalgebra::{DMatrix, DVector};
+    use std::cell::Cell;
+
+    /// The residual pair as argmin sees it.
+    ///
+    /// argmin has a real error channel (`Result<_, anyhow::Error>` on every
+    /// trait method), so unlike the `levenberg-marquardt` adapter there is no
+    /// stashed-error dance here -- a failed residual evaluation propagates as
+    /// itself and reaches the caller with its message intact.
+    struct Problem<'a> {
+        residuals: &'a (dyn Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync + 'a),
+        jacobian: Option<&'a dyn JacobianSource>,
+        /// (residual calls, Jacobian builds, Jacobians served analytically)
+        counts: Cell<(usize, usize, usize)>,
+    }
+
+    impl Problem<'_> {
+        /// `r(x)` as a column vector, counting the call.
+        fn r(&self, x: &DVector<f64>) -> Result<DVector<f64>, ArgminError> {
+            let mut out = Vec::new();
+            (self.residuals)(x.as_slice(), &mut out).map_err(ArgminError::msg)?;
+            let (r, j, a) = self.counts.get();
+            self.counts.set((r + 1, j, a));
+            Ok(DVector::from_vec(out))
+        }
+
+        /// `∂r/∂x` as an `m×n` matrix: the analytic source when there is one,
+        /// central differences otherwise. Same precedence as every other
+        /// backend, so a comparison between them compares solvers rather than
+        /// Jacobians.
+        fn j(&self, x: &DVector<f64>) -> Result<DMatrix<f64>, ArgminError> {
+            let n = x.len();
+            let mut jac: Vec<f64> = Vec::new();
+            let (m, analytic) = match self.jacobian.map(|s| s.fill(x.as_slice(), &mut jac)) {
+                Some(Err(e)) => return Err(ArgminError::msg(e)),
+                Some(Ok(Some(m))) => (m, true),
+                _ => {
+                    let added =
+                        build_jacobian(&self.residuals, x.as_slice(), &mut jac).map_err(ArgminError::msg)?;
+                    let (r, j, a) = self.counts.get();
+                    self.counts.set((r + added, j, a));
+                    (jac.len() / n, false)
+                },
+            };
+            let (r, j, a) = self.counts.get();
+            self.counts.set((r, j + 1, a + usize::from(analytic)));
+            // `jac` is row-major m×n; nalgebra is column-major.
+            Ok(DMatrix::from_fn(m, n, |i, k| jac[i * n + k]))
+        }
+    }
+
+    impl Operator for Problem<'_> {
+        type Param = DVector<f64>;
+        type Output = DVector<f64>;
+
+        fn apply(&self, x: &Self::Param) -> Result<Self::Output, ArgminError> {
+            self.r(x)
+        }
+    }
+
+    impl ArgminJacobian for Problem<'_> {
+        type Param = DVector<f64>;
+        type Jacobian = DMatrix<f64>;
+
+        fn jacobian(&self, x: &Self::Param) -> Result<Self::Jacobian, ArgminError> {
+            self.j(x)
+        }
+    }
+
+    // `TrustRegion` is a general minimizer: it wants a scalar cost with a
+    // gradient and a Hessian, not a residual vector with a Jacobian. The three
+    // below are the least-squares problem written in that form, on the
+    // Gauss-Newton model -- ½‖r‖², Jᵀr, JᵀJ -- which is self-consistent (the
+    // gradient and Hessian are the exact derivatives of *that* cost, up to the
+    // dropped second-order term the model is named for).
+
+    impl CostFunction for Problem<'_> {
+        type Param = DVector<f64>;
+        type Output = f64;
+
+        fn cost(&self, x: &Self::Param) -> Result<f64, ArgminError> {
+            Ok(0.5 * self.r(x)?.norm_squared())
+        }
+    }
+
+    impl Gradient for Problem<'_> {
+        type Param = DVector<f64>;
+        type Gradient = DVector<f64>;
+
+        fn gradient(&self, x: &Self::Param) -> Result<Self::Gradient, ArgminError> {
+            let r = self.r(x)?;
+            let j = self.j(x)?;
+            Ok(j.transpose() * r)
+        }
+    }
+
+    impl Hessian for Problem<'_> {
+        type Param = DVector<f64>;
+        type Hessian = DMatrix<f64>;
+
+        fn hessian(&self, x: &Self::Param) -> Result<Self::Hessian, ArgminError> {
+            let j = self.j(x)?;
+            Ok(j.transpose() * &j)
+        }
+    }
+
+    /// argmin's exit reason in Navette's vocabulary.
+    ///
+    /// argmin reports *why the executor stopped*, not which test fired, so the
+    /// mapping is coarser than MINPACK's on purpose: `SolverConverged` is
+    /// whatever tolerance the chosen solver owns (`|Δcost| < tol` for
+    /// Gauss-Newton), which is a cost test.
+    fn map_termination(
+        backend: OptimizerBackend,
+        status: &TerminationStatus,
+    ) -> Result<LmTermination, String> {
+        let reason = match status {
+            TerminationStatus::NotTerminated => return Ok(LmTermination::MaxIterations),
+            TerminationStatus::Terminated(r) => r,
+        };
+        match reason {
+            TerminationReason::SolverConverged => Ok(LmTermination::Cost),
+            TerminationReason::TargetCostReached => Ok(LmTermination::Cost),
+            TerminationReason::MaxItersReached => Ok(LmTermination::MaxIterations),
+            TerminationReason::Timeout => Ok(LmTermination::MaxIterations),
+            TerminationReason::Interrupt => {
+                Err(format!("{}: interrupted", backend.as_str()))
+            },
+            TerminationReason::SolverExit(w) => {
+                Err(format!("{}: solver stopped ({w})", backend.as_str()))
+            },
+        }
+    }
+
+    /// argmin's error, with the one case that needs explaining explained.
+    ///
+    /// `(JᵀJ)⁻¹` is the whole of the Gauss-Newton step, so a singular `JᵀJ`
+    /// is not a numerical hiccup -- it is the step being undefined, and it is
+    /// the failure mode every damped method is a repair of. It is reachable in
+    /// ordinary use: a parameter that stops moving the residual (a layer
+    /// driven to zero thickness), or an interior reparametrization whose slope
+    /// has flattened near a bound, both produce a zero column.
+    fn describe(backend: OptimizerBackend, e: impl std::fmt::Display) -> String {
+        let msg = e.to_string();
+        let name = backend.as_str();
+        if backend == OptimizerBackend::ArgminGaussNewton && msg.contains("Non-invertible") {
+            // ASCII on purpose: this string reaches Python as a
+            // `ValueError`, and a user printing it on a cp1252 console would
+            // otherwise get a `UnicodeEncodeError` instead of the diagnosis.
+            return format!(
+                "{name}: J^T J is singular at this point, so the undamped \
+                 Gauss-Newton step is undefined ({msg}). A parameter with no \
+                 effect on the residual, or a bound the interior map has \
+                 flattened, is enough to cause it. Use a damped backend \
+                 (builtin, trf, minpack_lm) on problems that can reach that \
+                 state -- this one is a baseline, not a hardened solver."
+            );
+        }
+        format!("{name}: {msg}")
+    }
+
+    pub(super) fn run<F, J>(
+        backend: OptimizerBackend,
+        residuals: &F,
+        jacobian: Option<&J>,
+        x0: &[f64],
+        lb: &[f64],
+        ub: &[f64],
+        cfg: &LmConfig,
+    ) -> Result<OptimizerResult, String>
+    where
+        F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
+        J: JacobianSource + ?Sized,
+    {
+        let name = backend.as_str();
+        let n = x0.len();
+        if n == 0 {
+            return Err(format!("{name}: empty parameter vector"));
+        }
+        if lb.len() != n || ub.len() != n {
+            return Err(format!("{name}: bound length mismatch"));
+        }
+        // Both solvers are unbounded, so the run happens in `u` on the same
+        // reparametrization the MINPACK backend uses -- the map and the chain
+        // rule on the analytic Jacobian are shared, not re-derived.
+        let map = IntervalMap::new(lb, ub)?;
+        let u0 = map.to_unbounded(x0);
+        let mapped_r = |u: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            residuals(&map.to_bounded(u), out)
+        };
+        let mapped_j = jacobian.map(|j| MappedJacobian { inner: j, map: &map });
+
+        let problem = Problem {
+            residuals: &mapped_r,
+            jacobian: mapped_j.as_ref().map(|j| j as &dyn JacobianSource),
+            counts: Cell::new((0, 0, 0)),
+        };
+        let start = DVector::from_row_slice(&u0);
+        let max_iters = cfg.max_iterations as u64;
+
+        let (u, cost, iterations, status, counts) = match backend {
+            OptimizerBackend::ArgminGaussNewton => {
+                let solver = GaussNewton::new()
+                    .with_tolerance(cfg.ftol)
+                    .map_err(|e| format!("{name}: {e}"))?;
+                let out = Executor::new(problem, solver)
+                    .configure(|st| st.param(start).max_iters(max_iters))
+                    .run()
+                    .map_err(|e| describe(backend, e))?;
+                let st = out.state;
+                let best = st
+                    .get_best_param()
+                    .ok_or_else(|| format!("{name}: solver returned no parameter vector"))?
+                    .clone();
+                // Gauss-Newton's state cost is ‖r‖, not ½‖r‖²; square it to
+                // reach Navette's ‖r‖².
+                let c = st.get_best_cost();
+                let counts = out.problem.problem.map(|p| p.counts.get()).unwrap_or_default();
+                (best, c * c, st.get_iter() as usize, st.get_termination_status().clone(), counts)
+            },
+            OptimizerBackend::ArgminTrustRegion => {
+                // Steihaug's iteration cap is the subproblem's, not the
+                // solver's: it is the CG budget for one step. `n` is the
+                // dimension, and exact CG terminates in at most `n` steps.
+                let sub: Steihaug<DVector<f64>, f64> =
+                    Steihaug::new().with_max_iters(n as u64);
+                let solver = TrustRegion::new(sub);
+                let out = Executor::new(problem, solver)
+                    .configure(|st| st.param(start).max_iters(max_iters))
+                    .run()
+                    .map_err(|e| describe(backend, e))?;
+                let st = out.state;
+                let best = st
+                    .get_best_param()
+                    .ok_or_else(|| format!("{name}: solver returned no parameter vector"))?
+                    .clone();
+                // This one's cost *is* ½‖r‖² (see `CostFunction` above).
+                let c = st.get_best_cost();
+                let counts = out.problem.problem.map(|p| p.counts.get()).unwrap_or_default();
+                (best, 2.0 * c, st.get_iter() as usize, st.get_termination_status().clone(), counts)
+            },
+            _ => return Err(format!("{name}: not an argmin backend")),
+        };
+
+        let termination = map_termination(backend, &status)?;
+        let (evals, _builds, analytic) = counts;
+        Ok(OptimizerResult {
+            x: map.to_bounded(u.as_slice()),
+            cost,
+            iterations,
+            evals,
+            termination,
+            // Neither solver exposes a per-step gain ratio: Gauss-Newton has
+            // no damping to report one for, and argmin's trust region keeps
+            // its reduction ratio internal.
+            gain_ratio: f64::NAN,
+            analytic_jacobians: analytic,
+            backend,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -577,8 +910,27 @@ mod tests {
 
     #[test]
     fn every_backend_name_round_trips() {
-        for b in [OptimizerBackend::BuiltinLm, OptimizerBackend::MinpackLm] {
+        // Over `ALL_BACKENDS`, not a hand-kept subset: a variant added
+        // without a `parse` arm is exactly the drift this catches.
+        for b in ALL_BACKENDS {
             assert_eq!(OptimizerBackend::parse(b.as_str()), Ok(b));
+        }
+        let mut names: Vec<&str> = ALL_BACKENDS.iter().map(|b| b.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(names.len(), before, "two backends answer to the same name");
+    }
+
+    #[test]
+    fn every_feature_gated_backend_says_which_feature() {
+        for b in ALL_BACKENDS {
+            match b.feature() {
+                Some(f) => assert!(b.unavailable().contains(f), "{}", b.as_str()),
+                // A backend with no feature must be compiled in, or its
+                // unavailability would be undiagnosable.
+                None => assert!(b.is_available(), "{}", b.as_str()),
+            }
         }
     }
 
@@ -590,6 +942,8 @@ mod tests {
             assert!(OptimizerBackend::parse(name).unwrap().is_available(), "{name}");
         }
         assert_eq!(av.contains(&"minpack_lm"), cfg!(feature = "opt-minpack-lm"));
+        assert_eq!(av.contains(&"argmin_gauss_newton"), cfg!(feature = "opt-argmin"));
+        assert_eq!(av.contains(&"argmin_trust_region"), cfg!(feature = "opt-argmin"));
     }
 
     #[test]
@@ -799,6 +1153,185 @@ mod tests {
             };
             let r = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg()).unwrap();
             assert!((r.cost - 25.0).abs() < 1e-9, "cost {}", r.cost);
+        }
+    }
+
+    #[cfg(feature = "opt-argmin")]
+    mod argmin_backend {
+        use super::*;
+
+        fn cfg(b: OptimizerBackend) -> LmConfig {
+            LmConfig { backend: b, ..Default::default() }
+        }
+
+        const BOTH: [OptimizerBackend; 2] =
+            [OptimizerBackend::ArgminGaussNewton, OptimizerBackend::ArgminTrustRegion];
+
+        #[test]
+        fn both_find_the_interior_optimum_the_builtin_finds() {
+            // `linear` is a well-conditioned overdetermined linear system with
+            // an exact solution at (1, -2) strictly inside the box, which is
+            // the one problem shape a plain Gauss-Newton is guaranteed on: one
+            // full step lands on the answer.
+            let x0 = [0.0, 0.0];
+            let lb = [-5.0, -5.0];
+            let ub = [5.0, 5.0];
+            for b in BOTH {
+                let r = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
+                assert_eq!(r.backend, b);
+                assert!((r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] + 2.0).abs() < 1e-6,
+                    "{}: {:?}", b.as_str(), r.x);
+                assert!(r.cost < 1e-12, "{}: cost {}", b.as_str(), r.cost);
+            }
+        }
+
+        #[test]
+        fn the_trust_region_stays_inside_the_box() {
+            // Unbounded solver on the interior reparametrization: the optimum
+            // it reports is strictly inside, never on a bound. The true
+            // optimum (1, -2) is outside this box on both axes.
+            let lb = [1.5, -1.0];
+            let ub = [4.0, 3.0];
+            let b = OptimizerBackend::ArgminTrustRegion;
+            let r = run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg(b))
+                .unwrap();
+            for (k, &v) in r.x.iter().enumerate() {
+                assert!(v > lb[k] && v < ub[k], "x[{k}]={v} left [{}, {}]", lb[k], ub[k]);
+            }
+            assert!((r.x[0] - 1.5).abs() < 1e-2, "expected the bound, got {}", r.x[0]);
+            for b in BOTH {
+                assert!(!b.bounds_are_native());
+            }
+        }
+
+        #[test]
+        fn gauss_newton_refuses_a_flattened_bound_rather_than_guessing() {
+            // The same squeezed box, on the undamped solver. Pushing toward a
+            // bound flattens the interior map's slope, the Jacobian column
+            // goes to zero, JᵀJ becomes singular and the Gauss-Newton step is
+            // undefined. That is the algorithm, not a bug in the adapter --
+            // but the message has to say so, or the user reads "non-invertible
+            // matrix" and goes looking for a broken stack.
+            let e = run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &[1.5, -1.0],
+                &[4.0, 3.0], &cfg(OptimizerBackend::ArgminGaussNewton))
+                .unwrap_err();
+            assert!(e.contains("singular"), "got: {e}");
+            assert!(e.contains("undamped"), "got: {e}");
+            assert!(e.contains("trf"), "the message must name a backend that copes: {e}");
+        }
+
+        #[test]
+        fn a_parameter_that_does_nothing_is_the_same_failure() {
+            // No reparametrization involved: the residual simply does not
+            // depend on x, so the Jacobian is zero. Every damped backend
+            // handles this; the undamped one cannot, and says why.
+            let flat = |_x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                out.clear();
+                out.push(3.0);
+                out.push(4.0);
+                Ok(())
+            };
+            let e = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0],
+                &cfg(OptimizerBackend::ArgminGaussNewton))
+                .unwrap_err();
+            assert!(e.contains("singular"), "got: {e}");
+            // The damped backends do not blink at it.
+            for b in [OptimizerBackend::BuiltinLm, OptimizerBackend::Trf] {
+                let r = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg(b))
+                    .unwrap();
+                assert!((r.cost - 25.0).abs() < 1e-9, "{}: cost {}", b.as_str(), r.cost);
+            }
+        }
+
+        #[test]
+        fn the_cost_is_navettes_convention_on_both() {
+            // r = (x - 1, 3): the optimum is x = 1 with an irreducible
+            // residual, so ‖r‖² = 9 there and the Jacobian stays rank 1. The
+            // two solvers carry two different internal conventions --
+            // Gauss-Newton's state cost is ‖r‖, the trust region's is ½‖r‖² --
+            // and both have to arrive at the same number here.
+            let offset = |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                out.clear();
+                out.push(x[0] - 1.0);
+                out.push(3.0);
+                Ok(())
+            };
+            for b in BOTH {
+                let r = run_optimizer(&offset, None::<&NoJacobian>, &[0.5], &[-5.0], &[5.0],
+                    &cfg(b))
+                    .unwrap();
+                assert!((r.x[0] - 1.0).abs() < 1e-5, "{}: x {:?}", b.as_str(), r.x);
+                assert!((r.cost - 9.0).abs() < 1e-8, "{}: cost {}", b.as_str(), r.cost);
+            }
+        }
+
+        #[test]
+        fn a_failing_residual_reports_its_own_message() {
+            let boom = |_x: &[f64], _o: &mut Vec<f64>| -> Result<(), String> {
+                Err("missing curve Rs".into())
+            };
+            for b in BOTH {
+                let e = run_optimizer(&boom, None::<&NoJacobian>, &[0.0], &[-1.0], &[1.0], &cfg(b))
+                    .unwrap_err();
+                assert!(e.contains("missing curve Rs"), "{}: {e}", b.as_str());
+            }
+        }
+
+        #[test]
+        fn the_analytic_jacobian_is_used_when_offered() {
+            let x0 = [0.0, 0.0];
+            let lb = [-5.0, -5.0];
+            let ub = [5.0, 5.0];
+            for b in BOTH {
+                let an = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
+                let fd =
+                    run_optimizer(&linear, None::<&NoJacobian>, &x0, &lb, &ub, &cfg(b)).unwrap();
+                assert!(an.analytic_jacobians > 0, "{}: {an:?}", b.as_str());
+                assert_eq!(fd.analytic_jacobians, 0, "{}", b.as_str());
+                // Differencing costs 2n evaluations per Jacobian; the analytic
+                // source costs none.
+                assert!(fd.evals > an.evals, "{}: {} vs {}", b.as_str(), fd.evals, an.evals);
+            }
+        }
+
+        #[test]
+        fn the_trust_region_admits_it_has_no_convergence_test() {
+            // argmin's `TrustRegion::terminate` returns `NotTerminated`
+            // unconditionally, so the run ends at `max_iterations` even when
+            // it sat on the optimum for most of them. That is a property of
+            // the backend, and callers reading `termination` need it declared
+            // rather than inferred from a suspiciously round iteration count.
+            assert!(OptimizerBackend::ArgminTrustRegion.runs_to_max_iterations());
+            assert!(!OptimizerBackend::ArgminGaussNewton.runs_to_max_iterations());
+            for b in [OptimizerBackend::BuiltinLm, OptimizerBackend::Trf] {
+                assert!(!b.runs_to_max_iterations());
+            }
+
+            let cfg = LmConfig {
+                max_iterations: 7,
+                ..cfg(OptimizerBackend::ArgminTrustRegion)
+            };
+            let r = run_optimizer(&linear, Some(&LinearJac), &[0.0, 0.0], &[-5.0, -5.0],
+                &[5.0, 5.0], &cfg).unwrap();
+            assert_eq!(r.termination, LmTermination::MaxIterations);
+            assert_eq!(r.iterations, 7);
+            // And it still got the right answer on the way.
+            assert!((r.x[0] - 1.0).abs() < 1e-6, "{:?}", r.x);
+        }
+
+        #[test]
+        fn gauss_newton_stops_on_its_own() {
+            // The contrast with the test above: Gauss-Newton owns a cost test,
+            // so on a problem it solves in one step it stops well short of the
+            // iteration cap.
+            let cfg = LmConfig {
+                max_iterations: 500,
+                ..cfg(OptimizerBackend::ArgminGaussNewton)
+            };
+            let r = run_optimizer(&linear, Some(&LinearJac), &[0.0, 0.0], &[-5.0, -5.0],
+                &[5.0, 5.0], &cfg).unwrap();
+            assert_eq!(r.termination, LmTermination::Cost);
+            assert!(r.iterations < 20, "took {} iterations", r.iterations);
         }
     }
 }

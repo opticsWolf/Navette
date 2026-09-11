@@ -66,7 +66,7 @@ coverage is thin.
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
-| R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; **item B (R4.4c) DONE (0.6.10)** — seam + `minpack_lm` behind `opt-minpack-lm`; the two argmin solvers (R4.4c-argmin) remain open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
+| ~~R4.4~~ | Optimizer backends: hardened built-in LM + optional ecosystem solvers — **DONE** | P2 | R4.4b (0.6.7), R4.4c (0.6.10), R4.4c-argmin (0.6.16). Five backends; the two argmin ones are baselines that measured badly and are documented as such (see corrections) | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | ~~R4.6~~ | TRF backend (trust-region-reflective) — **DONE (0.6.12)** | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat — `optimizer="trf"`, 10/10 breaks caught | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | ~~R5.1~~ | `unweave_collection` batch optimization — **DONE (0.6.13)** | P2 | 1.15×–2.29× where the cost is per-fragment; the rest is DRAM bandwidth, and the reference wins by aliasing the caller's buffer (see corrections) | M | L | §5.3 |
@@ -1154,7 +1154,8 @@ tests. What the plan did not say, or said differently:
   shape, the Python name plumbing and the availability/refusal machinery are
   all in place. TRF has bounds of its own, so it will set
   `bounds_are_native()` and skip `IntervalMap` entirely.
-* **Still open under this item (`R4.4c-argmin`).**
+* **`R4.4c-argmin` — DONE (0.6.16); see the corrections block below for what
+  the two backends turned out to be worth.** As specified:
   `OptimizerBackend::ArgminGaussNewton` and `ArgminTrustRegion` behind
   `opt-argmin = ["dep:argmin", "dep:argmin-math"]`, with
   `argmin-math`'s `nalgebra_0_34` backend (shared with `MinpackLm`, so no new
@@ -1171,6 +1172,70 @@ tests. What the plan did not say, or said differently:
   noted under R4.4d rather than silently dropped. **Closed by R4.6 (0.6.12)**:
   `trf` needs no cargo feature, so `lm_check.py` part D is that second row and
   it runs on every build.
+
+**CORRECTIONS / NOTES (0.6.16) — `R4.4c-argmin` shipped, and the answer it
+produced is that neither backend should be used.** Both are in, behind
+`opt-argmin`, with the plumbing the item specified. What the item did not
+specify was a measurement, and the measurement is the result.
+
+* **Measured on the three refold starts `lm_check.py` already uses** (residual
+  evaluations to reach scipy's optimum):
+
+  | backend | two films | two films, far | three films |
+  |---|---|---|---|
+  | `trf` | 8 | 21 | 32 |
+  | `argmin_trust_region` | 218 | 224 | 393 |
+  | `argmin_gauss_newton` | refuses | refuses | 201, cost 2690.8 vs 2670.0 |
+
+* **`argmin_trust_region` is correct and 7–27× more expensive.** It finds the
+  same optimum as scipy every time (1e-13 to 1e-9), but argmin's
+  `TrustRegion::terminate` returns `NotTerminated` unconditionally — the solver
+  has **no convergence test at all**, so `max_iterations` is its only exit. The
+  item did not anticipate this and there is no way to fix it from the adapter;
+  it is declared instead, as `OptimizerBackend::runs_to_max_iterations()`, so a
+  caller reading `termination` is not misled by a `MaxIterations` that is the
+  normal outcome.
+* **`argmin_gauss_newton` cannot run this problem class.** The item described
+  it as "unbounded and takes the same `IntervalMap`", which is true and beside
+  the point: the step is `(JᵀJ)⁻¹Jᵀr` with no damping, so a singular `JᵀJ`
+  makes it *undefined*, and a film driven toward zero thickness — the single
+  most ordinary thing that happens in a refold — produces exactly that. It
+  refuses two of the three starts outright and fails to converge on the third.
+  This is the algorithm behaving as the algorithm does; damping is what every
+  practical method adds to it. Shipped with a message that says so and names a
+  backend that copes, rather than surfacing argmin's bare "Non-invertible
+  matrix" to a user who will go looking for a broken stack.
+* **The item's premise about `TrustRegion` was right and its consequence
+  understated.** "It wants gradient `Jᵀr` and Hessian, so it needs the
+  Gauss-Newton approximation `JᵀJ` built explicitly — a different problem
+  shape." True; the adapter implements `CostFunction`/`Gradient`/`Hessian` on
+  ½‖r‖², `Jᵀr`, `JᵀJ`. What follows from it is the cost: `gradient` and
+  `hessian` each rebuild `J`, so one trust-region iteration differences the
+  Jacobian twice where a least-squares solver does it once. That is part of the
+  7–27×, and it is structural — argmin's trait split gives the adapter nowhere
+  to cache it that is not a lie about when the parameter changed.
+* **One dependency-plumbing trap, recorded because it fails silently.**
+  `argmin-math`'s nalgebra support is the feature `nalgebra_v0_34`.
+  `nalgebra_0_34` — the name the item used, and the one cargo generates for the
+  optional dependency — enables the *crate* and none of the trait impls, so the
+  build fails much later with a wall of unsatisfied `ArgminSub`/`ArgminInv`
+  bounds that say nothing about the cause.
+* **R4.4d's last row is now closed for real.** "Parametrize `lm_check.py` over
+  every enabled backend" was closed by R4.6 on the grounds that `trf` needs no
+  feature; part E now does it for the feature-gated ones too, skipping with the
+  rebuild command when they are absent. It asserts what the backends *do*, not
+  that they are good — the trust region's evaluation count and the
+  Gauss-Newton refusal are both pinned, so a future argmin that fixes either is
+  noticed rather than assumed.
+* **Recommendation, recorded so the next reader does not have to re-measure.**
+  `builtin` and `trf` are the backends to use. `minpack_lm` is a useful
+  independent LM to check them against. The two argmin backends earn their
+  place only as a demonstration of what damping and a stopping test are for,
+  and the feature stays off by default.
+* **No behaviour change on a default build.** `available_backends()` still
+  returns `["builtin", "trf"]`; 687 pytest, 440/445/449/454 cargo tests across
+  the four feature combinations, clippy clean on all four, fingerprint
+  unchanged.
 
 #### R4.4d Validation
 

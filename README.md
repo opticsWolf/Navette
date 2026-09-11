@@ -144,7 +144,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.15-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.16-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends
@@ -166,9 +166,11 @@ Off by default, so a standard wheel pulls no extra dependencies.
 | Feature | What it adds |
 |---|---|
 | `opt-minpack-lm` | `LmConfig(optimizer="minpack_lm")` — the `levenberg-marquardt` crate (MINPACK `lmdif`-derived, MIT), as a reference to compare the built-in LM against. Unbounded, so it runs on an interior reparametrization: its optima are strictly inside the thickness box, where the built-in's may sit exactly on it. |
+| `opt-argmin` | `LmConfig(optimizer="argmin_gauss_newton")` and `"argmin_trust_region"` — two solvers from the argmin ecosystem (MIT/Apache-2.0), as **baselines**, not as candidates. Both unbounded. The Gauss-Newton one is undamped, so it raises as soon as `JᵀJ` is singular — a film driven toward zero thickness is enough — and it refuses two of the three refold starts in `validation/review/lm_check.py`. The trust region finds the right optimum but has no convergence test of its own, so it always runs the full `max_iterations`: 218–393 residual evaluations where `"trf"` takes 8–32. Shares `nalgebra` with `opt-minpack-lm`. |
 
 ```powershell
 maturin develop --release --features opt-minpack-lm
+maturin develop --release --features opt-argmin
 ```
 
 Manual fallback: `cargo publish -p navette`;

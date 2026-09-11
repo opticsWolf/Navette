@@ -615,6 +615,18 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///   off a bound rather than on it -- the removal sweep compares against
 ///   ``clamp_min``, so a film still gets removed, but ``x == 0.0`` will not
 ///   hold. ``lambda_*`` and ``damping`` do nothing on this backend.
+/// * ``"argmin_gauss_newton"`` -- argmin's textbook Gauss-Newton, behind the
+///   ``opt-argmin`` cargo feature. Unbounded. Present as a *baseline*: it
+///   takes the full ``(JᵀJ)⁻¹Jᵀr`` step with no damping, so it raises
+///   ``ValueError`` the moment ``JᵀJ`` is singular -- which a layer with no
+///   effect on the merit, or a thickness pressed against a bound, is enough
+///   to cause. Do not reach for it on a real refold.
+/// * ``"argmin_trust_region"`` -- argmin's general-purpose trust region
+///   (Steihaug subproblem) driven on the Gauss-Newton model, behind
+///   ``opt-argmin``. Unbounded. It has **no convergence test of its own**, so
+///   it always runs the full ``max_iterations`` and always reports
+///   ``MaxIterations``; budget accordingly and read the cost, not the
+///   termination reason.
 ///
 /// Naming a backend the wheel was not built with raises ``ValueError`` with
 /// the rebuild command -- never a silent fall back to a different solver.
