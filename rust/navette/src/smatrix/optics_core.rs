@@ -74,6 +74,23 @@ pub fn cplx(re: f64, im: f64) -> Complex64 {
 }
 
 /// Fast algebraic principal complex square root (`re >= 0` branch).
+///
+/// `num_complex`'s general-case `sqrt` routes through `to_polar`/`from_polar`,
+/// i.e. an `atan2` plus a `sin`/`cos` — three transcendentals to take a root.
+/// This computes the same principal value from `|z|` and two real `sqrt`s,
+/// using the larger component first to avoid cancellation. Differs from the
+/// polar result by at most ~1 ULP, and `cos θ` is taken every interface so the
+/// saving compounds. Callers normalize the sign afterwards via
+/// [`forward_branch`], so the branch convention matches the reference exactly.
+///
+/// `|z|` is taken via `hypot`, which is correctly rounded and avoids the
+/// `a*a + b*b` intermediate (a couple of ULP of error plus over/underflow
+/// risk). The earlier naive form was chosen to mirror the reference's
+/// `fastmath` magnitude; with `fastmath` disabled this accurate form both
+/// matches the stricter reference better and lowers the component-level
+/// rounding that the `arg()` in `Delta` amplifies by `1/|cross|`. Cost is one
+/// libm `hypot` instead of one `sqrt`-of-a-sum — no `atan2`, so the hot-loop
+/// transcendental budget is unchanged in practice.
 #[inline(always)]
 pub fn csqrt_fast(z: Complex64) -> Complex64 {
     let a = z.re;

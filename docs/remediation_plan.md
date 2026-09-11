@@ -75,7 +75,7 @@ coverage is thin.
 | ~~R5.3~~ | `core_engine` — **DONE (0.6.14)**, and it was not the emit path | P2 | 1.4×–3.0× across the grid; the cost was `Solver::new` (see corrections). Now ~0.8–1.2× numba at 20k–60k points, still ~0.3–0.5× at 500 | M (must stay bit-identical) | M–L | §5, R2.4a |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
 | ~~R6.2~~ | small physics nits batch — **DONE (0.6.17)** | P3 | DOP_R clamped (fingerprint moved), τ̂ docstring fixed, Sellmeier domain guard added; the `+0.0` turned out to be load-bearing and stays (see corrections) | S | S | §3.3, §19.3 |
-| R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
+| ~~R6.3~~ | solver triplication (optional) — **CLOSED (0.6.23): consolidation measured and rejected; contract documented and now test-enforced** | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
 | ~~R6.4~~ | ~~docs/hygiene batch~~ — **DONE** (items 1,2,3,6 in 0.6.18; 4,5,7 in 0.6.19) | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, four stale docs closed, `extrap='error'` now errors | S | M | §6.3, §24.2, §18.4 |
 | ~~R6.5~~ | ~~`.pyi` stubs~~ — **DONE (0.6.20)**, plus a two-pass CI guard for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
 | ~~R6.6~~ | Rename `color/func_NN.rs` → descriptive module names — **DONE (0.6.22)** | P3 | 16 files renamed, 207 references rewritten; the decoder ring survives as a migration table in `color/mod.rs` and `docs/plans/color/README.md` | S (internal paths only) | S–M | §11 |
@@ -2017,7 +2017,7 @@ open.
   ten review harnesses exit 0; `check_exposure`, `check_cie_sync`,
   `bench_refold` all green.
 
-### R6.3 Solver triplication (optional)
+### R6.3 Solver triplication (optional) — CLOSED (0.6.23)
 
 **Review:** §4.2 — const-generic `LEVEL` consolidation of
 `solve_point`/`solve_point_intensity`, single-pol delegating to dual.
@@ -2025,6 +2025,76 @@ Only with benches before/after (per-call overhead is the risk); abort if
 `bench_backside_speed` regresses > 2 % or bit-identity breaks. Low priority.
 
 **Effort.** L.
+
+**OUTCOME (0.6.23) — the gate fired, and the review's actual finding was
+something else.**
+
+The consolidation was implemented, measured, and rejected. §4.2's headline is
+"deliberate, but **undocumented** as a maintenance contract", and that half is
+what shipped: the contract is now written down and, more to the point, enforced
+by a test.
+
+* **Half 1, `solve_point` / `solve_point_intensity` behind
+  `const CAPTURE: bool`: built, bit-exact, and 3–13 % slower.** The two bodies
+  fold to textually identical code at each instantiation — the fingerprint came
+  back `30d96909…3c6c`, unchanged — so the cost is pure codegen, not
+  arithmetic. Measured by alternating two `.pyd` builds in the same session,
+  eight rounds, 1500 reps each:
+
+  | | old | const-generic | delta |
+  |---|---|---|---|
+  | min | 0.0711 ms | 0.0757 ms | **+6.5 %** |
+  | p10 | 0.1136 ms | 0.1284 ms | **+13.0 %** |
+  | median | 0.1431 ms | 0.1477 ms | **+3.2 %** |
+
+  The old build won on min in 7 of 8 rounds, on p10 in 7 of 8, on median in 6
+  of 8. `#[inline]`, `#[inline(always)]` and no attribute at all were each
+  built and measured; none closed the gap. The plan's abort threshold was 2 %,
+  so it aborted. (`bench_backside_speed`'s own A and B masks stayed inside the
+  noise — A +1.8 %, B slightly *faster*; only the C_full mask, the
+  `ComplexAmps` path that actually runs `solve_point`, moved. That mask's
+  per-process spread is wide enough that the bench as written cannot resolve
+  2 %, which is why the A/B alternation and the tighter harness were needed to
+  get an answer at all.)
+
+* **Half 2, single-pol delegating to dual: not attempted, because the premise
+  is wrong.** `solve_coherent_block_fields_dual` has no "one pol off" mode — it
+  walks the interfaces once and does *both* polarizations, sharing the
+  per-interface `cos`/roughness work. Delegating therefore means computing the
+  polarization the caller did not ask for and discarding it. Measured directly:
+  asking for s+p instead of s alone costs 1.06–1.10× of total call time, and
+  that ratio *understates* the in-solver cost because a large part of the
+  measured call is fixed Python and dispatch overhead. Half 1 — a change with
+  literally zero extra arithmetic — already blew a 2 % gate; a change that adds
+  real arithmetic cannot pass it.
+
+* **What shipped instead.** The duplication stays and is now a stated contract
+  on `solve_point`, carrying the measurement so the next person does not
+  re-derive it. It is held in step by
+  `intensity_path_matches_full_path_bitwise`: 200 randomized stacks (3–8
+  layers, absorbing layers, all six roughness types, random incoherent flags,
+  all three coherence modes, both polarizations and the pair) driving both
+  functions and comparing all four intensity channels on `to_bits()` — 7200
+  comparisons, no tolerance, because a tolerance would pass exactly the
+  reordering this is meant to catch. Negative-tested by reassociating
+  `2.0 * PI * d_inc / lam` into `2.0 * PI / lam * d_inc` in the lean copy only:
+  the test fails on trial 27 with a 1-ULP `ts` difference. A second test pins
+  that the lean path leaves the complex fields NaN and the coherency channel
+  zero, so a future "helpful" fill-in cannot make an unread field look
+  meaningful.
+
+* **Out of scope, found on the way: a spliced doc comment.** `coherent_block.rs`
+  carried `csqrt_fast`'s five-paragraph rationale even though the function moved
+  to `optics_core.rs` in the `crates/` → `rust/` reshuffle (`aee3828`). Worse,
+  the move dropped four lines mid-sentence and glued the remainder onto
+  `solve_pol_specialized`'s doc — so the file documented a function it does not
+  contain, the sentence "The earlier naive form was chosen to mirror the
+  reference's" ended there, and `solve_pol_specialized`'s own one-line summary
+  was gone. The missing four lines were recovered from `af30379`
+  (`navette_smatrix/src/func_3.rs`), the rationale moved to `csqrt_fast` where
+  it belongs, and `solve_pol_specialized` has its summary back. Its claim that
+  "both solvers normalize the sign afterwards" was also stale after R3.4 and now
+  points at `forward_branch`.
 
 ### R6.4 Docs & hygiene batch — DONE (0.6.18 + 0.6.19)
 

@@ -258,6 +258,23 @@ pub struct OpticalState {
 
 /// Solve one point. Runs only the requested polarization branch(es) and the
 /// coherency channel only when `need_cross`.
+///
+/// # Maintenance contract with `solve_point_intensity`
+///
+/// [`solve_point_intensity`] is a deliberate copy of the block walk below,
+/// with the complex captures and the coherency channel removed. It is a copy
+/// on purpose and it is measured, not assumed (R6.3): folding the two behind a
+/// `const CAPTURE: bool` generic is bit-exact but costs +6.5 % on the min and
+/// +13 % on the p10 of the `ComplexAmps` path, over eight alternating A/B
+/// rounds, with `#[inline]`, `#[inline(always)]` and no attribute all measured
+/// and none of them closing the gap. The plan's own abort threshold was 2 %.
+///
+/// So the duplication stays, and the cost of keeping it honest is paid by
+/// `intensity_path_matches_full_path_bitwise` in the tests below, which drives
+/// both functions over randomized stacks -- absorbing layers, roughness, mixed
+/// incoherent flags, all three coherence modes -- and compares the four
+/// intensity channels on `to_bits()`. **Any edit to the block walk here must be
+/// made in both functions**; the test is what tells you if it was not.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn solve_point(
@@ -437,6 +454,10 @@ pub fn solve_point(
 /// real intensities for solved pols (NaN for unsolved ones) and NaN/zero complex
 /// fields, which are guaranteed unread at this level (requesting any of them
 /// would have lifted the plan to `ComplexAmps`/`Cross`).
+///
+/// This is a deliberate copy of [`solve_point`]'s block walk; see the
+/// maintenance contract in that function's docs for why it was not folded into
+/// one const-generic body, and which test holds the two in step.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn solve_point_intensity(
@@ -586,4 +607,130 @@ pub fn dispersion_channel(
         fod[lo..hi].copy_from_slice(&d4);
     }
     (gd, gdd, tod, fod)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic LCG -- no dev-dependency, and the same stacks every run.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0
+        }
+        fn uniform(&mut self, lo: f64, hi: f64) -> f64 {
+            let x = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+            lo + x * (hi - lo)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+    }
+
+    /// The R6.3 maintenance contract: `solve_point_intensity` is a hand-kept
+    /// copy of `solve_point`'s block walk, so the two must agree bit for bit on
+    /// every channel the lean path computes.
+    ///
+    /// Bit-for-bit, not `approx_eq`: the whole justification for keeping two
+    /// copies is that the arithmetic is identical, and a tolerance would let a
+    /// reordered expression through -- which is exactly the drift this guards.
+    #[test]
+    fn intensity_path_matches_full_path_bitwise() {
+        let mut rng = Lcg(0x5EED_1234_ABCD_0001);
+        let mut checked = 0usize;
+
+        for trial in 0..200 {
+            // `idx_n` is the *interface* count, so the stack must be one longer;
+            // `Solver::solve` passes `self.n_layers - 1` for exactly this reason.
+            let n_layers = 3 + rng.below(6);
+
+            let mut n_stack = Vec::with_capacity(n_layers);
+            let mut inv_n_stack = Vec::with_capacity(n_layers);
+            for i in 0..n_layers {
+                // Layer 0 stays transparent: an absorbing incident medium
+                // leaves the branch under-determined (R3.4).
+                let k = if i == 0 { 0.0 } else { rng.uniform(0.0, 0.4) };
+                let n = Complex64::new(rng.uniform(1.0, 3.0), k);
+                n_stack.push(n);
+                inv_n_stack.push(Complex64::new(1.0, 0.0) / n);
+            }
+
+            let mut thick = vec![0.0; n_layers];
+            for t in thick.iter_mut().take(n_layers - 1).skip(1) {
+                *t = rng.uniform(5.0, 400.0);
+            }
+
+            let mut inc_flags = vec![0i32; n_layers];
+            for f in inc_flags.iter_mut().take(n_layers - 1).skip(1) {
+                *f = if rng.uniform(0.0, 1.0) < 0.3 { 1 } else { 0 };
+            }
+
+            let rough_types: Vec<i32> = (0..n_layers).map(|_| rng.below(6) as i32).collect();
+            let rough_vals: Vec<f64> = (0..n_layers).map(|_| rng.uniform(0.0, 8.0)).collect();
+
+            let lam = rng.uniform(380.0, 1200.0);
+            let sin_theta = rng.uniform(0.0, 85.0f64.to_radians().sin());
+
+            for &mode in &[MODE_A, MODE_B, MODE_C] {
+                for &(need_s, need_p) in &[(true, false), (false, true), (true, true)] {
+                    let full = solve_point(
+                        n_layers - 1, lam, sin_theta, &n_stack, &inv_n_stack, &thick,
+                        &inc_flags, &rough_types, &rough_vals, mode,
+                        need_s, need_p, false,
+                    );
+                    let lean = solve_point_intensity(
+                        n_layers - 1, lam, sin_theta, &n_stack, &inv_n_stack, &thick,
+                        &inc_flags, &rough_types, &rough_vals, mode, need_s, need_p,
+                    );
+
+                    for (name, a, b) in [
+                        ("rs", full.rs, lean.rs),
+                        ("rp", full.rp, lean.rp),
+                        ("ts", full.ts, lean.ts),
+                        ("tp", full.tp, lean.tp),
+                    ] {
+                        assert_eq!(
+                            a.to_bits(), b.to_bits(),
+                            "trial {trial} mode {mode} s={need_s} p={need_p}: \
+                             {name} drifted, full={a} lean={b}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        // The loop must actually have run: an early `continue` or a mis-sized
+        // stack would otherwise make this test pass by doing nothing.
+        assert_eq!(checked, 200 * 3 * 3 * 4);
+    }
+
+    /// The lean path deliberately returns NaN complex amplitudes and a zero
+    /// coherency channel. Pinning it stops a future "helpful" fill-in from
+    /// making an unread field look meaningful.
+    #[test]
+    fn intensity_path_leaves_the_complex_fields_unset() {
+        let n_stack = [
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, 0.1),
+            Complex64::new(1.52, 0.0),
+        ];
+        let inv_n_stack: Vec<Complex64> =
+            n_stack.iter().map(|n| Complex64::new(1.0, 0.0) / n).collect();
+        let lean = solve_point_intensity(
+            2, 550.0, 0.3, &n_stack, &inv_n_stack, &[0.0, 120.0, 0.0],
+            &[0, 0, 0], &[0, 0, 0], &[0.0, 0.0, 0.0], MODE_C, true, true,
+        );
+        for c in [lean.rs_c, lean.rp_c, lean.ts_c, lean.tp_c,
+                  lean.rbs_c, lean.rbp_c, lean.tbs_c, lean.tbp_c] {
+            assert!(c.re.is_nan() && c.im.is_nan(), "expected NaN, got {c}");
+        }
+        assert_eq!(lean.cross_r, Complex64::new(0.0, 0.0));
+        assert_eq!(lean.cross_t, Complex64::new(0.0, 0.0));
+        // …and the intensities are real numbers, so the test is not passing
+        // because the whole solve fell over.
+        assert!(lean.rs.is_finite() && lean.ts.is_finite());
+    }
 }

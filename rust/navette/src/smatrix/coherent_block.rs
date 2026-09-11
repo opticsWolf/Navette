@@ -31,19 +31,6 @@ pub type BlockResult = (
     f64,
 );
 
-/// Fast algebraic principal complex square root (`re >= 0` branch).
-///
-/// `num_complex`'s general-case `sqrt` routes through `to_polar`/`from_polar`,
-/// i.e. an `atan2` plus a `sin`/`cos` — three transcendentals to take a root.
-/// This computes the same principal value from `|z|` and two real `sqrt`s,
-/// using the larger component first to avoid cancellation. Differs from the
-/// polar result by at most ~1 ULP, and `cos θ` is taken every interface so the
-/// saving compounds. Both solvers normalize the sign afterwards (`im >= 0`),
-/// so the branch convention matches the reference exactly.
-///
-/// `|z|` is taken via `hypot`, which is correctly rounded and avoids the
-/// `a*a + b*b` intermediate (a couple of ULP of error plus over/underflow
-/// risk). The earlier naive form was chosen to mirror the reference's
 /// Single-polarization coherent block solver, monomorphized on polarization.
 ///
 /// `IS_S` is a const generic, so the s/p admittance choice is resolved at

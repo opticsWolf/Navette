@@ -3,6 +3,65 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.23] — The solver duplication stays, and is now a test (R6.3)
+
+R6.3 proposed folding `solve_point` and `solve_point_intensity` into one
+const-generic body, gated on "abort if `bench_backside_speed` regresses > 2 %
+or bit-identity breaks". It was built, it was bit-exact, and it was 3–13 %
+slower. So it was aborted — and what §4.2 actually complains about ("deliberate,
+but **undocumented** as a maintenance contract") shipped instead.
+
+### Added
+
+- **`intensity_path_matches_full_path_bitwise`** — the contract, enforced. 200
+  randomized stacks (3–8 layers, absorbing layers, all six roughness types,
+  random incoherent flags, all three coherence modes, s / p / both) drive both
+  functions and compare all four intensity channels on `to_bits()`: 7200
+  comparisons, no tolerance. A tolerance would pass exactly the reordering this
+  is for. Negative-tested by reassociating `2.0 * PI * d_inc / lam` into
+  `2.0 * PI / lam * d_inc` in the lean copy alone — the test fails on trial 27
+  with a 1-ULP `ts` difference.
+- **`intensity_path_leaves_the_complex_fields_unset`** — pins that the lean
+  path returns NaN complex amplitudes and a zero coherency channel, so a future
+  fill-in cannot make an unread field look meaningful.
+- A maintenance contract on `solve_point` saying the copy is deliberate,
+  carrying the measurement, and naming the test that holds the two in step.
+
+### Measured (and rejected)
+
+Two `.pyd` builds alternated in one session, eight rounds, 1500 reps each, on
+the `ComplexAmps` path:
+
+| | old | const-generic | delta |
+|---|---|---|---|
+| min | 0.0711 ms | 0.0757 ms | **+6.5 %** |
+| p10 | 0.1136 ms | 0.1284 ms | **+13.0 %** |
+| median | 0.1431 ms | 0.1477 ms | **+3.2 %** |
+
+Old won on min in 7 of 8 rounds, p10 in 7 of 8, median in 6 of 8. `#[inline]`,
+`#[inline(always)]` and no attribute were each built and measured; none closed
+the gap. The bodies fold to textually identical code, and the fingerprint was
+unchanged — the cost is codegen, not arithmetic.
+
+R6.3's second half (single-pol delegating to dual) was not attempted: the dual
+solver has no "one pol off" mode. It walks the interfaces once doing *both*
+polarizations, so delegating means computing and discarding the unwanted one,
+measured at 1.06–1.10× of total call time — an understatement of the in-solver
+cost, since much of that call is fixed overhead.
+
+### Fixed
+
+- **A doc comment that documented an absent function, mid-sentence.**
+  `coherent_block.rs` still carried `csqrt_fast`'s five-paragraph rationale
+  after the function moved to `optics_core.rs` in the `crates/` → `rust/`
+  reshuffle, and the move dropped four lines and glued the remainder onto
+  `solve_pol_specialized`'s doc — so the sentence "The earlier naive form was
+  chosen to mirror the reference's" simply ended, and `solve_pol_specialized`
+  had no summary line of its own. The missing four lines were recovered from
+  the pre-port tree; the rationale now sits on `csqrt_fast`, updated to point at
+  `forward_branch` (its claim that "both solvers normalize the sign afterwards"
+  went stale in 0.6.21), and `solve_pol_specialized` has its summary back.
+
 ## [0.6.22] — The color catalog gets its names back (R6.6)
 
 `rust/navette/src/color/` held sixteen files called `func_01.rs` through
