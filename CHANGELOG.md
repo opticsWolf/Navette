@@ -3,6 +3,53 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.11] — The two whole-engine parity oracles are back (R2.4a)
+
+`parity/smatrix/test_core_engine_photometry_only.py` and
+`test_core_engine_rigorous_ellipsometry.py` were the only tests that compared
+the *entire* engine — inputs in, thirteen channels out — against the numba
+kernel it replaced. Since R2.4 (0.5.8) they had been skipping, because they
+loaded a `navette_matrix` extension that does not exist in this repository.
+They now run against `navette._smatrix.core_engine`, and the parity layer has
+no NEEDS PORT rows left: 13/13 channels, agreement ~1e-14 to ~1e-16.
+
+### Changed
+
+- **Both scripts ported to the request-driven `core_engine`.** The legacy
+  kernels took `calc_s, calc_p` and a `debug_flag` and always returned a
+  fixed-width tuple; the successor takes a request mask and emits only what
+  was asked for. Every element of both tuples is still compared.
+- **The coherence mode is `FRONT_BLOCK`, and the mapping is asserted.** The
+  legacy ellipsometry kernel took reflection S₂/S₃ from the first coherent
+  block and transmission S₂/S₃ from a Mueller cross-term product across
+  blocks — exactly `core_engine.rs`'s `track_cross_channel == false` path.
+  Half the cases flag an incoherent layer so the modes actually differ, and
+  the script requires `COHERENCY_MATRIX` to *disagree* with the reference:
+  without that, "mode A is the legacy treatment" would be an untested claim
+  that happens to hold because nothing separates the modes.
+- **A skipped channel is asserted absent, not compared against zeros.** The
+  legacy kernel zero-filled the polarization it was told to skip. Comparing
+  the missing channel against those zeros was tried deliberately: it passes,
+  and would keep passing if the mask were ignored entirely. The port asserts
+  the key is missing, and separately that `Rs` from an s-only request is
+  bit-identical to `Rs` from the full one.
+- **The 13th value moved rather than disappeared.** `conservation_err` is no
+  longer an engine channel; it is `solver_energy_conservation` (R1.2), and
+  the port reconstructs and compares it from the four intensities.
+
+### Known
+
+- **The rewrite is slower than the kernel it replaced** on this workload —
+  0.5–0.65× across 500 to 60 000 grid points — and roughly half the cost
+  looks to be outside the physics. Recorded as **R5.3 (P2)** rather than
+  fixed here: a performance change does not belong in a parity port.
+- **`Delta` is compared on the circle as a guard, not a finding.** The last
+  ellipsometry case is built to straddle ±π, and the script asserts it really
+  does — but both engines pick the same side everywhere, so a plain
+  difference would pass this file today. Removing the circle handling was run
+  as a deliberate break and was *not* caught; it is recorded in the plan that
+  way rather than dressed up.
+
 ## [0.6.10] — Which solver runs is now a choice, and a named one (R4.4c, work item B)
 
 The thickness optimizer's residual system was always solver-agnostic — a

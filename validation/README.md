@@ -27,8 +27,8 @@ validation/
 │   │   ├── test_redheffer_product_real.py        # PASS, ~1.7x
 │   │   ├── test_redheffer_product_complex_field.py # PASS, ~1.7x
 │   │   ├── test_solve_coherent_block_fields.py   # PASS, ~1.1x
-│   │   ├── test_core_engine_photometry_only.py   # SKIPS: NEEDS PORT (R2.4a)
-│   │   ├── test_core_engine_rigorous_ellipsometry.py # SKIPS: NEEDS PORT (R2.4a)
+│   │   ├── test_core_engine_photometry_only.py   # PASS, ~0.77x (R5.3)
+│   │   ├── test_core_engine_rigorous_ellipsometry.py # PASS, ~0.64x (R5.3)
 │   │   └── refs/
 │   │       └── loom_matrix.py         # numba reference (all kernels)
 │   └── materials/
@@ -90,14 +90,18 @@ python validation/parity/materials/gen_goldens.py
 
 ## Notes
 
-- `parity/smatrix/test_core_engine_*.py` predate the request-driven
-  `core_engine` API (`navette._smatrix.core_engine`) and need porting. They
-  now **skip with that reason** instead of calling `sys.exit(1)` at import,
-  which used to turn any collection of `parity/` into a pytest
-  INTERNALERROR. They load a standalone `navette_matrix` extension from
-  `parity/target/release/` — a crate that does not exist anywhere in this
-  repo, so building it is not the fix; porting onto `core_engine` is
-  (**R2.4a**). Everything else in `parity/` passes against the release build.
+- `parity/smatrix/test_core_engine_*.py` were ported onto the request-driven
+  `core_engine` in **R2.4a (0.6.11)**; they had been skipping since 0.5.8
+  because they loaded a standalone `navette_matrix` extension from
+  `parity/target/release/`, a crate that does not exist anywhere in this repo.
+  Both now compare every channel of their legacy 4- and 13-tuples against the
+  numba reference (~1e-14 to ~1e-16), including `conservation_err`, which is
+  reconstructed from `solver_energy_conservation` (R1.2). Everything in
+  `parity/` now passes against the release build — no NEEDS PORT rows left.
+- **These two are also the only whole-engine speed comparison**, and they say
+  the rewrite is *behind* the kernel it replaced (0.64–0.77× here, 0.5–0.65×
+  across 500–60 000 grid points). That is **R5.3**, not a regression
+  introduced by the port.
 - **The parity comparisons were not running at all before 0.5.8.** The numba
   reference was imported from `parity/loom/`, a directory that does not
   exist; the import failed, and the scripts responded by scoring every

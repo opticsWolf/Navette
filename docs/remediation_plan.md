@@ -58,7 +58,7 @@ coverage is thin.
 | ~~R2.3a~~ | ~~clippy clean → blocking gate~~ | — | **DONE (0.6.6)** | — | — | §7 |
 | R2.3b | rustfmt adoption → blocking gate | P3 | 981 files; style decision first | S (blame churn) | S/L review | §7 |
 | R2.4 | parity tests collected; `sys.exit` → skip | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
-| R2.4a | port `test_core_engine_*` onto `core_engine` | P1 | only whole-engine parity oracles | M | M | §15 |
+| ~~R2.4a~~ | port `test_core_engine_*` onto `core_engine` — **DONE (0.6.11)** | P1 | only whole-engine parity oracles — both restored, 13/13 channels, ~1e-14 | M | M | §15 |
 | R2.5 | request-bit + schema sync tests | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
 | R3.1 | `ScatterMatrix` input validation | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
 | R3.2 | needle z-range: debug-assert → error | P1 | release-build garbage | S | S | §21.1 |
@@ -71,6 +71,7 @@ coverage is thin.
 | R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
+| R5.3 | `core_engine` emit path (discovered by R2.4a) | **P2** | the rewrite is 0.5–0.65× the numba kernel it replaced | M (must stay bit-identical) | M–L | §5, R2.4a |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
 | R6.2 | small physics nits batch | P3 | DOP_R clamp, docstring, `+0.0` | S | S | §3.3, §19.3 |
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
@@ -459,7 +460,7 @@ update `validation/README.md`'s inventory (§6.3 rot) in the same commit.
 
 **Effort.** M.
 
-### R2.4a Port `test_core_engine_*` onto the request-driven `core_engine`
+### R2.4a Port `test_core_engine_*` onto the request-driven `core_engine` — DONE (0.6.11)
 
 **Discovered by R2.4 (0.5.8).** `parity/smatrix/test_core_engine_photometry_only.py`
 and `test_core_engine_rigorous_ellipsometry.py` load a standalone
@@ -483,6 +484,72 @@ the parity layer.
 **Risk.** M — a wrong mask mapping produces a false FAIL, which is the safe
 direction, but debugging it needs care with the ellipsometry channel order.
 **Effort.** M.
+
+**CORRECTIONS / NOTES (0.6.11) — both scripts ported; the parity layer has no
+NEEDS PORT rows left.** Every channel of both legacy kernels is compared
+against the numba reference, agreement ~1e-14 to ~1e-16 throughout, and both
+files are collected by pytest rather than skipped.
+
+* **The mode mapping is `FRONT_BLOCK`, and the reason is in the Rust, not in
+  a guess.** The legacy ellipsometry kernel takes reflection S₂/S₃ from the
+  *first coherent block's* field amplitudes and transmission S₂/S₃ from a
+  Mueller cross-term product accumulated across blocks. In `core_engine.rs`
+  that is exactly the `track_cross_channel == false` path (`cross_r =
+  rp₀·conj(rs₀)`, `cross_t = cross_t_acc`), which is mode A.
+  `COHERENCY_MATRIX` (mode B) cascades the complex p-s channel through the
+  incoherent echoes and is a *later, different* treatment. Half the cases flag
+  an incoherent layer so the two modes actually differ, and the script asserts
+  that mode B disagrees with the reference — otherwise "mode A is the legacy
+  treatment" would be an untested claim that happens to hold because nothing
+  separates the modes.
+* **For photometry the A/B distinction does not exist.** The coherency channel
+  is only tracked when something requests it, and pure intensities never do,
+  so `FRONT_BLOCK` and `COHERENCY_MATRIX` are the same computation there. The
+  photometry port says so and asserts it, and asserts the distinction it *can*
+  make: `FULLY_COHERENT` ignores the flags — identical to the other two when
+  every layer is coherent, different as soon as one is not.
+* **`calc_s`/`calc_p` became mask bits, and the old comparison would have
+  passed for the wrong reason.** The legacy kernel returned four arrays always,
+  zero-filling the polarization it was told to skip; the mask simply omits the
+  key. Comparing the missing channel against those zeros was tried
+  deliberately: **it passes**, and would keep passing if the mask were ignored
+  entirely. The port asserts the key is *absent* instead, and separately that
+  `Rs` from an s-only request is bit-identical to `Rs` from the full one — the
+  fast path is a fast path, not different physics.
+* **The 13th return value moved rather than disappeared.** `conservation_err`
+  is no longer an engine channel; it is `solver_energy_conservation` (R1.2).
+  The port reconstructs it from the four intensities and compares it, so the
+  tuple is covered end to end and nothing is dropped on the grounds that it
+  was refactored.
+* **`incoherent_flags` changed length.** The binding requires one flag per
+  layer; the numba kernel only ever reads the first n−1. The old test
+  generated n−1 and would have been rejected outright. One array of length n
+  now feeds both.
+* **The comparison inputs are built once, in both layouts.** numba wants a
+  complex (n_wavs, n_layers) cache, the binding wants the same numbers
+  interleaved re/im and flattened wav-major. Deriving both from one source is
+  what keeps a layout bug from reading as a physics difference — swapping the
+  interleave was one of the deliberate breaks, and it moves `Rp` by 4e5.
+* **The angle comparison is a guard, not a finding, and is labelled as one.**
+  Δ is compared on the circle and the last ellipsometry case is built to sit
+  on ±π (transparent, low contrast, near normal incidence — the script asserts
+  it really does straddle the cut). The two engines nonetheless pick the same
+  side everywhere, so a plain difference would pass this file today. Removing
+  the circle handling was run as a deliberate break and was **not** caught;
+  that is recorded here rather than dressed up.
+* **Six deliberate breaks run, five caught**: the wrong coherence mode (Δ_R
+  off by 2.8 rad), the re/im interleave swapped, `debug_flag=0` on the legacy
+  call, the single-polarization identity check given the wrong mask, and the
+  request mask ignored. The sixth — comparing unrequested channels against the
+  legacy zeros — passes, which is the point being made above.
+* **A performance finding, recorded as R5.3 rather than acted on here.** The
+  request-driven engine is **slower than the numba kernel it replaced** on
+  this workload: 0.5–0.65× across 500 to 60 000 grid points. A first
+  measurement puts roughly half the cost outside the physics — an `Rs`-only
+  solve of 20 000 points takes 0.98 ms where the full twelve-channel emit
+  takes 2.08 ms, against numba's 1.94 ms for all thirteen. Mixing a
+  performance change into a parity port would violate §0.1 rule 3, so it is
+  its own item.
 
 ### R2.5 Request-bit and schema sync tests — DONE (0.5.9)
 
@@ -1347,6 +1414,46 @@ scaling bench shows the serial fraction matters at real workloads.
 
 ---
 
+### R5.3 `core_engine`'s emit path — the rewrite is behind the kernel it replaced
+
+**Discovered by R2.4a (0.6.11).** With the whole-engine parity oracles finally
+running, the two engines can be timed on the same inputs, and the answer is
+not the one the rewrite assumed: `navette._smatrix.core_engine` is **0.5–0.65×
+the speed** of the numba `loom_matrix` kernel it replaced, at every grid size
+measured (500 to 60 000 points, 6 layers, release build, both parallel —
+numba `prange`, Rust rayon).
+
+**Where the time goes — one measurement, not a diagnosis.** At 20 000 points:
+an `Rs`-only solve (`Level::Intensities`, one emitted array) takes 0.98 ms; the
+full twelve-channel request takes 2.08 ms; numba computes all thirteen in
+1.94 ms. So roughly half the Rust time is spent after the physics. The obvious
+suspect is the shape of the pipeline — `solve` materializes a
+`Vec<OpticalState>` over every grid point, then walks it once per requested
+channel into its own `Vec<f64>`, then again into a numpy array — where numba
+writes each channel directly into its output array inside the point loop. That
+is a hypothesis; profile before rewriting.
+
+**Fix sketch.** Emit into the destination buffers inside the parallel map
+(per-destination indexed writes, §13 determinism — no reduction), so the
+intermediate `Vec<OpticalState>` and the per-channel walk both disappear.
+`PyArray::from_vec` already moves rather than copies, so the last hop is
+probably not the problem.
+
+**Risk.** M — this is the hot path of the whole package and every golden in
+the suite runs through it; it must stay **bit-identical** (§0.1 rule 5: the
+random-stack differential test plus the review harnesses), and the parallel
+write pattern must stay per-destination-indexed.
+
+**Validation.** Existing: the two R2.4a parity scripts are now the oracle and
+print the speedup ratio; the differential bit-identity test; the smatrix
+benches. New: a grid-scaling row in the smatrix bench so the ratio is tracked
+rather than rediscovered.
+
+**Effort.** M–L. **Priority note:** P2 — this is the package's advertised
+reason for existing, so it outranks R5.2; sequence it after R5.1.
+
+---
+
 ## 6. Phase 6 — Maintainability, docs, hygiene (P3)
 
 ### R6.1 `needle_gradient` refactor (channel-demand struct)
@@ -1497,7 +1604,7 @@ recur — the same pattern as `check_cie_sync.py`.
 |---|---|---|
 | `pytest validation` (smoke + goldens + regression) | 355 | imports, goldens, structure round-trips, mirror semantics |
 | `cargo test --workspace` | 376 | engine units, materials parity (22), bindings (15), synthesis deposit semantics |
-| pytest-style parity tests (`validation/parity/**`) | 11 (+2 NEEDS PORT) | Python-vs-Rust semantic parity — **hidden until R2.4** |
+| pytest-style parity tests (`validation/parity/**`) | 13 | Python-vs-Rust semantic parity — **hidden until R2.4**; the last two NEEDS PORT rows closed by R2.4a (0.6.11) |
 | review harnesses (`validation/review/`) | 8 scripts | independent physics: fold eval, FD gradients, color kernel, garbage-in, weaver race, TL golden, KK machinery |
 | benches (`validation/benches/`) | 7 | timing + numeric parity sections (release-only after R2.1) |
 
