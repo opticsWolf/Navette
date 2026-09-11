@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Native woven-grid provider (Phase E, triggered: Rust-only runs must
 //! serve measured n/k curves without touching Python).
 //!

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Mirror of the solver/needle physics tests through the public Python API.
 
 Translated intent (same stacks, same FD conventions, same hand values):

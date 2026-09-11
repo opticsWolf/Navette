@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Eigenmode search: the pinned SPP, and the runaway that used to pass (R3.3).
 
 ``char_func`` is ``|1/r(n_eff)|^2``, so a pole of the reflection coefficient

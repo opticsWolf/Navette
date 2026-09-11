@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Parity + validation for per-target weighting, count normalization and
 integral (mean) targets.
 

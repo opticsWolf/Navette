@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Mirror of the Rust materials tests through the installed extension.
 
 Covers ``crates/navette-materials/tests/parity.rs`` (22 golden tests —

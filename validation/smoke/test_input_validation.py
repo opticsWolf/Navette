@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Input validation for the public solver entry points (R3.1, R3.2).
 
 The engine is permissive on purpose -- it is also the optimizer's inner loop.

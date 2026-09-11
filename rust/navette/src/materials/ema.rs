@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Effective-medium approximation (EMA) mixing kernels.
 //!
 //! Each function takes the inclusion and host **refractive indices** (n + ik)

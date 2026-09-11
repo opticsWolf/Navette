@@ -83,7 +83,7 @@ Navette/
 │   └── navette-py/           # PyO3 aggregator -> navette._navette (one wheel)
 ├── validation/               # tests, parity, benches, goldens + references (see validation/README.md)
 ├── tools/check_exposure.py   # bidirectional exposure lint (CI)
-├── examples/  docs/plans/  attic/
+├── examples/  docs/plans/  benchmarks/
 ```
 
 ### Install & build
@@ -144,7 +144,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.17-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.18-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends

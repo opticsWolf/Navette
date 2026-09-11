@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Independent (non-loom) verification of the synthesis gradient chain.
 # Part A: Python reimplementation of the merit fold vs native MeritSpec.merit
 # Part B: end-to-end dF/dtheta_k: FD through the real solver+fold vs

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Coherent-block field solvers: s, p, and dual-polarization propagation
 //! through a contiguous coherent slice of the stack.
 //!

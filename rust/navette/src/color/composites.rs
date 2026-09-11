@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/composites.rs
 //! Convenience composite functions and Gamut Mapping.
 

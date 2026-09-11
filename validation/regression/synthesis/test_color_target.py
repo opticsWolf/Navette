@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Color Python surface: ``ColorTarget`` validation mirrors native messages,
 _dump resolution, ``build_merit_spec`` color section, TargetSet roundtrip
 (plan R5). Program documents carry no targets section (materials/groups/

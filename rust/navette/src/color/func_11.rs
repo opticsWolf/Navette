@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_11.rs
 //! Delta E CMC(l:c) – CMC colour difference formula (1984).
 //!

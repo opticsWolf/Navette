@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 ``navette.color`` — colorimetry (sRGB/XYZ/Lab/LCH/LUV/Oklab, ΔE, photometry).
 

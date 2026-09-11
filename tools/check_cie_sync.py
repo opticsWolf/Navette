@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """CI sync guard: re-extract the embedded color defaults from
 `src/navette/data/CIE/` and byte-compare against `rust/navette/data/`.
 Exit 1 on any drift (loud, not silent). Stdlib only."""

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 import numpy as np
 
 # analytic Lorentz oscillator: eps2 = f*G*E/((E^2-E0^2)^2 + G^2 E^2)

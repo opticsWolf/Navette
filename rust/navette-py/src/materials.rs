@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! PyO3 bindings for the Navette materials core.
 //!
 //! This crate contains NO math. Each `#[pyfunction]`:

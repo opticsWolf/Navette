@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """spectralweave: weave fragments into one curve, then unweave a target back.
 
 A simulation rarely produces one spectrum on one grid. It produces pieces --

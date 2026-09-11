@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Shared helpers for the parity scripts under ``validation/parity/``.
 
 These files are dual-shaped on purpose: they run as plain scripts

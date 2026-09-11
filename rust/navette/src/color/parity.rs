@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Parity tests: assert Rust outputs against exact golden vectors produced by
 //! the Python reference engine (refgen/gen_golden.py).
 

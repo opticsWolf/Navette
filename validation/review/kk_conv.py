@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 import numpy as np
 from kk_validate import eps1_pair, eps2_lor
 # convergence of MY quadrature at the TL comparison point E=4.13 (Lorentz proxy)

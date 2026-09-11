@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Parity/validation for needle T/A/phase gradients (Rust vs solver FD).
 
 Covers the coherent needle path added for transmission, absorption and

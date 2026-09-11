@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Wavelength-grid generation from (start, step) segments.
 //!
 //! Port of `generate_wavelength_array_from_steps`. Given points

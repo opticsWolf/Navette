@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Material providers: name → nk with explicit grids.
 //!
 //! Mirrors `navette.structure.materials` providers, with the A3 promise

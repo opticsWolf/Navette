@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Regression: inversion mirror semantics (BUG-A/B/C/E accept).
 
 An inverted block must be a MIRROR: order reversed AND plane quantities

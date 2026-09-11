@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette -- Rust Rewrite of Numba-optimized thin-film optical solver
 //!
 //! synthesis::needle_pass — analytic needle insertion pass.

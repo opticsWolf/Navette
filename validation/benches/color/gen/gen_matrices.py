@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 import numpy as np, loom_colorengine as ce
 import colour  # reference library; the sRGB matrices are taken from here verbatim
 

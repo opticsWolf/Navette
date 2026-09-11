@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! needle_operator.rs
 //!
 //! Analytic needle-operator sensitivities (Tikhonravov's method) for

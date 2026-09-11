@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Parser for the CIE DataCite JSON table envelope.
 //!
 //! Every reference file under `navette/data/CIE/` shares one envelope: a

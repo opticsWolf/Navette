@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Comparison test for core_engine_photometry_only — numba vs rust (R2.4a).
 
 The legacy kernel took ``calc_s, calc_p`` and always returned four arrays,

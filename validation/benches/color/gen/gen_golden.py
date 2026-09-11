@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 Generate exact golden vectors from the REAL loom_colorengine reference
 (running in pure-Python via the numba shim) and emit a Rust source file

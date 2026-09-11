@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! State-schema version gate.
 //!
 //! Mirrors `navette.structure.types.SCHEMA_VERSION`: v1 is the baseline,

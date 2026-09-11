@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Navette project metadata.
 
 from typing import Final
@@ -8,7 +9,7 @@ __description__: Final[str] = (
   "A high-performance optical engine utilizing a Scattering Matrix "
   "algorithm for stable simulation of light in stratified media."
 )
-__version__: Final[str] = "0.6.17"
+__version__: Final[str] = "0.6.18"
 __author__: Final[str] = "opticsWolf"
 __license__: Final[str] = "LGPL-3.0-or-later"
 __copyright__: Final[str] = "Copyright (c) 2026 opticsWolf"

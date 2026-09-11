@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Positioned composition of structures: blocks, chains, global indices.
 //!
 //! Mirrors `navette.structure.architect.Navette_Architect`. Structures live

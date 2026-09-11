@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Scaling/error policy shared by a set of layers.
 //!
 //! Mirrors `navette.structure.models.Group` exactly (factors, summands,

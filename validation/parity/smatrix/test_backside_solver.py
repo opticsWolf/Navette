@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Backside solver outputs: analytic + symmetry + energy validation.
 
 Covers Request.PHI_RBS/RBP/TBS/TBP and RBS_C/RBP_C/TBS_C/TBP_C:

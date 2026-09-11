@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Sellmeier dispersion model.
 //!
 //! n²(λ) = 1 + Σᵢ Bᵢ·λ² / (λ² − Cᵢ)   with λ in µm.  The third term is only

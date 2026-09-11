@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Tauc–Lorentz dielectric model (Jellison & Modine, 1996).
 //!
 //! ε₂ is the analytic Tauc–Lorentz form; ε₁ is recovered by the same FFT

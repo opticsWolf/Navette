@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Cody–Lorentz / UBF Cody–Lorentz dielectric model.
 //!
 //! ε₂ is generated on the cached 8192-pt energy grid (band region above Et,

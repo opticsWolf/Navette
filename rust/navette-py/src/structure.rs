@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Thin PyO3 bindings for the `navette-structure` model core.
 //!
 //! No model logic here: wrappers own the conversions (dicts, numpy,

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Regression: state round-trips and validation (BUG-1, BUG-2 accept).
 
 BUG-1: `from_state(get_state())` preserves every field — material names

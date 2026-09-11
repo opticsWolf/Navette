@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! synthesis::targets — typed target sets → native `MeritSpec`.
 //!
 //! Rust-first port of the Python `build_merit_spec` converter: typed

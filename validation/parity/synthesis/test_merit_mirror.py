@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Mirror of ``synthesis/merit.rs`` unit tests through ``navette._smatrix``.
 
 All 30 Rust tests translated 1:1 — same grids, same hand-computed

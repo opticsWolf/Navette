@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Layer and Group (bound Rust classes, re-exported).
 
 The model lives first-class in the native ``navette._structure``

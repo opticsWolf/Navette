@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Shim: re-export the ``_interpolate`` submodule of the aggregated extension.
 
 The single ``navette._navette`` native module (built by ``maturin develop --release``

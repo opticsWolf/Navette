@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Drude and Drude–Lorentz dispersion models.
 //!
 //! Drude:          ε = ε∞ − ωp² / (E² + i·γ·E)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_15.rs
 //! Shape handling and broadcasting (re‑export of `metrics::map_pairs`).
 //!

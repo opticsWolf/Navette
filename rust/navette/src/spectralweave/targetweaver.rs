@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Optimization targets and merit evaluation over woven simulation curves.
 //!
 //! A [`TargetWeaver`] owns dedicated frames holding target curves plus

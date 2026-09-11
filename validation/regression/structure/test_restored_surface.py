@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Restored GUI/legacy surface: Group props+draws, structure/architect
 conveniences (re-added on request; twins of the documented behavior)."""
 import pytest

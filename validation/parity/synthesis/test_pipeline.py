@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """End-to-end validation for the bound needle pipeline.
 
 Covers, through the public Python surface only:

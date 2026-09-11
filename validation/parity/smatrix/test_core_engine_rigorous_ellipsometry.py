@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Comparison test for core_engine_rigorous_ellipsometry — numba vs rust (R2.4a).
 
 The legacy kernel returned a fixed 13-tuple and took a ``debug_flag`` to

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! navette::config — versioned program documents and section assembly.
 //!
 //! Rust-first port of the Python `config.program` + section builders:

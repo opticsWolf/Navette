@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """ScatterMatrix.energy_conservation() coverage (R1.2, review §15).
 
 The wrapper passes 2-D ``[n_angles, n_wavs]`` arrays (squeeze=False) to the

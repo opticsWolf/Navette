@@ -3,6 +3,50 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.18] — Hygiene: the archive, the headers, and two docs that lied (R6.4, part 1)
+
+No behaviour change; the solve fingerprint is unmoved at `30d96909…3c6c`. Four
+of R6.4's seven items — the ones that are about the repository rather than
+about the physics.
+
+### Removed
+
+- **`attic/`** — 26 retired files, import-isolated and never referenced by live
+  code, but responsible for roughly 300 of the code review's 1 528 dead-code
+  findings and most of its scaffolding-comment hits. Deleted; git history keeps
+  them. `docs/plans/` and every `validation/**/refs/` stay — those are the
+  parity oracles, not archive.
+
+### Added
+
+- **SPDX headers** on 213 sources that lacked them (`// SPDX-License-Identifier:
+  LGPL-3.0-or-later`, `#` for Python), placed after a shebang and PEP 263 coding
+  line where present so nothing moves ahead of a module docstring. 8 files
+  already carried one. `COPYING` and `COPYING.LESSER` were already in the tree.
+
+### Documented
+
+- **`validation/README.md` rewritten.** Its tree predated `review/`,
+  `parity/synthesis`, `parity/color`, `regression/**` and nine of the twelve
+  smoke suites, and still pointed at `crates/navette-materials`, a path that has
+  not existed since the Rust consolidation. Now carries the real tree, the
+  per-directory test counts (287 smoke / 327 regression / 56 parity / 22
+  goldens), the distinction between what `pytest validation` collects and the
+  `review/` harnesses it does not, and the numba-thread-pool timing
+  contamination that the two whole-engine parity scripts call `cooldown()` for.
+  The "the rewrite is behind the kernel it replaced" note is now history with a
+  date on it: that was true at 0.64–0.77× and R5.3 fixed it.
+- **`docs/plans/bug_fix_plan.md` closed.** BUG-A, BUG-B and BUG-C had unticked
+  checkboxes and, directly underneath, their own notes recording the fix — the
+  tracker said open while the tree said fixed, which is precisely the audit-trail
+  rot the review filed. Ticked against named passing tests
+  (`test_asymmetric_interface_position_and_pair`,
+  `test_inverted_roughness_follows_plane`,
+  `test_partial_inversion_run_edge_clean`, all in
+  `validation/regression/structure/test_inversion.py`), with a header saying the
+  page is a record rather than a work item and that `expander.py` has been
+  `rust/navette/src/structure/expansion.rs` since the port.
+
 ## [0.6.17] — The small physics nits, and which of them were real (R6.2)
 
 Four items the review filed as minor. Two were: a missing clamp and a stale

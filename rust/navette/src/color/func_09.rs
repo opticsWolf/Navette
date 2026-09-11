@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_09.rs
 //! Delta E 76 – Euclidean distance in CIELAB.
 

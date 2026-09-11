@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Positioned composition of structures over the native model.
 
 :class:`Navette_Architect` wraps the bound ``Architect`` and tracks the

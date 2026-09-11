@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_08.rs
 //! Chromatic adaptation using the Bradford transform (CIE 1994).
 //!

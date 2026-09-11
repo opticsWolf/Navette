@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Tabulated and constant dispersion models.
 //!
 //! [`konstant_nk`] is a wavelength-independent `n + ik`.

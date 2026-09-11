@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 navette_target_bench.py — stress-test + benchmark for the Rust TargetWeaver
 (constraint ingestion + Merit Function) in `navette.spectralweave`.

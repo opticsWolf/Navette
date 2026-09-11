@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Navette spectral-weaving engine — pure-Rust core (no Python, no I/O).
 //
 // Caching, distribution plans, and merit evaluation. The PyO3 bindings

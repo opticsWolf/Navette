@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Typed validation channel: errors block, warnings flow.
 //!
 //! Replaces the `warning:`-prefix string convention with a typed channel;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Fragment-weaving store: many overlapping spectral curves over shared grids.
 //!
 //! A [`SpectralDataFrame`] owns one wavelength grid plus the curves sampled on

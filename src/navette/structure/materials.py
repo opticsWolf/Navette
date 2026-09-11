@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Material providers: name → nk arrays for stacks and architects."""
 
 from __future__ import annotations

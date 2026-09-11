@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Pure-Rust shared primitives for the whole crate: constants, fast complex
 //! kernels, the roughness form factor, the three Redheffer star products, and
 //! the non-uniform spectral differentiation operator.

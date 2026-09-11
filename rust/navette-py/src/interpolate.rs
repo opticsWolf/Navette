@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Thin PyO3 bindings for the Navette interpolation core.
 //!
 //! No math here: everything lives in the pure-Rust `navette-interpolate`

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette materials — pure-Rust optical dispersion core.
 //!
 //! No Python, no I/O. Every kernel is a free function over `ndarray` views

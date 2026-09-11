@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Cross-path consistency for Nevot-Croce roughness (type 5).
 
 The type-5 interface factor is built in FOUR places in the Rust core:

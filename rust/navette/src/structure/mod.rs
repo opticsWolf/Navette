@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Pure-Rust thin-film stack model: layers, groups, expansion, validation.
 //!
 //! First-class home of the structure model (`Layer`, `Group`, providers,

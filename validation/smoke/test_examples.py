@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Every file in ``examples/`` must still run (R4.3).
 
 ``examples/spectralweave_example.py`` failed on a fresh clone. It called the

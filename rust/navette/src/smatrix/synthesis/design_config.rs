@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! synthesis::design_config — typed config → native `(DesignStack, ContrastMap)`.
 //!
 //! Rust-first assembly for synthesis designs: a [`DesignRequest`] (the

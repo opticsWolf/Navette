@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """wrap_material_source dispatch over the native-backed providers."""
 import numpy as np
 import pytest

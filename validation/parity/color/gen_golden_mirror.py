@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Regenerate ``golden_mirror.py`` from ``rust/navette/src/color/golden.rs``.
 
 The Rust parity suite (``rust/navette/src/color/parity.rs``) asserts the

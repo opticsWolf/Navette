@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! One design stack: layers + material-keyed groups.
 //!
 //! Mirrors `navette.structure.structure.Navette_Structure`. The provider

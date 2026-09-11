@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Twin of the Rust `weaver::tests`: native woven-grid provider behavior.
 
 Same fragments, same frozen oracles (HEX — numpy array printing truncates

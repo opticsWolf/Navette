@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Program documents: versioned envelopes for full or partial restore.
 
 A *program* file restores a complete setup (materials, groups, named

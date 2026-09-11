@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Phase 1 program documents: envelope gate, partial + full restore,
 prefix namespaces, legacy flat files."""
 import numpy as np

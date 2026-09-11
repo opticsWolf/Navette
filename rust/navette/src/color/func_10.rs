@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_10.rs
 //! Delta E 94 – CIE 1994 colour difference.
 //!

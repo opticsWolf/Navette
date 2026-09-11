@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! core_engine.rs
 //!
 //! Unified, request-driven engine. One Rust entry point solves the optical

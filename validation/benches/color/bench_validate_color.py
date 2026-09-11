@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 Loom / Navette / Colour-Science — Extensive Benchmark & Parity Suite
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Step 4: OpticalWeaver LRU-plan eviction + thread race.
 import threading
 import numpy as np

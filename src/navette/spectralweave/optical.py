@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """
 Navette: Optical Core Wrapper
 Maintains a clean Python API for weaving spectral fragments, heavily

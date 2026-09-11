@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Native program loading twins the Python path, bitwise."""
 import json
 import numpy as np

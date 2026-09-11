@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Python bindings for the needle synthesis pipeline (`navette-smatrix`).
 //!
 //! Exposes the optimizer loop as data-in/data-out classes; target definition

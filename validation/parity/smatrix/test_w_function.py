@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Comparison test for w_function — numba vs rust."""
 
 import sys, os, time

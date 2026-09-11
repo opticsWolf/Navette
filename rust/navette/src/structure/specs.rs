@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Material recipes: `MaterialSpec` + `evaluate` over the native kernels.
 //!
 //! Rust owns the recipes end-to-end (§9.3B): the same

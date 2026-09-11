@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Canonical vocabulary of the thin-film stack model.
 //!
 //! Discriminants mirror `navette.structure.types` exactly (pinned by test):

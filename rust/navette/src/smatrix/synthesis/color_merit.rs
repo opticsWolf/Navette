@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! synthesis::color_merit — colorimetric demand kernel (Option B plan D2).
 //!
 //! Shipped: 15 quantities — P1 `Lab | XyY`, P2 `LCh | Oklab | Y`, P3

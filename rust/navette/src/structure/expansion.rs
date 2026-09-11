@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Two-phase stack expansion: design layers → solver rows.
 //!
 //! Transliteration of `navette.structure.expander._LayerExpander`:

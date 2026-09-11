@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """navette.synthesis — bridge from woven targets to optimizer-ready specs.
 
 Converts a :class:`TargetCollection` (user-facing targets over free-form

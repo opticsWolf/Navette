@@ -1,3 +1,27 @@
+# Bug-fix plan — `navette.structure` — **CLOSED (0.6.18)**
+
+> **Status: every item on this page is done.** The three Phase-2 boxes
+> (BUG-A/B/C) stayed unticked long after their own notes recorded the fix, so
+> the tracker said "open" while the tree said "fixed" — the audit-trail rot the
+> code review filed as §6.3. Ticked here against named, passing tests rather
+> than against the notes:
+>
+> | item | pinned by |
+> |---|---|
+> | BUG-A | `test_asymmetric_interface_position_and_pair` |
+> | BUG-B | `test_inverted_roughness_follows_plane` |
+> | BUG-C | `test_partial_inversion_run_edge_clean` |
+>
+> all in `validation/regression/structure/test_inversion.py`, which carries ten
+> inversion tests in total (BUG-E's process fix) and runs in `pytest validation`.
+>
+> **File names below are historical.** `expander.py` no longer exists: the
+> expansion logic moved to `rust/navette/src/structure/expansion.rs` during the
+> Rust port, and the named fixes were made there. `structure.py`, `models.py`
+> and `architect.py` are still where the page says. Nothing on this page is a
+> live work item; it is kept as the record of what was wrong and why the tests
+> that guard it look the way they do.
+
 # Bug-fix plan — `navette.structure` (`structure.py`, `models.py`, `expander.py`, `architect.py`)
 
 Source: code review of the four stack-model files (plus `types.py` / `materials.py`
@@ -53,7 +77,7 @@ inhomogen gradient flip (`expander.py`, `factors[::-1]`).
 
 ## Phase 2 — Inversion direction errors (mirror semantics)
 
-### [ ] BUG-A 🔴 Inverted interface slice: wrong plane AND wrong mixing pair (`expander.py`, `_LayerExpander.expand`)
+### [x] BUG-A 🔴 Inverted interface slice: wrong plane AND wrong mixing pair (`expander.py`, `_LayerExpander.expand`)
 - **Evidence** (`A | B(interface 4 nm) | C`, interface at front of B = plane AB):
 
   | | slice order | interface nk |
@@ -80,7 +104,7 @@ inhomogen gradient flip (`expander.py`, `factors[::-1]`).
 - **Accept:** inverted interface nk == sqrt(Looyenga-eps) ≈ 1.92 at index 2 (`[C, B, IF, A]`).
 > FIXED via STRUCT-8 two-phase expander (dev_rust): owner+carrier mix, donor-side carve. Committed tests in `validation/regression/structure/test_inversion.py`.
 
-### [ ] BUG-B 🔴 Inverted roughness stays on the wrong slice (`expander.py`, `_LayerExpander.expand`)
+### [x] BUG-B 🔴 Inverted roughness stays on the wrong slice (`expander.py`, `_LayerExpander.expand`)
 - **Evidence:** same stack, `rough=5` at index 2 (front of B) in *both* normal
   and inverted output. The physical AB plane is at the front of **A**
   (index 3) after mirroring, and the solver reads `rough_vals[k]` as front of
@@ -98,7 +122,7 @@ inhomogen gradient flip (`expander.py`, `factors[::-1]`).
 - **Accept:** inverted `rough_vals == [0, 0, 0, 5]`.
 > FIXED via STRUCT-8 (dev_rust): roughness follows the plane (owner-group draws). Committed tests in `validation/regression/structure/test_inversion.py`.
 
-### [ ] BUG-C 🟡 Phantom boundary interfaces for sandwiched inverted blocks (`expander.py` + `architect.py`)
+### [x] BUG-C 🟡 Phantom boundary interfaces for sandwiched inverted blocks (`expander.py` + `architect.py`)
 - **Cause:** `prev_eff_nk` chains across block boundaries by design (correct for
   contiguous joins), but an inverted block's first-yielded layer brings
   interface/roughness flags whose mirrored plane faces *inward*, yet they mix
@@ -221,9 +245,14 @@ swallows falsy custom rngs — use `if rng is None`.)
 
 ---
 
-## Suggested order of work
+## Suggested order of work — all four phases completed
 
 1. Phase 1 (BUG-1, BUG-2) + round-trip/coverage tests — data loss and crash.
 2. Phase 2 (BUG-A → BUG-E) — inversion mirror fix + tests + documented semantics.
 3. Phase 3 (WART-1 → WART-7) — API coherence before it calcifies.
 4. Phase 4 (NIT-1 → NIT-7) — single cleanup commit.
+
+Closed out under R6.4 (0.6.18). The inversion semantics this page argued about
+are now stated once in the expansion module's own docs and enforced by
+`test_inversion.py`; if they ever need revisiting, start from the tests, not
+from this page.

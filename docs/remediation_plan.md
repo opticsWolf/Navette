@@ -76,7 +76,7 @@ coverage is thin.
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
 | ~~R6.2~~ | small physics nits batch — **DONE (0.6.17)** | P3 | DOP_R clamped (fingerprint moved), τ̂ docstring fixed, Sellmeier domain guard added; the `+0.0` turned out to be load-bearing and stays (see corrections) | S | S | §3.3, §19.3 |
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
-| R6.4 | docs/hygiene batch | P3 | audit-trail rot | S | M | §6.3, §24.2, §18.4 |
+| R6.4 | docs/hygiene batch — **items 1,2,3,6 DONE (0.6.18)**; 4,5,7 open | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, both stale docs closed | S | M | §6.3, §24.2, §18.4 |
 | R6.5 | `.pyi` stubs for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
 | R6.6 | Rename `color/func_NN.rs` → descriptive module names | P3 | readability; the mod.rs doc comment is currently the only decoder ring | S (internal paths only) | S–M | §11 |
 
@@ -1928,7 +1928,7 @@ Only with benches before/after (per-call overhead is the risk); abort if
 
 **Effort.** L.
 
-### R6.4 Docs & hygiene batch
+### R6.4 Docs & hygiene batch — items 1, 2, 3, 6 DONE (0.6.18)
 
 From §6.3, §18.4, §24.2 (each small; group into 2–3 commits):
 1. `validation/README.md` — refresh the inventory (post-R2.4 counts,
@@ -1966,6 +1966,43 @@ From §6.3, §18.4, §24.2 (each small; group into 2–3 commits):
    claims may now be understated); stamp build profile.
 
 **Effort.** M total.
+
+**CORRECTIONS / NOTES (0.6.18) — the four repository-facing items.** Items 4
+(naming drift), 5 (doc-line batch) and 7 (README perf table) are still open;
+they are about content rather than hygiene and one of them carries a code
+decision, so they ride a separate increment.
+
+* **Item 3, `attic/`: 26 files, not the "~28" the review estimated, and
+  genuinely inert.** Verified no live import and no reference outside
+  `docs/code_review.md` and one README tree line before deleting.
+* **Item 6, SPDX: 213 files gained a header, 8 already had one.** The eight are
+  the `refs/` numba oracles and `src/navette/config/*`, which carry a full
+  four-line Loom copyright block. The new header is the bare identifier line —
+  deliberately, because item 4 has not decided "Loom" vs "Navette" yet and a
+  copyright block would have committed that choice 213 times. Placement handles
+  shebang and PEP 263 coding lines so no Python module docstring stopped being
+  the first statement, and Rust's `//!` inner docs still lead their items.
+* **Item 1, `validation/README.md`: staler than "post-R2.4 counts".** The plan
+  asked for refreshed counts; the tree in that file also predated `review/`,
+  `parity/synthesis`, `parity/color`, all of `regression/**` and nine of twelve
+  smoke suites, and pointed at `crates/navette-materials`, a path removed in the
+  Rust consolidation. Rewritten rather than patched. It now also records the
+  numba-thread-pool timing contamination (R5.3's finding), because that is the
+  kind of thing the next person to read a bench number needs and it lived only
+  in a CHANGELOG entry.
+* **Item 2, `bug_fix_plan.md`: §6.3 said "the plan cannot currently tell"
+  whether BUG-A is open. It could — the answer was three lines below the
+  checkbox.** All three Phase-2 items carried `FIXED via STRUCT-8 (dev_rust)`
+  notes under unticked boxes. Confirmed against the tests rather than the notes
+  (each of the three names one, and all ten inversion tests pass), then ticked
+  and the page marked closed. Also corrected: the page's whole title refers to
+  `expander.py`, which has not existed since the Rust port — the fixes were made
+  in `rust/navette/src/structure/expansion.rs`. A tracker that names a file that
+  does not exist is worse than no tracker.
+* **Verification.** cargo test 449 workspace; clippy clean; pytest 691 passed,
+  1 skipped; ten review harnesses exit 0; fingerprint unchanged at
+  `30d96909…3c6c`; `check_exposure` 217/102; `check_cie_sync` OK; `bench_refold`
+  ALL OK.
 
 ### R6.5 `.pyi` stubs for `_smatrix` / `_spectralweave`
 

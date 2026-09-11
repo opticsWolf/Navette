@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_13.rs
 //! Spectral pipeline: convert a spectral power distribution to sRGB.
 //!

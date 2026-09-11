@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // AUTO-GENERATED matrices (natural row-major form) + numpy inverses.
 // out[j] = sum_i M[j][i] * v[i]  (i.e. standard M * column-vector).
 

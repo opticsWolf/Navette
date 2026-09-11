@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette — unified optical thin-film engine (pure Rust, no Python).
 //!
 //! Single crate, six modules. Rust consumers depend on this one crate;

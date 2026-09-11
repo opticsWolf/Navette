@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Pure-Rust univariate interpolation core (no Python, no I/O).
 //!
 //! Batch-aware kernels with rayon-parallel evaluation. The Python bindings

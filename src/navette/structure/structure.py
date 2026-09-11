@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Thin-film design stacks over the native model (provider plumbing).
 
 :class:`Navette_Structure` wraps the bound ``Structure`` and adds the two

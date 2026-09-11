@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """MaterialObjectProvider thinned onto the native SpecProvider: twins."""
 import numpy as np
 import pytest

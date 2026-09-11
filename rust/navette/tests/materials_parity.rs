@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Golden-parity tests: load NumPy-generated references and assert the Rust
 //! kernels reproduce them. Parameter values mirror `tools/gen_golden.py`.
 

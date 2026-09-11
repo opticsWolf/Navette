@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Benchmark: per-cycle needle-target re-fold cost vs static fold.
 
 Compares the same design problem with `refold_per_cycle=True/False`

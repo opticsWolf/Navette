@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Extract embedded color defaults from `src/navette/data/CIE/` into
 `rust/navette/data/*.json`. Run when the upstream CIE sources change;
 `tools/check_cie_sync.py` guards against unextracted drift."""

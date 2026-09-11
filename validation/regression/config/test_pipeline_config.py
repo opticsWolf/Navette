@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """pipeline_from_config: typed configs -> native (DesignStack, contrast_map)."""
 import numpy as np
 import pytest

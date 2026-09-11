@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Thin PyO3 bindings for the Navette color engine.
 //!
 //! No math here: every kernel lives in the pure-Rust `navette-color` core.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Shared extraction of the embedded color defaults (stdlib only).
 
 Single source of column knowledge for `extract_cie_defaults.py` (writes

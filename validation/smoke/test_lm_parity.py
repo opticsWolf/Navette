@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The bounded LM against ``scipy.optimize.least_squares`` (R4.4).
 
 ``docs/`` has claimed scipy parity for ``synthesis/thick_opt.rs`` since it

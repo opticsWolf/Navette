@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """navette.synthesis.pipeline — needle synthesis driver.
 
 Thin wrapper over the native pipeline (``navette._smatrix``): target

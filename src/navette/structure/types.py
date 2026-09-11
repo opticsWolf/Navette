@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Shared dtypes, enums and solver-array containers for layer stacks.
 
 All solver-facing arrays use fixed dtypes (``FLOAT_TYPE``/``COMPLEX_TYPE``/

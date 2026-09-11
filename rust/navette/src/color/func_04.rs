@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_04.rs
 //! Oklab colour space – direct XYZ pipeline.
 //!

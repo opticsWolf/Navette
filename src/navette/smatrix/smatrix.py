@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """navette_smatrix — a clean Python interface to the ``smatrix`` Rust extension.
 
 This module is a thin, self-contained wrapper around the compiled Rust core. It

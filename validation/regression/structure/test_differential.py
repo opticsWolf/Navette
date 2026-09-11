@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Cross-boundary differentials: Python model vs bound Rust model.
 
 Layer 3 of the verification contract (§8): both runtimes in one test.

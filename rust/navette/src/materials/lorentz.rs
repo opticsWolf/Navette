@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Lorentz oscillator dispersion model.
 //!
 //! ε(E) = ε∞ + Σⱼ fⱼ·E0ⱼ² / ((E0ⱼ² − E²) − i·E·Γⱼ),   n̂ = √ε.

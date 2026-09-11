@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Shared preamble for every bench under ``validation/benches``.
 
 Two jobs, both of which exist because of a failure that actually happened:

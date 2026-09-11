@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Spectral-weaving submodule of the aggregated `navette._navette` extension.
 //!
 //! Re-exports the optical/target wrappers; registration lives here so the

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Step 5: Tauc-Lorentz golden from first principles (break the reference oracle).
 # See docs/code_review.md section 23. kk_validate.py provides the
 # pair-sampled principal-value Kramers-Kronig scheme (validated against an

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Physical constants and unit conversions.
 //!
 //! Single source of truth for the wavelength/energy conversions that were

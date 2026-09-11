@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Landscape scanning, local minimization (Nelder–Mead) and field-profile
 //! extraction on top of the coherent-block solver.
 //!

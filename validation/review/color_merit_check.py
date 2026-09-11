@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Step 2: color_merit.rs independent verification.
 # Part A: merit value of a Lab+DeltaE2000 color demand vs my own Python chain
 #         (XYZ rectangular integral, k-normalization, Lab, Sharma DE2000)

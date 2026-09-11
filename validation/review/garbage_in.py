@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Garbage-in behaviour of the public solver entry points (review harness).
 
 Originally this script *documented* what the library did with malformed

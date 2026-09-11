@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! One design layer: material name + geometry + flags.
 //!
 //! Mirrors `navette.structure.models.Layer` exactly (field names, defaults,

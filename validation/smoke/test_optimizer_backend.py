@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Which least-squares solver runs, and how a build says what it has (R4.4c).
 
 The alternative backends are cargo features, so what a wheel can run is a

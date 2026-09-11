@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """``core_engine`` against the numba kernel it replaced, across grid sizes.
 
 R2.4a put the two engines on the same inputs for the first time and found the

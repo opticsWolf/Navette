@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Roughness energy-conservation regression (R1.1, review §3.2).
 
 The Névot-Croce path (roughness type 5) historically applied the reflection

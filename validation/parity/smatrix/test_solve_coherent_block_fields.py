@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Comparison test for solve_coherent_block_fields — numba vs rust."""
 
 import sys, os, time

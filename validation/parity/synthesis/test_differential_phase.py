@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Parity + validation for differential-phase targets (PDts / PDtp).
 
 Dphi(λ) = arg(t(λ)) − passes·2π·n_inc·D·cosθ/λ — the coating-induced transmitted

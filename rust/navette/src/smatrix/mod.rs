@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Navette S-matrix engine — pure-Rust core (no Python, no I/O).
 //
 // Module map:

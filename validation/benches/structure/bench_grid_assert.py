@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Grid-assertion cost: solve_structure with vs without provider grids.
 
 Compares full-solve wall time on a fixed workload (100 wav, 7-layer

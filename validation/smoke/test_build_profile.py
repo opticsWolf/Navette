@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The build-profile probe and the bench release gate (R2.1).
 
 Deliberately does NOT assert that the installed extension is a release build:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Thin PyO3 config types: validated constructors over `navette::config`.
 //!
 //! These replace the pydantic models. Each class validates its input

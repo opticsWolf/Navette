@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! synthesis::driver — array-level design assembly + end-to-end runs.
 //!
 //! Rust-first port of the Python `stack_from_layers`/`run_needle`

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """DictMaterialProvider thinned onto the native DictProvider: twins."""
 import numpy as np
 import pytest

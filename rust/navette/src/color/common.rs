@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Core constants, matrix/vector utilities, and CIE Lab transfer functions.
 //!
 //! This module provides the shared building blocks for all colour

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The analytic Jacobian of the thickness optimizer (R4.5).
 
 ``J[i,k] = sum_terms dr_i/d(curve value) * d(curve value)/dd_k``: the merit

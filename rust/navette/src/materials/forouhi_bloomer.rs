@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Forouhi–Bloomer dispersion (2019 "new formulation" + 2021 metal).
 //!
 //! Each interband/free-electron transition contributes a causal rational

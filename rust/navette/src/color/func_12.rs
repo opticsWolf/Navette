@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_12.rs
 //! DIN99 colour difference (DIN 6176).
 //!

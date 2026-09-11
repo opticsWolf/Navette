@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 import numpy as np
 from navette.smatrix.smatrix import ScatterMatrix, Request
 from navette.smatrix.needle import NeedleRequest, needle_gradient

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Color demands end to end: bound ``compile_merit_spec`` -> merit/residuals
 vs independent oracles (Rust ``color_merit`` + ``merit`` twins, plan R3)."""
 import json

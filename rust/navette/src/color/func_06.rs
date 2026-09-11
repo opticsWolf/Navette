@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // src/func_06.rs
 //! CIE 1964 U*V*W* colour space.
 //!

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """navette.needle — Python interface to the analytic needle operator.
 
 Thin wrapper around ``needle_engine`` in the compiled Rust extension, which

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Internal shared helpers used across dispersion modules.
 
 use ndarray::{Array1, ArrayView1};

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Exposure lint: every feature-level `pub fn` in the `navette` crate must be
 reachable from the PyO3 bindings (directly or through a covered entry point).
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Solver speed: old-request workloads must not regress with backside outputs.
 
 Measures core_engine throughput on a fixed workload (40 wav x 3 angles,

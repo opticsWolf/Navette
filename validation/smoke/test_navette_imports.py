@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Smoke tests for the pure-Python surface (no Rust build required)."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! # navette_color
 //!
 //! Rust rewrite of the Loom unified color engine — a parity port of

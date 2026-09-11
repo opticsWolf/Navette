@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The scipy parity the plan docs have been claiming (R4.4, review §18.2).
 
 `docs/` has asserted "scipy parity" for the bounded Levenberg-Marquardt in

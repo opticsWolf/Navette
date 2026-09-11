@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Request-driven needle sensitivities over the analytic needle operator.
 //!
 //! Pure-Rust core (no Python): mirrors the conventions of `core_engine` —

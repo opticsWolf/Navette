@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Cauchy dispersion model.
 //!
 //! n(λ) = A + B/λ² + C/λ⁴   with λ in µm.  k = 0 (or Urbach tail for the

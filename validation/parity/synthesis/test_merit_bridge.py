@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Synthesis bridge: TargetCollection -> MeritSpec converter validation.
 
   1. Merit agreement: MeritSpec.merit == calculate_merit on identical data

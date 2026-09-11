@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Cross-language sync guards for the request bits and the schema versions.
 
 Three constant tables are written twice, once per language, and nothing tied

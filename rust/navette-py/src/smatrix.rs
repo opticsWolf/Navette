@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Thin PyO3 bindings for the Navette S-matrix engine.
 //!
 //! No physics here: every kernel lives in the pure-Rust

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! Aggregated PyO3 bindings for Navette — builds the single
 //! `navette._navette` extension containing all five native submodules:
 //!

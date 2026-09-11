@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! FFT Kramers–Kronig (Hilbert) transform — shared by Cody-Lorentz and UBF.
 //!
 //! ε₁ via an FFT Hilbert transform with odd extension. Faithful port of

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 //! smatrix::solver — configured thin-film solver over `core_engine`.
 //!
 //! Rust-first port of the Python `ScatterMatrix` driver: input validation,

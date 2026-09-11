@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """The color gradient on the Python needle path (R4.2).
 
 ``build_needle_targets`` -> ``needle_gradient`` is the documented way to

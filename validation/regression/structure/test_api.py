@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Regression: index spaces, coherence warts and nits (BUG-D, WART-1/2/3/5/6/7,
 NIT-1/2/3/5/6/7 accept)."""
 

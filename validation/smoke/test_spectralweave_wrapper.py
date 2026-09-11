@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """``SimulationWeaver``'s edges, as the broken example found them (R4.3).
 
 Three defects, all reachable from a first-time reader's transcript:
