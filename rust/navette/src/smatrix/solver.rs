@@ -565,14 +565,6 @@ impl Solver {
         };
       };
     }
-    macro_rules! put {
-      ($buf:ident, $k:expr, $val:expr) => {
-        if let Some(b) = $buf.as_mut() {
-          b[$k] = $val;
-        }
-      };
-    }
-
     f64buf!(b_rs, requested & REQ_RS != 0);
     f64buf!(b_rp, requested & REQ_RP != 0);
     f64buf!(b_ts, requested & REQ_TS != 0);
@@ -620,72 +612,60 @@ impl Solver {
     cbuf!(b_cross_r, REQ_CROSS_R);
     cbuf!(b_cross_t, REQ_CROSS_T);
 
-    for (k, s) in states.iter().enumerate() {
-      let rs = s.rs;
-      let rp = s.rp;
-      let ts = s.ts;
-      let tp = s.tp;
-
-      put!(b_rs, k, rs);
-      put!(b_rp, k, rp);
-      put!(b_ts, k, ts);
-      put!(b_tp, k, tp);
-      put!(b_ravg, k, 0.5 * (rs + rp));
-      put!(b_tavg, k, 0.5 * (ts + tp));
-      put!(b_as, k, 1.0 - rs - ts);
-      put!(b_ap, k, 1.0 - rp - tp);
-      put!(b_aavg, k, 1.0 - 0.5 * (rs + rp) - 0.5 * (ts + tp));
-
-      let s0r = rp + rs;
-      let s1r = rp - rs;
-      let s2r = -2.0 * s.cross_r.re + 0.0;
-      let s3r = -2.0 * s.cross_r.im + 0.0;
-      put!(b_s0r, k, s0r);
-      put!(b_s1r, k, s1r);
-      put!(b_s2r, k, s2r);
-      put!(b_s3r, k, s3r);
-      let s0t = tp + ts;
-      let s1t = tp - ts;
-      let s2t = 2.0 * s.cross_t.re + 0.0;
-      let s3t = 2.0 * s.cross_t.im + 0.0;
-      put!(b_s0t, k, s0t);
-      put!(b_s1t, k, s1t);
-      put!(b_s2t, k, s2t);
-      put!(b_s3t, k, s3t);
-
-      put!(b_diatt_r, k, s1r / (s0r + 1e-20));
-      put!(b_diatt_t, k, s1t / (s0t + 1e-20));
-
-      put!(b_dop_r, k, (s1r * s1r + s2r * s2r + s3r * s3r).sqrt() / (s0r + 1e-20));
-      put!(b_dop_t, k, ((s1t * s1t + s2t * s2t + s3t * s3t).sqrt() / (s0t + 1e-20)).min(1.0));
-
-      put!(b_psi_r, k, if rs < RS_FLOOR { PI / 2.0 } else { (rp / rs).sqrt().atan() });
-      put!(b_delta_r, k, if rs < RS_FLOOR { 0.0 } else { s3r.atan2(s2r) });
-      put!(b_psi_t, k, if ts < TS_FLOOR { PI / 2.0 } else { (tp / ts).sqrt().atan() });
-      put!(b_delta_t, k, if ts < TS_FLOOR { 0.0 } else { s3t.atan2(s2t) });
-
-      put!(b_retard_r, k, s.cross_r.arg());
-      put!(b_retard_t, k, s.cross_t.arg());
-
-      put!(b_phi_rs, k, s.rs_c.arg());
-      put!(b_phi_rp, k, s.rp_c.arg());
-      put!(b_phi_ts, k, s.ts_c.arg());
-      put!(b_phi_tp, k, s.tp_c.arg());
-      put!(b_phi_rbs, k, s.rbs_c.arg());
-      put!(b_phi_rbp, k, s.rbp_c.arg());
-      put!(b_phi_tbs, k, s.tbs_c.arg());
-      put!(b_phi_tbp, k, s.tbp_c.arg());
-
-      if let Some(b) = b_rs_c.as_mut() { b[k] = s.rs_c; }
-      if let Some(b) = b_rp_c.as_mut() { b[k] = s.rp_c; }
-      if let Some(b) = b_ts_c.as_mut() { b[k] = s.ts_c; }
-      if let Some(b) = b_tp_c.as_mut() { b[k] = s.tp_c; }
-      if let Some(b) = b_rbs_c.as_mut() { b[k] = s.rbs_c; }
-      if let Some(b) = b_rbp_c.as_mut() { b[k] = s.rbp_c; }
-      if let Some(b) = b_tbs_c.as_mut() { b[k] = s.tbs_c; }
-      if let Some(b) = b_tbp_c.as_mut() { b[k] = s.tbp_c; }
-      if let Some(b) = b_cross_r.as_mut() { b[k] = s.cross_r; }
-      if let Some(b) = b_cross_t.as_mut() { b[k] = s.cross_t; }
+    // The derive pass -- per-point algebra plus up to twelve
+    // transcendentals per point -- split across the rayon pool by halving the
+    // point range and every live buffer together (R5.2). Each destination
+    // index is written once, by one task, with the same expression the serial
+    // pass used, so the result is bit-identical by construction.
+    {
+      let sinks = Sinks {
+        b_rs: b_rs.as_deref_mut(),
+        b_rp: b_rp.as_deref_mut(),
+        b_ts: b_ts.as_deref_mut(),
+        b_tp: b_tp.as_deref_mut(),
+        b_ravg: b_ravg.as_deref_mut(),
+        b_tavg: b_tavg.as_deref_mut(),
+        b_as: b_as.as_deref_mut(),
+        b_ap: b_ap.as_deref_mut(),
+        b_aavg: b_aavg.as_deref_mut(),
+        b_psi_r: b_psi_r.as_deref_mut(),
+        b_psi_t: b_psi_t.as_deref_mut(),
+        b_delta_r: b_delta_r.as_deref_mut(),
+        b_delta_t: b_delta_t.as_deref_mut(),
+        b_dop_r: b_dop_r.as_deref_mut(),
+        b_dop_t: b_dop_t.as_deref_mut(),
+        b_diatt_r: b_diatt_r.as_deref_mut(),
+        b_diatt_t: b_diatt_t.as_deref_mut(),
+        b_s0r: b_s0r.as_deref_mut(),
+        b_s1r: b_s1r.as_deref_mut(),
+        b_s2r: b_s2r.as_deref_mut(),
+        b_s3r: b_s3r.as_deref_mut(),
+        b_s0t: b_s0t.as_deref_mut(),
+        b_s1t: b_s1t.as_deref_mut(),
+        b_s2t: b_s2t.as_deref_mut(),
+        b_s3t: b_s3t.as_deref_mut(),
+        b_retard_r: b_retard_r.as_deref_mut(),
+        b_retard_t: b_retard_t.as_deref_mut(),
+        b_phi_rs: b_phi_rs.as_deref_mut(),
+        b_phi_rp: b_phi_rp.as_deref_mut(),
+        b_phi_ts: b_phi_ts.as_deref_mut(),
+        b_phi_tp: b_phi_tp.as_deref_mut(),
+        b_phi_rbs: b_phi_rbs.as_deref_mut(),
+        b_phi_rbp: b_phi_rbp.as_deref_mut(),
+        b_phi_tbs: b_phi_tbs.as_deref_mut(),
+        b_phi_tbp: b_phi_tbp.as_deref_mut(),
+        b_rs_c: b_rs_c.as_deref_mut(),
+        b_rp_c: b_rp_c.as_deref_mut(),
+        b_ts_c: b_ts_c.as_deref_mut(),
+        b_tp_c: b_tp_c.as_deref_mut(),
+        b_rbs_c: b_rbs_c.as_deref_mut(),
+        b_rbp_c: b_rbp_c.as_deref_mut(),
+        b_tbs_c: b_tbs_c.as_deref_mut(),
+        b_tbp_c: b_tbp_c.as_deref_mut(),
+        b_cross_r: b_cross_r.as_deref_mut(),
+        b_cross_t: b_cross_t.as_deref_mut(),
+      };
+      derive_par(&states, sinks);
     }
 
     let omega: Vec<f64> =
@@ -772,6 +752,177 @@ impl Solver {
     if let Some(t) = disp_t_p { dispmaps.push(("T_p".to_string(), [t.0, t.1, t.2, t.3])); }
 
     Ok(Solution { n_angles: num_angles, n_wavs: num_wavs, f64maps, c64maps, dispmaps })
+  }
+}
+
+/// Leaf size of the derive pass's parallel split: a range of at most this many
+/// grid points is derived on one thread.
+///
+/// The split halves the point range and **every live destination buffer**
+/// together, so each output index is still written exactly once, by one task,
+/// with the same expression it had when the pass was serial. Bit-identity is
+/// therefore structural and holds at any leaf size (§13; §0.1 rule 5) -- this
+/// constant trades scheduling overhead against parallelism and nothing else.
+/// Swept at 256 / 512 / 2048 / 8192 on a rigorous twelve-channel request: the
+/// grid sizes that matter land within ~3% of each other, except that a leaf
+/// above the grid means no split at all -- 2 000 points cost 0.428 ms at 2048
+/// and 0.386 ms at 256/512. 512 is the smallest leaf that still buys something
+/// measurable; below ~500 points the whole pass is tens of microseconds and
+/// there is nothing left to divide.
+const DERIVE_PAR_LEAF: usize = 512;
+
+/// The derive pass's destinations: one optional slice per channel, so a
+/// channel nobody requested costs a `None` rather than a buffer.
+///
+/// Generated from a single list because the halving is the part that must not
+/// miss one, and a hand-written `split_at` over 45 fields is exactly the kind
+/// of thing that silently does.
+macro_rules! derive_sinks {
+  (f64: $($f:ident),* $(,)? ; c64: $($c:ident),* $(,)?) => {
+    struct Sinks<'a> {
+      $( $f: Option<&'a mut [f64]>, )*
+      $( $c: Option<&'a mut [Complex64]>, )*
+    }
+
+    impl<'a> Sinks<'a> {
+      /// Every destination absent -- the starting point for a request that
+      /// asks for only a few channels.
+      #[cfg(test)]
+      fn none() -> Sinks<'a> {
+        Sinks { $( $f: None, )* $( $c: None, )* }
+      }
+
+      /// Two sink sets over disjoint index ranges: `..mid` and `mid..`.
+      fn split_at(self, mid: usize) -> (Sinks<'a>, Sinks<'a>) {
+        $(
+          let $f = match self.$f {
+            Some(b) => { let (lo, hi) = b.split_at_mut(mid); (Some(lo), Some(hi)) }
+            None => (None, None),
+          };
+        )*
+        $(
+          let $c = match self.$c {
+            Some(b) => { let (lo, hi) = b.split_at_mut(mid); (Some(lo), Some(hi)) }
+            None => (None, None),
+          };
+        )*
+        (
+          Sinks { $( $f: $f.0, )* $( $c: $c.0, )* },
+          Sinks { $( $f: $f.1, )* $( $c: $c.1, )* },
+        )
+      }
+    }
+  };
+}
+
+derive_sinks!(
+  f64:
+  b_rs, b_rp, b_ts, b_tp,
+  b_ravg, b_tavg, b_as, b_ap,
+  b_aavg, b_psi_r, b_psi_t, b_delta_r,
+  b_delta_t, b_dop_r, b_dop_t, b_diatt_r,
+  b_diatt_t, b_s0r, b_s1r, b_s2r,
+  b_s3r, b_s0t, b_s1t, b_s2t,
+  b_s3t, b_retard_r, b_retard_t, b_phi_rs,
+  b_phi_rp, b_phi_ts, b_phi_tp, b_phi_rbs,
+  b_phi_rbp, b_phi_tbs, b_phi_tbp,
+  ;
+  c64:
+  b_rs_c, b_rp_c, b_ts_c, b_tp_c,
+  b_rbs_c, b_rbp_c, b_tbs_c, b_tbp_c,
+  b_cross_r, b_cross_t,
+);
+
+/// Derive `states` into `sinks`, halving onto the rayon pool down to
+/// `DERIVE_PAR_LEAF`. `states` and `sinks` index the same points.
+fn derive_par(states: &[OpticalState], sinks: Sinks<'_>) {
+  if states.len() <= DERIVE_PAR_LEAF {
+    derive_range(states, sinks);
+    return;
+  }
+  let mid = states.len() / 2;
+  let (lo_states, hi_states) = states.split_at(mid);
+  let (lo, hi) = sinks.split_at(mid);
+  rayon::join(|| derive_par(lo_states, lo), || derive_par(hi_states, hi));
+}
+
+/// One thread's share of the derive pass: the per-point algebra and
+/// transcendentals, written to whichever destinations exist.
+fn derive_range(states: &[OpticalState], mut sinks: Sinks<'_>) {
+  macro_rules! put {
+    ($buf:ident, $k:expr, $val:expr) => {
+      if let Some(b) = sinks.$buf.as_mut() {
+        b[$k] = $val;
+      }
+    };
+  }
+
+  for (k, s) in states.iter().enumerate() {
+    let rs = s.rs;
+    let rp = s.rp;
+    let ts = s.ts;
+    let tp = s.tp;
+
+    put!(b_rs, k, rs);
+    put!(b_rp, k, rp);
+    put!(b_ts, k, ts);
+    put!(b_tp, k, tp);
+    put!(b_ravg, k, 0.5 * (rs + rp));
+    put!(b_tavg, k, 0.5 * (ts + tp));
+    put!(b_as, k, 1.0 - rs - ts);
+    put!(b_ap, k, 1.0 - rp - tp);
+    put!(b_aavg, k, 1.0 - 0.5 * (rs + rp) - 0.5 * (ts + tp));
+
+    let s0r = rp + rs;
+    let s1r = rp - rs;
+    let s2r = -2.0 * s.cross_r.re + 0.0;
+    let s3r = -2.0 * s.cross_r.im + 0.0;
+    put!(b_s0r, k, s0r);
+    put!(b_s1r, k, s1r);
+    put!(b_s2r, k, s2r);
+    put!(b_s3r, k, s3r);
+    let s0t = tp + ts;
+    let s1t = tp - ts;
+    let s2t = 2.0 * s.cross_t.re + 0.0;
+    let s3t = 2.0 * s.cross_t.im + 0.0;
+    put!(b_s0t, k, s0t);
+    put!(b_s1t, k, s1t);
+    put!(b_s2t, k, s2t);
+    put!(b_s3t, k, s3t);
+
+    put!(b_diatt_r, k, s1r / (s0r + 1e-20));
+    put!(b_diatt_t, k, s1t / (s0t + 1e-20));
+
+    put!(b_dop_r, k, (s1r * s1r + s2r * s2r + s3r * s3r).sqrt() / (s0r + 1e-20));
+    put!(b_dop_t, k, ((s1t * s1t + s2t * s2t + s3t * s3t).sqrt() / (s0t + 1e-20)).min(1.0));
+
+    put!(b_psi_r, k, if rs < RS_FLOOR { PI / 2.0 } else { (rp / rs).sqrt().atan() });
+    put!(b_delta_r, k, if rs < RS_FLOOR { 0.0 } else { s3r.atan2(s2r) });
+    put!(b_psi_t, k, if ts < TS_FLOOR { PI / 2.0 } else { (tp / ts).sqrt().atan() });
+    put!(b_delta_t, k, if ts < TS_FLOOR { 0.0 } else { s3t.atan2(s2t) });
+
+    put!(b_retard_r, k, s.cross_r.arg());
+    put!(b_retard_t, k, s.cross_t.arg());
+
+    put!(b_phi_rs, k, s.rs_c.arg());
+    put!(b_phi_rp, k, s.rp_c.arg());
+    put!(b_phi_ts, k, s.ts_c.arg());
+    put!(b_phi_tp, k, s.tp_c.arg());
+    put!(b_phi_rbs, k, s.rbs_c.arg());
+    put!(b_phi_rbp, k, s.rbp_c.arg());
+    put!(b_phi_tbs, k, s.tbs_c.arg());
+    put!(b_phi_tbp, k, s.tbp_c.arg());
+
+    put!(b_rs_c, k, s.rs_c);
+    put!(b_rp_c, k, s.rp_c);
+    put!(b_ts_c, k, s.ts_c);
+    put!(b_tp_c, k, s.tp_c);
+    put!(b_rbs_c, k, s.rbs_c);
+    put!(b_rbp_c, k, s.rbp_c);
+    put!(b_tbs_c, k, s.tbs_c);
+    put!(b_tbp_c, k, s.tbp_c);
+    put!(b_cross_r, k, s.cross_r);
+    put!(b_cross_t, k, s.cross_t);
   }
 }
 
@@ -2352,6 +2503,261 @@ mod tests {
           assert_eq!(*inv, n.recip(), "wavelength {w}");
         }
       }
+    }
+  }
+
+  /// A deterministic spread of states: every field varies with the index, so a
+  /// split that drops, duplicates or misaligns a range shows up as a wrong
+  /// value rather than as a plausible-looking constant.
+  fn states_for(n: usize) -> Vec<OpticalState> {
+    (0..n)
+      .map(|i| {
+        let x = i as f64;
+        let c = |a: f64, b: f64| Complex64::new(a + x * 1e-4, b - x * 7e-5);
+        OpticalState {
+          // Kept inside (0, 1) and away from the Rs/Ts floors so the
+          // Psi/Delta branches take their transcendental arm.
+          rs: 0.05 + 0.4 * ((x * 0.013).sin() * 0.5 + 0.5),
+          rp: 0.07 + 0.4 * ((x * 0.017).cos() * 0.5 + 0.5),
+          ts: 0.11 + 0.4 * ((x * 0.019).sin() * 0.5 + 0.5),
+          tp: 0.13 + 0.4 * ((x * 0.023).cos() * 0.5 + 0.5),
+          rs_c: c(0.2, 0.3),
+          rp_c: c(-0.4, 0.1),
+          ts_c: c(0.5, -0.2),
+          tp_c: c(0.6, 0.7),
+          rbs_c: c(-0.1, -0.8),
+          rbp_c: c(0.9, 0.4),
+          tbs_c: c(0.3, -0.6),
+          tbp_c: c(-0.7, 0.2),
+          cross_r: c(0.15, -0.25),
+          cross_t: c(-0.35, 0.45),
+        }
+      })
+      .collect()
+  }
+
+  /// Every f64 channel then every complex channel, in the order the sink
+  /// struct declares them, all destinations live.
+  type AllChannels = (Vec<Vec<f64>>, Vec<Vec<Complex64>>);
+
+  /// Derive `states` into a full set of buffers, either through the halving
+  /// (`split = true`) or in one serial call.
+  fn derive_all(states: &[OpticalState], split: bool) -> AllChannels {
+    let n = states.len();
+      let mut b_rs = vec![f64::NAN; n];
+      let mut b_rp = vec![f64::NAN; n];
+      let mut b_ts = vec![f64::NAN; n];
+      let mut b_tp = vec![f64::NAN; n];
+      let mut b_ravg = vec![f64::NAN; n];
+      let mut b_tavg = vec![f64::NAN; n];
+      let mut b_as = vec![f64::NAN; n];
+      let mut b_ap = vec![f64::NAN; n];
+      let mut b_aavg = vec![f64::NAN; n];
+      let mut b_psi_r = vec![f64::NAN; n];
+      let mut b_psi_t = vec![f64::NAN; n];
+      let mut b_delta_r = vec![f64::NAN; n];
+      let mut b_delta_t = vec![f64::NAN; n];
+      let mut b_dop_r = vec![f64::NAN; n];
+      let mut b_dop_t = vec![f64::NAN; n];
+      let mut b_diatt_r = vec![f64::NAN; n];
+      let mut b_diatt_t = vec![f64::NAN; n];
+      let mut b_s0r = vec![f64::NAN; n];
+      let mut b_s1r = vec![f64::NAN; n];
+      let mut b_s2r = vec![f64::NAN; n];
+      let mut b_s3r = vec![f64::NAN; n];
+      let mut b_s0t = vec![f64::NAN; n];
+      let mut b_s1t = vec![f64::NAN; n];
+      let mut b_s2t = vec![f64::NAN; n];
+      let mut b_s3t = vec![f64::NAN; n];
+      let mut b_retard_r = vec![f64::NAN; n];
+      let mut b_retard_t = vec![f64::NAN; n];
+      let mut b_phi_rs = vec![f64::NAN; n];
+      let mut b_phi_rp = vec![f64::NAN; n];
+      let mut b_phi_ts = vec![f64::NAN; n];
+      let mut b_phi_tp = vec![f64::NAN; n];
+      let mut b_phi_rbs = vec![f64::NAN; n];
+      let mut b_phi_rbp = vec![f64::NAN; n];
+      let mut b_phi_tbs = vec![f64::NAN; n];
+      let mut b_phi_tbp = vec![f64::NAN; n];
+      let mut b_rs_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_rp_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_ts_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_tp_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_rbs_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_rbp_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_tbs_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_tbp_c = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_cross_r = vec![Complex64::new(f64::NAN, f64::NAN); n];
+      let mut b_cross_t = vec![Complex64::new(f64::NAN, f64::NAN); n];
+    {
+      let sinks = Sinks {
+          b_rs: Some(&mut b_rs),
+          b_rp: Some(&mut b_rp),
+          b_ts: Some(&mut b_ts),
+          b_tp: Some(&mut b_tp),
+          b_ravg: Some(&mut b_ravg),
+          b_tavg: Some(&mut b_tavg),
+          b_as: Some(&mut b_as),
+          b_ap: Some(&mut b_ap),
+          b_aavg: Some(&mut b_aavg),
+          b_psi_r: Some(&mut b_psi_r),
+          b_psi_t: Some(&mut b_psi_t),
+          b_delta_r: Some(&mut b_delta_r),
+          b_delta_t: Some(&mut b_delta_t),
+          b_dop_r: Some(&mut b_dop_r),
+          b_dop_t: Some(&mut b_dop_t),
+          b_diatt_r: Some(&mut b_diatt_r),
+          b_diatt_t: Some(&mut b_diatt_t),
+          b_s0r: Some(&mut b_s0r),
+          b_s1r: Some(&mut b_s1r),
+          b_s2r: Some(&mut b_s2r),
+          b_s3r: Some(&mut b_s3r),
+          b_s0t: Some(&mut b_s0t),
+          b_s1t: Some(&mut b_s1t),
+          b_s2t: Some(&mut b_s2t),
+          b_s3t: Some(&mut b_s3t),
+          b_retard_r: Some(&mut b_retard_r),
+          b_retard_t: Some(&mut b_retard_t),
+          b_phi_rs: Some(&mut b_phi_rs),
+          b_phi_rp: Some(&mut b_phi_rp),
+          b_phi_ts: Some(&mut b_phi_ts),
+          b_phi_tp: Some(&mut b_phi_tp),
+          b_phi_rbs: Some(&mut b_phi_rbs),
+          b_phi_rbp: Some(&mut b_phi_rbp),
+          b_phi_tbs: Some(&mut b_phi_tbs),
+          b_phi_tbp: Some(&mut b_phi_tbp),
+          b_rs_c: Some(&mut b_rs_c),
+          b_rp_c: Some(&mut b_rp_c),
+          b_ts_c: Some(&mut b_ts_c),
+          b_tp_c: Some(&mut b_tp_c),
+          b_rbs_c: Some(&mut b_rbs_c),
+          b_rbp_c: Some(&mut b_rbp_c),
+          b_tbs_c: Some(&mut b_tbs_c),
+          b_tbp_c: Some(&mut b_tbp_c),
+          b_cross_r: Some(&mut b_cross_r),
+          b_cross_t: Some(&mut b_cross_t),
+      };
+      if split {
+        derive_par(states, sinks);
+      } else {
+        derive_range(states, sinks);
+      }
+    }
+    (
+      vec![
+        b_rs,
+        b_rp,
+        b_ts,
+        b_tp,
+        b_ravg,
+        b_tavg,
+        b_as,
+        b_ap,
+        b_aavg,
+        b_psi_r,
+        b_psi_t,
+        b_delta_r,
+        b_delta_t,
+        b_dop_r,
+        b_dop_t,
+        b_diatt_r,
+        b_diatt_t,
+        b_s0r,
+        b_s1r,
+        b_s2r,
+        b_s3r,
+        b_s0t,
+        b_s1t,
+        b_s2t,
+        b_s3t,
+        b_retard_r,
+        b_retard_t,
+        b_phi_rs,
+        b_phi_rp,
+        b_phi_ts,
+        b_phi_tp,
+        b_phi_rbs,
+        b_phi_rbp,
+        b_phi_tbs,
+        b_phi_tbp,
+      ],
+      vec![
+        b_rs_c,
+        b_rp_c,
+        b_ts_c,
+        b_tp_c,
+        b_rbs_c,
+        b_rbp_c,
+        b_tbs_c,
+        b_tbp_c,
+        b_cross_r,
+        b_cross_t,
+      ],
+    )
+  }
+
+  #[test]
+  fn the_split_derive_is_bit_identical_to_the_serial_one() {
+    // Not a round multiple of the leaf, so the halving ends on odd sizes and
+    // an off-by-one in the split would land somewhere.
+    let states = states_for(4 * DERIVE_PAR_LEAF + 37);
+    let (par_f, par_c) = derive_all(&states, true);
+    let (ser_f, ser_c) = derive_all(&states, false);
+    // Bit-for-bit: there is no reduction here, so anything less is a bug in
+    // the split, not a floating-point tolerance question (§0.1 rule 5).
+    assert_eq!(par_f, ser_f);
+    assert_eq!(par_c, ser_c);
+  }
+
+  #[test]
+  fn the_split_reaches_every_index() {
+    // The buffers start as NaN. A range the halving never visits stays NaN,
+    // and NaN != NaN would not be caught by comparing two equally-gapped
+    // runs -- so check coverage directly.
+    let states = states_for(3 * DERIVE_PAR_LEAF + 5);
+    let (f, c) = derive_all(&states, true);
+    for (ch, buf) in f.iter().enumerate() {
+      assert_eq!(buf.len(), states.len());
+      for (i, v) in buf.iter().enumerate() {
+        assert!(!v.is_nan(), "f64 channel {ch} index {i} was never written");
+      }
+    }
+    for (ch, buf) in c.iter().enumerate() {
+      for (i, v) in buf.iter().enumerate() {
+        assert!(!v.re.is_nan() && !v.im.is_nan(),
+          "complex channel {ch} index {i} was never written");
+      }
+    }
+  }
+
+  #[test]
+  fn a_grid_below_the_leaf_never_splits_and_still_derives() {
+    let states = states_for(DERIVE_PAR_LEAF - 1);
+    let (par_f, par_c) = derive_all(&states, true);
+    let (ser_f, ser_c) = derive_all(&states, false);
+    assert_eq!(par_f, ser_f);
+    assert_eq!(par_c, ser_c);
+    assert!(!par_f[0].iter().any(|v| v.is_nan()));
+  }
+
+  #[test]
+  fn a_channel_nobody_asked_for_is_left_alone() {
+    // `None` sinks are the common case -- a four-channel photometry request
+    // leaves 41 of the 45 unasked -- so the halving must tolerate them at
+    // every level, not just the top.
+    let states = states_for(2 * DERIVE_PAR_LEAF + 3);
+    let n = states.len();
+    let mut rs = vec![f64::NAN; n];
+    let mut cross = vec![Complex64::new(f64::NAN, f64::NAN); n];
+    {
+      let mut sinks = Sinks::none();
+      sinks.b_rs = Some(&mut rs);
+      sinks.b_cross_r = Some(&mut cross);
+      derive_par(&states, sinks);
+    }
+    for (i, s) in states.iter().enumerate() {
+      assert_eq!(rs[i], s.rs);
+      assert_eq!(cross[i], s.cross_r);
     }
   }
 

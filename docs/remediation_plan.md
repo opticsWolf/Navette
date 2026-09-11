@@ -70,7 +70,7 @@ coverage is thin.
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | ~~R4.6~~ | TRF backend (trust-region-reflective) — **DONE (0.6.12)** | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat — `optimizer="trf"`, 10/10 breaks caught | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | ~~R5.1~~ | `unweave_collection` batch optimization — **DONE (0.6.13)** | P2 | 1.15×–2.29× where the cost is per-fragment; the rest is DRAM bandwidth, and the reference wins by aliasing the caller's buffer (see corrections) | M | L | §5.3 |
-| R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck — **gate met**: ~1.1 ms of a 2.4 ms rigorous 20k call (R5.3's bench) | M (bit-identity) | M–L | §5.4 |
+| ~~R5.2~~ | parallelize serial derive loop — **DONE (0.6.15)** | P3 | 1.42× at 20k and 1.73× at 60k on a twelve-channel request; ~1.03× on a four-channel one, which is the whole story (see corrections) | M (bit-identity) | M–L | §5.4 |
 | ~~R5.3~~ | `core_engine` — **DONE (0.6.14)**, and it was not the emit path | P2 | 1.4×–3.0× across the grid; the cost was `Solver::new` (see corrections). Now ~0.8–1.2× numba at 20k–60k points, still ~0.3–0.5× at 500 | M (must stay bit-identical) | M–L | §5, R2.4a |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
 | R6.2 | small physics nits batch | P3 | DOP_R clamp, docstring, `+0.0` | S | S | §3.3, §19.3 |
@@ -1547,7 +1547,7 @@ difference, not a missing optimization.
   `opticalweaver.rs` also gains the 13 tests it had none of — it was covered
   only from Python.
 
-### R5.2 Parallelize the serial derive loop
+### R5.2 Parallelize the serial derive loop — DONE (0.6.15)
 
 **Review:** §5.4 (`Solver::solve`'s per-point derive pass — atan/sqrt/arg —
 is serial; the next Amdahl bottleneck at 10⁵+ points).
@@ -1570,6 +1570,60 @@ structure is wrong (a reduction crept in) — treat as failure, not tolerance.
 
 **Effort.** M–L. **Priority note:** P3 — do it after R5.1 and only if the
 scaling bench shows the serial fraction matters at real workloads.
+
+**CORRECTIONS / NOTES (0.6.15) — shipped; the item was right, and its gate was
+the useful part.** The derive pass now splits across the rayon pool. 1.42× at
+20 000 points and 1.73× at 60 000 on a twelve-channel request; ~1.03–1.14× on
+a four-channel one.
+
+* **The priority note's gate was met by R5.3's bench, not by argument.** "Only
+  if the scaling bench shows the serial fraction matters at real workloads" —
+  it does, but only after R5.3: with `Solver::new` still costing 2.2–2.5 ms of a
+  4.3–4.8 ms call, the derive loop was ~23% of the call and this item would
+  have been worth ~1.1×. Once construction was fixed the same 1.1 ms became
+  ~46% of a 2.4 ms call. **The sequencing in the plan (R5.3 before R5.2) was
+  right for a reason the plan did not know**: R5.3 is what made R5.2 worth
+  doing.
+* **The fix design is taken as written.** Per-destination indexed writes, no
+  reduction. The form is a recursive halving of the point range *and every live
+  buffer together* (`rayon::join` down to a 512-point leaf) rather than
+  per-thread scratch buffers — same guarantee, no merge step: each output index
+  is written once, by one task, with the expression the serial pass used.
+  Bit-identity is therefore structural and holds at any leaf size, which is
+  asserted directly (`the_split_derive_is_bit_identical_to_the_serial_one`)
+  rather than argued.
+* **"Scope the first cut to the pure per-element trig chain" was not needed.**
+  Nothing in the pass crosses points: every channel is a function of one
+  `OpticalState`. The cross-point work is the dispersion pass, which is a
+  separate stage and untouched. So the whole loop parallelises, not a subset.
+* **Two alternatives measured and rejected.** One parallel pass *per channel*
+  (`buf.par_iter_mut().zip(states)`) is simpler but walks the 3.8 MB state
+  array once per requested channel — 12 passes for a rigorous request, which is
+  more traffic than the single serial pass it replaces. Emitting inside the
+  existing solve map (R5.3's fix sketch) would make that map's write pattern
+  channel-dependent, which is the §13 property worth keeping. The halving
+  keeps one pass over the states and one writer per index.
+* **The gain is a function of the request, not the grid.** The pass costs what
+  the caller asked for: four trivial channels (photometry) have almost nothing
+  to divide and gain ~1.03–1.14×, twelve channels with `sqrt`/`atan`/`atan2`/
+  `arg` gain 1.42× at 20 000 points and 1.73× at 60 000. A benchmark that only
+  ever measured a photometry request would have concluded this item was not
+  worth doing.
+* **The optional validation item is not done and is now redundant.** The plan
+  offered "a scaling sweep extension of `bench_backside_speed` (40 → 10⁶
+  points) — also fills §5.4's 'no solver scaling bench' gap." R5.3 filled that
+  gap with `bench_core_engine_scaling.py`, which sweeps the grid at two request
+  breadths — and the request breadth is the axis this item actually moves, which
+  a point-count sweep alone would have missed.
+* **The leaf size is a scheduling knob, not a numerical one.** Swept at 256 /
+  512 / 2048 / 8192: within ~3% of each other at the sizes that matter, the one
+  real effect being that a leaf above the grid means no split (2 000 points:
+  0.428 ms at 2048, 0.386 ms at 512). 512 chosen as the smallest leaf that
+  still buys something measurable.
+* **Bit-identity (§0.1 rule 5) held.** Fingerprint unchanged
+  (`a99e8383…f154`), ten review harnesses exit 0, both parity oracles pass,
+  687 pytest / 476 cargo tests green, clippy clean with and without
+  `opt-minpack-lm`.
 
 ---
 
@@ -1923,7 +1977,9 @@ Phase 3 (R3.1→R3.3)           behavior changes (0.6.0); R3.1 before R3.2
 Phase 4 (R4.1→R4.6)           R4.2 before R6.1 (refactor absorbs the new slots);
                               R4.4b (QR + gain-ratio) before R4.4c (backends);
                               R4.5 (analytic J) after R4.4b, before R4.6 (TRF consumes J)
-Phase 5 (R5.1, R5.2)          perf; R5.2 gated by the optional scaling bench
+Phase 5 (R5.1, R5.3, R5.2)    perf; all three DONE. R5.3 before R5.2 turned
+                              out to be load-bearing: until construction was
+                              fixed the derive loop was only ~23% of the call
 Phase 6 (R6.1→R6.5)           R6.1 last among code items (XL, bit-exact gate)
 ```
 

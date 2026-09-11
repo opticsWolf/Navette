@@ -3,6 +3,62 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.15] — The derive pass is no longer the serial half (R5.2)
+
+R5.3's scaling bench made the gate for this item concrete: after the
+construction fix, a rigorous twelve-channel request at 20 000 points spent
+~1.1 ms of its 2.4 ms in one serial loop — the per-point derive, where every
+requested channel's algebra and transcendentals (`sqrt`, `atan`, `atan2`,
+`arg`) are evaluated. The solve itself was already on the rayon pool; this pass
+was not.
+
+### Changed
+
+- **The derive pass splits across the rayon pool.** The point range and *every
+  live destination buffer* are halved together, down to a 512-point leaf, so
+  each output index is still written exactly once, by one task, with the
+  expression it had when the pass was serial. There is no reduction and no
+  shared accumulator: bit-identity is structural, not a tolerance.
+- The 45 channel buffers and their halving are generated from one list, so a
+  new channel cannot be added to the pass and forgotten by the split.
+
+Measured with `bench_core_engine_scaling.py`, 6 layers, 1 angle, median of 25
+(0.6.14 → 0.6.15):
+
+| points | photometry | | rigorous | |
+|---:|---:|---|---:|---|
+| 500 | 0.183 → 0.177 ms | 1.03× | 0.231 → 0.231 ms | — |
+| 2 000 | 0.364 → 0.344 ms | 1.06× | 0.440 → 0.401 ms | 1.10× |
+| 5 000 | 0.592 → 0.540 ms | 1.10× | 0.769 → 0.666 ms | 1.15× |
+| 20 000 | 1.539 → 1.499 ms | 1.03× | 2.387 → 1.684 ms | 1.42× |
+| 60 000 | 4.229 → 3.700 ms | 1.14× | 6.977 → 4.022 ms | 1.73× |
+
+The gain tracks how many channels the request asks for, which is what the pass
+costs: a four-channel photometry request has almost nothing to divide, a
+twelve-channel ellipsometric one has 1.7× at 60 000 points. Against the numba
+kernel the rigorous request now runs at ~1.1–1.8× at 20 000–60 000 points,
+where 0.6.13 had it at ~0.4–0.5×.
+
+### Added
+
+- Four solver tests: the split pass is bit-identical to a single serial call on
+  a grid that is not a multiple of the leaf; the split reaches every index
+  (buffers start as NaN, so a range nobody visits is caught directly rather
+  than by comparing two equally-gapped runs); a grid below the leaf still
+  derives; and absent channels — 41 of the 45 on a photometry request — survive
+  the halving at every level.
+
+### Known
+
+- **The leaf size is a scheduling knob, not a numerical one.** Swept at 256 /
+  512 / 2048 / 8192: the grid sizes that matter land within ~3% of each other,
+  the one real effect being that a leaf above the grid means no split at all
+  (2 000 points cost 0.428 ms at 2048 and 0.386 ms at 512). 512 is the smallest
+  leaf that still buys something measurable.
+- Small grids remain dispatch-bound and behind the numba kernel; see 0.6.14.
+- Bit-identity held: the differential fingerprint is unchanged, all ten review
+  harnesses exit 0, both parity oracles pass.
+
 ## [0.6.14] — `core_engine` was paying for its own construction (R5.3)
 
 R2.4a timed the Rust engine at 0.5–0.65× the numba kernel it replaced and the
