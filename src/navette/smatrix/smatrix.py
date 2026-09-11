@@ -209,6 +209,142 @@ def expected_keys(request: Union[int, Request]) -> List[str]:
     return keys
 
 
+# ─── Construction-time validation (R3.1) ─────────────────────────────────────
+# The engine is permissive by design: it is also driven by the optimizer's
+# inner loop and by Rust-side tests, where a re-check per call would be pure
+# overhead. That permissiveness used to reach the user unfiltered, and the
+# review harness (validation/review/garbage_in.py) recorded the result: a NaN
+# thickness and a negative thickness both produced the *same* numbers as
+# deleting the layer; 120 deg silently aliased onto 60 deg; a duplicated
+# wavelength turned every dispersion channel into NaN. None of these raised,
+# and none warned.
+#
+# So the checks live here, at the Python user surface, and run once per
+# construction (microseconds, not in any hot path). There is deliberately no
+# opt-out: a caller who wants the permissive engine can reach it through the
+# native Solver, and a silent physics change is worse than a loud error.
+
+
+def _first_bad(mask: np.ndarray):
+    """Index of the first True in ``mask``, or None. 2-D masks give a tuple."""
+    hits = np.argwhere(mask)
+    if hits.size == 0:
+        return None
+    first = hits[0]
+    return int(first[0]) if first.size == 1 else tuple(int(i) for i in first)
+
+
+def _validate_indices(idx2d: np.ndarray) -> None:
+    """Every refractive index must be finite, real and imaginary part alike.
+
+    A NaN index propagates through the whole stack, so the output is NaN
+    everywhere and the layer that caused it is unrecoverable from the result.
+    """
+    where = _first_bad(~(np.isfinite(idx2d.real) & np.isfinite(idx2d.imag)))
+    if where is not None:
+        layer, col = where if isinstance(where, tuple) else (where, 0)
+        raise ValueError(
+            f"`layer_indices`: non-finite value at layer {layer}, wavelength "
+            f"index {col}: {complex(idx2d[layer, col])}. Refractive indices "
+            f"must be finite (a NaN or inf index makes every output NaN)."
+        )
+    # Finite is not enough. The engine squares the index (n^2, and kz^2), so
+    # any |n| past sqrt(DBL_MAX) overflows to inf *inside* the solve and comes
+    # back as NaN with nothing to point at. The bound is the machine's, not a
+    # taste judgement: it is exactly where the engine's own arithmetic dies.
+    with np.errstate(over="ignore", invalid="ignore"):
+        mag2 = idx2d.real * idx2d.real + idx2d.imag * idx2d.imag
+    where = _first_bad(~np.isfinite(mag2))
+    if where is not None:
+        layer, col = where if isinstance(where, tuple) else (where, 0)
+        raise ValueError(
+            f"`layer_indices`: magnitude too large at layer {layer}, "
+            f"wavelength index {col}: {complex(idx2d[layer, col])}. |n|^2 "
+            f"overflows double, so the solve returns NaN; keep |n| below "
+            f"{np.sqrt(np.finfo(np.float64).max):.3e}."
+        )
+
+
+def _validate_thicknesses(d: np.ndarray) -> None:
+    """Thickness must be finite and non-negative; 0 is legal (ambient rows).
+
+    Negative and NaN thicknesses were both silently equivalent to deleting the
+    layer -- the engine returned the numbers for a *different* stack than the
+    one asked for. There is no upper cap: 1e9 nm is handled correctly.
+    """
+    where = _first_bad(~np.isfinite(d))
+    if where is not None:
+        raise ValueError(
+            f"`thicknesses`: non-finite value at layer {where}: {float(d[where])}. "
+            f"Thickness must be finite (NaN silently removed the layer)."
+        )
+    where = _first_bad(d < 0.0)
+    if where is not None:
+        raise ValueError(
+            f"`thicknesses`: negative value at layer {where}: {float(d[where])}. "
+            f"Thickness must be >= 0 (use 0 for ambient and substrate; a "
+            f"negative thickness silently removed the layer)."
+        )
+
+
+def _validate_wavelengths(w: np.ndarray) -> None:
+    """Finite, positive, and strictly increasing.
+
+    Descending grids are mathematically fine (the engine is sign-invariant),
+    but one rule is easier to hold than two, and the dispersion channels
+    divide by the grid spacing: a repeated wavelength gives 1/0 and NaN
+    GD/GDD/TOD/FOD. Sorting is left to the caller on purpose -- silently
+    reordering the grid would desynchronize it from a caller's own
+    wavelength-indexed arrays.
+    """
+    where = _first_bad(~np.isfinite(w))
+    if where is not None:
+        raise ValueError(
+            f"`wavelengths`: non-finite value at index {where}: {float(w[where])}."
+        )
+    where = _first_bad(w <= 0.0)
+    if where is not None:
+        raise ValueError(
+            f"`wavelengths`: non-positive value at index {where}: "
+            f"{float(w[where])}. Wavelengths must be > 0 (k = 2*pi/lambda)."
+        )
+    if w.size > 1:
+        where = _first_bad(np.diff(w) <= 0.0)
+        if where is not None:
+            i = where + 1
+            same = w[i] == w[where]
+            raise ValueError(
+                f"`wavelengths` must be strictly increasing: index {i} "
+                f"({float(w[i])}) is {'equal to' if same else 'not greater than'} "
+                f"index {where} ({float(w[where])}). Sort ascending and remove "
+                f"duplicates before constructing (duplicates make the "
+                f"dispersion channels NaN)."
+            )
+
+
+def _validate_angles(theta: np.ndarray, in_radians: bool) -> None:
+    """Finite, and within the physical incidence quadrant.
+
+    Only ``sin(theta)`` reaches the engine, so 120 deg silently became 60 deg
+    and returned plausible numbers for an angle the caller never asked for.
+    """
+    where = _first_bad(~np.isfinite(theta))
+    if where is not None:
+        raise ValueError(
+            f"`angles`: non-finite value at index {where}: {float(theta[where])}."
+        )
+    hi = (np.pi / 2.0) if in_radians else 90.0
+    unit = "rad" if in_radians else "deg"
+    where = _first_bad((theta < 0.0) | (theta > hi))
+    if where is not None:
+        raise ValueError(
+            f"`angles`: out of range at index {where}: {float(theta[where])} "
+            f"{unit}. Angle of incidence must satisfy 0 <= theta <= {hi} "
+            f"{unit}; the engine uses sin(theta) only, so an angle outside "
+            f"that range silently aliases onto its mirror."
+        )
+
+
 # ─── Eigenmode result container ──────────────────────────────────────────────
 class EigenLandscape:
     """Result of an eigenmode landscape scan over the complex effective index."""
@@ -266,6 +402,27 @@ class ScatterMatrix:
         Default ``FRONT_BLOCK``.
     angles_in_radians : bool, optional
         Treat ``angles`` as radians. Default False (degrees).
+
+    Raises
+    ------
+    ValueError
+        On malformed input, naming the offending index and value (R3.1). The
+        constructor requires:
+
+        * ``layer_indices`` finite, with ``|n|`` below ``sqrt(DBL_MAX)``
+          (beyond that the engine's own ``n**2`` overflows);
+        * ``thicknesses`` finite and ``>= 0`` (0 for ambient and substrate;
+          there is no upper limit);
+        * ``wavelengths`` finite, positive and **strictly increasing** --
+          descending grids are rejected rather than sorted, because sorting
+          would desynchronize the grid from the caller's own
+          wavelength-indexed arrays;
+        * ``angles`` finite and within ``0 <= theta <= 90`` degrees (or
+          ``pi/2`` radians): only ``sin(theta)`` reaches the engine, so a
+          larger angle would alias onto its mirror.
+
+        The native ``Solver`` underneath stays permissive for internal
+        callers; there is no opt-out at this layer.
     """
 
     def __init__(
@@ -295,9 +452,17 @@ class ScatterMatrix:
             idx2d = raw_idx
         else:
             raise ValueError("`layer_indices` must be 1-D or 2-D.")
+        thick = (None if thicknesses is None else
+                 np.ascontiguousarray(thicknesses, dtype=np.float64).ravel())
+        _validate_indices(idx2d)
+        _validate_wavelengths(wavls)
+        _validate_angles(theta, bool(angles_in_radians))
+        if thick is not None:
+            _validate_thicknesses(thick)
+
         self._native = _NativeSolver(
             wavls, theta, np.ascontiguousarray(idx2d).ravel(), n_layers,
-            thicknesses=None if thicknesses is None else np.ascontiguousarray(thicknesses, dtype=np.float64).ravel(),
+            thicknesses=thick,
             incoherent_flags=None if incoherent_flags is None else np.ascontiguousarray(incoherent_flags, dtype=np.int32).ravel(),
             roughness_types=None if roughness_types is None else np.ascontiguousarray(roughness_types, dtype=np.int32).ravel(),
             roughness_values=None if roughness_values is None else np.ascontiguousarray(roughness_values, dtype=np.float64).ravel(),

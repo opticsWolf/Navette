@@ -20,8 +20,8 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (569 passed +
-     2 skipped at 0.5.9, parity included; `PYTHONIOENCODING=utf-8` no longer
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (599 passed +
+     2 skipped at 0.6.0, parity included; `PYTHONIOENCODING=utf-8` no longer
      needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
@@ -518,7 +518,7 @@ documentation of the bit map.
 
 ## 3. Phase 3 — Input validation & robustness (P1)
 
-### R3.1 `ScatterMatrix` construction validation
+### R3.1 `ScatterMatrix` construction validation — DONE (0.6.0)
 
 **Review:** §21.1/§21.2 + §19.3 (dup wavelengths → NaN GD/GDD/TOD/FOD;
 negative/NaN thickness silently deletes the layer; θ > 90° aliases to its
@@ -562,6 +562,27 @@ expect the new errors (it currently *documents* the silent behavior).
   sort-mangle: assert no silent reordering happens anywhere).
 
 **Effort.** M.
+
+**NOTES (0.6.0).**
+
+* **Two checks beyond the plan.** `wavelengths > 0` (`k = 2*pi/lambda`
+  divides by zero at 0) and an upper bound on `|n|`: the review harness's
+  "inf index" case actually passes `1e308`, which *is* finite, so the finite
+  check let it through and `n**2` then overflowed inside the solve. The bound
+  is `sqrt(DBL_MAX)` — the machine's, not a taste judgement: exactly where
+  the engine's own arithmetic dies.
+* **One test relied on the silent clamping**, as the plan anticipated:
+  `test_physics_mirror.py::test_pd_optimizer_recovery` runs an unbounded
+  Nelder-Mead over thickness whose minimum sits on the `d = 0` boundary, so
+  the simplex reached for `d = -4`. It was a harness artifact and worse than
+  it looked — the optimizer had been steered by the merit of a stack with the
+  layer deleted. Fixed with a sloped barrier at zero, not by relaxing the
+  check.
+* **`garbage_in.py` had the parity scripts' defect too**: it computed an `OK`
+  flag nothing ever set and always exited 0. It now asserts a verdict per
+  case and exits 1 on drift (verified by flipping one expectation).
+* Out of scope and still unvalidated: `roughness_values` (negative sigma) and
+  `incoherent_flags`. No silent-wrong-answer path is known for either.
 
 ### R3.2 Needle z-range: debug-assert → real error
 

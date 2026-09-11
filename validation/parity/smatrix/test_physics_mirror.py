@@ -176,6 +176,14 @@ def test_pd_optimizer_recovery():
 
     def merit(d):
         dd = float(d[0])
+        # Nelder-Mead is unbounded and the minimum sits on the d = 0 boundary,
+        # so the simplex reaches for negative thickness. That used to be
+        # silently accepted -- the layer was dropped and the optimizer was
+        # steered by the merit of a *different* stack (R3.1 makes it an
+        # error). A sloped barrier keeps the search in the physical half-line
+        # and points it back toward zero.
+        if dd < 0.0:
+            return 1.0 + abs(dd)
         st = ScatterMatrix(np.array([1.0 + 0j, 1.5 + 0j, 1.0 + 0j]),
                            np.array([0.0, dd, 0.0]),
                            wavelengths=wl, angles=[0.0])

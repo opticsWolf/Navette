@@ -3,6 +3,73 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.0] — `ScatterMatrix` rejects malformed input (R3.1)
+
+**Behaviour change.** The constructor now validates its inputs and raises
+`ValueError`. Inputs that used to return plausible numbers for a stack nobody
+asked for are errors; the message names the offending index and value.
+
+### Fixed — these used to be silent
+
+| input | old behaviour |
+|---|---|
+| negative thickness | same numbers as **deleting the layer** |
+| NaN / inf thickness | same numbers as **deleting the layer** |
+| NaN or inf refractive index | every output NaN, nothing naming the layer |
+| refractive index with `|n|` past `sqrt(DBL_MAX)` | `n**2` overflowed inside the solve; NaN out |
+| NaN wavelength | NaN output |
+| wavelength <= 0 | `k = 2*pi/lambda` divides by zero |
+| duplicated wavelength | NaN `GD`/`GDD`/`TOD`/`FOD` (the kernels divide by the grid spacing) |
+| descending wavelength grid | worked, but silently a second convention |
+| angle > 90 deg (e.g. 120 deg) | **aliased onto its mirror** (60 deg) — only `sin(theta)` reaches the engine |
+| negative or NaN angle | aliased / NaN |
+
+Descending grids are **rejected, not sorted**: silently reordering would
+desynchronize the grid from the caller's own wavelength-indexed arrays, and
+nothing would say so. Sorting is the caller's call.
+
+### Unchanged — deliberately still accepted
+
+Grazing incidence (90 deg, `R = 1`), a single-point wavelength grid, zero
+thicknesses, a 1e9 nm layer (no upper cap — verified safe), and metallic
+indices with `n < 1`. A validation layer that rejected any of these would
+have broken the library to fix a bug; `test_input_validation.py` holds that
+line with 9 positive controls.
+
+The native `Solver` underneath stays permissive. It is also the optimizer's
+inner loop and the Rust test surface, where a re-check per call is pure
+overhead — so the checks live at the Python user surface, run once per
+construction, and have no opt-out flag.
+
+### Added
+
+- `validation/smoke/test_input_validation.py` — 30 tests: 17 rejected inputs
+  (each asserting the index and value appear in the message), 9 accepted
+  ones, and four positive controls, including that a rejected construction
+  does not mutate the caller's arrays and that the native `Solver` is never
+  constructed for a stack that is about to be rejected.
+
+### Changed
+
+- `validation/review/garbage_in.py` recorded the old silent behaviour as
+  prose. It now carries an expected verdict per case and **exits 1** when one
+  drifts (it previously computed an `OK` flag it never used and always
+  exited 0). The four `needle_gradient` rows are still permissive and are
+  marked `[R3.2]` rather than quietly listed.
+- `validation/parity/smatrix/test_physics_mirror.py` — the Nelder-Mead
+  thickness search is unbounded and its minimum sits on the `d = 0` boundary,
+  so the simplex reached for negative thickness. That was silently accepted
+  before, meaning the optimizer was steered by the merit of a *different*
+  stack; it now gets a sloped barrier at zero.
+
+### Known gaps
+
+- `needle_gradient` is unguarded: a NaN needle index still gives NaN, and
+  `z` outside the stack or negative is accepted silently. That is R3.2.
+- `roughness_values` and `incoherent_flags` are not validated (negative sigma
+  is still accepted). Not in R3.1's scope; no silent-wrong-answer path is
+  known for them.
+
 ## [0.5.9] — Request-bit and schema sync guards (R2.5)
 
 Three constant tables are written once per language with nothing tying them
