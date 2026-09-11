@@ -954,8 +954,8 @@ mod tests {
         let n_re = [1.0, 2.35, 1.46, 2.35, 1.52];
         let mut cache = Vec::with_capacity(NW * NL * 2);
         for _w in 0..NW {
-            for l in 0..NL {
-                cache.push(n_re[l]);
+            for &n in n_re.iter().take(NL) {
+                cache.push(n);
                 cache.push(0.0);
             }
         }
@@ -1754,8 +1754,8 @@ mod tests {
     fn color_sim_r4(level: f64) -> SimCurves {
         // Front R rows uniform; T rows absent (R demands only).
         let mut curves: [Option<Arc<[f64]>>; 9] = Default::default();
-        for slot in 0..3 {
-            curves[slot] = Some(Arc::from(vec![level; NW]));
+        for slot in curves.iter_mut().take(3) {
+            *slot = Some(Arc::from(vec![level; NW]));
         }
         SimCurves {
             angles: vec![0.0].into(),

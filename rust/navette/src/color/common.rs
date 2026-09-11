@@ -109,6 +109,7 @@ pub fn signed_pow(x: f64, p: f64) -> f64 {
 /// Used in the conversion between XYZ and CIELAB.
 /// - For `t > ε`  (ε = LAB_EPSILON):   `f(t) = t^(1/3)`
 /// - Otherwise:                        `f(t) = (κ·t + 16) / 116`
+///
 /// where `κ = LAB_KAPPA`, `ε = LAB_EPSILON`.
 ///
 /// **Note:** The condition uses `t <= ε` to exactly match the behaviour
@@ -184,15 +185,13 @@ pub fn inverse_gamma_srgb(v: f64) -> f64 {
 }
 
 /// Clamp a value to the closed unit interval `[0, 1]`.
+///
+/// `f64::clamp` is `if self < min { min } else if self > max { max } else
+/// { self }` -- the same three arms this used to spell out, NaN included
+/// (both comparisons are false, so NaN passes through unchanged).
 #[inline(always)]
 pub fn clip01(v: f64) -> f64 {
-    if v < 0.0 {
-        0.0
-    } else if v > 1.0 {
-        1.0
-    } else {
-        v
-    }
+    v.clamp(0.0, 1.0)
 }
 
 // -----------------------------------------------------------------------------

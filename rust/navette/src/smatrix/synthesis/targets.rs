@@ -348,7 +348,7 @@ fn ingest_spectral(
   let frame = weaver.create_dedicated_frame(&t.wavelengths)?;
   frame.set_data(key.clone(), SpectralData::from_arc(Arc::from(t.values.as_slice())), Some(&t.wavelengths))?;
   weaver.inner.inner.map_frame_to_key(&key, &frame);
-  let count_norm = t.normalize_count.then(|| n as f64);
+  let count_norm = t.normalize_count.then_some(n as f64);
   weaver.register_metadata(
     frame.uid, key, &t.values, &t.tolerances, kind, mode, &band, t.weight, count_norm, t.integral,
   );
@@ -381,7 +381,7 @@ fn ingest_angular(
       Some(&wl_point),
     )?;
     weaver.inner.inner.map_frame_to_key(&key, &frame);
-    let count_norm = t.normalize_count.then(|| n as f64);
+    let count_norm = t.normalize_count.then_some(n as f64);
     let band_one = if band.is_empty() { vec![] } else { vec![band[i]] };
     weaver.register_metadata_resolved(
       frame.uid, key, &[t.values[i]], &[t.tolerances[i]], kind, shared_mode, shared_nf,

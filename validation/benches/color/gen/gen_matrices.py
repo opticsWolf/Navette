@@ -3,7 +3,15 @@ import colour  # reference library; the sRGB matrices are taken from here verbat
 
 def m(name, M):
     M = np.asarray(M, dtype=np.float64)
-    rows = ",\n    ".join("[" + ", ".join(f"{x:.17e}" for x in M[i]) + "]" for i in range(3))
+    # repr(), not f"{x:.17e}". Both round-trip to the same f64, but the
+    # fixed 17-digit form pads every value with trailing noise ("4.124"
+    # became "4.12399999999999989e-01"), which clippy excessive_precision
+    # flags -- 108 warnings from this file alone, enough on its own to keep
+    # the lint gate non-blocking. repr() emits the shortest literal that
+    # round-trips, so the generated file stays bit-identical and lint-clean.
+    # After regenerating, check every literal still parses to the same bits.
+    rows = ",\n    ".join("[" + ", ".join(repr(float(x)) for x in M[i]) + "]"
+                          for i in range(3))
     return f"pub const {name}: [[f64; 3]; 3] = [\n    {rows},\n];\n"
 
 o = ["// AUTO-GENERATED matrices (natural row-major form) + numpy inverses.",

@@ -105,7 +105,7 @@ impl PyTargetWeaver {
                 .map_err(PyValueError::new_err)?;
             self.inner.inner.inner.map_frame_to_key(&key, &frame);
 
-            let count_norm = normalize_count.then(|| val_len as f64);
+            let count_norm = normalize_count.then_some(val_len as f64);
             self.inner.register_metadata(frame.uid, key, val_data, tol_data, k, &norm_mode, band_data, weight, count_norm, integral);
             Ok(())
         })
@@ -242,7 +242,7 @@ impl PyTargetWeaver {
                 self.inner.inner.inner.map_frame_to_key(&key, &frame);
 
                 // Target-level count shared across this target's entries.
-                let count_norm = normalize_count.then(|| a_len as f64);
+                let count_norm = normalize_count.then_some(a_len as f64);
                 self.inner.register_metadata_resolved(frame.uid, key, &val_arr, &tol_arr, k, shared_mode, shared_nf, &band_arr, weight, count_norm, integral);
             }
             Ok(())
@@ -325,8 +325,8 @@ pub fn calculate_merit(
                 };
 
                 // Skip frames whose grid does not overlap the simulated curve.
-                if sim_wl.last().map_or(true, |&l| l < t_wl[0])
-                    || sim_wl.first().zip(t_wl.last()).map_or(true, |(&f, &l)| f > l)
+                if sim_wl.last().is_none_or(|&l| l < t_wl[0])
+                    || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
                 {
                     continue;
                 }

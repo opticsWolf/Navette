@@ -3,6 +3,46 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.6] — The clippy gate is blocking (R2.3a)
+
+CI ran `cargo clippy` from 0.6.0 onward, but with `continue-on-error: true`
+against 267 findings. An advisory gate over a tree that cannot go green is a
+gate nobody reads. The tree is now clean and the step fails the build.
+
+### Changed
+
+- **`cargo clippy --workspace --all-targets -- -D warnings` is a blocking CI
+  step.** 267 findings → 0. Nothing in the diff changes behaviour: the
+  bit-exactness fingerprint (12 seeded random stacks × every `Request` bit,
+  needle gradients, an eigenmode landscape, hashed over the raw f64 bytes)
+  is byte-identical before and after, and was re-checked after each pass.
+- **108 `excessive_precision` findings came from one generated file.**
+  `rust/navette/src/color/matrices.rs` is emitted by
+  `validation/benches/color/gen/gen_matrices.py`, which formatted with
+  `f"{x:.17e}"` — enough digits to name every double, and ~5 more than needed
+  for most of them. The generator now uses `repr(float(x))`, which is the
+  shortest string that round-trips. All 108 literals were verified bit-identical
+  through `struct.pack("<d", ...)` against the previous tree. Fixing only the
+  output would have reintroduced the warnings on the next regeneration.
+- **Remaining lint decisions are crate-level `allow`s with written rationale**,
+  in both `lib.rs` files, rather than scattered per-site suppressions:
+  - `neg_cmp_op_on_partial_ord` — all 15 sites are `!(x > 0.0)`-shaped
+    validators. The negation is what rejects NaN; clippy's suggested
+    `x <= 0.0` would wave NaN through every one of them. Load-bearing.
+  - `too_many_arguments` — the wide kernel signatures are what R6.1 / R6.3
+    exist to restructure. Silenced so the gate can go blocking now.
+  - `needless_range_loop` — flat angle-major index arithmetic
+    (`k = a * num_wavs + w`), where the variable indexes several arrays at
+    different strides.
+  - `type_complexity`, `should_implement_trait` — plan/cache tuples, and
+    inherent `from_str` parsers returning the crate's own `String` error.
+
+### Notes
+
+- `cargo fmt --check` stays advisory (R2.3b): making it blocking requires a
+  tree-wide reformat that rewrites `git blame` for the whole crate, and the
+  plan asks for a style decision before that lands.
+
 ## [0.6.5] — The one shipped example did not run (R4.3)
 
 `examples/spectralweave_example.py` failed on a fresh clone, at line 22 of 24.

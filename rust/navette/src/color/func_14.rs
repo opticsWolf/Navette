@@ -62,8 +62,11 @@ impl PhotometryEngine {
     #[inline]
     fn flux_kernel(&self, spd: &[f64], w_p: f64, w_s: f64, interval: f64) -> f64 {
         let mut total = 0.0;
-        for i in 0..spd.len() {
-            total += spd[i] * (self.vp[i] * w_p + self.vs[i] * w_s);
+        // Explicit fold, not `.sum()`: same left-to-right order either way,
+        // but this one is obviously the order (f64 addition is not
+        // associative, and this kernel is pinned against a reference).
+        for ((&s, &vp), &vs) in spd.iter().zip(&self.vp).zip(&self.vs) {
+            total += s * (vp * w_p + vs * w_s);
         }
         total * interval
     }
@@ -74,7 +77,7 @@ impl PhotometryEngine {
     /// * `spd` – Spectral power distribution (same length as V(λ) curves).
     /// * `vision` – Type of vision (`Photopic`, `Scotopic`, or `Mesopic`).
     /// * `m` – Mesopic adaptation factor (ignored for photopic/scotopic).
-    ///         `m = 1` gives pure photopic, `m = 0` pure scotopic.
+    ///   `m = 1` gives pure photopic, `m = 0` pure scotopic.
     /// * `interval` – Wavelength sampling interval in nanometres.
     ///
     /// # Returns

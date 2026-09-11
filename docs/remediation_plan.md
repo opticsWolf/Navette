@@ -55,7 +55,7 @@ coverage is thin.
 | R2.1 | `build_profile()` probe + bench guard | P0-enabler | benchmarking hygiene | S | S | §5.1.1 |
 | R2.2 | README `--release` + bench UTF-8 | P0-enabler | docs/benches | S | S | §5.1.1, §17 |
 | R2.3 | push/PR CI workflow | **P0-enabler** | gates everything after it | M (fix live warnings first) | M | §7 |
-| R2.3a | clippy clean → blocking gate | P2 | 248 findings in hot code | M (numeric drift) | M–L | §7 |
+| ~~R2.3a~~ | ~~clippy clean → blocking gate~~ | — | **DONE (0.6.6)** | — | — | §7 |
 | R2.3b | rustfmt adoption → blocking gate | P3 | 981 files; style decision first | S (blame churn) | S/L review | §7 |
 | R2.4 | parity tests collected; `sys.exit` → skip | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
 | R2.4a | port `test_core_engine_*` onto `core_engine` | P1 | only whole-engine parity oracles | M | M | §15 |
@@ -344,7 +344,7 @@ and watching it gate.
 
 **Effort.** M.
 
-### R2.3a Clippy clean → make the clippy gate blocking
+### R2.3a Clippy clean → make the clippy gate blocking — DONE (0.6.6)
 
 **Discovered by R2.3 (0.5.6).** `cargo clippy --workspace --all-targets`
 reports **248** findings (217 in `navette`, 31 in `navette-py`), of which
@@ -360,6 +360,36 @@ behavior-neutral; (2) hand-fix or `#[allow(...)]`-with-rationale the rest;
 **Risk.** M — touches hot physics code. Nothing here is a bug fix, so any
 numeric change is a regression by definition.
 **Effort.** M/L.
+
+**CORRECTIONS / NOTES (0.6.6).**
+
+* **267 findings, not 248.** The count in this plan was taken at 0.5.6; six
+  releases of new code landed since. Final state: 0.
+* **108 of them — 40% of the whole backlog — came from one generated file.**
+  `color/matrices.rs` is emitted by `validation/benches/color/gen/gen_matrices.py`
+  with `f"{x:.17e}"`, which names every double but writes ~5 more digits than
+  most of them need. Fixing the *output* alone would have reintroduced all 108
+  on the next regeneration and quietly un-greened a blocking gate, so the
+  generator was changed too (`repr(float(x))` — shortest round-tripping form).
+  All 108 literals verified bit-identical via `struct.pack("<d", ...)` against
+  the pre-change tree.
+* **`neg_cmp_op_on_partial_ord` must never be blanket-rewritten.** All 15 sites
+  are validators shaped `!(x > 0.0)`. The negation is what rejects NaN;
+  clippy's `x <= 0.0` suggestion would wave NaN through every one of them.
+  Allowed crate-wide with that written in, next to the attribute.
+* **Remaining allowances are crate-level, not per-site**, so they read as a
+  short list of decisions in `lib.rs` rather than as noise at 40 call sites:
+  `too_many_arguments` (owned by R6.1 / R6.3), `needless_range_loop` (flat
+  angle-major index arithmetic), `type_complexity`, `should_implement_trait`.
+* **Ground rule 5 held throughout.** The bit-exactness fingerprint
+  `a99e83835e8b44ae3416a715ee94410b6123f0ca62aa4610ef8e37b3ab00f154` (12 seeded
+  random stacks × every `Request` bit + needle gradients + an eigenmode
+  landscape, hashed over raw f64 bytes) was unchanged after every pass, and
+  `cargo clippy --fix` output was reviewed hunk by hunk rather than trusted.
+* **The `--fix` pass is *not* a separate commit per pass as the plan proposed.**
+  Splitting mechanical auto-fixes from their hand-reviewed corrections would
+  have left intermediate commits that do not build or do not pass the
+  fingerprint. It ships as one reviewed change with the gate flip.
 
 ### R2.3b rustfmt adoption → make the fmt gate blocking
 

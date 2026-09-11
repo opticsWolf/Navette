@@ -143,7 +143,7 @@ impl LayerRow {
       return Err("interface_thickness_nm must be >= 0.".to_string());
     }
     match self.layer_type {
-      0 | 1 | 2 => {}
+      0..=2 => {}
       t => return Err(format!("layer_type must be 0, 1 or 2 (got {t}).")),
     }
     Ok(())
@@ -351,18 +351,17 @@ fn layer_from_row(
   prefix: Option<&str>,
 ) -> Result<Layer, String> {
   let code = px(&row.material_code, prefix);
-  if let Some(p) = provider {
-    if !p.contains(&code) {
-      // NOTE: prefixed codes only resolve against prefixed providers;
-      // unprefixed fallthrough mirrors the file-wins rule.
-      let unprefixed = row.material_code.as_str();
-      if !p.contains(unprefixed) {
-        return Err(format!("material code {code:?} not found in provider"));
-      }
-      let mut layer = Layer::film(row.thickness_nm, unprefixed);
-      apply_layer_fields(&mut layer, row)?;
-      return Ok(layer);
+  if let Some(p) = provider
+    && !p.contains(&code) {
+    // NOTE: prefixed codes only resolve against prefixed providers;
+    // unprefixed fallthrough mirrors the file-wins rule.
+    let unprefixed = row.material_code.as_str();
+    if !p.contains(unprefixed) {
+      return Err(format!("material code {code:?} not found in provider"));
     }
+    let mut layer = Layer::film(row.thickness_nm, unprefixed);
+    apply_layer_fields(&mut layer, row)?;
+    return Ok(layer);
   }
   let mut layer = Layer::film(row.thickness_nm, &code);
   apply_layer_fields(&mut layer, row)?;

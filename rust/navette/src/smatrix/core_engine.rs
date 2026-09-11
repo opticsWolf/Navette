@@ -10,6 +10,7 @@
 //!   * whether the complex p-s coherency channel runs (Mode B),
 //!   * which derived observables are computed,
 //!   * whether the cross-wavelength dispersion post-pass runs.
+//!
 //! `calc_s` / `calc_p` are NOT inputs; they are resolved from the request.
 
 use num_complex::Complex64;

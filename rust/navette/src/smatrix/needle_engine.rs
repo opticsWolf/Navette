@@ -23,6 +23,12 @@
 //!   ∂F/∂δ(z) = Σ_k 2·w_k·(GDD_k − GDD_t_k)·dGDD[k][z]
 
 
+// clippy::doc_overindented_list_items: the request-bit list above is a
+// hand-aligned table (constant / description / parenthetical). Clippy's
+// two-space continuation rule would break the columns, and the columns
+// are what make the block readable in source -- which is where it is read.
+#![allow(clippy::doc_overindented_list_items)]
+
 /// Speed of light in nm/fs (group-delay conversions).
 pub const C_NM_PER_FS: f64 = 299.792458;
 

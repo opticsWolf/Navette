@@ -261,7 +261,7 @@ impl ConstraintKind {
 ///
 /// Linear-mode folding note: `(nf·(sim − t)/tol)² ≡ ((sim − t)/(tol/nf))²`,
 /// so purely-linear specs may equivalently store Linear + original targets
-/// + eff_tol. We keep the spectralweave representation verbatim instead so
+/// and eff_tol. We keep the spectralweave representation verbatim instead so
 /// the parity test compares like-for-like.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SimTransform {
@@ -625,10 +625,9 @@ impl MeritSpec {
                 "weight must be finite and >= 0 (got {})", target.weight
             ));
         }
-        if let Some(n) = target.count_norm {
-            if !n.is_finite() || n <= 0.0 {
-                return Err(format!("count_norm must be finite and > 0 (got {n})"));
-            }
+        if let Some(n) = target.count_norm
+            && (!n.is_finite() || n <= 0.0) {
+            return Err(format!("count_norm must be finite and > 0 (got {n})"));
         }
         // Integral targets already are means — a count divisor would
         // double-dilute silently.
@@ -775,8 +774,8 @@ impl MeritSpec {
                 continue;
             }
             // Skip frames whose grid does not overlap the simulated curve.
-            if sim_wl.last().map_or(true, |&l| l < t_wl[0])
-                || sim_wl.first().zip(t_wl.last()).map_or(true, |(&f, &l)| f > l)
+            if sim_wl.last().is_none_or(|&l| l < t_wl[0])
+                || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
             {
                 continue;
             }
@@ -991,7 +990,7 @@ pub fn rotate_rows(
   rows: &mut [num_complex::Complex64],
   rot: &[num_complex::Complex64],
 ) -> Result<(), String> {
-  if rot.is_empty() || rows.len() % rot.len() != 0 {
+  if rot.is_empty() || !rows.len().is_multiple_of(rot.len()) {
     return Err(format!(
       "rotate_rows: {} entries not a multiple of {} wavelengths.",
       rows.len(),

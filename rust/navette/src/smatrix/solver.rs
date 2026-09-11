@@ -234,9 +234,9 @@ impl Solver {
     let nw = wavelengths.len();
     let full = if indices.len() == n_layers {
       let mut v = Vec::with_capacity(n_layers * nw);
-      for l in 0..n_layers {
+      for &n in indices.iter().take(n_layers) {
         for _ in 0..nw {
-          v.push(indices[l]);
+          v.push(n);
         }
       }
       v
@@ -849,9 +849,9 @@ pub fn needle_gradient(
                 } else if arr.len() == total_points {
                     Ok(Some(arr.to_vec()))
                 } else {
-                    Err(String::from(format!(
+                    Err(format!(
                         "{name} must be a scalar or have num_angles*num_wavs entries (angle-major)",
-                    )))
+                    ))
                 }
             }
             None => Ok(None),
@@ -918,10 +918,9 @@ pub fn needle_gradient(
         ));
     }
     for (name, v) in [("grads_r", &grd_r), ("grads_t", &grd_t)] {
-        if let Some(a) = v {
-            if let Some(i) = a.iter().position(|x| !x.is_finite()) {
-                return Err(format!("{name}[{i}] is not finite ({})", a[i]));
-            }
+        if let Some(a) = v
+            && let Some(i) = a.iter().position(|x| !x.is_finite()) {
+            return Err(format!("{name}[{i}] is not finite ({})", a[i]));
         }
     }
 
@@ -1238,92 +1237,92 @@ pub fn needle_gradient(
 
     let pol_suffix = |pi: usize| if pi == 0 { "s" } else { "p" };
     if want_p {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_{}", pol_suffix(pi)), p, pi);
             }
         }
     }
     if want_pt {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_T_{}", pol_suffix(pi)), pt, pi);
             }
         }
     }
     if want_pa {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_A_{}", pol_suffix(pi)), pa, pi);
             }
         }
     }
     if want_pphi {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_PHI_{}", pol_suffix(pi)), pphi, pi);
             }
         }
     }
     if want_pmb {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("Pmb_{}", pol_suffix(pi)), pmb, pi);
             }
         }
     }
     if want_pmb_t {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("Pmb_T_{}", pol_suffix(pi)), pmb_t, pi);
             }
         }
     }
     if want_pmb_a {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("Pmb_A_{}", pol_suffix(pi)), pmb_a, pi);
             }
         }
     }
     if want_ptb {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_TB_{}", pol_suffix(pi)), ptb, pi);
             }
         }
     }
     if want_prb {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_RB_{}", pol_suffix(pi)), prb, pi);
             }
         }
     }
     if want_pab {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("P_AB_{}", pol_suffix(pi)), pab, pi);
             }
         }
     }
     if want_pmb_tb {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("Pmb_TB_{}", pol_suffix(pi)), pmb_tb, pi);
             }
         }
     }
     if want_pmb_rb {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("Pmb_RB_{}", pol_suffix(pi)), pmb_rb, pi);
             }
         }
     }
     if want_pmb_ab {
-        for pi in 0..2 {
-            if pol_on[pi] {
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if on {
                 emit!(format!("Pmb_AB_{}", pol_suffix(pi)), pmb_ab, pi);
             }
         }
@@ -1656,11 +1655,9 @@ pub fn nelder_refine(
         ]
     };
 
-    let mut simplex = vec![
-        clamp([x0.0, x0.1]),
+    let mut simplex = [clamp([x0.0, x0.1]),
         clamp([x0.0 + step, x0.1]),
-        clamp([x0.0, x0.1 + step * 0.1]),
-    ];
+        clamp([x0.0, x0.1 + step * 0.1])];
     let mut values: Vec<f64> = simplex
         .iter()
         .map(|x| char_func_xy(x, n_slice, &inv_n, d_slice, rt_slice, rv_slice, lam, pol))
@@ -1848,7 +1845,7 @@ pub fn field_prof(
     s_left.push((Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0), Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0))); // identity before ambient
 
     for i in 0..n_layers-1 {
-        let mut sg = s_left.last().unwrap().clone();
+        let mut sg = *s_left.last().unwrap();
         if i > 0 && layers[i].thickness > 1e-12 {
             let phi = prop_phase(i);
             sg = redheffer_product_complex_field_inner(

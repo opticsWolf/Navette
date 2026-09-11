@@ -11,14 +11,14 @@
 #   * tools/check_cie_sync.py
 #   * dependency floors               (R4.1: a floor with no wheel is fiction)
 #   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
+#   * cargo clippy -D warnings        (R2.3a: zero findings as of 0.6.6)
 #
 # What is ADVISORY (continue-on-error) and why:
-#   * cargo clippy  — 248 findings on the current tree
 #   * cargo fmt     — 981 files differ from rustfmt defaults
-# Both are tracked as their own items. Turning either blocking means landing
-# a large mechanical diff first; doing it inside this commit would bury the
-# gate itself. A gate that cannot go green teaches people to ignore CI, so
-# these report without failing until that work lands.
+# Tracked as R2.3b. Turning it blocking means landing a tree-wide reformat
+# first, which rewrites `git blame` for the whole crate; doing that inside
+# this commit would bury the gate itself. A gate that cannot go green teaches
+# people to ignore CI, so it reports without failing until that work lands.
 #
 # The `dependency-floors` job was advisory until R4.1 (0.6.3) fixed the floors
 # it was failing on. It is blocking now.
@@ -62,9 +62,8 @@ jobs:
           RUSTFLAGS: "-D warnings"
         run: cargo check --workspace --all-targets
 
-      - name: clippy (advisory)
-        continue-on-error: true
-        run: cargo clippy --workspace --all-targets
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: rustfmt (advisory)
         continue-on-error: true

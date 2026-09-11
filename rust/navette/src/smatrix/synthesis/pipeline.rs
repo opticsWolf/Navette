@@ -14,6 +14,12 @@
 //! The loop ends with a final optimize + clamp sweep + evaluation.
 //! User abort = callback returning Err (the KeyboardInterrupt analog).
 
+// clippy::doc_overindented_list_items: the list above is a hand-aligned
+// table (name / description / parenthetical). Clippy's two-space
+// continuation rule would break the columns, and the columns are what
+// make the block readable in source -- which is where it is read.
+#![allow(clippy::doc_overindented_list_items)]
+
 use crate::smatrix::synthesis::cleanup::{cleanup_design, CleanupResult};
 use crate::smatrix::synthesis::config::{PipelineConfig, TerminationReason};
 use crate::smatrix::synthesis::context::DesignContext;

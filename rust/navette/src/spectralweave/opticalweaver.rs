@@ -214,13 +214,12 @@ impl SpectralDataFrame {
         value: SpectralData,
         wavelength: Option<&[f64]>,
     ) -> Result<bool, String> {
-        if let Some(wl) = wavelength {
-            if !wl_bits_eq(&self.wavelength, wl) {
-                return Err(format!(
-                    "SpectralDataFrame(uid={}): wavelength grid conflict.",
-                    self.uid
-                ));
-            }
+        if let Some(wl) = wavelength
+            && !wl_bits_eq(&self.wavelength, wl) {
+            return Err(format!(
+                "SpectralDataFrame(uid={}): wavelength grid conflict.",
+                self.uid
+            ));
         }
         if value.len() != self.wavelength.len() {
             return Err(format!(
@@ -250,6 +249,12 @@ impl SpectralDataFrame {
     /// Number of curves stored in this frame.
     pub fn len(&self) -> usize {
         self.data.read().len()
+    }
+
+    /// Whether the frame holds no curves. A frame can legitimately be empty:
+    /// it is created for a wavelength grid and populated afterwards.
+    pub fn is_empty(&self) -> bool {
+        self.data.read().is_empty()
     }
 
     /// Borrowed grid shared by all curves in this frame.
@@ -405,16 +410,14 @@ impl OpticalCollection {
     /// Returns the frame plus whether it is newly created.
     fn get_or_create_frame(&self, wl_arr: &[f64]) -> Result<(Arc<SpectralDataFrame>, bool), String> {
         let sig = wl_signature(wl_arr);
-        if let Some(frm) = self.wl_fingerprints.read().get(&sig) {
-            if wl_bits_eq(frm.wavelength(), wl_arr) {
-                return Ok((frm.clone(), false));
-            }
+        if let Some(frm) = self.wl_fingerprints.read().get(&sig)
+            && wl_bits_eq(frm.wavelength(), wl_arr) {
+            return Ok((frm.clone(), false));
         }
         let mut fp = self.wl_fingerprints.write();
-        if let Some(frm) = fp.get(&sig) {
-            if wl_bits_eq(frm.wavelength(), wl_arr) {
-                return Ok((frm.clone(), false));
-            }
+        if let Some(frm) = fp.get(&sig)
+            && wl_bits_eq(frm.wavelength(), wl_arr) {
+            return Ok((frm.clone(), false));
         }
         let new_frame = Arc::new(SpectralDataFrame::new(wl_arr)?);
         self.frames.write().push(new_frame.clone());
@@ -642,10 +645,9 @@ impl OpticalWeaver {
         let current_gen = self.generation.load(Ordering::SeqCst);
         {
             let mut cache = self.distribution_cache.write();
-            if let Some((cached_gen, cached_wl, plan)) = cache.get(&sig) {
-                if *cached_gen == current_gen && wl_bits_eq(cached_wl, full_wavelength) {
-                    return Ok(plan.clone());
-                }
+            if let Some((cached_gen, cached_wl, plan)) = cache.get(&sig)
+                && *cached_gen == current_gen && wl_bits_eq(cached_wl, full_wavelength) {
+                return Ok(plan.clone());
             }
             cache.pop(&sig);
         }

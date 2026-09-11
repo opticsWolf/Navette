@@ -7,6 +7,7 @@
 //!   1. Plateau      — |normalized regression gradient| < tol  OR  grad > 0
 //!   2. Oscillation  — sign-alternation fraction of consecutive deltas ≥ ratio
 //!   3. Divergence   — ≥ N consecutive MF increases (>= comparisons)
+//!
 //! Check order: divergence → oscillation → plateau (most urgent first).
 
 /// Why the trajectory is stuck — reuses `TerminationReason` stagnation

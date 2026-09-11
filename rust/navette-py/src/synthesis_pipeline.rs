@@ -807,7 +807,7 @@ impl PySmatrixContext {
                 move || inner.simulate(st)
             })
             .map_err(PyValueError::new_err)?;
-        Ok(Py::new(py, PySimCurves::wrap(sim))?)
+        Py::new(py, PySimCurves::wrap(sim))
     }
 
     /// Merit of the stack (missing-curve penalty 1e6).

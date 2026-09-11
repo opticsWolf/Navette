@@ -1114,10 +1114,10 @@ fn load_structure_section(
     prefix.as_deref(),
   ))?;
   let shared: SharedStructure = std::rc::Rc::new(std::cell::RefCell::new(st));
-  Ok(Py::new(
+  Py::new(
     py,
     PyStructure { inner: shared, materials: None },
-  )?)
+  )
 }
 
 /// Named structures section -> `{label: Structure}` (prefix-aware).
@@ -1167,7 +1167,7 @@ fn load_architect_section(
     .collect();
   let arch =
     ver(navette::config::load_architect_shared(&v, &map, prefix.as_deref()))?;
-  Ok(Py::new(py, PyArchitect { inner: arch, materials: None })?)
+  Py::new(py, PyArchitect { inner: arch, materials: None })
 }
 
 /// Load a program document (JSON text) into native objects (thin over
@@ -2160,6 +2160,13 @@ fn apply_error_fn(
 }
 
 /// Seed-selected RNG for the per-channel draw helpers (`None` = thread RNG).
+///
+/// `StdRng` carries ChaCha's ~136-byte state and `ThreadRng` is a handle, so
+/// the variants differ in size (clippy::large_enum_variant). Boxing the big
+/// one would move the state behind a pointer that every single `next_u64` --
+/// the hottest call in the expansion draw -- then has to chase, to save a
+/// stack slot on a value constructed once per call. Not worth it.
+#[allow(clippy::large_enum_variant)]
 enum SeedRng {
   Seeded(rand::rngs::StdRng),
   Thread(rand::rngs::ThreadRng),

@@ -342,7 +342,7 @@ mod tests {
     assert!(parse_cie_tables("not json").unwrap_err().contains("invalid JSON"));
     assert!(parse_cie_tables("{}").unwrap_err().contains("missing 'data'"));
     assert!(parse_cie_tables("{\"data\": {}}").unwrap_err().contains("empty"));
-    let no_vals = doc(&"\"a\": {\"unit\": \"nm\"}".to_string());
+    let no_vals = doc("\"a\": {\"unit\": \"nm\"}");
     assert!(parse_cie_tables(&no_vals).unwrap_err().contains("'a'"));
     let empty = doc(&col("a", ""));
     assert!(parse_cie_tables(&empty).unwrap_err().contains("'a'"));

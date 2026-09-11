@@ -13,6 +13,12 @@ pub mod expansion;
 pub mod layer;
 pub mod providers;
 pub mod specs;
+// `structure::structure` (clippy::module_inception): the crate's public path
+// is `navette::structure::structure::Structure`, and every Python binding,
+// doc example and saved program document names it. Renaming the inner module
+// is a path break for no behaviour gain -- R6.6's rename batch is where a
+// change like that belongs, if it is worth making at all.
+#[allow(clippy::module_inception)]
 pub mod structure;
 pub mod validation;
 pub mod version;

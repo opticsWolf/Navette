@@ -109,17 +109,16 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 
     for cycle in 0..cfg.max_needles {
         // Refresh the fold against the live operating point.
-        if cfg.refold_per_cycle {
-            if let Ok(sim) = ctx.simulate(stack) {
-                if let Ok(f) = build_needle_targets(
-                    &spectral.spec,
-                    &spectral.angles_deg,
-                    &spectral.wavls,
-                    Some(&sim),
-                ) {
-                    fold = f;
-                }
-            }
+        if cfg.refold_per_cycle
+            && let Ok(sim) = ctx.simulate(stack)
+            && let Ok(f) = build_needle_targets(
+                &spectral.spec,
+                &spectral.angles_deg,
+                &spectral.wavls,
+                Some(&sim),
+            )
+        {
+            fold = f;
         }
         // 1. Build candidate sites restricted to films whose material has a
         //    contrast entry (Python skips layers without a mapping) AND

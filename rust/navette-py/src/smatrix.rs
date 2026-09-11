@@ -397,7 +397,7 @@ fn solver_energy_conservation<'py>(
     )
     .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let arr = PyArray1::from_vec(py, e);
-    Ok(arr.reshape([shape[0], shape[1]])?)
+    arr.reshape([shape[0], shape[1]])
 }
 
 // ---- core_engine wrapper (verbatim from core) ----

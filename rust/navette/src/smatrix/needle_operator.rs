@@ -794,10 +794,9 @@ pub fn locate_hosts_multiblock(
                  needles inside spacers are not supported"
             ));
         }
-        if let Some(mask) = host_mask {
-            if !mask.get(j).copied().unwrap_or(false) {
-                continue;
-            }
+        if let Some(mask) = host_mask
+            && !mask.get(j).copied().unwrap_or(false) {
+            continue;
         }
         let bi = blocks
             .iter()

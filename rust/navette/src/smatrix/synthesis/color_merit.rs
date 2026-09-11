@@ -230,10 +230,9 @@ impl ColorDemand {
     if !weight.is_finite() || weight < 0.0 {
       return Err(format!("color: weight must be finite and >= 0, got {weight}."));
     }
-    if let ColorReference::Triple(t) = &reference {
-      if t.iter().any(|v| !v.is_finite()) {
-        return Err("color: non-finite reference triple.".to_string());
-      }
+    if let ColorReference::Triple(t) = &reference
+      && t.iter().any(|v| !v.is_finite()) {
+      return Err("color: non-finite reference triple.".to_string());
     }
     if !yi_cx.is_finite() || !yi_cz.is_finite() {
       return Err("color: non-finite E313 coefficients.".to_string());
@@ -349,10 +348,9 @@ fn xyz_workspace(
   for (i, &w) in sim_wl.iter().enumerate() {
     // Sample window: points outside [lo, hi] never enter the integral
     // (inclusive bounds; the white/locus above already used full range).
-    if let Some([lo, hi]) = wr {
-      if w < lo || w > hi {
-        continue;
-      }
+    if let Some([lo, hi]) = wr
+      && (w < lo || w > hi) {
+      continue;
     }
     let e = resample(illum_wl, illum, w);
     let x = resample(cmf_wl, &cmf_c[0], w);
@@ -551,12 +549,12 @@ fn dom_wl_purity(demand: &ColorDemand, xyz: &[f64; 3]) -> Result<(f64, f64), Str
     }
     let lam = la + sg * (lb - la);
     // Forward: smallest t past the sample (1-eps keeps monochrome edge).
-    if t > 1.0 - 1e-9 && forward.map_or(true, |(bt, _)| t < bt) {
+    if t > 1.0 - 1e-9 && forward.is_none_or(|(bt, _)| t < bt) {
       forward = Some((t, lam));
     }
     // Backward ray: u = -t form, smallest positive u.
     let u = -t;
-    if u > 1e-9 && backward.map_or(true, |(bu, _)| u < bu) {
+    if u > 1e-9 && backward.is_none_or(|(bu, _)| u < bu) {
       backward = Some((u, lam));
     }
   }
@@ -876,7 +874,7 @@ mod tests {
     // Empty overlap / single point / non-finite.
     let d = toy_demand();
     let far: Vec<f64> = (0..8).map(|i| 1000.0 + 10.0 * i as f64).collect();
-    assert!(xyz_of_spectrum(&vec![0.5; 8], &far, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None)
+    assert!(xyz_of_spectrum(&[0.5; 8], &far, &d.cmf, &d.cmf_wl, &d.illuminant, &d.illum_wl, None)
       .unwrap_err()
       .contains("no overlap"));
     let mut bad = vec![0.5; 8];
@@ -1252,7 +1250,7 @@ mod tests {
     );
     let (wl, _, _, _) = toy();
     assert!(
-      eval_color(&d, &vec![0.5; 8], &wl)
+      eval_color(&d, &[0.5; 8], &wl)
         .unwrap_err()
         .contains("[1000, 1010]")
     );
