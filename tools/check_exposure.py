@@ -52,7 +52,8 @@ ALLOWLIST = {
     # breaking. (via Solver::solve, which reads the request bits)
     "max_disp_order",
     # optimizer internals (via scan/refine bindings)
-    "char_func", "char_func_xy", "reflection_coefficient_helper",
+    # n_eff_bound (R3.3) is the minimizer's box; solver::nelder_refine calls it.
+    "char_func", "char_func_xy", "reflection_coefficient_helper", "n_eff_bound",
     # pipeline stages (via NeedlePipeline::run / run_design)
     "run_needle_cycles", "run_needle_pass", "needle_pass_scan",
     "build_scan_sites", "cleanup_design", "remove_thin_layers",

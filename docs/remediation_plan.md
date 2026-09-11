@@ -20,8 +20,8 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (612 passed +
-     2 skipped at 0.6.1, parity included; `PYTHONIOENCODING=utf-8` no longer
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (631 passed +
+     2 skipped at 0.6.2, parity included; `PYTHONIOENCODING=utf-8` no longer
      needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
@@ -631,7 +631,7 @@ z-range rows (z = 1000 on a 400 nm stack; z = −1) asserting the precise
 * Also closed here (beyond the plan's scope, same check, same place): a
   non-finite `needle_n_per_wav` entry, which used to NaN the whole gradient.
 
-### R3.3 Eigenmode `char_func` upper bound + `refine_mode` no-mode contract
+### R3.3 Eigenmode `char_func` upper bound + `refine_mode` no-mode contract — DONE (0.6.2)
 
 **Review:** §16 (`optimizer.rs` `char_func` guards the lower edge only;
 unbounded Nelder–Mead returned n_eff = −1.7e8 + 7.4e6j with val ≈ 1e-217 for
@@ -680,6 +680,34 @@ high-index substrates understand the rejection region.
   - landscape s-pol stays flat (min ≈ 0.99).
 
 **Effort.** M.
+
+**CORRECTIONS (0.6.2).**
+
+* **The pinned SPP numbers are not reproducible.** The plan asks for
+  `n_eff = 1.0459458 + 0.0015949j` with `val < 1e-10` on "50 nm metal film
+  (eps = -12+1j) between air and glass, p-pol" — but does not state the
+  wavelength. At 632.8 nm this geometry has *two* landscape minima. The one
+  near 1.046 refines to `1.0471183 + 0j` with `val = 1.8e-6`: a shallow
+  resonance, not a pole — `Im(n_eff) -> 0` on a lossy metal, and it lies below
+  the substrate index. Worse, `1.8e-6` is *above* the threshold the plan
+  proposes, so pinning it would have made the plan's own example fail the
+  plan's own default. The genuine pole is the glass-side plasmon at
+  `1.7139417 + 0.0226069j`, `val = 1e-17` — eleven orders below the threshold,
+  and its field profile peaks at the metal/glass interface as a bound surface
+  mode must. That is what the test pins.
+* **The box went into `char_func_xy`, not `char_func`.** `char_func` is shared
+  with the landscape scanner, over a range the *user* chooses. Guarding it
+  there would paint `1e30` across any part of a requested scan lying outside
+  the box — corrupting a diagnostic the caller explicitly asked for. The
+  minimizer picks its own points and is the thing that needs walls.
+  `test_the_landscape_is_not_walled_off_outside_the_box` pins the distinction.
+* **Step 3 was already true and is now tested**: `find_eigenmodes` returns
+  `[]` for s-polarization on this stack. The documented workflow never
+  produced the garbage; only the manual seed did.
+* The s-polarized landscape minimum is `1.0000000000000004`, not "≈ 0.99".
+* Boxing alone would not have been enough. Confined, the non-mode settles on
+  the boundary with `val ~ 1e-3` — the residual contract is what turns that
+  into an error instead of a number.
 
 ---
 

@@ -3,6 +3,65 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.2] — Eigenmode search is boxed, and says when it found nothing (R3.3)
+
+`char_func` is `|1/r(n_eff)|^2`, so a pole drives it to zero — but so does
+letting `|n_eff|` run away, and the search was unbounded. Seeded on a stack
+with no s-polarized mode, it reached `n_eff = -2.0e8 + 8.4e6j` and reported a
+characteristic value of `1.3e-217`: twelve orders *better* than the real
+surface-plasmon pole it never found, for a trial index two hundred million
+times the largest index in the stack. Nothing said anything.
+
+### Fixed
+
+- **The minimizer is confined to a physical box**, `3 x max |n|` over the
+  stack. Every guided mode satisfies `min|n| <= |n_eff| <= max|n|`, so 3x is
+  generous even for leaky and substrate-side modes. Candidates are *projected*
+  into the box rather than rejected, so Nelder-Mead stays well-defined and
+  slides along the boundary instead of reflecting off an invisible wall.
+- **`refine_mode` refuses to call something a mode when the characteristic
+  value says otherwise**: new `max_residual` kwarg, default `1e-6`, raising
+  `ValueError` with the settled `n_eff`, the value, and what to do instead.
+  Pass `max_residual=None` for the old unconditional behaviour. The margin is
+  not tight — on the pinned SPP a real pole reaches `1e-17`, eleven orders
+  below the threshold, while the boxed non-mode settles around `1e-3`.
+- `char_func` now reports a non-finite `r` as `1e30` rather than propagating
+  NaN into `find_minima`, whose comparisons are undefined on NaN.
+
+### Changed
+
+- **The box is in `char_func_xy`, not `char_func`.** The plan put it in the
+  shared `char_func`, which the landscape scanner also calls — that would
+  paint `1e30` across any part of a user-requested scan range lying outside
+  the box, corrupting a diagnostic the caller explicitly asked for at the
+  range they asked for it. The minimizer picks its own points and needs walls;
+  the scanner is already bounded by its caller. A test pins the distinction.
+- `find_eigenmodes` is untouched and does **not** go through the residual
+  contract: its seeds come from a bounded landscape scan, which is what makes
+  them seeds. On this stack it correctly returns `[]` for s-polarization — the
+  documented workflow was never the broken one.
+
+### Added
+
+- `validation/smoke/test_eigenmodes.py` — 19 tests. Nothing pinned the
+  eigenmode path before, which is why the runaway survived a full review
+  cycle. Covers the SPP from three seeds, the field profile peaking at the
+  metal/glass interface (the physics check a characteristic value cannot
+  give you), the runaway from five seeds including two already outside the
+  box, the flat s-polarized landscape, the threshold behaviour, and the
+  landscape *not* being walled off. Removing the box fails exactly seven of
+  them, including `DID NOT RAISE` on the original runaway seed.
+
+### Known gaps
+
+- The plan pinned the SPP at `n_eff = 1.0459458 + 0.0015949j, val < 1e-10`.
+  That is not reproducible from the stack as described (the wavelength is not
+  stated), and the nearby feature this code converges to — `1.0471183 + 0j`,
+  val `1.8e-6` — is a shallow resonance, not a pole: `Im(n_eff) -> 0` on a
+  lossy metal, and it sits below the substrate index. The genuine pole on this
+  geometry is the glass-side plasmon at `1.7139417 + 0.0226069j`, val `1e-17`,
+  and that is what is pinned. See the plan's R3.3 notes.
+
 ## [0.6.1] — Needle depth is range-checked in release builds (R3.2)
 
 `needle_slopes4_ddz` guarded its host-layer invariant with `debug_assert!`,

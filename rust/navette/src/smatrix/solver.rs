@@ -13,7 +13,7 @@ use rayon::prelude::*;
 
 use super::core_engine::*;
 use super::needle_engine::*;
-use super::optimizer::{char_func, char_func_xy};
+use super::optimizer::{char_func, char_func_xy, n_eff_bound};
 use super::optics_core::{nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner};
 use super::needle_operator::*;
 use super::optics_core::C_NM_PER_FS;
@@ -1571,10 +1571,23 @@ pub fn nelder_refine(
     // Reciprocals computed once and reused across every simplex evaluation.
     let inv_n: Vec<Complex64> = n_slice.iter().map(|n| n.recip()).collect();
 
+    // R3.3: project every candidate into the physical box instead of letting
+    // the simplex leave it. `char_func_xy` already reports 1e30 outside, but a
+    // rejection alone leaves Nelder-Mead reflecting against an infinite wall
+    // it cannot see past; projection keeps the search well-defined and simply
+    // slides along the boundary. Inert for any seed with a real mode nearby.
+    let bound = n_eff_bound(n_slice);
+    let clamp = |p: [f64; 2]| -> [f64; 2] {
+        [
+            if p[0].is_finite() { p[0].clamp(-bound, bound) } else { 0.0 },
+            if p[1].is_finite() { p[1].clamp(-bound, bound) } else { 0.0 },
+        ]
+    };
+
     let mut simplex = vec![
-        [x0.0, x0.1],
-        [x0.0 + step, x0.1],
-        [x0.0, x0.1 + step * 0.1],
+        clamp([x0.0, x0.1]),
+        clamp([x0.0 + step, x0.1]),
+        clamp([x0.0, x0.1 + step * 0.1]),
     ];
     let mut values: Vec<f64> = simplex
         .iter()
@@ -1596,17 +1609,17 @@ pub fn nelder_refine(
             (simplex[best][0] + simplex[good][0]) / 2.0,
             (simplex[best][1] + simplex[good][1]) / 2.0,
         ];
-        let reflected = [
+        let reflected = clamp([
             centroid[0] + alpha * (centroid[0] - simplex[worst][0]),
             centroid[1] + alpha * (centroid[1] - simplex[worst][1]),
-        ];
+        ]);
         let f_ref = char_func_xy(&reflected, n_slice, &inv_n, d_slice, rt_slice, rv_slice, lam, pol);
 
         if f_ref < values[best] {
-            let expanded = [
+            let expanded = clamp([
                 centroid[0] + gamma * (reflected[0] - centroid[0]),
                 centroid[1] + gamma * (reflected[1] - centroid[1]),
-            ];
+            ]);
             let f_exp = char_func_xy(&expanded, n_slice, &inv_n, d_slice, rt_slice, rv_slice, lam, pol);
             if f_exp < f_ref {
                 simplex[worst] = expanded;
@@ -1619,10 +1632,10 @@ pub fn nelder_refine(
             simplex[worst] = reflected;
             values[worst] = f_ref;
         } else {
-            let contracted = [
+            let contracted = clamp([
                 centroid[0] + rho * (simplex[worst][0] - centroid[0]),
                 centroid[1] + rho * (simplex[worst][1] - centroid[1]),
-            ];
+            ]);
             let f_con = char_func_xy(&contracted, n_slice, &inv_n, d_slice, rt_slice, rv_slice, lam, pol);
             if f_con < values[worst] {
                 simplex[worst] = contracted;

@@ -617,10 +617,37 @@ class ScatterMatrix:
         step: float = 1e-3,
         tol: float = 1e-9,
         max_iter: int = 200,
+        max_residual: Optional[float] = 1e-6,
     ) -> Tuple[complex, float]:
         """Nelder-Mead refine a single complex eigenmode guess.
 
-        Returns ``(n_eff, characteristic_value)``.
+        Returns ``(n_eff, characteristic_value)``. The characteristic value is
+        :math:`|1/r(n_{eff})|^2`, so a true pole drives it to ~0; on the
+        pinned surface-plasmon stack a converged mode reaches ``1e-24``.
+
+        Parameters
+        ----------
+        max_residual : float or None, optional
+            Refuse to return a "mode" whose characteristic value exceeds this
+            (default ``1e-6``); pass ``None`` to get the raw result back
+            whatever it is.
+
+            The default is strict because the failure it guards is not a near
+            miss. Seeded where no mode exists, the unbounded minimizer used to
+            run off to ``n_eff = -2.0e8 + 8.4e6j`` and report a characteristic
+            value of ``1.3e-217`` -- a *more* confident answer than any real
+            mode produces, for a trial index two hundred million times the
+            highest index in the stack. The search is boxed now (R3.3), so the
+            runaway is gone; what is left is an honest "no mode here", and
+            this turns that into an exception rather than a plausible number.
+
+            ``find_eigenmodes`` does not go through this check: its seeds come
+            from a bounded landscape scan, which is what makes them seeds.
+
+        Raises
+        ------
+        ValueError
+            If the refined characteristic value exceeds ``max_residual``.
         """
         n_eff, val = self._native.refine_mode(
             complex(guess),
@@ -629,7 +656,17 @@ class ScatterMatrix:
             wav_index,
             float(step), float(tol), int(max_iter),
         )
-        return complex(n_eff), float(val)
+        n_eff, val = complex(n_eff), float(val)
+        if max_residual is not None and not (val <= float(max_residual)):
+            raise ValueError(
+                f"no eigenmode near seed {guess}: the search settled at "
+                f"n_eff = {n_eff} with characteristic value {val:.3e}, above "
+                f"max_residual = {float(max_residual):.3e}. Either there is no "
+                f"mode of this polarization near the seed, or the seed is too "
+                f"far from it -- scan with `eigenmode_landscape` and seed from "
+                f"a local minimum. Pass max_residual=None to accept any result."
+            )
+        return n_eff, val
 
     def find_eigenmodes(
         self,
