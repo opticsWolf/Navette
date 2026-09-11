@@ -3,6 +3,81 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.14] — `core_engine` was paying for its own construction (R5.3)
+
+R2.4a timed the Rust engine at 0.5–0.65× the numba kernel it replaced and the
+plan put the blame on the emit path — a `Vec<OpticalState>` walked once per
+requested channel on the way out. The profile says otherwise. At 20 000 points
+the emit is 0.01–0.25 ms of a 4.3–4.8 ms call; **`Solver::new` is 2.2–2.5 ms of
+it**, and 1.77–2.24 ms of *that* is building the index cache as a
+`Vec<Vec<Complex64>>` — roughly 40 000 heap allocations per call, on a path
+whose callers construct a fresh solver for every evaluation.
+
+### Changed
+
+- **The index cache is one flat wav-major `Vec<Complex64>`** (stride
+  `n_layers`) instead of a `Vec` of per-wavelength `Vec`s, and so is its
+  reciprocal. Same numbers, same order, two allocations instead of 40 000.
+- **`Solver::from_wav_major_flat`** — a second constructor that takes the
+  interleaved `[re, im]` buffer the Python boundary already holds. `core_engine`
+  was transposing that into layer-major so `Solver::new` could transpose it
+  straight back; both passes are gone. `new` keeps its layer-major signature and
+  its behaviour.
+- **`flat_cache` is built on first use** (`OnceLock`), not in the constructor.
+  Only `needle_gradient` reads it; every ordinary solve was paying for it.
+- **The emit takes its `Solution` by value.** `PyArray::from_vec` moves, so
+  borrowing meant cloning every channel — one extra full copy of the result.
+- **Both parity oracles and the new scaling bench pause between engines.** See
+  Known: the 0.5–0.65× figure was partly a measurement artefact.
+
+### Added
+
+- `validation/benches/smatrix/bench_core_engine_scaling.py` — the ratio across
+  the grid (500 → 60 000 points) at two request breadths, which is what the
+  single-size speed line in the parity scripts could not show.
+- Four solver tests (the two constructors agree bit-for-bit on a dispersive
+  stack; a mis-sized flat cache is refused; the flat constructor validates what
+  `new` validates; the serial and parallel reciprocal paths agree across the
+  threshold) and two Python tests that a wrong-length index cache raises instead
+  of panicking through the binding.
+
+Measured with `bench_core_engine_scaling.py`, 6 layers, 1 angle, median of 25:
+
+| points | photometry before → after | | rigorous before → after | |
+|---:|---:|---|---:|---|
+| 500 | 0.254 → 0.183 ms | 1.39× | 0.324 → 0.230 ms | 1.41× |
+| 2 000 | 0.598 → 0.364 ms | 1.64× | 0.718 → 0.440 ms | 1.63× |
+| 5 000 | 1.233 → 0.592 ms | 2.08× | 1.474 → 0.769 ms | 1.92× |
+| 20 000 | 4.149 → 1.539 ms | 2.70× | 5.023 → 2.387 ms | 2.10× |
+| 60 000 | 12.63 → 4.229 ms | 2.99× | 15.74 → 6.977 ms | 2.26× |
+
+Against the numba kernel the same bench now reports roughly 0.3–0.5× at 500
+points, 0.6–0.8× at 5 000, and 0.8–1.2× at 20 000–60 000 — the rewrite passes
+the kernel it replaced on large grids and is still behind on small ones, where
+~150 µs of rayon dispatch is most of the call.
+
+### Known
+
+- **numba's default threading layer contaminated the original ratio.** Its
+  workers spin-wait after a call returns, so timing the two engines back to back
+  charges whichever runs second. The same Rust call at 20 000 points measures
+  1.52 ms on its own, 2.00 ms immediately after a block of numba calls, and
+  1.58 ms after a one-second pause. Forcing numba onto the non-spinning
+  `workqueue` layer also removes the effect, but makes numba itself ~70% slower
+  here, so both benches take the pause instead and leave each engine in its
+  native configuration.
+- **Small grids are still dispatch-bound.** Below ~5 000 points the parallel map
+  costs more to start than the work it distributes, but serializing them is
+  worse: a `SOLVE_PAR_THRESHOLD` experiment made 2 000 points 5× slower
+  (0.35 → 1.75 ms), because serial is ~875 ns/point against ~80 ns/point
+  effective under rayon. Not taken.
+- **What is left is the derive loop.** On a rigorous 20 000-point request it is
+  ~1.1 ms of a 2.4 ms call, and it is serial. That is plan item R5.2, whose gate
+  ("only if the scaling bench shows the serial fraction matters") this bench now
+  satisfies.
+- Bit-identity held throughout: the differential fingerprint is unchanged, and
+  all ten review harnesses and both parity oracles pass.
+
 ## [0.6.13] — What the batch unweave was actually spending (R5.1)
 
 `unweave_collection` ran at 0.22–0.48× the Python reference and the plan blamed

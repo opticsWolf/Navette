@@ -85,29 +85,33 @@ pub fn solve_coherent_block_fields(
 }
 
 // ---- shared solution emit (used by core_engine + PySolver + structure) ----
+/// Emit takes the `Solution` **by value**: `PyArray::from_vec` moves its
+/// buffer, so borrowing here meant cloning every channel -- a full extra copy
+/// of the whole result on the way out (R5.3).
 pub(crate) fn solution_to_dict(
     py: Python<'_>,
-    sol: &navette::smatrix::solver::Solution,
+    sol: navette::smatrix::solver::Solution,
 ) -> PyResult<Py<PyDict>> {
     let shape = [sol.n_angles, sol.n_wavs];
     let out = PyDict::new(py);
-    for (k, b) in &sol.f64maps {
-        out.set_item(k, PyArray::from_vec(py, b.clone()).reshape(shape)?)?;
+    for (k, b) in sol.f64maps {
+        out.set_item(k, PyArray::from_vec(py, b).reshape(shape)?)?;
     }
-    for (k, b) in &sol.c64maps {
-        out.set_item(k, PyArray::from_vec(py, b.clone()).reshape(shape)?)?;
+    for (k, b) in sol.c64maps {
+        out.set_item(k, PyArray::from_vec(py, b).reshape(shape)?)?;
     }
-    for (chan, quads) in &sol.dispmaps {
+    for (chan, quads) in sol.dispmaps {
         let (g, gg, t, f) = match chan.as_str() {
             "R_s" => ("GD_R_s", "GDD_R_s", "TOD_R_s", "FOD_R_s"),
             "R_p" => ("GD_R_p", "GDD_R_p", "TOD_R_p", "FOD_R_p"),
             "T_s" => ("GD_T_s", "GDD_T_s", "TOD_T_s", "FOD_T_s"),
             _ => ("GD_T_p", "GDD_T_p", "TOD_T_p", "FOD_T_p"),
         };
-        out.set_item(g, PyArray::from_vec(py, quads[0].clone()).reshape(shape)?)?;
-        out.set_item(gg, PyArray::from_vec(py, quads[1].clone()).reshape(shape)?)?;
-        out.set_item(t, PyArray::from_vec(py, quads[2].clone()).reshape(shape)?)?;
-        out.set_item(f, PyArray::from_vec(py, quads[3].clone()).reshape(shape)?)?;
+        let [gd, gdd, tod, fod] = quads;
+        out.set_item(g, PyArray::from_vec(py, gd).reshape(shape)?)?;
+        out.set_item(gg, PyArray::from_vec(py, gdd).reshape(shape)?)?;
+        out.set_item(t, PyArray::from_vec(py, tod).reshape(shape)?)?;
+        out.set_item(f, PyArray::from_vec(py, fod).reshape(shape)?)?;
     }
     Ok(out.into())
 }
@@ -161,7 +165,7 @@ impl PySolver {
         let sol = py
             .detach(|| self.inner.solve(requested))
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
-        solution_to_dict(py, &sol)
+        solution_to_dict(py, sol)
     }
 
     #[getter]
@@ -421,29 +425,14 @@ pub fn core_engine(
     coherence_mode: i32,
     requested: u64,
 ) -> PyResult<Py<PyDict>> {
-    // Thin over the native Solver: transpose the wav-major flat cache to
-    // layer-major, solve, emit arrays. No physics here.
+    // Thin over the native Solver: hand it the cache in the layout it already
+    // arrived in, solve, emit arrays. No physics here.
     use navette::smatrix::solver::Solver;
-    let wav_slice = wavls.as_slice()?;
-    let sin_theta_slice = sin_theta_arr.as_slice()?;
-    let n_stack_slice = n_stack_cache.as_slice()?;
-    let num_wavs = wav_slice.len();
-    let n_layers_us = n_layers as usize;
-    let mut layer_major = Vec::with_capacity(n_layers_us * num_wavs);
-    for l in 0..n_layers_us {
-        for w in 0..num_wavs {
-            let base = w * n_layers_us * 2;
-            layer_major.push(Complex64::new(
-                n_stack_slice[base + l * 2],
-                n_stack_slice[base + l * 2 + 1],
-            ));
-        }
-    }
-    let solver = Solver::new(
-        wav_slice,
-        sin_theta_slice,
-        &layer_major,
-        n_layers_us,
+    let solver = Solver::from_wav_major_flat(
+        wavls.as_slice()?,
+        sin_theta_arr.as_slice()?,
+        n_stack_cache.as_slice()?,
+        n_layers as usize,
         thicknesses.as_slice()?,
         incoherent_flags.as_slice()?,
         rough_types.as_slice()?,
@@ -454,7 +443,7 @@ pub fn core_engine(
     let sol = py
         .detach(|| solver.solve(requested))
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
-    solution_to_dict(py, &sol)
+    solution_to_dict(py, sol)
 }
 
 // ---- needle_engine wrapper (verbatim from core) ----

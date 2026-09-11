@@ -212,16 +212,31 @@ print(f"  mode mapping: {'PASS' if differs else 'FAIL'} | "
       f"COHERENCY_MATRIX gives a different Delta_R, so FRONT_BLOCK is a real choice")
 all_pass &= differs
 
+def cooldown(seconds=1.0):
+    """Let the other engine's thread pool go quiet before timing this one.
+
+    numba's default threading layer leaves its workers spin-waiting after a
+    call returns, and a spinning worker holds a core while the *other* engine
+    is being timed -- so timing the two back to back charges whichever runs
+    second. Measured at 20 000 points: the same Rust call is 1.52 ms on its
+    own, 2.00 ms immediately after a block of numba calls, 1.58 ms again after
+    a one-second pause. The speed line below was reporting that artefact as a
+    property of the engine (R5.3).
+    """
+    time.sleep(seconds)
+
 print(f"\n=== SPEED BENCHMARK: {UNIT_NAME} ===")
 bench_case = CASES[-1][1]
 call_numba(bench_case)      # warm the jit
 call_rust(bench_case)
 NUM_RUNS = 50
 numba_times, rust_times = [], []
+cooldown()
 for _ in range(NUM_RUNS):
     t0 = time.perf_counter()
     call_numba(bench_case)
     numba_times.append(time.perf_counter() - t0)
+cooldown()
 for _ in range(NUM_RUNS):
     t0 = time.perf_counter()
     call_rust(bench_case)

@@ -70,8 +70,8 @@ coverage is thin.
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | ~~R4.6~~ | TRF backend (trust-region-reflective) — **DONE (0.6.12)** | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat — `optimizer="trf"`, 10/10 breaks caught | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | ~~R5.1~~ | `unweave_collection` batch optimization — **DONE (0.6.13)** | P2 | 1.15×–2.29× where the cost is per-fragment; the rest is DRAM bandwidth, and the reference wins by aliasing the caller's buffer (see corrections) | M | L | §5.3 |
-| R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
-| R5.3 | `core_engine` emit path (discovered by R2.4a) | **P2** | the rewrite is 0.5–0.65× the numba kernel it replaced | M (must stay bit-identical) | M–L | §5, R2.4a |
+| R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck — **gate met**: ~1.1 ms of a 2.4 ms rigorous 20k call (R5.3's bench) | M (bit-identity) | M–L | §5.4 |
+| ~~R5.3~~ | `core_engine` — **DONE (0.6.14)**, and it was not the emit path | P2 | 1.4×–3.0× across the grid; the cost was `Solver::new` (see corrections). Now ~0.8–1.2× numba at 20k–60k points, still ~0.3–0.5× at 500 | M (must stay bit-identical) | M–L | §5, R2.4a |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
 | R6.2 | small physics nits batch | P3 | DOP_R clamp, docstring, `+0.0` | S | S | §3.3, §19.3 |
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
@@ -549,7 +549,9 @@ files are collected by pytest rather than skipped.
   solve of 20 000 points takes 0.98 ms where the full twelve-channel emit
   takes 2.08 ms, against numba's 1.94 ms for all thirteen. Mixing a
   performance change into a parity port would violate §0.1 rule 3, so it is
-  its own item.
+  its own item. **Superseded by R5.3 (0.6.14):** the 0.5–0.65× was measured
+  with numba's threads still spinning, and the cost was `Solver::new`, not the
+  emit. See R5.3's corrections.
 
 ### R2.5 Request-bit and schema sync tests — DONE (0.5.9)
 
@@ -1571,7 +1573,7 @@ scaling bench shows the serial fraction matters at real workloads.
 
 ---
 
-### R5.3 `core_engine`'s emit path — the rewrite is behind the kernel it replaced
+### R5.3 `core_engine`'s emit path — DONE (0.6.14) — the rewrite is behind the kernel it replaced
 
 **Discovered by R2.4a (0.6.11).** With the whole-engine parity oracles finally
 running, the two engines can be timed on the same inputs, and the answer is
@@ -1608,6 +1610,92 @@ rather than rediscovered.
 
 **Effort.** M–L. **Priority note:** P2 — this is the package's advertised
 reason for existing, so it outranks R5.2; sequence it after R5.1.
+
+**CORRECTIONS / NOTES (0.6.14) — shipped, and the item pointed at the wrong
+half of the call.** `core_engine` is 1.4×–3.0× faster across the grid. The item
+named the emit path; the emit path was never the cost. Two of the numbers this
+item was built on were also measurement artefacts.
+
+* **The item's own hypothesis, quoted so the correction is unambiguous:** "the
+  obvious suspect is the shape of the pipeline — `solve` materializes a
+  `Vec<OpticalState>` over every grid point, then walks it once per requested
+  channel into its own `Vec<f64>`, then again into a numpy array … That is a
+  hypothesis; profile before rewriting." Profiled, at 20 000 points, 6 layers,
+  before the change: `Solver::new` 2.2–2.5 ms, binding transpose 0.14–0.45 ms,
+  the parallel `solve` map 0.9–1.1 ms, the derive loop 0.3 ms (photometry) to
+  1.1 ms (rigorous), dispersion + pack ~0.02 ms, `solution_to_dict` 0.01–0.25 ms
+  — 4.3–4.8 ms total. **Construction was ~55% of the call and the emit was
+  under 5%.** The pipeline also does not walk the states once per channel; it
+  walks them once, filling every requested channel in the same pass.
+* **What it actually was: 40 000 heap allocations per call.** `n_cache` and
+  `inv_n_cache` were `Vec<Vec<Complex64>>` — one inner `Vec` per wavelength,
+  twice — and 1.77–2.24 ms of the 2.2–2.5 ms constructor was building them.
+  They are now two flat wav-major `Vec<Complex64>`s of stride `n_layers`, read
+  through `layer_n(w)` / `layer_inv_n(w)`. Same values, same order, bit-identical
+  output.
+* **The cache was transposed twice to arrive where it started.** The binding
+  holds a wav-major interleaved `[re, im]` buffer; `Solver::new` wants
+  layer-major complex and immediately re-transposes to wav-major internally. So
+  `core_engine` built a whole intermediate `Vec` for nothing.
+  `Solver::from_wav_major_flat` takes the caller's layout directly; `new` keeps
+  its signature for the callers that genuinely have layer-major data. A
+  side-effect worth having: the length is now a checked precondition with a
+  message, where the transpose loop was a raw index and a mis-sized cache was an
+  out-of-bounds panic — which through PyO3 is a `PanicException`, not a
+  `ValueError`.
+* **`flat_cache` was eager and almost nobody read it.** Only `needle_gradient`
+  does; every ordinary solve was building it. Now a `OnceLock`.
+* **The emit was still worth one line.** `solution_to_dict` borrowed its
+  `Solution` and cloned every channel into `PyArray::from_vec`, which moves — so
+  the whole result was copied once on the way out. Taking the `Solution` by
+  value removes the copy. Worth 0.01–0.25 ms, i.e. the item's entire named
+  target.
+* **The 0.5–0.65× ratio was measured through numba's spinning thread pool.**
+  numba's default threading layer leaves its workers spin-waiting after a call
+  returns, so timing the two engines back to back charges whichever runs second.
+  The same Rust call at 20 000 points: **1.52 ms on its own, 2.00 ms immediately
+  after a block of numba calls, 1.58 ms after a one-second pause.** R2.4a's
+  speed sections timed numba then Rust, with nothing in between. Both parity
+  scripts and the new bench now pause between engines. `NUMBA_THREADING_LAYER=
+  workqueue` removes the effect too, but makes numba itself ~70% slower here
+  (1.004 → 1.721 ms), which is not a fair comparison either — a pause leaves
+  both engines in their native configuration.
+* **The fix sketch is not taken, and should not be.** Emitting into destination
+  buffers inside the parallel map would remove ~0.02 ms of packing and the
+  `Vec<OpticalState>` it walks, at the cost of making the parallel map's write
+  pattern channel-dependent — real §13 risk for a target that the profile says
+  is ~0.5% of the call. The `Vec<OpticalState>` stays.
+* **One experiment failed and is recorded so it is not retried.** Small grids
+  are dispatch-bound (~150 µs of rayon start-up is most of a 500-point call),
+  so a `SOLVE_PAR_THRESHOLD = 2048` was tried to run them serially. It made
+  2 000 points **5× slower** (0.35 → 1.75 ms) and 500 points 1.9× slower
+  (0.192 → 0.358 ms): serial costs ~875 ns/point against ~80 ns/point effective
+  under rayon, so the pool wins even at 500 points despite its start-up. Not
+  taken.
+* **Where the ratio stands now**, from the new bench (photometry / rigorous,
+  against the numba kernels, noisy because numba's own timings swing ~2× run to
+  run): ~0.3–0.5× at 500 points, ~0.6–0.8× at 5 000, ~0.8–1.2× at 20 000 and
+  60 000. The rewrite now passes the kernel it replaced on large grids. It is
+  still behind on small ones, and that is dispatch cost, not physics.
+* **What is left, quantified.** The serial derive loop is now the biggest
+  remaining block — ~1.1 ms of a 2.4 ms rigorous 20 000-point call. **That is
+  R5.2, and its stated gate ("only if the scaling bench shows the serial
+  fraction matters at real workloads") is now met**; the master row is annotated.
+  Two smaller ones, measured but not done: folding `inv_n_cache` into
+  `solve_point` (~0.3 ms, removes a second pass over the cache) and letting
+  `n_cache` alias the caller's buffer via a `bytemuck` cast (~0.17 ms, needs a
+  lifetime parameter on `Solver` and would tie the solver to the caller's array
+  — the same ownership trade R5.1 declined).
+* **The optional validation item is done.**
+  `validation/benches/smatrix/bench_core_engine_scaling.py` sweeps 500 → 60 000
+  points at two request breadths, so the ratio is tracked rather than
+  rediscovered — which is the whole reason this item existed: the single 500-
+  point measurement in the parity scripts could not show a cost that scaled with
+  the grid.
+* **Bit-identity (§0.1 rule 5) held.** The random-stack differential fingerprint
+  is unchanged (`a99e8383…f154`), all ten review harnesses exit 0, both parity
+  oracles pass, 687 pytest / 472 cargo tests green, clippy clean with and
+  without `opt-minpack-lm`.
 
 ---
 

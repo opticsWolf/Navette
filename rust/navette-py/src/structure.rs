@@ -1271,7 +1271,7 @@ fn solve_arrays_fn(
     coherence_mode,
   )
   .map_err(pyo3::exceptions::PyValueError::new_err)?;
-  Ok((crate::smatrix::solution_to_dict(py, &sol)?, warnings))
+  Ok((crate::smatrix::solution_to_dict(py, sol)?, warnings))
 }
 
 // ---- Structure ----

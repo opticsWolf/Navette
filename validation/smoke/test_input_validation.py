@@ -302,3 +302,46 @@ def test_non_finite_needle_index_raises():
     nn[3] = np.nan
     with pytest.raises(ValueError, match=r"needle_n_per_wav\[3\]"):
         _needle(200.0, n_prime=nn)
+
+
+# --------------------------------------------------------------------------- #
+# The raw core_engine binding (R5.3)
+# --------------------------------------------------------------------------- #
+# The binding hands its index cache to the solver in the wav-major layout it
+# arrives in, instead of transposing it into a layer-major Vec first. The old
+# transpose loop indexed that buffer directly, so a cache of the wrong length
+# was an out-of-bounds panic -- and a panic here aborts the interpreter rather
+# than raising. The length is now a checked precondition of the constructor.
+
+
+def _core_engine_args(n_wavs=8, n_layers=3):
+    """The raw binding's argument tuple, in its own flat layout."""
+    import navette._smatrix as native
+    from navette.smatrix.smatrix import CoherenceMode
+
+    wavls = np.linspace(450.0, 750.0, n_wavs)
+    n_flat = np.tile(np.array([1.0, 0.0, 2.35, 0.01, 1.52, 0.0]), n_wavs)
+    return native.core_engine, (
+        wavls, np.array([0.0]), n_layers, n_flat,
+        np.array([0.0, 120.0, 0.0]), np.zeros(n_layers, dtype=np.int32),
+        np.zeros(n_layers, dtype=np.int32), np.zeros(n_layers),
+        int(CoherenceMode.FRONT_BLOCK), int(Request.RS))
+
+
+def test_a_short_index_cache_raises_instead_of_panicking():
+    engine, args = _core_engine_args()
+    assert engine(*args)["Rs"].shape == (1, 8)
+    short = list(args)
+    short[3] = args[3][:-2]
+    with pytest.raises(ValueError, match="index cache length"):
+        engine(*short)
+
+
+def test_a_long_index_cache_is_refused_too():
+    """Too much data is as wrong as too little -- silently ignoring the tail
+    would solve a different stack than the caller described."""
+    engine, args = _core_engine_args()
+    long = list(args)
+    long[3] = np.concatenate([args[3], np.zeros(2)])
+    with pytest.raises(ValueError, match="index cache length"):
+        engine(*long)

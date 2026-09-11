@@ -7,6 +7,7 @@
 //! with no Python.
 
 use std::f64::consts::PI;
+use std::sync::OnceLock;
 
 use num_complex::{Complex64, ComplexFloat};
 use rayon::prelude::*;
@@ -22,14 +23,32 @@ use super::optics_core::C_NM_PER_FS;
 // Solver
 // ---------------------------------------------------------------------------
 
+/// Above this many index-cache entries (`n_layers * n_wavs`) the reciprocal
+/// cache is built on the rayon pool. Below it the hand-off costs more than the
+/// divisions; the map is elementwise either way, so the two agree bit for bit.
+const RECIP_PAR_THRESHOLD: usize = 4096;
+
 /// Configured solver: validated inputs + precomputed index caches.
 /// `indices_layer_major` is `(n_layers, n_wavs)` row-major complex.
 pub struct Solver {
   wavls: Vec<f64>,
   sin_theta: Vec<f64>,
-  n_cache: Vec<Vec<Complex64>>,
-  inv_n_cache: Vec<Vec<Complex64>>,
-  flat_cache: Vec<f64>,
+  /// Layer indices per wavelength, wav-major and **flat**: wavelength `w`'s
+  /// layers are `n_cache[w * n_layers..][..n_layers]`.
+  ///
+  /// Flat rather than `Vec<Vec<Complex64>>`, which is what it was. The nested
+  /// form is one heap allocation per wavelength -- 40 000 of them for a
+  /// 20 000-point grid counting the inverse cache -- rebuilt on every
+  /// `core_engine` call, and that alone was about 45% of what the call spent
+  /// end to end (R5.3).
+  n_cache: Vec<Complex64>,
+  /// Reciprocals of [`Solver::n_cache`], same layout.
+  inv_n_cache: Vec<Complex64>,
+  /// Wav-major interleaved `[re, im]` view of `n_cache`, built on first use.
+  ///
+  /// Only `needle_gradient` reads it. Building it eagerly charged every
+  /// `solve` for a layout nothing on that path looks at.
+  flat_cache: OnceLock<Vec<f64>>,
   thicknesses: Vec<f64>,
   incoherent_flags: Vec<i32>,
   rough_types: Vec<i32>,
@@ -127,17 +146,20 @@ pub fn energy_conservation(
 
 impl Solver {
   #[allow(clippy::too_many_arguments)]
-  pub fn new(
+  /// Shape and range checks shared by both constructors. `n_indices` is the
+  /// index cache's element count, whichever layout it arrived in.
+  #[allow(clippy::too_many_arguments)]
+  fn validate(
     wavelengths: &[f64],
     sin_theta: &[f64],
-    indices_layer_major: &[Complex64],
     n_layers: usize,
+    n_indices: usize,
     thicknesses: &[f64],
     incoherent_flags: &[i32],
     rough_types: &[i32],
     rough_vals: &[f64],
     coherence_mode: i32,
-  ) -> Result<Self, String> {
+  ) -> Result<(), String> {
     if wavelengths.is_empty() {
       return Err("wavelengths must be non-empty".to_string());
     }
@@ -147,10 +169,10 @@ impl Solver {
     if n_layers < 2 {
       return Err("need at least 2 layers (ambient + substrate)".to_string());
     }
-    if indices_layer_major.len() != n_layers * wavelengths.len() {
+    if n_indices != n_layers * wavelengths.len() {
       return Err(format!(
         "indices length {} must equal n_layers ({}) × n_wavs ({})",
-        indices_layer_major.len(),
+        n_indices,
         n_layers,
         wavelengths.len()
       ));
@@ -171,40 +193,163 @@ impl Solver {
           .to_string(),
       );
     }
+    Ok(())
+  }
+
+  pub fn new(
+    wavelengths: &[f64],
+    sin_theta: &[f64],
+    indices_layer_major: &[Complex64],
+    n_layers: usize,
+    thicknesses: &[f64],
+    incoherent_flags: &[i32],
+    rough_types: &[i32],
+    rough_vals: &[f64],
+    coherence_mode: i32,
+  ) -> Result<Self, String> {
+    Self::validate(
+      wavelengths,
+      sin_theta,
+      n_layers,
+      indices_layer_major.len(),
+      thicknesses,
+      incoherent_flags,
+      rough_types,
+      rough_vals,
+      coherence_mode,
+    )?;
     let n_wavs = wavelengths.len();
-    let mut flat_cache = Vec::with_capacity(n_layers * n_wavs * 2);
+    let mut n_cache = Vec::with_capacity(n_layers * n_wavs);
     for w in 0..n_wavs {
       for l in 0..n_layers {
-        let nv = indices_layer_major[l * n_wavs + w];
-        flat_cache.push(nv.re);
-        flat_cache.push(nv.im);
+        n_cache.push(indices_layer_major[l * n_wavs + w]);
       }
     }
-    let mut n_cache = Vec::with_capacity(n_wavs);
-    let mut inv_n_cache = Vec::with_capacity(n_wavs);
-    for w in 0..n_wavs {
-      let mut layer_n = Vec::with_capacity(n_layers);
-      let mut layer_inv = Vec::with_capacity(n_layers);
-      for l in 0..n_layers {
-        let nv = indices_layer_major[l * n_wavs + w];
-        layer_n.push(nv);
-        layer_inv.push(nv.recip());
-      }
-      n_cache.push(layer_n);
-      inv_n_cache.push(layer_inv);
+    Ok(Self::assemble(
+      wavelengths,
+      sin_theta,
+      n_cache,
+      n_layers,
+      thicknesses,
+      incoherent_flags,
+      rough_types,
+      rough_vals,
+      coherence_mode,
+    ))
+  }
+
+  /// Same solver from the wav-major interleaved `[re, im]` cache the Python
+  /// boundary already holds: `n_stack_flat[(w * n_layers + l) * 2]` and `+ 1`.
+  ///
+  /// `new` wants `(n_layers, n_wavs)` complex, so reaching it from that layout
+  /// meant transposing into layer-major and letting `new` transpose straight
+  /// back -- two passes over the whole cache to arrive where the caller
+  /// started (R5.3).
+  #[allow(clippy::too_many_arguments)]
+  pub fn from_wav_major_flat(
+    wavelengths: &[f64],
+    sin_theta: &[f64],
+    n_stack_flat: &[f64],
+    n_layers: usize,
+    thicknesses: &[f64],
+    incoherent_flags: &[i32],
+    rough_types: &[i32],
+    rough_vals: &[f64],
+    coherence_mode: i32,
+  ) -> Result<Self, String> {
+    let n_wavs = wavelengths.len();
+    if n_stack_flat.len() != n_layers * n_wavs * 2 {
+      return Err(format!(
+        "index cache length {} must equal n_layers ({n_layers}) x n_wavs ({n_wavs}) x 2",
+        n_stack_flat.len()
+      ));
     }
-    Ok(Self {
+    let n_cache: Vec<Complex64> = n_stack_flat
+      .chunks_exact(2)
+      .map(|c| Complex64::new(c[0], c[1]))
+      .collect();
+    Self::validate(
+      wavelengths,
+      sin_theta,
+      n_layers,
+      n_cache.len(),
+      thicknesses,
+      incoherent_flags,
+      rough_types,
+      rough_vals,
+      coherence_mode,
+    )?;
+    Ok(Self::assemble(
+      wavelengths,
+      sin_theta,
+      n_cache,
+      n_layers,
+      thicknesses,
+      incoherent_flags,
+      rough_types,
+      rough_vals,
+      coherence_mode,
+    ))
+  }
+
+  /// The shared tail of both constructors: take an already wav-major flat
+  /// index cache, derive the reciprocals, and own the rest.
+  #[allow(clippy::too_many_arguments)]
+  fn assemble(
+    wavelengths: &[f64],
+    sin_theta: &[f64],
+    n_cache: Vec<Complex64>,
+    n_layers: usize,
+    thicknesses: &[f64],
+    incoherent_flags: &[i32],
+    rough_types: &[i32],
+    rough_vals: &[f64],
+    coherence_mode: i32,
+  ) -> Self {
+    // Elementwise and pure, so serial and parallel are bit-identical; above the
+    // threshold the 120 000 complex divisions a 20 000-point grid needs are a
+    // third of what building the solver costs.
+    let inv_n_cache: Vec<Complex64> = if n_cache.len() >= RECIP_PAR_THRESHOLD {
+      n_cache.par_iter().map(|n| n.recip()).collect()
+    } else {
+      n_cache.iter().map(|n| n.recip()).collect()
+    };
+    Self {
       wavls: wavelengths.to_vec(),
       sin_theta: sin_theta.to_vec(),
       n_cache,
       inv_n_cache,
-      flat_cache,
+      flat_cache: OnceLock::new(),
       thicknesses: thicknesses.to_vec(),
       incoherent_flags: incoherent_flags.to_vec(),
       rough_types: rough_types.to_vec(),
       rough_vals: rough_vals.to_vec(),
       coherence_mode,
       n_layers,
+    }
+  }
+
+  /// Layer indices for wavelength `w`.
+  #[inline]
+  fn layer_n(&self, w: usize) -> &[Complex64] {
+    &self.n_cache[w * self.n_layers..(w + 1) * self.n_layers]
+  }
+
+  /// Reciprocal layer indices for wavelength `w`.
+  #[inline]
+  fn layer_inv_n(&self, w: usize) -> &[Complex64] {
+    &self.inv_n_cache[w * self.n_layers..(w + 1) * self.n_layers]
+  }
+
+  /// Wav-major interleaved `[re, im]` cache, built on first use.
+  fn flat_cache(&self) -> &[f64] {
+    self.flat_cache.get_or_init(|| {
+      let mut v = Vec::with_capacity(self.n_cache.len() * 2);
+      for nv in &self.n_cache {
+        v.push(nv.re);
+        v.push(nv.im);
+      }
+      v
     })
   }
 
@@ -315,7 +460,7 @@ impl Solver {
       &self.wavls,
       &self.sin_theta,
       self.n_layers,
-      &self.flat_cache,
+      self.flat_cache(),
       &self.thicknesses,
       &self.rough_types,
       &self.rough_vals,
@@ -376,8 +521,8 @@ impl Solver {
             idx_n,
             self.wavls[w],
             self.sin_theta[a],
-            &self.n_cache[w],
-            &self.inv_n_cache[w],
+            self.layer_n(w),
+            self.layer_inv_n(w),
             &self.thicknesses,
             &self.incoherent_flags,
             &self.rough_types,
@@ -390,8 +535,8 @@ impl Solver {
             idx_n,
             self.wavls[w],
             self.sin_theta[a],
-            &self.n_cache[w],
-            &self.inv_n_cache[w],
+            self.layer_n(w),
+            self.layer_inv_n(w),
             &self.thicknesses,
             &self.incoherent_flags,
             &self.rough_types,
@@ -1389,7 +1534,7 @@ impl Solver {
         }
       },
     };
-    Ok((self.wavls[w], self.n_cache[w].clone()))
+    Ok((self.wavls[w], self.layer_n(w).to_vec()))
   }
 
   /// Scan `|1/r(n_eff)|^2` over a complex effective-index box.
@@ -1953,6 +2098,30 @@ mod tests {
     out
   }
 
+  /// The same dispersive two-layer stack in both index layouts: layer-major
+  /// complex for `new`, wav-major interleaved `[re, im]` for
+  /// `from_wav_major_flat`. The indices vary with both `l` and `w` on purpose
+  /// -- a constant stack would not notice a transposed cache.
+  fn both_layouts(nw: usize) -> (Vec<Complex64>, Vec<f64>) {
+    let n = |l: usize, w: usize| {
+      Complex64::new(1.0 + l as f64 * 0.5 + w as f64 * 0.01, l as f64 * 0.001 * w as f64)
+    };
+    let mut layer_major = Vec::with_capacity(2 * nw);
+    for l in 0..2 {
+      for w in 0..nw {
+        layer_major.push(n(l, w));
+      }
+    }
+    let mut flat = Vec::with_capacity(4 * nw);
+    for w in 0..nw {
+      for l in 0..2 {
+        flat.push(n(l, w).re);
+        flat.push(n(l, w).im);
+      }
+    }
+    (layer_major, flat)
+  }
+
   #[test]
   fn bare_interface_fresnel_hex() {
     // Air (n=1) → glass (n=1.5): Rs(0°) = ((1-1.5)/(1+1.5))² = 0.04.
@@ -2119,6 +2288,71 @@ mod tests {
     let (_, warns) = super::solve_arrays(&idx, &[5.0, 0.0], &[false, false], &[0, 0], &[0.0, 0.0],
       &wl, &[0.0], false, REQ_RS, 2).unwrap();
     assert_eq!(warns.len(), 1);
+  }
+
+  #[test]
+  fn the_flat_constructor_solves_what_the_layer_major_one_solves() {
+    let nw = 64;
+    let wl: Vec<f64> = (0..nw).map(|i| 400.0 + i as f64).collect();
+    let (layer_major, flat) = both_layouts(nw);
+    let a = Solver::new(&wl, &[0.2], &layer_major, 2, &[0.0, 0.0], &[0, 0], &[0, 0],
+      &[0.0, 0.0], 2).unwrap();
+    let b = Solver::from_wav_major_flat(&wl, &[0.2], &flat, 2, &[0.0, 0.0], &[0, 0], &[0, 0],
+      &[0.0, 0.0], 2).unwrap();
+    let va = a.solve(REQ_RS).unwrap().f64maps.iter().find(|(k, _)| k == "Rs").unwrap().1.clone();
+    let vb = b.solve(REQ_RS).unwrap().f64maps.iter().find(|(k, _)| k == "Rs").unwrap().1.clone();
+    // Bit-identical, not merely close: the two paths must differ only in how
+    // they walked the caller's buffer (§0.1 rule 5).
+    assert_eq!(va, vb);
+    // And the curve must actually disperse, or a transposed cache would pass.
+    assert!(va[0] != va[nw - 1]);
+  }
+
+  #[test]
+  fn a_flat_cache_of_the_wrong_length_is_rejected() {
+    let wl = vec![500.0, 600.0];
+    let (_, flat) = both_layouts(2);
+    let ok = Solver::from_wav_major_flat(&wl, &[0.0], &flat, 2, &[0.0, 0.0], &[0, 0], &[0, 0],
+      &[0.0, 0.0], 2);
+    assert!(ok.is_ok());
+    let err = Solver::from_wav_major_flat(&wl, &[0.0], &flat[..flat.len() - 2], 2, &[0.0, 0.0],
+      &[0, 0], &[0, 0], &[0.0, 0.0], 2)
+    .err()
+    .expect("a short cache must be refused");
+    assert!(err.contains("index cache length"), "{err}");
+  }
+
+  #[test]
+  fn the_flat_constructor_refuses_what_new_refuses() {
+    let wl = vec![500.0];
+    let (_, flat) = both_layouts(1);
+    let call = |sin: &[f64], thick: &[f64], mode: i32| {
+      Solver::from_wav_major_flat(&wl, sin, &flat, 2, thick, &[0, 0], &[0, 0], &[0.0, 0.0], mode)
+    };
+    assert!(call(&[0.0], &[0.0, 0.0], 2).is_ok());
+    assert!(call(&[], &[0.0, 0.0], 2).is_err(), "no angles");
+    assert!(call(&[0.0], &[0.0, 0.0], 5).is_err(), "unknown coherence mode");
+    assert!(call(&[0.0], &[0.0], 2).is_err(), "one thickness for two layers");
+  }
+
+  #[test]
+  fn both_reciprocal_paths_give_the_same_cache() {
+    // The parallel branch is a plain map over independent elements -- no
+    // reduction, so it owes the serial one bit-identity. Cross the threshold
+    // in both directions rather than assume it (R5.3).
+    for nw in [8usize, RECIP_PAR_THRESHOLD] {
+      let wl: Vec<f64> = (0..nw).map(|i| 400.0 + i as f64 * 0.1).collect();
+      let (_, flat) = both_layouts(nw);
+      let s = Solver::from_wav_major_flat(&wl, &[0.0], &flat, 2, &[0.0, 0.0], &[0, 0], &[0, 0],
+        &[0.0, 0.0], 2)
+      .unwrap();
+      assert_eq!(s.n_cache.len(), 2 * nw);
+      for w in 0..nw {
+        for (n, inv) in s.layer_n(w).iter().zip(s.layer_inv_n(w)) {
+          assert_eq!(*inv, n.recip(), "wavelength {w}");
+        }
+      }
+    }
   }
 
   #[test]
