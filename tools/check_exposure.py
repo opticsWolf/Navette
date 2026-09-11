@@ -66,6 +66,12 @@ ALLOWLIST = {
     # `deposit_channel` are the two halves' seam, exercised by the cargo
     # cross-check against finite differences.
     "levenberg_marquardt_with", "assemble_jacobian", "deposit_channel",
+    # backend dispatch (R4.4c): Python selects a backend by name on
+    # `LmConfig(optimizer=...)` and reads it back on the report; the dispatch
+    # itself takes a residual closure and a `JacobianSource`, both Rust
+    # traits, so there is nothing to bind. `available_optimizers` is the part
+    # a caller actually needs and it is bound.
+    "run_optimizer",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

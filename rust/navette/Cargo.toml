@@ -14,6 +14,14 @@ categories = ["science"]
 name = "navette"
 crate-type = ["rlib"]
 
+[features]
+default = []
+# Optional least-squares backends (synthesis::optimizer, R4.4c). Off by
+# default: a standard build pulls no new dependencies, and a backend that is
+# not compiled in is an error with a rebuild hint, never a silent fallback.
+# Both crates are MIT, which is compatible with this crate's LGPL-3.0-or-later.
+opt-minpack-lm = ["dep:levenberg-marquardt", "dep:nalgebra"]
+
 [dependencies]
 rayon = { workspace = true }
 num-complex = { workspace = true }
@@ -31,6 +39,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.9"
 rand_distr = "0.5"
+# --- optional optimizer backends (see [features]) --------------------------
+# The argmin ecosystem's reference LM (MINPACK lmdif-derived, MIT). Pinned to
+# the nalgebra major it was built against so an argmin backend added later can
+# share the same one.
+levenberg-marquardt = { version = "0.15", optional = true }
+nalgebra = { version = "0.34", optional = true }
 
 [dev-dependencies]
 # .npy reading for golden-parity tests. default-features=false avoids the

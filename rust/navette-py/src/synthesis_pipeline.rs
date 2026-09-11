@@ -29,6 +29,7 @@ use navette::smatrix::synthesis::cycle::{ContrastMap, NeedleCycleConfig};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
 use navette::smatrix::synthesis::structure::{DesignStack, LayerSpec};
+use navette::smatrix::synthesis::optimizer::OptimizerBackend;
 use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
@@ -571,6 +572,16 @@ fn wrap_layer(l: LayerSpec) -> PyLayerSpec {
 // Configs
 // ---------------------------------------------------------------------------
 
+/// Names ``LmConfig(optimizer=...)`` accepts in *this* build.
+///
+/// The optional backends are cargo features, so what a wheel can run is a
+/// property of how it was built. Ask rather than guess: naming a backend this
+/// build lacks raises ``ValueError`` with the rebuild command.
+#[pyfunction]
+pub fn available_optimizers() -> Vec<&'static str> {
+    navette::smatrix::synthesis::optimizer::available_backends()
+}
+
 #[pyclass(name = "LmConfig", from_py_object)]
 /// Bounded Levenberg-Marquardt knobs (see `LmConfig` in the core).
 ///
@@ -583,6 +594,20 @@ fn wrap_layer(l: LayerSpec) -> PyLayerSpec {
 ///
 /// ``lambda_up`` still governs both modes' error ladder (a failed step solve
 /// or a failed residual evaluation); ``lambda_down`` applies to ``"fixed"``.
+///
+/// ``optimizer`` selects the solver itself:
+///
+/// * ``"builtin"`` (default) -- this crate's bounded LM. The only backend
+///   with bounds semantics of its own: a thickness may end up exactly on a
+///   bound, which is how the synthesis loop learns a film wants removing.
+/// * ``"minpack_lm"`` -- the ``levenberg-marquardt`` crate (MINPACK
+///   ``lmdif``-derived), available only if the wheel was built with the
+///   ``opt-minpack-lm`` cargo feature. Unbounded, so it runs on an interior
+///   reparametrization and its optima are *strictly inside* the box. A
+///   reference to compare against, not a replacement.
+///
+/// Naming a backend the wheel was not built with raises ``ValueError`` with
+/// the rebuild command -- never a silent fall back to a different solver.
 #[derive(Clone)]
 pub struct PyLmConfig {
     inner: LmConfig,
@@ -594,7 +619,7 @@ impl PyLmConfig {
     #[pyo3(signature = (max_iterations=200, max_evals=100_000, ftol=1e-12, xtol=1e-12,
                         gtol=1e-10, lambda_init=1e-3, lambda_up=5.0, lambda_down=3.0,
                         damping="gain_ratio", gtol_scale_invariant=true,
-                        jacobian="analytic"))]
+                        jacobian="analytic", optimizer="builtin"))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_iterations: usize,
@@ -608,6 +633,7 @@ impl PyLmConfig {
         damping: &str,
         gtol_scale_invariant: bool,
         jacobian: &str,
+        optimizer: &str,
     ) -> PyResult<Self> {
         for (name, v) in [("ftol", ftol), ("xtol", xtol), ("gtol", gtol),
                           ("lambda_init", lambda_init), ("lambda_up", lambda_up),
@@ -637,6 +663,21 @@ impl PyLmConfig {
                 )))
             },
         };
+        let backend = OptimizerBackend::parse(optimizer).map_err(PyValueError::new_err)?;
+        if !backend.is_available() {
+            return Err(PyValueError::new_err(format!(
+                concat!(
+                    "optimizer {:?} is not available in this build — the wheel ",
+                    "was compiled without its cargo feature; rebuild with ",
+                    "`maturin develop --release --features {}`"
+                ),
+                optimizer,
+                match backend {
+                    OptimizerBackend::MinpackLm => "opt-minpack-lm",
+                    OptimizerBackend::BuiltinLm => "",
+                }
+            )));
+        }
         Ok(PyLmConfig {
             inner: LmConfig {
                 max_iterations,
@@ -650,15 +691,19 @@ impl PyLmConfig {
                 damping,
                 gtol_scale_invariant,
                 jacobian,
+                backend,
             },
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?}, jacobian={:?})",
+            concat!(
+                "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?}, ",
+                "jacobian={:?}, optimizer={:?})"
+            ),
             self.inner.max_iterations, self.inner.ftol, self.inner.damping,
-            self.inner.jacobian
+            self.inner.jacobian, self.inner.backend.as_str()
         )
     }
 }
@@ -908,6 +953,7 @@ impl PySmatrixContext {
         d.set_item("termination", format!("{:?}", r.termination))?;
         d.set_item("gain_ratio", r.gain_ratio)?;
         d.set_item("analytic_jacobians", r.analytic_jacobians)?;
+        d.set_item("backend", r.backend.as_str())?;
         Ok((mf, Some(d.unbind())))
     }
 }

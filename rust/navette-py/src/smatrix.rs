@@ -710,6 +710,7 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::synthesis_pipeline::PyDesignStack>()?;
     m.add_class::<crate::synthesis_pipeline::PySmatrixContext>()?;
     m.add_class::<crate::synthesis_pipeline::PyLmConfig>()?;
+    m.add_function(wrap_pyfunction!(crate::synthesis_pipeline::available_optimizers, m)?)?;
     m.add_class::<crate::synthesis_pipeline::PyPipelineConfig>()?;
     m.add_class::<crate::synthesis_pipeline::PyNeedleCycleConfig>()?;
     m.add_class::<crate::synthesis_pipeline::PyNeedlePipeline>()?;

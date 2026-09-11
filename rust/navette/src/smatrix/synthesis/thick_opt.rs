@@ -83,6 +83,16 @@ pub struct LmConfig {
     /// itself only ever has the residual closure, so a run with no source is
     /// finite-difference regardless.
     pub jacobian: JacobianMode,
+    /// Which solver runs. `BuiltinLm` is this module; the others live behind
+    /// cargo features and are dispatched by `synthesis::optimizer`.
+    ///
+    /// The field sits here rather than on a parallel `OptimizerConfig`
+    /// because every other knob in this struct is one the alternatives take
+    /// too (ftol/xtol/gtol/max_evals are MINPACK's own names), and two
+    /// structs that must agree field for field are a synchronization bug
+    /// waiting to be written. `levenberg_marquardt_with` ignores it — it *is*
+    /// the built-in — so only `optimizer::run_optimizer` reads it.
+    pub backend: crate::smatrix::synthesis::optimizer::OptimizerBackend,
 }
 
 /// Which Jacobian the thickness optimizer should use.
@@ -128,6 +138,7 @@ impl Default for LmConfig {
             damping: LmDamping::GainRatio,
             gtol_scale_invariant: true,
             jacobian: JacobianMode::Analytic,
+            backend: crate::smatrix::synthesis::optimizer::OptimizerBackend::BuiltinLm,
         }
     }
 }
@@ -720,7 +731,7 @@ fn neg(v: &[f64]) -> Vec<f64> {
 
 /// Central-difference Jacobian, columns in parallel.
 /// Returns the number of residual evaluations performed (2·n).
-fn build_jacobian<F>(
+pub(crate) fn build_jacobian<F>(
     residuals: &F,
     x: &[f64],
     jac: &mut Vec<f64>,

@@ -144,7 +144,22 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.9-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.10-*.whl (single wheel, all engines)
+```
+
+#### Optional cargo features
+
+Off by default, so a standard wheel pulls no extra dependencies. A build
+without one still *knows* the name and refuses it with the rebuild command
+rather than silently running something else; `navette._smatrix.
+available_optimizers()` reports what the installed wheel actually has.
+
+| Feature | What it adds |
+|---|---|
+| `opt-minpack-lm` | `LmConfig(optimizer="minpack_lm")` — the `levenberg-marquardt` crate (MINPACK `lmdif`-derived, MIT), as a reference to compare the built-in LM against. Unbounded, so it runs on an interior reparametrization: its optima are strictly inside the thickness box, where the built-in's may sit exactly on it. |
+
+```powershell
+maturin develop --release --features opt-minpack-lm
 ```
 
 Manual fallback: `cargo publish -p navette`;

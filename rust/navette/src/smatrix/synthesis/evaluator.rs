@@ -26,8 +26,9 @@ use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
 use crate::smatrix::synthesis::structure::{DesignStack, SolverArrays};
 use crate::smatrix::synthesis::jacobian::assemble_jacobian;
+use crate::smatrix::synthesis::optimizer::{run_optimizer, OptimizerResult};
 use crate::smatrix::synthesis::thick_opt::{
-    levenberg_marquardt_with, JacobianMode, JacobianSource, LmConfig, LmResult, NoJacobian,
+    JacobianMode, JacobianSource, LmConfig, NoJacobian,
 };
 
 /// Solver + merit context for one synthesis problem.
@@ -295,14 +296,14 @@ impl SmatrixContext {
     ///
     /// The report is `None` when there was nothing to optimize (no
     /// optimize-flagged films), which is not a solve and has no diagnostics.
-    /// Otherwise it is the LM's `LmResult` — `analytic_jacobians` says which
-    /// Jacobian path actually ran, `gain_ratio` and `termination` say how the
-    /// run ended. The trait method drops it; callers that want to know keep
-    /// it.
+    /// Otherwise it is the solver's `OptimizerResult` — `backend` says which
+    /// solver ran, `analytic_jacobians` which Jacobian path it took, and
+    /// `gain_ratio` / `termination` how the run ended. The trait method drops
+    /// it; callers that want to know keep it.
     pub fn optimize_thicknesses_report(
         &mut self,
         stack: &mut DesignStack,
-    ) -> Result<(f64, Option<LmResult>), String> {
+    ) -> Result<(f64, Option<OptimizerResult>), String> {
         // Collect optimize-flagged film indices and their starting values.
         let opt_indices: Vec<usize> = stack
             .films()
@@ -341,6 +342,10 @@ impl SmatrixContext {
         // source decides per call: a spec with a phase target or a color
         // demand declines and the driver differences that iteration, so the
         // mode is a preference, not a promise.
+        //
+        // Which *solver* consumes them is `self.lm.backend`'s business, and
+        // `run_optimizer`'s: the built-in LM is the default and the only one
+        // with bounds semantics of its own (R4.4c).
         let res = match self.lm.jacobian {
             JacobianMode::Analytic => {
                 let src = DepositJacobian {
@@ -349,10 +354,10 @@ impl SmatrixContext {
                     indices: opt_indices.clone(),
                     n_wav: self.wavls.len(),
                 };
-                levenberg_marquardt_with(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)?
+                run_optimizer(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)?
             },
             JacobianMode::Fd => {
-                levenberg_marquardt_with(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)?
+                run_optimizer(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)?
             },
         };
 

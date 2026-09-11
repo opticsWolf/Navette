@@ -11,6 +11,12 @@ publish = false
 name = "_navette"
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Forward the engine's optional optimizer backends so a wheel can be built
+# with one: `maturin develop --release --features opt-minpack-lm`.
+opt-minpack-lm = ["navette/opt-minpack-lm"]
+
 [dependencies]
 navette = { workspace = true }
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py312", "num-complex"] }

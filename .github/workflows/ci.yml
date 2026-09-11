@@ -12,6 +12,8 @@
 #   * dependency floors               (R4.1: a floor with no wheel is fiction)
 #   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
 #   * cargo clippy -D warnings        (R2.3a: zero findings as of 0.6.6)
+#   * the optional optimizer backends (R4.4c) built and tested, since the
+#     default build compiles none of their code
 #
 # What is ADVISORY (continue-on-error) and why:
 #   * cargo fmt     — 981 files differ from rustfmt defaults
@@ -64,6 +66,16 @@ jobs:
 
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Optional optimizer backends (R4.4c) are default-off, so nothing above
+      # compiles them. A feature nobody builds rots: this runs their tests and
+      # their lints too, so the alternative-backend adapter breaks here rather
+      # than in the hands of whoever first turns it on.
+      - name: cargo test --features opt-minpack-lm
+        run: cargo test -p navette --features opt-minpack-lm
+
+      - name: clippy --features opt-minpack-lm
+        run: cargo clippy -p navette --all-targets --features opt-minpack-lm -- -D warnings
 
       - name: rustfmt (advisory)
         continue-on-error: true

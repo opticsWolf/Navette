@@ -66,7 +66,7 @@ coverage is thin.
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
-| R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; item B (R4.4c) open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
+| R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; **item B (R4.4c) DONE (0.6.10)** — seam + `minpack_lm` behind `opt-minpack-lm`; the two argmin solvers (R4.4c-argmin) remain open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
@@ -1005,12 +1005,101 @@ and FD Jacobian untouched. What the plan did not say:
   nothing to triage. `bench_refold`: one LM optimize 2.0 ms against the 2.1 ms
   baseline.
 
-#### R4.4c Work item B — backend selection + optional ecosystem solvers (feature-gated)
+#### R4.4c Work item B — backend selection + optional ecosystem solvers (feature-gated) — DONE (0.6.10)
 
 1. New `synthesis/optimizer.rs`: `enum OptimizerBackend { BuiltinLm, MinpackLm, Trf /* R4.6 */, ArgminGaussNewton, ArgminTrustRegion }`; `OptimizerConfig { backend, ftol, xtol, gtol, max_iterations, max_evals, stepbound, … }` mapping 1:1 onto `LmConfig` for the default; one entry point `run_optimizer(problem, x0, bounds, cfg) -> OptimizerResult` with the existing result shape (x / cost / iterations / evals / termination). Residual system stays the injected closure (`MeritSpec::residuals`) — it is already solver-agnostic.
 2. Cargo features, **default OFF** (zero new dependencies for standard builds): `opt-minpack-lm = ["dep:levenberg-marquardt"]`, `opt-argmin = ["dep:argmin", "dep:argmin-math"]` (pin `argmin = "0.11"`, `levenberg-marquardt = "0.15"`). Python surface: `optimizer: str = "builtin"` kwarg on the synthesis entry points; absent feature → `PyValueError` with a rebuild hint (same pattern as the module ImportError fallbacks, §13). `design_config.rs` gains the backend field (`deny_unknown_fields` envelope updated in lockstep — the schema-version rule of §9.3 applies).
 3. **Bounds contract per backend:** `MinpackLm`/`Argmin*` are unbounded — wrap with an interior logit reparametrization u = atanh(2(x−lb−ε)/(ub−lb−2ε)), x = lb+ε+(ub−lb−2ε)·(tanh(u)+1)/2. The transform is elementwise and the LM Jacobian is FD per parameter, so gradients pass through it exactly. Document explicitly that boundary semantics on these backends (interior parametrization, optimum strictly inside) **differ** from the built-in veto+clamp (optimum may sit on the bound) — this is a contract difference, not a bug; the built-in stays the default for bounded problems.
 4. **argmin integration friction, recorded up front:** argmin-math 0.5 ships backends for nalgebra and ndarray ≤ 0.16; navette pins **ndarray 0.17** (§7) → either write the small manual adapter for our residual types (~100 lines; argmin explicitly supports user-supplied implementations) or convert J to nalgebra matrices per iteration (m×n copy per iteration — negligible against the TMM residual cost). Decide at implementation time; do not bump the ndarray pin for it.
+
+**CORRECTIONS / NOTES (0.6.10) — item B shipped; `MinpackLm` is the one
+backend it ships with.** Items 1, 2 and 3 are done: `synthesis/optimizer.rs`
+with `OptimizerBackend` / `OptimizerResult` / `run_optimizer`, a default-off
+cargo feature per backend, the Python `optimizer=` surface with a rebuild hint
+in place of a silent fallback, and the interior reparametrization with its own
+tests. What the plan did not say, or said differently:
+
+* **The `OptimizerConfig` / `LmConfig` split is not worth having.** A struct
+  "mapping 1:1 onto `LmConfig` for the default" *is* `LmConfig` plus a
+  `backend` field — every other knob it names (ftol, xtol, gtol,
+  max_iterations, max_evals) already carries over verbatim, because they are
+  MINPACK's own names. Two structs that must agree field for field are a
+  synchronization bug waiting to be written, so `backend` went on `LmConfig`
+  and `run_optimizer` takes it directly.
+* **`stepbound` is deliberately not exposed.** It is a MINPACK-only knob, and
+  a setting that does nothing on the default backend is a support question,
+  not a feature. The crate default stands until a workload argues otherwise.
+* **The backend field does not belong in `design_config.rs`.** That module is
+  the *design* request — structure, materials, film flags — and carries no
+  optimizer settings at all, so §9.3's schema-version rule does not come into
+  play. The backend travels on `LmConfig`, which is already threaded through
+  `SmatrixContext`, the pipeline and the driver.
+* **Item 4's ndarray/nalgebra friction does not arise.** argmin-math 0.5 ships
+  a `nalgebra_0_34` backend and `levenberg-marquardt` 0.15 is built on
+  nalgebra 0.34, so both crates share one linear-algebra dependency and the
+  ndarray 0.17 pin is untouched: no adapter, no per-iteration conversion, no
+  bump. Worth recording that the *other* escape the plan hints at does not
+  work — argmin-math's default `Vec<f64>` backend has no `ArgminInv`, which
+  `GaussNewton` requires, so a Vec-typed argmin problem will not compile.
+* **`ArgminGaussNewton` / `ArgminTrustRegion` are not declared yet.** An enum
+  variant that nothing can ever select is worse than no variant: it appears on
+  the Python surface as a name that is accepted and then fails. They arrive
+  with their implementation. `MinpackLm` is declared unconditionally *because*
+  it has one — the feature gates the implementation, so a build without it can
+  still name the backend and be told how to get it.
+* **A missing backend is refused, never substituted.** This is the load-bearing
+  half of item 2 and has its own test on both build configurations: a silent
+  fall back to the built-in would make every "compared against the reference
+  LM" claim a comparison with ourselves.
+* **The interior map needs no ε.** The plan's
+  `u = atanh(2(x−lb−ε)/(ub−lb−2ε))` is also missing a `− 1` (its argument runs
+  over [0, 2], outside `atanh`'s domain). The map shipped is
+  `x = mid + half·tanh(u)` with the `atanh` argument clamped to
+  `±(1 − 1e-14)`, which is the same guard with one fewer parameter and keeps
+  the map exactly symmetric: an `x0` sitting on a bound maps to a large finite
+  `u`, and comes back inside the bound by `half·1e-14`.
+* **The contract difference is documented in three places** (module docs,
+  `LmConfig`'s Python docstring, README) because it is the reason the built-in
+  stays the default: the unbounded backends converge to a boundary optimum
+  only in the limit, and the gradient vanishes as they approach it — whereas
+  the built-in's veto+clamp lets a film land *on* zero, which is how the
+  synthesis loop learns to remove it.
+* **The MINPACK adapter has three conversions worth naming**, each with a
+  test: the crate reports ½‖r‖² where Navette's cost is ‖r‖²; it reports
+  evaluations but not iterations, and since MINPACK builds the Jacobian
+  exactly once per outer iteration, counting builds *is* the iteration count;
+  and it has no error channel at all (`residuals()` returns `Option`), so a
+  failure is stashed and re-raised — otherwise "the merit spec is missing a
+  curve" arrives as "the solver gave up".
+* **The crate does not difference on its own.** Its `differentiate_numerically`
+  is a checker, not a fallback, so the adapter calls Navette's own
+  `build_jacobian` when there is no analytic source or the source declines —
+  which keeps the FD step rule identical across backends.
+* **Eight deliberate breaks, all caught**: the interval map made linear, the
+  chain rule dropped, the chain rule applied along rows instead of columns,
+  the result left in `u`-space, the ½‖r‖² conversion removed, an unavailable
+  backend falling back to the built-in, differenced Jacobians counted as
+  analytic, and the `atanh` clamp removed.
+* **What R4.6 inherits.** `OptimizerBackend::Trf` is a new arm in
+  `run_optimizer` and nothing else: the `JacobianSource` seam, the result
+  shape, the Python name plumbing and the availability/refusal machinery are
+  all in place. TRF has bounds of its own, so it will set
+  `bounds_are_native()` and skip `IntervalMap` entirely.
+* **Still open under this item (`R4.4c-argmin`).**
+  `OptimizerBackend::ArgminGaussNewton` and `ArgminTrustRegion` behind
+  `opt-argmin = ["dep:argmin", "dep:argmin-math"]`, with
+  `argmin-math`'s `nalgebra_0_34` backend (shared with `MinpackLm`, so no new
+  linear-algebra crate). Both are unbounded and take the same `IntervalMap`.
+  Note `TrustRegion` is a general-purpose minimizer, not a least-squares one:
+  it wants gradient `Jᵀr` and Hessian, so it needs the Gauss-Newton
+  approximation `JᵀJ` built explicitly — a different problem shape from the
+  other backends, and the reason it is a separate increment rather than a
+  second arm in the same one.
+* **R4.4d's remaining row.** "Parametrize `lm_check.py` over every enabled
+  backend" is not done here: on a default build there is exactly one enabled
+  backend, so the harness would parametrize over a single row and assert
+  nothing new. It belongs with the first CI job that builds the feature —
+  noted under R4.4d rather than silently dropped.
 
 #### R4.4d Validation
 

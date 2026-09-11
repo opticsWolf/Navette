@@ -3,6 +3,71 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.10] — Which solver runs is now a choice, and a named one (R4.4c, work item B)
+
+The thickness optimizer's residual system was always solver-agnostic — a
+closure over `x` and a `JacobianSource` over `x` — but only one solver was
+ever reachable, and the plan's claim of scipy parity had no second
+implementation to be parity *with* (review §3.6, §18.2). `synthesis::optimizer`
+is now the single place that decides who gets handed that pair, and the
+argmin ecosystem's reference LM is a `--features` flag away.
+
+**Nothing changes for a standard build.** The default backend is the built-in
+LM, the optional crates are default-off, and the whole cargo and Python suites
+pass unchanged.
+
+### Added
+
+- **`LmConfig(optimizer=...)`** — `"builtin"` (default) or `"minpack_lm"`. The
+  latter is the `levenberg-marquardt` crate (rust-cv, MINPACK `lmdif`-derived,
+  MIT), available when the wheel was built `--features opt-minpack-lm`.
+- **`navette._smatrix.available_optimizers()`** — what *this* wheel can run.
+  Backends are cargo features, so the answer is a property of the build, and
+  a caller should be able to ask rather than discover it by failing.
+- **`synthesis::optimizer`** — `OptimizerBackend`, `OptimizerResult`,
+  `run_optimizer`, and `IntervalMap`. A new solver is an arm here, not a
+  second copy of the call site; R4.6's TRF backend takes the same seam.
+- **`optimize_thicknesses_report`'s dict gained `"backend"`** — which solver
+  produced the answer, beside which Jacobian path it took.
+
+### Changed
+
+- **`LmConfig` gained `backend`.** The plan's separate `OptimizerConfig`
+  "mapping 1:1 onto `LmConfig`" would have been `LmConfig` plus one field, and
+  two structs that must agree field for field are a synchronization bug
+  waiting to be written. Every other knob already carries over — ftol, xtol,
+  gtol and max_evals are MINPACK's own names.
+
+### Notes
+
+- **Bounds are not a shared contract, and this is the reason the built-in
+  stays the default.** Navette's LM vetoes and clamps the step it just solved,
+  so an optimum may sit *exactly* on a bound — a film driven to zero thickness
+  is a real answer the synthesis loop then removes. Every reference
+  implementation in the ecosystem is unbounded, so those backends run on
+  `x = mid + half·tanh(u)` and their optima are *strictly inside* the box,
+  with the gradient vanishing as a bound is approached. A contract
+  difference, not a bug.
+- **A missing backend is refused, never substituted.** Naming one the wheel
+  was not built with raises `ValueError` carrying the rebuild command. A
+  silent fall back to the built-in would make every "compared against the
+  reference LM" claim a comparison with ourselves.
+- **The plan's ndarray/nalgebra friction does not arise.** argmin-math 0.5
+  ships a `nalgebra_0_34` backend and `levenberg-marquardt` 0.15 is built on
+  nalgebra 0.34, so the two share one linear-algebra crate and navette's
+  ndarray 0.17 pin is untouched — no adapter, no per-iteration conversion, no
+  version bump. (The plan's alternative, argmin-math's default `Vec<f64>`
+  backend, would not have worked: it has no `ArgminInv`, which GaussNewton
+  requires.)
+- **`stepbound` is not exposed.** It is a MINPACK-only knob; putting it on the
+  shared config would add a setting that does nothing on the default backend.
+  The crate's default stands until a real workload argues otherwise.
+- Eight deliberate breaks, all caught: the interval map made linear, the chain
+  rule dropped, the chain rule applied along rows instead of columns, the
+  result left in `u`-space, MINPACK's ½‖r‖² not converted to Navette's ‖r‖²,
+  an unavailable backend falling back to the built-in, differenced Jacobians
+  counted as analytic, and the `atanh` clamp removed.
+
 ## [0.6.9] — The thickness optimizer stops guessing its own Jacobian (R4.5, increment ii)
 
 `build_jacobian` was central differences: **2n full residual evaluations per

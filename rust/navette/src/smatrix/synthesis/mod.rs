@@ -25,6 +25,7 @@ pub mod structure;
 pub mod merit;
 pub mod thick_opt;
 pub mod jacobian;
+pub mod optimizer;
 pub mod needle_pass;
 pub mod context;
 pub mod cleanup;
