@@ -9,6 +9,8 @@
 #   * tools/check_exposure.py         (README claims it is "enforced in CI" —
 #                                      as of this workflow that is finally true)
 #   * tools/check_cie_sync.py
+#   * tools/check_pyi_sync.py      (R6.5: stub surface AND parameter names,
+#                                   for the three stubbed submodules)
 #   * dependency floors               (R4.1: a floor with no wheel is fiction)
 #   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
 #   * cargo clippy -D warnings        (R2.3a: zero findings as of 0.6.6)
@@ -116,6 +118,9 @@ jobs:
 
       - name: embedded CIE tables match sources
         run: python tools/check_cie_sync.py
+
+      - name: .pyi stubs match the PyO3 registration lists
+        run: python tools/check_pyi_sync.py
 
   dependency-floors:
     # A declared floor is a promise: "this package works with at least this

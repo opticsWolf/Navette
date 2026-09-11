@@ -77,7 +77,7 @@ coverage is thin.
 | ~~R6.2~~ | small physics nits batch — **DONE (0.6.17)** | P3 | DOP_R clamped (fingerprint moved), τ̂ docstring fixed, Sellmeier domain guard added; the `+0.0` turned out to be load-bearing and stays (see corrections) | S | S | §3.3, §19.3 |
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
 | ~~R6.4~~ | ~~docs/hygiene batch~~ — **DONE** (items 1,2,3,6 in 0.6.18; 4,5,7 in 0.6.19) | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, four stale docs closed, `extrap='error'` now errors | S | M | §6.3, §24.2, §18.4 |
-| R6.5 | `.pyi` stubs for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
+| ~~R6.5~~ | ~~`.pyi` stubs~~ — **DONE (0.6.20)**, plus a two-pass CI guard for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
 | R6.6 | Rename `color/func_NN.rs` → descriptive module names | P3 | readability; the mod.rs doc comment is currently the only decoder ring | S (internal paths only) | S–M | §11 |
 
 Recommended execution order = the phase order below. R1.1 and R1.2 come
@@ -2056,7 +2056,7 @@ decision, so they ride a separate increment.
   1 skipped; ten review harnesses exit 0; `bench_refold` ALL OK; `check_exposure`
   217/102; `check_cie_sync` OK; fingerprint unchanged at `30d96909…3c6c`.
 
-### R6.5 `.pyi` stubs for `_smatrix` / `_spectralweave`
+### R6.5 `.pyi` stubs for `_smatrix` / `_spectralweave` — DONE (0.6.20)
 
 **Review:** §24.1 (`_materials.pyi` verified zero-drift; the other modules
 are unstubbed). Build stubs from the PyO3 registration lists the same way
@@ -2067,6 +2067,36 @@ recur — the same pattern as `check_cie_sync.py`.
 **Effort.** M.
 
 ---
+
+**CORRECTIONS / NOTES (0.6.20).**
+
+* **Built as asked, plus the pass the plan did not name.** The registration-list
+  diff (the §24.1 audit, automated) catches a binding nobody stubbed. It cannot
+  catch a *renamed parameter*, which is the drift that actually breaks callers:
+  the name is still there, the keyword argument no longer is. So
+  `check_pyi_sync.py` has a second pass that compares parameter names from
+  PyO3's `__text_signature__` against the stub's, for every function,
+  constructor and method — 64 of 64 `_smatrix` entries, 0 skipped. Verified by
+  deliberately renaming `solver_rt_request(pol)` to `polarization` and watching
+  it fail.
+* **`UNSTUBBED` is an explicit list, not an inference.** `_color`,
+  `_interpolate` and `_structure` are still unstubbed; naming them means a
+  *new* submodule without a stub fails rather than joining the gap quietly, and
+  that stubbing one of the three fails until the list is updated. Those three
+  are a smaller gap than the two just closed — `_color` is 3 entries,
+  `_interpolate` 1, `_structure` 27 — and none of them is the surface the
+  review called out.
+* **Return types are the honest limit.** `core_engine`, `Solver.solve`,
+  `needle_gradient`, `run_design` and `NeedlePipeline.run` return
+  `dict[str, Any]`: the key set is chosen at runtime by the request bitmask, so
+  a real type needs a `TypedDict` per request shape. The guard checks names and
+  parameters, not returns. Worth knowing before anyone reads the stub as a
+  contract it does not make.
+* **Also fixed in passing:** `_materials.pyi` pointed at `crates/navette-py`,
+  gone since the Rust consolidation, and carried no SPDX header.
+* **Verification.** cargo test 454 workspace; clippy clean; pytest 691 passed,
+  1 skipped; `check_pyi_sync` OK (3 stubbed, 3 known gaps); `check_exposure`
+  217/102; `check_cie_sync` OK; fingerprint unchanged at `30d96909…3c6c`.
 
 ### R6.6 Rename `color/func_NN.rs` → descriptive module names
 

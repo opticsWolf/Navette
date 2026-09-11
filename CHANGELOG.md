@@ -3,6 +3,59 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.20] — Stubs for the other two engines, and a guard so they stay true (R6.5)
+
+`_materials` was the only stubbed submodule, so IDE completion and any type
+checker stopped at materials while the whole S-matrix and weaving surface —
+the part anyone actually drives — had nothing.
+
+### Added
+
+- **`src/navette/_smatrix.pyi`** — 53 exported names: the 18 `NREQ_*` request
+  bits and their seven builder functions, the eight kernels (`w_function`, the
+  three Redheffer products, `solve_coherent_block_fields`, `core_engine`,
+  `needle_engine`, `field_profile`, the eigenmode trio), `Solver` with all six
+  methods including the 30-argument `needle_gradient`, the merit pair
+  (`SimCurves`, `MeritSpec`) and the full synthesis pipeline (`LayerSpec`,
+  `DesignStack`, `LmConfig`, `PipelineConfig`, `NeedleCycleConfig`,
+  `SmatrixContext`, `NeedlePipeline`, `run_design`, `assemble_design`).
+- **`src/navette/_spectralweave.pyi`** — `SpectralDataFrame`,
+  `OpticalCollection`, `OpticalWeaver`, `TargetWeaver`, `calculate_merit`,
+  including the dunder protocol methods (`__getitem__`, `__contains__`,
+  `__len__`) that the registration list does not mention but callers use.
+- **`tools/check_pyi_sync.py`**, wired into `ci.yml` beside the exposure and
+  CIE guards. Two passes, because they rot differently:
+  * **Surface** — parses each `#[pymodule]` body for its `wrap_pyfunction!` /
+    `add_class::<>` / `m.add("…")` entries (resolving `#[pyclass(name = …)]`,
+    so `PyDesignStack` is checked as `DesignStack`) and diffs against the
+    stub's top-level names. Needs no build.
+  * **Signatures** — when the extension imports, compares parameter *names*
+    from PyO3's `__text_signature__` against the stub's, for every function,
+    constructor and method. A renamed keyword argument passes the surface
+    check and breaks every caller that used it. 64 of 64 `_smatrix` entries
+    compare; nothing is skipped silently.
+
+  Modules without a stub (`_color`, `_interpolate`, `_structure`) are listed
+  explicitly in `UNSTUBBED` rather than inferred from which files exist, so a
+  *new* unstubbed submodule fails the check instead of joining the gap in
+  silence — and adding one of those three stubs fails until the name is
+  removed from the list.
+
+### Fixed
+
+- `_materials.pyi` pointed at `crates/navette-py`, a path removed in the Rust
+  consolidation, and had no SPDX header. Both corrected.
+
+### Known
+
+- No behaviour change; the fingerprint is unmoved at `30d96909…3c6c`.
+- Return types in the new stubs are as precise as the boundary allows:
+  `core_engine`, `Solver.solve`, `needle_gradient`, `run_design` and
+  `NeedlePipeline.run` return `dict[str, Any]` because their key set is chosen
+  at runtime by the request bitmask. The sync guard checks names and
+  parameters, not return types — a `TypedDict` per request shape would be the
+  next step, and is not one the review asked for.
+
 ## [0.6.19] — The doc-line batch, and the one line in it that was a bug (R6.4, part 2)
 
 R6.4's remaining three items. Six of the seven doc lines were exactly that —

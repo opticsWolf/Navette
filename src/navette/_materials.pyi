@@ -1,7 +1,10 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Type stubs for the compiled extension navette._materials
 # (submodule of the aggregated navette._navette extension, built from
-# crates/navette-py over the navette Rust crate). All wavelengths are in nanometres;
+# rust/navette-py over the navette Rust crate). All wavelengths are in nanometres;
 # all functions return a complex128 array of n + ik.
+#
+# Kept in sync with the PyO3 registration list by tools/check_pyi_sync.py.
 from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
