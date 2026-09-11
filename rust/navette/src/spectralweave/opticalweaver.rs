@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 use lru::LruCache;
+use rayon::prelude::*;
 use smallvec::SmallVec;
 use parking_lot::RwLock;
 
@@ -230,10 +231,11 @@ impl SpectralDataFrame {
             ));
         }
 
-        let mut guard = self.data.write();
-        let is_new = !guard.contains_key(&key);
-        guard.insert(key, value);
-        Ok(is_new)
+        // `insert` already tells us whether the key was there, so this is one
+        // hash of `key` rather than the `contains_key` + `insert` pair's two.
+        // A batch unweave does this once per (key, frame) -- tens of thousands
+        // of times for a 512-key call.
+        Ok(self.data.write().insert(key, value).is_none())
     }
 
     /// Cloned view of the curve under `key`, if present.
@@ -375,13 +377,31 @@ impl OpticalCollection {
     /// Record that `frame` holds fragments of `key`. Returns false when the
     /// mapping already existed.
     pub fn map_frame_to_key(&self, key: &OpticalKey, frame: &Arc<SpectralDataFrame>) -> bool {
+        self.map_frames_to_key(key, std::slice::from_ref(frame)) == 1
+    }
+
+    /// Record that every frame in `frames` holds fragments of `key`, under a
+    /// single lock. Returns how many were not already recorded.
+    ///
+    /// The singular form above takes the collection-wide write lock once per
+    /// *fragment*; a batch unweave writes one fragment per (key, frame) pair,
+    /// which is tens of thousands for a 512-key call and all of it contending
+    /// on one lock. This form takes it once per key. Frames keep the order
+    /// they arrive in -- the distribution plan's order -- which is what
+    /// `get_converted` hands back, so it must not depend on how the batch was
+    /// scheduled; each key is still processed by one thread, start to finish.
+    pub fn map_frames_to_key(&self, key: &OpticalKey, frames: &[Arc<SpectralDataFrame>]) -> usize {
         let mut key_map = self.key_map.write();
-        let frames = key_map.entry(key.clone()).or_default();
-        if frames.iter().any(|f| Arc::ptr_eq(f, frame)) {
-            return false;
+        let mapped = key_map.entry(key.clone()).or_default();
+        let mut added = 0;
+        for frame in frames {
+            if mapped.iter().any(|f| Arc::ptr_eq(f, frame)) {
+                continue;
+            }
+            mapped.push(Arc::clone(frame));
+            added += 1;
         }
-        frames.push(frame.clone());
-        true
+        added
     }
 
     pub fn set_data(
@@ -435,23 +455,28 @@ enum SliceOrIndices {
     Indices(Vec<usize>),
 }
 impl SliceOrIndices {
-    /// True if this plan entry can use the zero-copy (buffer-sharing) path when
-    /// a shared source `Arc<[f64]>` is available. Contiguous slices can be a
-    /// view onto the source; strided index sets must be copied out.
+    /// How many source points this entry contributes, without gathering them.
     #[inline]
-    fn wants_shared(&self) -> bool {
-        matches!(self, SliceOrIndices::Slice(..))
+    fn len(&self) -> usize {
+        match self {
+            SliceOrIndices::Slice(s, e) => e - s,
+            SliceOrIndices::Indices(idx) => idx.len(),
+        }
     }
 
     /// Extract this entry's fragment from `data`. When `shared` is `Some` it must
-    /// alias `data`; a contiguous slice then becomes a zero-copy view into that
-    /// buffer (which keeps the whole source alive for the fragment's lifetime).
-    /// Strided fragments, and the `shared == None` case, copy out.
+    /// be a copy of `data` over a span containing this entry; a contiguous slice
+    /// then becomes a zero-copy view into that buffer. Strided fragments, and the
+    /// `shared == None` case, copy out.
     #[inline]
-    fn gather(&self, data: &[f64], shared: Option<&Arc<[f64]>>) -> SpectralData {
+    fn gather(&self, data: &[f64], shared: Option<&SharedSource>) -> SpectralData {
         match self {
             SliceOrIndices::Slice(s, e) => match shared {
-                Some(arc) => SpectralData { buf: Arc::clone(arc), start: *s, len: e - s },
+                Some(src) => SpectralData {
+                    buf: Arc::clone(&src.buf),
+                    start: s - src.base,
+                    len: e - s,
+                },
                 None => SpectralData::from_arc(Arc::from(&data[*s..*e])),
             },
             SliceOrIndices::Indices(idx) => {
@@ -462,7 +487,39 @@ impl SliceOrIndices {
     }
 }
 
+/// One key's source curve, copied over just the span the plan reaches, so every
+/// contiguous fragment of that key can be a view into it instead of a copy of
+/// its own.
+///
+/// The engine has to own this: the caller's buffer is borrowed for the length of
+/// the call (and, from Python, is a numpy array the caller may write to
+/// afterwards), while a fragment lives as long as the frame holding it. `base`
+/// is the source offset the copy starts at -- frames rarely tile the whole input
+/// curve, and copying the part of it no fragment reads is the one saving
+/// available here that does not change what a fragment *is*.
+struct SharedSource {
+    buf: Arc<[f64]>,
+    base: usize,
+}
+
 type DistributionPlan = Vec<(Arc<SpectralDataFrame>, SliceOrIndices)>;
+
+/// Above this many fragments in one batch unweave -- frames in the plan times
+/// keys in the batch -- the per-key loop goes to the rayon pool.
+///
+/// The count, not the byte volume, is the thing to gate on. The bytes are a
+/// `memcpy` per key and that is bound by DRAM bandwidth, which does not
+/// parallelise: 512 keys x 100k points measures 39.7 / 35.1 / 36.5 ms on 1 / 4
+/// / 32 threads, 22 GB/s of traffic either way. What *does* scale is the
+/// per-fragment work -- gather, hash, frame lock -- and that goes as the
+/// fragment count. Measured across the bench grid the split is clean: every
+/// configuration with 16384 fragments gains (1.06x to 2.11x) and every one with
+/// 4096 or fewer loses (up to 2.2x at 10k points x 8 frames x 32 keys, where
+/// the pool hand-off costs more than the whole call). 8192 sits between them.
+///
+/// Serial and parallel write the same bytes to the same places; this is a speed
+/// knob, not a semantic one.
+const UNWEAVE_PAR_FRAGMENTS: usize = 8192;
 
 /// Top-level weaving store: fragment distribution plus re-assembly.
 /// `generation` bumps on every structural change so caches and Python-side
@@ -578,6 +635,84 @@ impl OpticalWeaver {
         ))
     }
 
+    /// Everything `unweave` validates that depends only on the plan and the
+    /// grid, not on which curve is being distributed: each fragment has to
+    /// cover its frame's grid exactly.
+    ///
+    /// Hoisting it out of the per-key loop is what makes a batch all-or-nothing.
+    /// Checked inside the loop it would reject the batch after an arbitrary
+    /// prefix of it had already been written -- and once the loop runs in
+    /// parallel, "arbitrary" would mean *scheduling-dependent*.
+    fn check_plan(plan: &DistributionPlan) -> Result<(), String> {
+        for (frm, indices) in plan {
+            Self::check_coverage(frm, indices.len())?;
+        }
+        Ok(())
+    }
+
+    /// Reject a curve that is not one value per wavelength, before the plan
+    /// indexes it.
+    ///
+    /// The plan addresses the source by position, so a short curve would index
+    /// out of bounds -- a panic, and from a rayon worker at that. The Python
+    /// wrapper checks this for a single `unweave` but not for a batch, which is
+    /// exactly the path that reaches here with many curves at once.
+    fn check_length(key: &OpticalKey, got: usize, want: usize) -> Result<(), String> {
+        if got == want {
+            return Ok(());
+        }
+        Err(format!(
+            "unweave: the curve for key ({}, {}, {}) has {got} value(s) for a {want}-point grid; a target curve must carry one value per wavelength.",
+            key.wavelength, key.data_type, key.polarisation
+        ))
+    }
+
+    /// The half-open source span every contiguous fragment of `plan` lies in,
+    /// or `None` when the plan has none (an all-strided plan gathers
+    /// element-wise and never reads a shared buffer).
+    fn shared_span(plan: &DistributionPlan) -> Option<(usize, usize)> {
+        let mut lo = usize::MAX;
+        let mut hi = 0usize;
+        for (_, indices) in plan {
+            if let SliceOrIndices::Slice(s, e) = indices {
+                lo = lo.min(*s);
+                hi = hi.max(*e);
+            }
+        }
+        (lo < hi).then_some((lo, hi))
+    }
+
+    /// Distribute one curve over `plan` and register the frames it is new to.
+    /// Returns the fragments written.
+    ///
+    /// Infallible in practice once `check_plan` and `check_length` have passed
+    /// -- the only error `set_data` can still return is the length mismatch
+    /// `check_plan` already ruled out -- but it is not the place to assert that,
+    /// so the `Result` stays.
+    fn unweave_one(
+        &self,
+        plan: &DistributionPlan,
+        span: Option<(usize, usize)>,
+        key: &OpticalKey,
+        full_data: &[f64],
+    ) -> Result<usize, String> {
+        let shared = span.map(|(lo, hi)| SharedSource {
+            buf: Arc::from(&full_data[lo..hi]),
+            base: lo,
+        });
+        let mut fresh: SmallVec<[Arc<SpectralDataFrame>; 2]> = SmallVec::new();
+        for (frm, indices) in plan {
+            let subset = indices.gather(full_data, shared.as_ref());
+            if frm.set_data(key.clone(), subset, None)? {
+                fresh.push(Arc::clone(frm));
+            }
+        }
+        if !fresh.is_empty() {
+            self.inner.map_frames_to_key(key, &fresh);
+        }
+        Ok(plan.len())
+    }
+
     pub fn unweave(
         &self,
         key: OpticalKey,
@@ -585,26 +720,23 @@ impl OpticalWeaver {
         full_data: &[f64],
     ) -> Result<usize, String> {
         let plan = self.resolve_plan(full_wavelength)?;
-        // Materialise the source once if any fragment is a contiguous slice; all
-        // such fragments then view it with no copy. Skip it for all-strided plans.
-        let shared_data: Option<Arc<[f64]>> =
-            plan.iter().any(|(_, i)| i.wants_shared()).then(|| Arc::from(full_data));
-
-        let mut updated = 0;
-        for (frm, indices) in &plan {
-            let subset = indices.gather(full_data, shared_data.as_ref());
-            Self::check_coverage(frm, subset.len())?;
-            let is_new = frm.set_data(key.clone(), subset, None)?;
-            if is_new {
-                self.inner.map_frame_to_key(&key, frm);
-            }
-            updated += 1;
-        }
-        Ok(updated)
+        Self::check_plan(&plan)?;
+        Self::check_length(&key, full_data.len(), full_wavelength.len())?;
+        self.unweave_one(&plan, Self::shared_span(&plan), &key, full_data)
     }
 
     /// Distribute many curves sharing one grid, reusing a single plan.
     /// Returns the total fragments written.
+    ///
+    /// The per-key work is a copy of the source span plus one map insert per
+    /// frame; it shares nothing across keys but the plan, which is read-only
+    /// here, so above [`UNWEAVE_PAR_FRAGMENTS`] fragments it runs on the rayon
+    /// pool. What each key writes is independent of the others -- distinct
+    /// map entries, in frames that already exist -- and each key is handled by
+    /// one thread from start to finish, so the frame order recorded under a key
+    /// is the plan's either way. The keys arrive in an `AHashMap`'s iteration
+    /// order, which is already not the caller's, so nothing observable was
+    /// ordered by the loop to begin with.
     pub fn unweave_collection(
         &self,
         common_wavelength: &[f64],
@@ -614,22 +746,31 @@ impl OpticalWeaver {
             return Ok(0);
         }
         let plan = self.resolve_plan(common_wavelength)?;
-        // The plan is shared across all keys, so decide once whether it contains
-        // any contiguous slice worth materialising a per-key shared buffer for.
-        let needs_shared = plan.iter().any(|(_, i)| i.wants_shared());
+        Self::check_plan(&plan)?;
+        let items: Vec<(&OpticalKey, &[f64])> =
+            data_batch.iter().map(|(k, d)| (k, *d)).collect();
+        for (key, full_data) in &items {
+            Self::check_length(key, full_data.len(), common_wavelength.len())?;
+        }
+
+        let span = Self::shared_span(&plan);
+        let fragments = plan.len().saturating_mul(items.len());
+        let written: Vec<Result<usize, String>> =
+            if items.len() > 1 && fragments >= UNWEAVE_PAR_FRAGMENTS {
+                items
+                    .par_iter()
+                    .map(|(key, full_data)| self.unweave_one(&plan, span, key, full_data))
+                    .collect()
+            } else {
+                items
+                    .iter()
+                    .map(|(key, full_data)| self.unweave_one(&plan, span, key, full_data))
+                    .collect()
+            };
+
         let mut total = 0usize;
-        for (key, full_data) in &data_batch {
-            let shared_data: Option<Arc<[f64]>> =
-                needs_shared.then(|| Arc::from(*full_data));
-            for (frm, indices) in &plan {
-                let subset = indices.gather(full_data, shared_data.as_ref());
-                Self::check_coverage(frm, subset.len())?;
-                let is_new = frm.set_data(key.clone(), subset, None)?;
-                if is_new {
-                    self.inner.map_frame_to_key(key, frm);
-                }
-                total += 1;
-            }
+        for count in written {
+            total += count?;
         }
         Ok(total)
     }
@@ -718,5 +859,261 @@ impl OpticalWeaver {
             }
         }
         Ok(plan)
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(wl: f64, pol: &str) -> OpticalKey {
+        OpticalKey::from((wl, "R".to_string(), pol.to_string()))
+    }
+
+    /// A weaver whose frames tile `[0, n)` in `n / frames` blocks, seeded so the
+    /// frames exist before anything is unwoven onto them.
+    fn tiled(n: usize, frames: usize) -> (OpticalWeaver, Vec<f64>) {
+        let grid: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let w = OpticalWeaver::new(16);
+        let block = n / frames;
+        let seed = key(0.0, "seed");
+        for f in 0..frames {
+            let sub = &grid[f * block..(f + 1) * block];
+            w.set_data(seed.clone(), &vec![0.0; sub.len()], sub, Unit::NM, Unit::RAW)
+                .unwrap();
+        }
+        (w, grid)
+    }
+
+    fn curve(grid: &[f64], scale: f64) -> Vec<f64> {
+        grid.iter().map(|&x| x * scale + 1.0).collect()
+    }
+
+    // -- the length guard --------------------------------------------------
+
+    #[test]
+    fn a_short_curve_in_a_batch_is_an_error_not_a_panic() {
+        let (w, grid) = tiled(64, 4);
+        let k = key(500.0, "s");
+        let short = vec![0.0; 32];
+        let mut batch = AHashMap::new();
+        batch.insert(k, short.as_slice());
+        let err = w.unweave_collection(&grid, batch).unwrap_err();
+        assert!(err.contains("32 value(s) for a 64-point grid"), "{err}");
+        assert!(err.contains("one value per wavelength"), "{err}");
+    }
+
+    #[test]
+    fn the_length_error_names_the_key_it_came_from() {
+        let (w, grid) = tiled(64, 4);
+        let mut batch = AHashMap::new();
+        let short = vec![0.0; 10];
+        batch.insert(key(633.0, "p"), short.as_slice());
+        let err = w.unweave_collection(&grid, batch).unwrap_err();
+        assert!(err.contains("(633, R, p)"), "{err}");
+    }
+
+    #[test]
+    fn a_long_curve_is_rejected_too() {
+        // Indexing would succeed; the curve is still not one value per
+        // wavelength, and silently ignoring the tail is how a caller's off-by-one
+        // grid goes unnoticed.
+        let (w, grid) = tiled(64, 4);
+        let long = vec![0.0; 65];
+        assert!(w.unweave(key(500.0, "s"), &grid, &long).is_err());
+    }
+
+    // -- the batch is all-or-nothing ---------------------------------------
+
+    #[test]
+    fn a_grid_that_misses_part_of_a_frame_writes_nothing() {
+        // The plan is checked before any key is distributed, so a bad grid
+        // cannot leave an arbitrary prefix of the batch written.
+        let (w, grid) = tiled(64, 4);
+        let every_other: Vec<f64> = grid.iter().step_by(2).copied().collect();
+        let data = curve(&every_other, 1.0);
+        let mut batch = AHashMap::new();
+        for pol in ["s", "p"] {
+            batch.insert(key(500.0, pol), data.as_slice());
+        }
+        assert!(w.unweave_collection(&every_other, batch).is_err());
+        assert!(!w.inner.contains_key(&key(500.0, "s")));
+        assert!(!w.inner.contains_key(&key(500.0, "p")));
+    }
+
+    // -- batch == per-key ---------------------------------------------------
+
+    #[test]
+    fn a_batch_writes_exactly_what_the_per_key_calls_would() {
+        let (batched, grid) = tiled(600, 6);
+        let (singly, _) = tiled(600, 6);
+        let curves: Vec<Vec<f64>> = (0..8).map(|i| curve(&grid, i as f64 + 0.5)).collect();
+        let keys: Vec<OpticalKey> = (0..8).map(|i| key(400.0 + i as f64, "s")).collect();
+
+        let mut batch = AHashMap::new();
+        for (k, c) in keys.iter().zip(&curves) {
+            batch.insert(k.clone(), c.as_slice());
+        }
+        assert_eq!(batched.unweave_collection(&grid, batch).unwrap(), 8 * 6);
+        for (k, c) in keys.iter().zip(&curves) {
+            singly.unweave(k.clone(), &grid, c).unwrap();
+        }
+        for (k, c) in keys.iter().zip(&curves) {
+            let (bw, bd) = batched.get_weaved(k).unwrap();
+            let (sw, sd) = singly.get_weaved(k).unwrap();
+            assert_eq!(bd, sd, "data differs for {}", k.wavelength);
+            assert_eq!(bw, sw);
+            assert_eq!(bd, *c);
+        }
+    }
+
+    #[test]
+    fn the_parallel_path_writes_what_the_serial_path_writes() {
+        // 64 frames x 256 keys = 16384 fragments, comfortably over
+        // UNWEAVE_PAR_FRAGMENTS; the 4-frame twin stays serial. Same answers.
+        let n = 1024;
+        let (par, grid) = tiled(n, 64);
+        let (ser, _) = tiled(n, 4);
+        let curves: Vec<Vec<f64>> = (0..256).map(|i| curve(&grid, i as f64)).collect();
+        let keys: Vec<OpticalKey> = (0..256).map(|i| key(i as f64, "s")).collect();
+
+        let mut a = AHashMap::new();
+        let mut b = AHashMap::new();
+        for (k, c) in keys.iter().zip(&curves) {
+            a.insert(k.clone(), c.as_slice());
+            b.insert(k.clone(), c.as_slice());
+        }
+        const { assert!(64 * 256 >= UNWEAVE_PAR_FRAGMENTS) };
+        const { assert!(4 * 256 < UNWEAVE_PAR_FRAGMENTS) };
+        assert_eq!(par.unweave_collection(&grid, a).unwrap(), 256 * 64);
+        assert_eq!(ser.unweave_collection(&grid, b).unwrap(), 256 * 4);
+        for (k, c) in keys.iter().zip(&curves) {
+            assert_eq!(par.get_weaved(k).unwrap().1, *c);
+            assert_eq!(ser.get_weaved(k).unwrap().1, *c);
+        }
+    }
+
+    #[test]
+    fn every_key_records_its_frames_in_plan_order() {
+        // `get_converted` hands fragments back in the order they were recorded,
+        // so that order must not depend on how the batch was scheduled.
+        let n = 1024;
+        let (w, grid) = tiled(n, 64);
+        let curves: Vec<Vec<f64>> = (0..256).map(|i| curve(&grid, i as f64)).collect();
+        let mut batch = AHashMap::new();
+        let keys: Vec<OpticalKey> = (0..256).map(|i| key(i as f64, "s")).collect();
+        for (k, c) in keys.iter().zip(&curves) {
+            batch.insert(k.clone(), c.as_slice());
+        }
+        w.unweave_collection(&grid, batch).unwrap();
+        let reference: Vec<usize> = w
+            .inner
+            .frames_for_key(&keys[0])
+            .unwrap()
+            .iter()
+            .map(|f| f.uid)
+            .collect();
+        assert_eq!(reference.len(), 64);
+        for k in &keys[1..] {
+            let uids: Vec<usize> = w
+                .inner
+                .frames_for_key(k)
+                .unwrap()
+                .iter()
+                .map(|f| f.uid)
+                .collect();
+            assert_eq!(uids, reference);
+        }
+    }
+
+    // -- the span-limited shared source -------------------------------------
+
+    #[test]
+    fn a_plan_reaching_only_the_tail_of_the_curve_still_gathers_the_tail() {
+        // Frames cover [300, 600) of a 600-point grid, so the shared copy starts
+        // at 300 and every fragment index has to be rebased onto it. Getting the
+        // offset wrong reads the head of the curve and nothing else notices.
+        let grid: Vec<f64> = (0..600).map(|i| i as f64).collect();
+        let w = OpticalWeaver::new(8);
+        let seed = key(0.0, "seed");
+        for (lo, hi) in [(300, 450), (450, 600)] {
+            w.set_data(seed.clone(), &vec![0.0; hi - lo], &grid[lo..hi], Unit::NM, Unit::RAW)
+                .unwrap();
+        }
+        let c = curve(&grid, 3.0);
+        let k = key(500.0, "s");
+        let mut batch = AHashMap::new();
+        batch.insert(k.clone(), c.as_slice());
+        assert_eq!(w.unweave_collection(&grid, batch).unwrap(), 2);
+        let (wl, data) = w.get_weaved(&k).unwrap();
+        assert_eq!(wl, grid[300..]);
+        assert_eq!(data, c[300..]);
+    }
+
+    #[test]
+    fn shared_span_is_none_when_no_fragment_is_contiguous() {
+        // An all-strided plan gathers element-wise and must not materialise a
+        // copy it will never read.
+        let grid: Vec<f64> = (0..200).map(|i| i as f64).collect();
+        let strided: Vec<f64> = grid.iter().step_by(2).copied().collect();
+        let w = OpticalWeaver::new(8);
+        w.set_data(key(0.0, "seed"), &vec![0.0; strided.len()], &strided, Unit::NM, Unit::RAW)
+            .unwrap();
+        let c = curve(&grid, 2.0);
+        let k = key(500.0, "s");
+        assert_eq!(w.unweave(k.clone(), &grid, &c).unwrap(), 1);
+        let (_, data) = w.get_weaved(&k).unwrap();
+        assert_eq!(data, c.iter().step_by(2).copied().collect::<Vec<f64>>());
+    }
+
+    // -- the key map --------------------------------------------------------
+
+    #[test]
+    fn mapping_the_same_frames_twice_adds_nothing() {
+        let (w, grid) = tiled(64, 4);
+        let c = curve(&grid, 1.0);
+        let k = key(500.0, "s");
+        for _ in 0..3 {
+            let mut batch = AHashMap::new();
+            batch.insert(k.clone(), c.as_slice());
+            assert_eq!(w.unweave_collection(&grid, batch).unwrap(), 4);
+        }
+        assert_eq!(w.inner.frames_for_key(&k).unwrap().len(), 4);
+        assert_eq!(w.inner.len_keys(), 2); // the seed key and this one
+    }
+
+    #[test]
+    fn map_frames_to_key_reports_only_what_was_new() {
+        let (w, _) = tiled(64, 4);
+        let frames = w.inner.frames_snapshot();
+        let k = key(500.0, "s");
+        assert_eq!(w.inner.map_frames_to_key(&k, &frames), 4);
+        assert_eq!(w.inner.map_frames_to_key(&k, &frames), 0);
+        assert!(!w.inner.map_frame_to_key(&k, &frames[0]));
+    }
+
+    #[test]
+    fn an_empty_batch_is_a_no_op() {
+        let (w, grid) = tiled(64, 4);
+        assert_eq!(w.unweave_collection(&grid, AHashMap::new()).unwrap(), 0);
+        assert_eq!(w.inner.len_keys(), 1);
+    }
+
+    #[test]
+    fn overwriting_a_key_does_not_re_count_it_as_new() {
+        let (w, grid) = tiled(64, 4);
+        let a = curve(&grid, 1.0);
+        let b = curve(&grid, 7.0);
+        let k = key(500.0, "s");
+        for c in [&a, &b] {
+            let mut batch = AHashMap::new();
+            batch.insert(k.clone(), c.as_slice());
+            w.unweave_collection(&grid, batch).unwrap();
+        }
+        assert_eq!(w.get_weaved(&k).unwrap().1, b);
     }
 }

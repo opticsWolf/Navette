@@ -253,6 +253,45 @@ def s_generation_no_bump_on_overwrite(make) -> int:
     return g1 - g0
 
 
+def s_batch_equals_per_key(make) -> None:
+    """A batch unweave must write exactly what the one-at-a-time calls write.
+
+    The batch path resolves the plan once, shares a materialised source across
+    the fragments of a key, and above a threshold runs the keys on a thread
+    pool; `unweave` does none of that. Nothing in the per-op benchmarks would
+    notice if the two drifted, and every caller of `unweave_batch` assumes they
+    have not (R5.1).
+
+    Sized to cross the parallel threshold on the Rust engine -- 40 frames x 256
+    keys is 10240 fragments -- so the pooled path is the one under test.
+    """
+    n_points, n_frames, n_keys = 2_000, 40, 256
+    full = arr(np.linspace(300.0, 900.0, n_points))
+    edges = np.linspace(0, n_points, n_frames + 1).astype(int)
+    seed = (0.0, "seed", "x")
+
+    batched, singly = make(), make()
+    for w in (batched, singly):
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            band = arr(full[lo:hi])
+            w.set_data(seed, arr(np.zeros(hi - lo)), band)
+
+    curves = {(float(k), "C", "s"): arr(np.cos(full / (k + 2)) + k)
+              for k in range(n_keys)}
+
+    n = batched.unweave_collection(full, dict(curves))
+    assert n == n_keys * n_frames, f"expected {n_keys * n_frames} writes, got {n}"
+    for key, values in curves.items():
+        assert singly.unweave(key, full, values) == n_frames
+
+    for key, values in curves.items():
+        bw, bd = batched.get_weaved(key)
+        sw, sd = singly.get_weaved(key)
+        assert eq_arrays(bw, sw), f"{key}: grids differ between batch and per-key"
+        assert eq_arrays(bd, sd), f"{key}: data differs between batch and per-key"
+        assert eq_arrays(bd, values), f"{key}: neither path reproduced the source"
+
+
 # Scenarios that produce a comparable value for Python-vs-Rust cross-checks.
 CROSS_SCENARIOS: List[Tuple[str, Callable]] = [
     ("basic_weave", s_basic),
@@ -268,6 +307,7 @@ CROSS_SCENARIOS: List[Tuple[str, Callable]] = [
 INVARIANT_SCENARIOS: List[Tuple[str, Callable]] = [
     ("generation_invalidation", s_generation_invalidation),
     ("generation_no_bump_on_overwrite", s_generation_no_bump_on_overwrite),
+    ("batch_equals_per_key", s_batch_equals_per_key),
 ]
 
 
@@ -296,6 +336,10 @@ def s_errors(engine: str) -> List[str]:
     # unweave length mismatch
     full = arr(np.arange(0.0, 8.0, 1.0))
     expect_raise("unweave_len_mismatch", lambda: w.unweave((4.0, "R", "s"), full, arr(np.zeros(7))))
+    # ... and the same curve in a batch, which used to reach the plan's indexing
+    # unchecked (R5.1).
+    expect_raise("unweave_collection_len_mismatch",
+                 lambda: w.unweave_collection(full, {(5.0, "R", "s"): arr(np.zeros(7))}))
     return failures
 
 

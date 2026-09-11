@@ -56,7 +56,7 @@ coverage is thin.
 | R2.2 | README `--release` + bench UTF-8 | P0-enabler | docs/benches | S | S | §5.1.1, §17 |
 | R2.3 | push/PR CI workflow | **P0-enabler** | gates everything after it | M (fix live warnings first) | M | §7 |
 | ~~R2.3a~~ | ~~clippy clean → blocking gate~~ | — | **DONE (0.6.6)** | — | — | §7 |
-| R2.3b | rustfmt adoption → blocking gate | P3 | 981 files; style decision first | S (blame churn) | S/L review | §7 |
+| R2.3b | rustfmt adoption → blocking gate — **DEFERRED**, decision pending | P3 | 981 files; style decision first — put to the maintainer at 0.6.12, answer: not now | S (blame churn) | S/L review | §7 |
 | R2.4 | parity tests collected; `sys.exit` → skip | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
 | ~~R2.4a~~ | port `test_core_engine_*` onto `core_engine` — **DONE (0.6.11)** | P1 | only whole-engine parity oracles — both restored, 13/13 channels, ~1e-14 | M | M | §15 |
 | R2.5 | request-bit + schema sync tests | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
@@ -69,7 +69,7 @@ coverage is thin.
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; **item B (R4.4c) DONE (0.6.10)** — seam + `minpack_lm` behind `opt-minpack-lm`; the two argmin solvers (R4.4c-argmin) remain open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | ~~R4.6~~ | TRF backend (trust-region-reflective) — **DONE (0.6.12)** | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat — `optimizer="trf"`, 10/10 breaks caught | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
-| R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
+| ~~R5.1~~ | `unweave_collection` batch optimization — **DONE (0.6.13)** | P2 | 1.15×–2.29× where the cost is per-fragment; the rest is DRAM bandwidth, and the reference wins by aliasing the caller's buffer (see corrections) | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
 | R5.3 | `core_engine` emit path (discovered by R2.4a) | **P2** | the rewrite is 0.5–0.65× the numba kernel it replaced | M (must stay bit-identical) | M–L | §5, R2.4a |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
@@ -392,7 +392,7 @@ numeric change is a regression by definition.
   have left intermediate commits that do not build or do not pass the
   fingerprint. It ships as one reviewed change with the gate flip.
 
-### R2.3b rustfmt adoption → make the fmt gate blocking
+### R2.3b rustfmt adoption → make the fmt gate blocking — DEFERRED (decision pending, asked 0.6.12)
 
 **Discovered by R2.3 (0.5.6).** `cargo fmt --all --check` reports diffs in
 **981** files — i.e. the tree has never been rustfmt-formatted and the
@@ -1427,7 +1427,7 @@ different method:
 
 ## 5. Phase 5 — Performance (P2/P3)
 
-### R5.1 `unweave_collection` batch path
+### R5.1 `unweave_collection` batch path — DONE (0.6.13)
 
 **Review:** §5.3/§5.2 (only genuine perf regression on the release build:
 0.22× @ 100k pts × 512 keys; 0.48× @ 500k × 16 keys; diagnosis: per-key
@@ -1468,6 +1468,82 @@ friction around the read guard inside `py.detach` is the likely time sink.
   (cheap, kills the whole class of batch-vs-single drift).
 
 **Effort.** L.
+
+**CORRECTIONS / NOTES (0.6.13) — shipped, and the diagnosis in this item was
+wrong twice over.** The batch path is 1.15×–2.29× faster where the cost is
+per-fragment work, unchanged where it is bandwidth, and it no longer panics on a
+short curve. The Impact line is not reachable and the reason is a semantic
+difference, not a missing optimization.
+
+* **The named causes were not the cost.** "Per-key `AHashMap` rebuild +
+  `String` clones + `frames.read().clone()`": the binding already builds the
+  map once per call (fix-design point 1 was done before this item was picked
+  up), `OpticalKey` holds `Arc<str>` so a clone is two atomic increments, the
+  plan is resolved once, and `unweave_collection` never called
+  `frames_snapshot` at all. Measured, the per-key cost is memcpy bandwidth:
+  10.4, 7.1 and 15.8 GB/s across three configurations before the change, which
+  is what a copy of that size costs on this machine and nothing like what a
+  hash-map rebuild costs.
+* **The Python reference wins because it does not own its data.** `full_data[s:e]`
+  on a numpy array is a *view*; the Rust engine copies, because a fragment
+  outlives the borrowed buffer the call was handed. A probe settles it — mutate
+  the caller's array after `unweave_collection` returns and the stored curve
+  changes on the Python engine (first value becomes 99.0) and does not on the
+  Rust one (0.0). So the **Impact line — "brings the last regressing data-plane
+  op to >= 1x vs numba at 512-key scale" — is not reachable.** 512 keys x 100k
+  points is 400 MB copied in and 400 MB out; the 36 ms that takes is 22 GB/s of
+  DRAM traffic, this machine's ceiling. Matching the reference means adopting
+  its aliasing, which would make a stored fragment change under a caller who
+  edited their own array afterwards. That is a correctness hazard, not an
+  optimization, and it is not done.
+* **Fix-design point 2 does not apply and point 3 was already true.** There is
+  no `frames.read().clone()` on this path to replace with a held guard; the
+  plan's `Arc<SpectralDataFrame>` handles are what the loop walks, and they are
+  cloned once when the plan is built and cached. Results are not materialized
+  per key either — fragments are written straight into the frames.
+* **What was actually worth doing**, all of it found by measuring rather than
+  from the item:
+  1. **Copy only the span the plan reaches.** Frames rarely tile the whole
+     curve handed to them, and the rest of it was being copied once per key.
+  2. **One collection-wide lock per key, not per fragment.** `map_frame_to_key`
+     took the `key_map` write lock once per (key, frame) pair — 16 384
+     acquisitions of one lock for a 512-key call. `map_frames_to_key` takes it
+     once per key; the singular form delegates to it, so there is one
+     implementation.
+  3. **`set_data` hashes the key once**, not twice.
+  4. **Rayon across keys above 8192 fragments.** Gated on the fragment count,
+     not the byte volume, because the bytes are the part that does not
+     parallelise: the same 512-key call measures 39.7 / 35.1 / 36.5 ms on
+     1 / 4 / 32 threads. What scales is the per-fragment work, and across the
+     bench grid the split is clean — every configuration at 16 384 fragments
+     gains (1.06× to 2.11×) and every one at 4096 or fewer loses, by up to 2.2×
+     where the hand-off costs more than the whole call.
+* **Two correctness defects, neither in the item.** A curve that is not one
+  value per wavelength was indexed straight out of its buffer: a Rust panic,
+  surfacing as `pyo3_runtime.PanicException`, which does not derive from
+  `Exception` — so `except Exception:` around `unweave_batch` did not catch it.
+  The Python wrapper checked this for a single `unweave` and never for a batch.
+  And the coverage check ran *inside* the per-key loop, so a bad grid rejected
+  the call after an arbitrary prefix of the batch had been written — which,
+  once the loop can run on a pool, would have become a scheduling-dependent
+  prefix. Both checks are now hoisted ahead of the first write and the batch is
+  all-or-nothing.
+* **Determinism (§13).** Each key is handled by one thread start to finish, so
+  the frame order recorded under a key is still the plan's — which is what
+  `get_converted` hands back. The keys arrive in an `AHashMap`'s iteration
+  order, which was already not the caller's, so the loop never ordered anything
+  observable. Asserted directly (`every_key_records_its_frames_in_plan_order`)
+  rather than argued. `weaver_race.py` re-run: 0 exceptions, 0 torn writes, all
+  192 keys bit-exact.
+* **Point 4 of the fix design (the `py_arrays` lifetime-anchor comment) is not
+  folded in here.** The binding is untouched by this item; the comment belongs
+  with §13's review of the pointer-capture pattern and is left with R6.x.
+* **The optional validation item is done**, and on both engines:
+  `batch_equals_per_key` in the spectral bench asserts a 40-frame × 256-key
+  batch writes exactly what 256 single `unweave` calls write. Sized to cross
+  the parallel threshold, so the pooled path is the one under test.
+  `opticalweaver.rs` also gains the 13 tests it had none of — it was covered
+  only from Python.
 
 ### R5.2 Parallelize the serial derive loop
 

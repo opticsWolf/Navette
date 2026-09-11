@@ -3,6 +3,81 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.13] — What the batch unweave was actually spending (R5.1)
+
+`unweave_collection` ran at 0.22–0.48× the Python reference and the plan blamed
+per-key hash-map rebuilds, `String` clones and a whole-collection clone. None of
+those were there any more. What it spends is a `memcpy`, and the reason the
+reference does not is that the reference **does not own its data**.
+
+### Changed
+
+- **The batch unweave copies only the span the plan reaches**, not the whole
+  input curve, and shares that one copy across a key's fragments. Frames rarely
+  tile the entire curve handed to them; the part no fragment reads was being
+  copied per key.
+- **One collection-wide lock per key instead of one per fragment.** The key→
+  frames map was taking its write lock once per (key, frame) pair — 16 384 times
+  for a 512-key call, all of it on one lock. `OpticalCollection::
+  map_frames_to_key` takes it once per key; the singular form now delegates to
+  it.
+- **`SpectralDataFrame::set_data` hashes the key once**, not twice
+  (`contains_key` then `insert` → `insert` and read what it returns).
+- **Above 8192 fragments the per-key loop runs on the rayon pool.** Gated on the
+  fragment count rather than the byte volume, because the bytes are the part
+  that does *not* parallelise — see Known.
+
+Measured on the bench grid, Rust-side `unweave_collection`, median of 7:
+
+| grid × frames × keys | before | after | |
+|---|---:|---:|---|
+| 1 000 × 32 × 128 | 0.296 ms | 0.234 ms | 1.27× |
+| 10 000 × 64 × 256 | 2.585 ms | 1.346 ms | 1.92× |
+| 10 000 × 256 × 64 | 1.024 ms | 0.446 ms | 2.29× |
+| 100 000 × 512 × 32 | 2.957 ms | 2.057 ms | 1.44× |
+| 100 000 × 32 × 512 | 41.29 ms | 35.92 ms | 1.15× |
+| 100 000 × 16 × 32 | 1.848 ms | 1.8 ms | — |
+| 500 000 × 32 × 16 | 3.711 ms | 3.7 ms | — |
+
+### Fixed
+
+- **A curve that is not one value per wavelength no longer panics in a batch.**
+  The distribution plan addresses the source by position, so a short curve was
+  indexed straight out of its buffer — a Rust panic surfacing as
+  `pyo3_runtime.PanicException`, which does not even derive from `Exception`, so
+  an `except Exception:` around the call did not catch it. The Python wrapper
+  checked this for a single `unweave` and never for `unweave_batch`. It is a
+  `ValueError` naming the key now, on both paths.
+- **A rejected batch writes nothing.** Everything that depends only on the plan
+  and the grid is checked before the first key is distributed, so a grid that
+  misses part of a frame no longer rejects the call after an arbitrary prefix of
+  it has already been applied — which, once the loop can run on a pool, would
+  have meant a *scheduling-dependent* prefix.
+
+### Added
+
+- **`batch_equals_per_key`** in the spectral bench's correctness section, on both
+  engines: a 40-frame × 256-key batch must write exactly what 256 single
+  `unweave` calls write. The batch path resolves one plan, shares one
+  materialised source per key and may run pooled; nothing in the per-op timings
+  would have noticed the two drifting.
+- 13 tests for `opticalweaver`, which had none of its own (it was covered only
+  from Python), and four for the wrapper's batch guards.
+
+### Known
+
+- **`unweave_collection` is still ~0.28× the Python reference at 512-key scale,
+  and that gap is not an optimization target.** The Python reference stores
+  *views into the caller's numpy buffer*; the Rust engine owns its fragments.
+  Mutating the caller's array after the call changes the stored curve on the
+  Python engine and does not on the Rust one. Owning it means copying it: 512
+  keys × 100 000 points is 400 MB in and 400 MB out, and 36 ms of that is
+  22 GB/s of DRAM traffic — this machine's ceiling, not a code path. Measured
+  1 / 4 / 32 rayon threads: 39.7 / 35.1 / 36.5 ms. The plan's stated goal for
+  this item, "≥ 1× vs numba at 512-key scale", is reachable only by adopting the
+  aliasing, which would make a fragment change under a caller who edited their
+  own array afterwards. Recorded in `docs/remediation_plan.md`; not done.
+
 ## [0.6.12] — The method the docs have been naming (R4.6)
 
 `thick_opt.rs` has said since the rewrite that it replaces

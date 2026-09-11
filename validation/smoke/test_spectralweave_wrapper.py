@@ -141,3 +141,70 @@ def test_unweave_batch_writes_every_key(woven):
 def test_a_fragment_still_rejects_mismatched_arrays():
     with pytest.raises(ValueError, match="same shape"):
         OpticalFragment(wavelengths=_WL_A, values=np.zeros(3), **_KEY)
+
+
+# --------------------------------------------------------------------------
+# 5. The batch path's own guards (R5.1)
+# --------------------------------------------------------------------------
+
+def test_a_short_curve_in_a_batch_is_an_error_not_a_crash(woven):
+    """``unweave`` checks this in the wrapper; ``unweave_batch`` never did.
+
+    The distribution plan addresses the source curve by position, so a short one
+    indexed straight out of the buffer -- a Rust panic surfacing as
+    ``pyo3_runtime.PanicException``, which does not even derive from
+    ``Exception``. It is an error message now.
+    """
+    wl, values = woven.get_continuous_curve(**_KEY)
+    frag = OpticalFragment(wavelengths=wl, values=values, **_KEY)
+    with pytest.raises(ValueError, match="one value per wavelength"):
+        woven.unweave_batch(wl, {frag: values[:-1]})
+
+
+def test_the_batch_length_error_names_the_offending_key(woven):
+    wl, values = woven.get_continuous_curve(**_KEY)
+    frag = OpticalFragment(wavelengths=wl, values=values,
+                           base_wavelength=550.0, data_type="R",
+                           polarization="p")
+    with pytest.raises(ValueError, match=r"\(550, R, p\)"):
+        woven.unweave_batch(wl, {frag: values[:-1]})
+
+
+def test_a_rejected_batch_writes_nothing(woven):
+    """All-or-nothing: one bad curve must not leave the others half-applied."""
+    wl, values = woven.get_continuous_curve(**_KEY)
+    good = OpticalFragment(wavelengths=wl, values=values, base_wavelength=550.0,
+                           data_type="R", polarization="good")
+    bad = OpticalFragment(wavelengths=wl, values=values, base_wavelength=550.0,
+                          data_type="R", polarization="bad")
+    with pytest.raises(ValueError):
+        woven.unweave_batch(wl, {good: values * 2.0, bad: values[:-1]})
+    with pytest.raises(Exception):
+        woven.get_continuous_curve(550.0, "R", "good")
+
+
+def test_a_batch_writes_what_the_single_calls_write(woven):
+    """The batch path shares one plan and one materialised source across keys;
+    ``unweave`` does neither. They must still agree (R5.1)."""
+    wl, values = woven.get_continuous_curve(**_KEY)
+    scales = {"s": 1.0, "p": 0.5, "u": -3.25}
+    frags = {
+        pol: OpticalFragment(wavelengths=wl, values=values,
+                             base_wavelength=550.0, data_type="R",
+                             polarization=pol)
+        for pol in scales
+    }
+    woven.unweave_batch(wl, {f: values * scales[pol] for pol, f in frags.items()})
+
+    single = SimulationWeaver(cache_size=16)
+    for sub in (_WL_A, _WL_B):
+        single.add_fragment(OpticalFragment(wavelengths=sub,
+                                            values=np.sin(sub / 40.0), **_KEY))
+    for pol, f in frags.items():
+        single.unweave(f, wl, values * scales[pol])
+
+    for pol in scales:
+        _, from_batch = woven.get_continuous_curve(550.0, "R", pol)
+        _, from_single = single.get_continuous_curve(550.0, "R", pol)
+        assert np.array_equal(from_batch, from_single)
+        assert np.array_equal(from_batch, values * scales[pol])
