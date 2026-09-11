@@ -679,11 +679,22 @@ impl MeritSpec {
         &self.color
     }
 
-    /// Total number of residual components (all target points, active or
-    /// not — inactive ones contribute zeros so the residual vector length
-    /// stays fixed for the optimizer).
+    /// Number of residual components `residuals()` produces: one per target
+    /// point for pointwise frames, ONE per integral frame (the kind applies
+    /// to the mean, not to each point), plus one per color demand. Inactive
+    /// constraints still occupy their rows — they contribute zeros, so the
+    /// length does not depend on the values.
+    ///
+    /// It does depend on the *grids*: a frame whose wavelengths do not
+    /// overlap the simulated grid is skipped entirely by `residuals_into`
+    /// and contributes nothing, which cannot be known from the spec alone.
+    /// This is therefore the count for a simulation that covers every frame.
     pub fn n_residuals(&self) -> usize {
-        self.targets.iter().map(|t| t.wavelengths.len()).sum::<usize>() + self.color.len()
+        self.targets
+            .iter()
+            .map(|t| if t.integral { 1 } else { t.wavelengths.len() })
+            .sum::<usize>()
+            + self.color.len()
     }
 
     /// Scalar merit function: Σ residual² + missing-key penalties.
@@ -956,6 +967,379 @@ impl MeritSpec {
         eval_color(d, sim_row, &sim.wavelengths)
             .map(|(r, _)| r)
             .map_err(|_| key.curve)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row-wise curve sensitivity (R4.5, work item i)
+// ---------------------------------------------------------------------------
+
+/// How one residual row depends on one simulated curve value.
+///
+/// `curve`/`angle_row`/`wavelength` address a single entry of `SimCurves`
+/// (`curve[angle_row * n_wav + wavelength]`); `d_residual` is ∂r/∂(that
+/// value). A row with an empty term list does not move when the curves move
+/// — an inactive constraint, a target grid that misses the simulation, or a
+/// kind sitting in its dead zone.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CurveTerm {
+    pub curve: CurveId,
+    pub angle_row: usize,
+    pub wavelength: usize,
+    pub d_residual: f64,
+}
+
+/// ∂r/∂(simulated curve) for every residual row, in `residuals()` order.
+///
+/// The merit half of the analytic Jacobian (R4.5): with ∂(curve)/∂θ from the
+/// solver sweep, J[i,k] = Σ_terms d_residual · ∂(curve)/∂θ_k. Splitting it
+/// here means this half is verifiable on its own, against a finite difference
+/// of `residuals()` in curve space — no solver in the loop.
+#[derive(Clone, Debug, Default)]
+pub struct MeritSensitivity {
+    /// `rows[i]` are the terms of residual `i`. Length == `n_residuals()`.
+    pub rows: Vec<Vec<CurveTerm>>,
+    /// Rows whose dependence this pass cannot express, in the same indexing.
+    /// A caller that finds one among its active demands must fall back to a
+    /// finite-difference Jacobian rather than treat the row as constant —
+    /// see `is_complete`.
+    pub uncovered: Vec<usize>,
+}
+
+impl MeritSensitivity {
+    /// True when every row's dependence is expressed. `false` means some row
+    /// is a phase or color demand, whose chain this pass does not carry.
+    pub fn is_complete(&self) -> bool {
+        self.uncovered.is_empty()
+    }
+}
+
+/// Where one target point reads the simulated grid, and with what weights.
+enum SampleRef {
+    /// Reads `sim[idx]` outright (aligned grids, or a clamped edge).
+    Direct(usize),
+    /// Reads between `idx` and `idx + 1` with fraction `f`:
+    /// value = (1−f)·sim[idx] + f·sim[idx+1].
+    Interp(usize, f64),
+}
+
+impl SampleRef {
+    fn read(&self, row: &[f64]) -> f64 {
+        match *self {
+            SampleRef::Direct(i) => row[i],
+            SampleRef::Interp(i, f) => row[i] + f * (row[i + 1] - row[i]),
+        }
+    }
+}
+
+/// ∂(kind_residual)/∂(scaled_diff) — `kind_residual` differentiated arm by arm.
+///
+/// The kinks are the constraint, not an approximation: `a`/`b` are exactly
+/// zero on their satisfied side and `r` is exactly zero inside its band. At a
+/// kink this returns the derivative of the arm `kind_residual` itself takes
+/// there, so the two agree on which side of the boundary the point is on.
+fn d_kind_residual(kind: ConstraintKind, scaled_diff: f64, tol: f64, bw: f64) -> f64 {
+    match kind {
+        ConstraintKind::Exact => 1.0 / tol,
+        ConstraintKind::Above if scaled_diff < 0.0 => 1.0 / tol,
+        ConstraintKind::Below if scaled_diff > 0.0 => 1.0 / tol,
+        ConstraintKind::Above | ConstraintKind::Below => 0.0,
+        ConstraintKind::Range => {
+            let bw_eff = if bw <= 0.0 { tol } else { bw };
+            let ad = scaled_diff.abs();
+            if ad <= bw_eff { 0.0 } else { scaled_diff.signum() / tol }
+        },
+        ConstraintKind::CenterBand => {
+            if bw <= 0.0 {
+                1.0 / tol
+            } else {
+                let ad = scaled_diff.abs();
+                if ad <= bw {
+                    1.0 / bw
+                } else {
+                    // d/dx sqrt(((|x|−bw)/tol)² + 1)
+                    let u = (ad - bw) / tol;
+                    scaled_diff.signum() * u / (tol * (u * u + 1.0).sqrt())
+                }
+            }
+        },
+    }
+}
+
+/// ∂(scaled_diff)/∂(sim_raw) for one transform.
+///
+/// `Phase` wraps by subtracting a multiple of 2π, which is piecewise the
+/// identity. `Log` is flat below the 1e-12 clamp — the residual genuinely
+/// stops responding there, and so does a finite difference.
+fn d_transform(transform: SimTransform, sim_raw: f64, norm_factor: f64) -> f64 {
+    match transform {
+        SimTransform::Phase => 1.0,
+        SimTransform::Log => {
+            if sim_raw > 1e-12 {
+                norm_factor / (sim_raw * std::f64::consts::LN_10)
+            } else {
+                0.0
+            }
+        },
+        SimTransform::Linear | SimTransform::Complex => norm_factor,
+    }
+}
+
+/// Does the target grid coincide bit-for-bit with a contiguous block of the
+/// simulated grid, and where does that block start? The same expression
+/// `residuals_into` uses — integer and bit comparisons only, no arithmetic
+/// that could round differently.
+fn alignment(t_wl: &[f64], sim_wl: &[f64]) -> (bool, usize) {
+    let offset = sim_wl.partition_point(|&x| x < t_wl[0]);
+    let aligned = offset + t_wl.len() <= sim_wl.len()
+        && t_wl
+            .iter()
+            .zip(&sim_wl[offset..offset + t_wl.len()])
+            .all(|(&a, &b)| a.to_bits() == b.to_bits());
+    (aligned, offset)
+}
+
+/// Which simulated points target point `i` reads. Mirrors the two-pointer
+/// sampler in `residuals_into`, including its edge clamps; `sim_idx` advances
+/// monotonically across the sorted target grid exactly as it does there.
+fn resolve_sample(
+    t_wl: &[f64],
+    sim_wl: &[f64],
+    i: usize,
+    sim_idx: &mut usize,
+    aligned: bool,
+    offset: usize,
+) -> SampleRef {
+    let n_wav = sim_wl.len();
+    if aligned {
+        return SampleRef::Direct(offset + i);
+    }
+    let target_w = t_wl[i];
+    while *sim_idx + 1 < n_wav && sim_wl[*sim_idx + 1] < target_w {
+        *sim_idx += 1;
+    }
+    if *sim_idx + 1 < n_wav && sim_wl[*sim_idx] <= target_w {
+        let w0 = sim_wl[*sim_idx];
+        let w1 = sim_wl[*sim_idx + 1];
+        if (w1 - w0).abs() < 1e-14 {
+            SampleRef::Direct(*sim_idx)
+        } else {
+            SampleRef::Interp(*sim_idx, (target_w - w0) / (w1 - w0))
+        }
+    } else if *sim_idx < n_wav {
+        SampleRef::Direct(*sim_idx)
+    } else {
+        SampleRef::Direct(n_wav - 1)
+    }
+}
+
+impl MeritSpec {
+    /// ∂r/∂(simulated curve) for every residual row (R4.5).
+    ///
+    /// Mirrors `residuals()` exactly in row order and count, so the two index
+    /// together. Covered: pointwise and integral targets over intensity and
+    /// absorption curves, every constraint kind and every real transform.
+    /// **Not** covered, and listed in `uncovered`: phase targets (`arg()` of a
+    /// complex row, plus a differential reference that depends on the stack's
+    /// total thickness directly rather than through any curve) and color
+    /// demands (a spectrum-wide integral through the CIE chain —
+    /// `build_needle_targets` already emits *that* derivative, in the
+    /// per-solver-point shape the needle pass wants rather than per row).
+    ///
+    /// This deliberately walks the target grids a second time instead of
+    /// being folded into `residuals_into`. That function is the
+    /// bit-exactness-critical path — its arithmetic is pinned point for point
+    /// against the Python original — and threading a sink through it to save
+    /// one traversal would put every residual in the engine at risk to buy a
+    /// Jacobian. The two are kept in step by
+    /// `sensitivity_is_a_finite_difference_of_residuals`, which differences
+    /// `residuals()` itself: any drift between them fails it.
+    pub fn curve_sensitivity(&self, sim: &SimCurves) -> Result<MeritSensitivity, CurveId> {
+        let mut s = MeritSensitivity {
+            rows: Vec::with_capacity(self.n_residuals()),
+            uncovered: Vec::new(),
+        };
+        for k in 0..self.keys.len() {
+            self.curve_sensitivity_into(sim, k, &mut s)?;
+        }
+        // The invariant is row-for-row agreement with `residuals()` itself,
+        // not with `n_residuals()`: a frame that misses the simulated grid
+        // is skipped by both and counted by neither. Debug builds check it
+        // against the real thing, so any future divergence in either pass
+        // trips everywhere, not only in the one cross-check test.
+        debug_assert!(
+            {
+                let mut v = Vec::new();
+                self.residuals(sim, &mut v).map(|()| v.len()) == Ok(s.rows.len())
+            },
+            "curve_sensitivity produced {} rows; residuals() disagrees",
+            s.rows.len()
+        );
+        Ok(s)
+    }
+
+    fn curve_sensitivity_into(
+        &self,
+        sim: &SimCurves,
+        key_idx: usize,
+        out: &mut MeritSensitivity,
+    ) -> Result<(), CurveId> {
+        let key = &self.keys[key_idx];
+        let ang_row = sim.angle_row(key.angle);
+        let sim_wl: &[f64] = &sim.wavelengths;
+        let n_wav = sim_wl.len();
+        let irow = |id: CurveId| -> Result<&[f64], CurveId> {
+            let arc = if id.is_back() { sim.back_curve(id) } else { sim.curve(id) };
+            arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
+                .ok_or(key.curve)
+        };
+
+        for t in self.targets.iter().filter(|t| t.key_idx as usize == key_idx) {
+            let t_wl: &[f64] = &t.wavelengths;
+            let n_rows = if t.integral { 1 } else { t_wl.len() };
+
+            // sim_raw = const + Σ sgn·curve. Absorption is A = 1 − R − T, so
+            // the constant is 1 and both companions enter with −1. Resolve
+            // the rows BEFORE anything else, so a missing curve errors here
+            // exactly where `residuals_into` errors.
+            let (konst, channels): (f64, Vec<(CurveId, &[f64], f64)>) = if t.phase {
+                // Phase rows end up uncovered, but the *failure* has to
+                // match: `residuals_into` errors on a missing complex row
+                // before it pushes anything, so a spec that cannot be
+                // evaluated at all must not come back as a tidy list of
+                // empty rows.
+                let have = if key.curve.is_back() {
+                    sim.complex_back_curve(key.curve).is_some()
+                } else {
+                    sim.complex_curve(key.curve).is_some()
+                };
+                if !have {
+                    return Err(key.curve);
+                }
+                (0.0, Vec::new())
+            } else if let Some((rc, tc)) = key.curve.absorption_companions() {
+                (1.0, vec![(rc, irow(rc)?, -1.0), (tc, irow(tc)?, -1.0)])
+            } else {
+                (0.0, vec![(key.curve, irow(key.curve)?, 1.0)])
+            };
+
+            if t_wl.is_empty() {
+                continue;
+            }
+            // Grid miss: `residuals_into` pushes nothing for this target, so
+            // neither does this.
+            if sim_wl.last().is_none_or(|&l| l < t_wl[0])
+                || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
+            {
+                continue;
+            }
+            // A phase target occupies its rows like any other; they are just
+            // unexplained. Reported as uncovered rather than left empty, so a
+            // phase demand is never quietly read as covered-and-constant.
+            if t.phase {
+                for _ in 0..n_rows {
+                    out.uncovered.push(out.rows.len());
+                    out.rows.push(Vec::new());
+                }
+                continue;
+            }
+
+            let (aligned, offset) = alignment(t_wl, sim_wl);
+            let rscale = (t.weight / t.count_norm.unwrap_or(1.0)).sqrt();
+
+            // Re-derive the values the residual pass saw; every derivative
+            // factor below is evaluated at those same points.
+            let mut sim_idx = 0usize;
+            let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
+            let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
+            let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+            for i in 0..t_wl.len() {
+                let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
+                let raw = konst
+                    + channels.iter().map(|(_, row, sgn)| sgn * r.read(row)).sum::<f64>();
+                let target_scaled = t.normalized_targets[i];
+                let diff = match t.transform {
+                    SimTransform::Phase => {
+                        let d = raw - target_scaled;
+                        d - std::f64::consts::TAU * (d / std::f64::consts::TAU).round()
+                    },
+                    SimTransform::Log => raw.max(1e-12).log10() * t.norm_factor - target_scaled,
+                    SimTransform::Linear | SimTransform::Complex => {
+                        raw * t.norm_factor - target_scaled
+                    },
+                };
+                refs.push(r);
+                raws.push(raw);
+                diffs.push(diff);
+            }
+
+            let n = t_wl.len() as f64;
+            if t.integral {
+                // One row over the mean: ∂R/∂value = rscale · kind'(mean)
+                //                        · (1/n) · transform'(raw_i) · channel
+                //                        · sample weight.
+                let mean_d = diffs.iter().sum::<f64>() / n;
+                let mean_tol =
+                    (t.tolerances.iter().take(t_wl.len()).sum::<f64>() / n).max(1e-300);
+                let mean_bw = t.band.iter().take(t_wl.len()).sum::<f64>() / n;
+                let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
+                let mut terms: Vec<CurveTerm> = Vec::new();
+                for i in 0..t_wl.len() {
+                    let dt = d_transform(t.transform, raws[i], t.norm_factor);
+                    push_terms(&mut terms, &channels, ang_row, &refs[i], rscale * dk * dt / n);
+                }
+                out.rows.push(terms);
+            } else {
+                for i in 0..t_wl.len() {
+                    let tol = t.tolerances[i];
+                    let bw = t.band.get(i).copied().unwrap_or(0.0);
+                    let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
+                    let dt = d_transform(t.transform, raws[i], t.norm_factor);
+                    let mut terms: Vec<CurveTerm> = Vec::new();
+                    push_terms(&mut terms, &channels, ang_row, &refs[i], rscale * dk * dt);
+                    out.rows.push(terms);
+                }
+            }
+        }
+
+        // One row per color demand, all unexplained here: a color residual
+        // integrates the whole spectrum through the CIE chain, and
+        // `build_needle_targets` already emits that derivative as
+        // `grad_r`/`grad_t`, per solver point rather than per row.
+        for _ in self.color.iter().filter(|d| d.key_idx as usize == key_idx) {
+            out.uncovered.push(out.rows.len());
+            out.rows.push(Vec::new());
+        }
+        Ok(())
+    }
+}
+
+/// Append ∂r/∂value for every (channel × simulated point) this sample reads.
+/// Terms that are structurally zero are dropped rather than stored: a caller
+/// multiplying them by ∂(curve)/∂θ would only be adding zeros.
+fn push_terms(
+    terms: &mut Vec<CurveTerm>,
+    channels: &[(CurveId, &[f64], f64)],
+    angle_row: usize,
+    r: &SampleRef,
+    scale: f64,
+) {
+    if scale == 0.0 {
+        return;
+    }
+    for &(curve, _, sgn) in channels {
+        let mut emit = |wavelength: usize, w: f64| {
+            if w != 0.0 {
+                terms.push(CurveTerm { curve, angle_row, wavelength, d_residual: w });
+            }
+        };
+        match *r {
+            SampleRef::Direct(i) => emit(i, scale * sgn),
+            SampleRef::Interp(i, f) => {
+                emit(i, scale * sgn * (1.0 - f));
+                emit(i + 1, scale * sgn * f);
+            },
+        }
     }
 }
 
@@ -1927,4 +2311,369 @@ mod tests {
       assert!(res.cost < 1e-14, "cost={}", res.cost);
       assert!(res.x[0].is_finite());
     }
+
+  // -------------------------------------------------------------------------
+  // R4.5: row-wise curve sensitivity, against a finite difference of
+  // `residuals()` itself. This is also the anti-drift guard between
+  // `curve_sensitivity` and `residuals_into`, which walk the target grids
+  // separately on purpose (see the doc comment on `curve_sensitivity`).
+  // -------------------------------------------------------------------------
+
+  mod sensitivity {
+    use super::*;
+    use std::sync::Arc;
+
+    const NW: usize = 9;
+    const NA: usize = 2;
+
+    fn wl() -> Vec<f64> {
+      (0..NW).map(|i| 500.0 + 25.0 * i as f64).collect()
+    }
+
+    /// Two angle rows of smooth, distinguishable curves.
+    fn sim_of(rs: &[f64], ts: &[f64]) -> SimCurves {
+      let mut s = SimCurves {
+        angles: vec![0.0, 30.0].into(),
+        wavelengths: wl().into(),
+        total_d: 400.0,
+        n_front_re: 1.0,
+        n_back_re: 1.52,
+        ..Default::default()
+      };
+      s.set_curve(CurveId::Rs, Arc::from(rs.to_vec())).unwrap();
+      s.set_curve(CurveId::Ts, Arc::from(ts.to_vec())).unwrap();
+      s
+    }
+
+    fn base_sim() -> SimCurves {
+      let rs: Vec<f64> = (0..NA * NW)
+        .map(|k| 0.08 + 0.05 * ((k as f64) * 0.7).sin())
+        .collect();
+      let ts: Vec<f64> = (0..NA * NW)
+        .map(|k| 0.80 + 0.04 * ((k as f64) * 0.4).cos())
+        .collect();
+      sim_of(&rs, &ts)
+    }
+
+    fn target(
+      key_idx: u32,
+      grid: Vec<f64>,
+      kind: ConstraintKind,
+      transform: SimTransform,
+      integral: bool,
+      weight: f64,
+    ) -> MeritTarget {
+      let n = grid.len();
+      MeritTarget {
+        key_idx,
+        wavelengths: grid.into(),
+        kind,
+        transform,
+        norm_factor: 1.0,
+        normalized_targets: vec![0.05; n].into(),
+        tolerances: vec![0.02; n].into(),
+        band: vec![0.01; n].into(),
+        phase: false,
+        differential_passes: None,
+        integral,
+        weight,
+        count_norm: None,
+      }
+    }
+
+    /// Rebuild the sim with one (curve, flat index) entry shifted by `h`.
+    fn bumped(base: &SimCurves, curve: CurveId, flat: usize, h: f64) -> SimCurves {
+      let mut rs = base.curve(CurveId::Rs).unwrap().to_vec();
+      let mut ts = base.curve(CurveId::Ts).unwrap().to_vec();
+      match curve {
+        CurveId::Rs => rs[flat] += h,
+        CurveId::Ts => ts[flat] += h,
+        other => panic!("unexpected curve {other:?}"),
+      }
+      sim_of(&rs, &ts)
+    }
+
+    /// Dense ∂r/∂value by central difference, for one (curve, flat) entry.
+    fn fd_column(spec: &MeritSpec, sim: &SimCurves, curve: CurveId, flat: usize) -> Vec<f64> {
+      let h = 1e-7;
+      let mut plus = Vec::new();
+      let mut minus = Vec::new();
+      spec.residuals(&bumped(sim, curve, flat, h), &mut plus).unwrap();
+      spec.residuals(&bumped(sim, curve, flat, -h), &mut minus).unwrap();
+      plus.iter().zip(&minus).map(|(p, m)| (p - m) / (2.0 * h)).collect()
+    }
+
+    /// The analytic sensitivity as a dense column for one (curve, flat).
+    fn analytic_column(s: &MeritSensitivity, n_wav: usize, curve: CurveId, flat: usize)
+      -> Vec<f64>
+    {
+      s.rows
+        .iter()
+        .map(|terms| {
+          terms
+            .iter()
+            .filter(|t| t.curve == curve && t.angle_row * n_wav + t.wavelength == flat)
+            .map(|t| t.d_residual)
+            .sum()
+        })
+        .collect()
+    }
+
+    fn compare(spec: &MeritSpec, sim: &SimCurves, tol: f64, label: &str) {
+      let s = spec.curve_sensitivity(sim).unwrap();
+      // Against the residual vector itself, not `n_residuals()`: the two
+      // differ by design for a frame that misses the simulated grid, and
+      // the contract this pass owes its caller is index-for-index with
+      // `residuals()`.
+      let mut r0 = Vec::new();
+      spec.residuals(sim, &mut r0).unwrap();
+      assert_eq!(s.rows.len(), r0.len(), "{label}: row count");
+      assert!(s.is_complete(), "{label}: uncovered {:?}", s.uncovered);
+
+      let mut checked = 0usize;
+      let mut worst = 0.0f64;
+      for curve in [CurveId::Rs, CurveId::Ts] {
+        for flat in 0..NA * NW {
+          let fd = fd_column(spec, sim, curve, flat);
+          let an = analytic_column(&s, NW, curve, flat);
+          let scale = fd.iter().fold(1.0f64, |a, v| a.max(v.abs()));
+          for (i, (a, f)) in an.iter().zip(&fd).enumerate() {
+            let dev = (a - f).abs() / scale;
+            worst = worst.max(dev);
+            assert!(dev < tol, "{label}: row {i}, {curve:?}[{flat}]: {a} vs {f}");
+            if f.abs() > 1e-9 {
+              checked += 1;
+            }
+          }
+        }
+      }
+      assert!(checked > 0, "{label}: every finite difference was zero — vacuous");
+      println!("  {label}: {checked} live entries, worst rel dev {worst:.3e}");
+    }
+
+    #[test]
+    fn sensitivity_is_a_finite_difference_of_residuals() {
+      // Every kind x every real transform, pointwise, on the aligned grid.
+      for kind in [
+        ConstraintKind::Exact,
+        ConstraintKind::Above,
+        ConstraintKind::Below,
+        ConstraintKind::Range,
+        ConstraintKind::CenterBand,
+      ] {
+        for transform in [SimTransform::Linear, SimTransform::Log] {
+          let mut spec = MeritSpec::new();
+          let k = spec.add_key(MeritKey { angle: 30.0, curve: CurveId::Rs });
+          let mut t = target(k as u32, wl(), kind, transform, false, 1.7);
+          // Aim at the middle of the R sweep, in whatever units the
+          // transform works in. A level the curve never reaches would leave
+          // `a`/`b` inactive at every point and the comparison vacuous —
+          // which is exactly what a flat 0.05 does to `b` under `Log`.
+          let level = if transform == SimTransform::Log { 0.08f64.log10() } else { 0.08 };
+          t.normalized_targets = vec![level; NW].into();
+          spec.add_target(t).unwrap();
+          compare(&spec, &base_sim(), 1e-6, &format!("{kind:?}/{transform:?}"));
+        }
+      }
+    }
+
+    #[test]
+    fn sensitivity_covers_the_integral_mean_row() {
+      // One residual over the mean of nine points: every point contributes
+      // 1/n, and the kind applies once, to the mean.
+      let mut spec = MeritSpec::new();
+      let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+      spec
+        .add_target(target(k as u32, wl(), ConstraintKind::Exact, SimTransform::Linear,
+                           true, 3.0))
+        .unwrap();
+      assert_eq!(spec.n_residuals(), 1);
+      compare(&spec, &base_sim(), 1e-6, "integral/Exact");
+    }
+
+    #[test]
+    fn sensitivity_covers_absorption_through_both_companions() {
+      // A = 1 − R − T: the row must depend on BOTH curves, each with the
+      // opposite sign of an R row. A one-channel bug would still pass a
+      // single-curve check.
+      let mut spec = MeritSpec::new();
+      let k = spec.add_key(MeritKey { angle: 30.0, curve: CurveId::As });
+      spec
+        .add_target(target(k as u32, wl(), ConstraintKind::Exact, SimTransform::Linear,
+                           false, 1.0))
+        .unwrap();
+      let sim = base_sim();
+      compare(&spec, &sim, 1e-6, "absorption");
+
+      let s = spec.curve_sensitivity(&sim).unwrap();
+      let curves: Vec<CurveId> = s.rows[0].iter().map(|t| t.curve).collect();
+      assert!(curves.contains(&CurveId::Rs) && curves.contains(&CurveId::Ts),
+              "absorption row reads {curves:?}");
+      assert!(s.rows[0].iter().all(|t| t.d_residual < 0.0),
+              "A = 1 − R − T: raising either companion must lower the residual");
+    }
+
+    #[test]
+    fn sensitivity_covers_an_interpolated_target_grid() {
+      // Off-grid target points read two simulated points with weights
+      // (1−f, f). A pass that only handled the aligned fast path would look
+      // perfect on every other test in this module.
+      let grid: Vec<f64> = (0..7).map(|i| 512.0 + 31.0 * i as f64).collect();
+      let sim = base_sim();
+      // Under `Linear`/`Exact` the derivative is the same number wherever
+      // the row is evaluated, so that pair pins the interpolation WEIGHTS
+      // and nothing else. `Log` makes ∂r/∂value depend on the interpolated
+      // value itself, which pins the point the derivative is taken AT —
+      // reading the left neighbour instead of interpolating passes the
+      // first and fails the second.
+      for transform in [SimTransform::Linear, SimTransform::Log] {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+        let mut t = target(k as u32, grid.clone(), ConstraintKind::Exact, transform,
+                           false, 1.0);
+        if transform == SimTransform::Log {
+          t.normalized_targets = vec![0.08f64.log10(); grid.len()].into();
+        }
+        spec.add_target(t).unwrap();
+        compare(&spec, &sim, 1e-6, &format!("interpolated/{transform:?}"));
+
+        let s = spec.curve_sensitivity(&sim).unwrap();
+        assert!(s.rows.iter().any(|r| r.len() == 2),
+                "no row read two simulated points — the grid was not off-grid");
+      }
+    }
+
+    #[test]
+    fn sensitivity_covers_several_keys_targets_and_angles_at_once() {
+      // Row ORDER is the contract: keys in registration order, targets per
+      // key in insertion order, points along the grid. A mis-ordered pass
+      // would still be elementwise correct on any single-target spec.
+      let mut spec = MeritSpec::new();
+      let k0 = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+      let k1 = spec.add_key(MeritKey { angle: 30.0, curve: CurveId::Ts });
+      spec
+        .add_target(target(k0 as u32, wl(), ConstraintKind::Exact, SimTransform::Linear,
+                           false, 1.0))
+        .unwrap();
+      spec
+        .add_target(target(k0 as u32, wl()[2..6].to_vec(), ConstraintKind::Below,
+                           SimTransform::Linear, true, 2.5))
+        .unwrap();
+      spec
+        .add_target(target(k1 as u32, wl(), ConstraintKind::CenterBand,
+                           SimTransform::Linear, false, 0.4))
+        .unwrap();
+      compare(&spec, &base_sim(), 1e-6, "multi-key");
+    }
+
+    #[test]
+    fn a_target_grid_that_misses_the_simulation_contributes_no_rows() {
+      // `residuals_into` pushes nothing at all for a non-overlapping frame.
+      // If this pass pushed empty rows instead, every row after it would be
+      // misaligned — silently, since the values would all still be finite.
+      let mut spec = MeritSpec::new();
+      let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+      spec
+        .add_target(target(k as u32, vec![1200.0, 1300.0], ConstraintKind::Exact,
+                           SimTransform::Linear, false, 1.0))
+        .unwrap();
+      spec
+        .add_target(target(k as u32, wl(), ConstraintKind::Exact, SimTransform::Linear,
+                           false, 1.0))
+        .unwrap();
+      let sim = base_sim();
+      let mut r = Vec::new();
+      spec.residuals(&sim, &mut r).unwrap();
+      let s = spec.curve_sensitivity(&sim).unwrap();
+      assert_eq!(s.rows.len(), r.len(), "row counts diverged on a grid miss");
+      compare(&spec, &sim, 1e-6, "grid-miss");
+    }
+
+    #[test]
+    fn a_phase_target_is_reported_uncovered_not_zero() {
+      // The whole point of `uncovered`: a caller must fall back to a finite
+      // difference, not conclude that the phase rows are constant.
+      let mut spec = MeritSpec::new();
+      let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+      let mut t = target(k as u32, wl(), ConstraintKind::Exact, SimTransform::Phase,
+                         false, 1.0);
+      t.phase = true;
+      spec.add_target(t).unwrap();
+
+      let mut sim = base_sim();
+      let cplx: Vec<Complex64> = (0..NA * NW)
+        .map(|k| Complex64::new(0.3 * ((k as f64) * 0.3).cos(), 0.2 * ((k as f64) * 0.5).sin()))
+        .collect();
+      sim.set_complex(CurveId::Rs, Arc::from(cplx)).unwrap();
+      let s = spec.curve_sensitivity(&sim).unwrap();
+      assert!(!s.is_complete());
+      assert_eq!(s.uncovered.len(), NW);
+      assert_eq!(s.rows.len(), spec.n_residuals());
+      assert!(s.rows.iter().all(|r| r.is_empty()));
+    }
+
+    #[test]
+    fn a_missing_curve_errors_where_the_residual_pass_errors() {
+      let mut spec = MeritSpec::new();
+      let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rp });
+      spec
+        .add_target(target(k as u32, wl(), ConstraintKind::Exact, SimTransform::Linear,
+                           false, 1.0))
+        .unwrap();
+      let sim = base_sim();
+      let mut r = Vec::new();
+      assert_eq!(spec.residuals(&sim, &mut r).unwrap_err(), CurveId::Rp);
+      assert_eq!(spec.curve_sensitivity(&sim).unwrap_err(), CurveId::Rp);
+    }
+
+    #[test]
+    fn the_weight_and_count_normalization_ride_through() {
+      // rscale = sqrt(weight / count_norm) multiplies the residual, so it
+      // multiplies its derivative too. Two specs differing only in weight
+      // must differ in sensitivity by exactly that ratio.
+      let build = |weight: f64, count: Option<f64>| {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+        let mut t = target(k as u32, wl(), ConstraintKind::Exact, SimTransform::Linear,
+                           false, weight);
+        t.count_norm = count;
+        spec.add_target(t).unwrap();
+        spec
+      };
+      let sim = base_sim();
+      let a = build(1.0, None).curve_sensitivity(&sim).unwrap();
+      let b = build(9.0, Some(4.0)).curve_sensitivity(&sim).unwrap();
+      let ratio = (9.0f64 / 4.0).sqrt();
+      for (ra, rb) in a.rows.iter().zip(&b.rows) {
+        for (ta, tb) in ra.iter().zip(rb) {
+          assert!((tb.d_residual - ta.d_residual * ratio).abs()
+                  <= 1e-14 * tb.d_residual.abs().max(1.0),
+                  "{} vs {}", tb.d_residual, ta.d_residual * ratio);
+        }
+      }
+      compare(&build(9.0, Some(4.0)), &sim, 1e-6, "weighted");
+    }
+
+    #[test]
+    fn an_inactive_constraint_has_no_terms_at_all() {
+      // A `b` (below) demand already satisfied everywhere is flat: the rows
+      // must carry no terms, not terms that happen to be zero, so a caller
+      // assembling J does no work for them.
+      let mut spec = MeritSpec::new();
+      let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+      let mut t = target(k as u32, wl(), ConstraintKind::Below, SimTransform::Linear,
+                         false, 1.0);
+      t.normalized_targets = vec![10.0; NW].into(); // R is nowhere near 10
+      spec.add_target(t).unwrap();
+
+      let sim = base_sim();
+      let s = spec.curve_sensitivity(&sim).unwrap();
+      assert!(s.is_complete());
+      assert!(s.rows.iter().all(|r| r.is_empty()), "{:?}", s.rows);
+
+      let mut r = Vec::new();
+      spec.residuals(&sim, &mut r).unwrap();
+      assert!(r.iter().all(|v| *v == 0.0), "the constraint should be inactive");
+    }
+  }
 }

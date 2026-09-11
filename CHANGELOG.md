@@ -3,6 +3,64 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.8] — Every residual row can say what it depends on (R4.5, increment i)
+
+The merit half of the analytic Jacobian. `MeritSpec` can now report, for each
+residual row it produces, which simulated curve values that row reads and with
+what derivative — the factor `J[i,k] = Σ_terms ∂r_i/∂(curve value) ·
+∂(curve value)/∂θ_k` needs on the left. The right-hand factor, the per-point
+deposits from the solver sweep, is increment ii; nothing in the optimizer uses
+this yet, so no synthesis result moves.
+
+Splitting R4.5 this way is deliberate: the merit half is verifiable on its own
+against a finite difference of `residuals()` **in curve space**, with no solver
+in the loop, so when the two halves are joined a disagreement has only one
+place left to be.
+
+### Added
+
+- **`MeritSpec::curve_sensitivity(&sim) -> MeritSensitivity`** — `rows[i]` is
+  the list of `CurveTerm { curve, angle_row, wavelength, d_residual }` for
+  residual `i`, in `residuals()` order, index for index. Covered: pointwise
+  and integral-mean targets, over intensity and absorption curves, for every
+  constraint kind and every real transform, on aligned and interpolated target
+  grids.
+- **`MeritSensitivity::uncovered` / `is_complete()`** — rows whose dependence
+  this pass does not carry: phase targets (`arg()` of a complex row, plus a
+  differential reference that depends on the stack's total thickness directly)
+  and color demands (a spectrum-wide integral through the CIE chain, whose
+  derivative `build_needle_targets` already emits in a different shape). They
+  occupy their rows and are *listed*, never returned as empty-and-covered — a
+  caller that finds one among its active demands must fall back to a
+  finite-difference Jacobian, and `is_complete()` is how it asks.
+- **Ten cargo tests**, led by `sensitivity_is_a_finite_difference_of_residuals`
+  — five kinds × two transforms, central-differenced through `residuals()`
+  itself. That is the anti-drift guard: this pass walks the target grids a
+  second time rather than threading a sink through `residuals_into`, which is
+  the bit-exactness-critical path, and the cross-check is what keeps the two
+  walks in step.
+
+### Fixed
+
+- **`n_residuals()` over-counted integral targets.** It reported one component
+  per target point; `residuals()` pushes exactly **one** row per integral
+  frame, because the constraint kind applies to the mean, not to each point.
+  A spec with one nine-point integral frame advertised 9 components and
+  produced 1. The count is now what the vector actually holds, and its
+  docstring says the remaining caveat out loud: a frame whose grid misses the
+  simulated grid is skipped by `residuals_into` and cannot be counted from the
+  spec alone.
+
+### Notes
+
+- The kinks are the constraint, not an approximation: `a`/`b` rows are exactly
+  flat on their satisfied side and `r` rows exactly flat inside the band, so
+  an inactive constraint comes back with *no terms at all* rather than terms
+  that happen to be zero. `Log` is likewise flat below its 1e-12 clamp — the
+  residual genuinely stops responding there, and so does a finite difference.
+- Bit-exactness fingerprint unchanged; `bench_refold` unchanged (one LM
+  optimize 2.1 ms — this increment is not yet on any hot path).
+
 ## [0.6.7] — The LM stops squaring its own condition number (R4.4b)
 
 The bounded Levenberg-Marquardt behind every thickness optimization solved the

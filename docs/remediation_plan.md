@@ -67,7 +67,7 @@ coverage is thin.
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | **item A (R4.4b) DONE (0.6.7)**; item B (R4.4c) open | M (pinned optima may shift) | M–L | §3.6, §18.2 |
-| R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | 2n→1 solver sweeps per LM iteration; removes the FD noise floor; benefits every backend | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
+| R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | **increment i (merit rows) DONE (0.6.8)**; increment ii (deposits + J assembly) open | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
 | R5.1 | `unweave_collection` batch optimization | P2 | 0.22–0.48× at scale | M | L | §5.3 |
 | R5.2 | parallelize serial derive loop | P3 | next Amdahl bottleneck | M (bit-identity) | M–L | §5.4 |
@@ -1028,7 +1028,7 @@ and FD Jacobian untouched. What the plan did not say:
 
 ---
 
-### R4.5 Analytic Jacobian for the refold optimizer — assemble J from the verified deposit chain
+### R4.5 Analytic Jacobian for the refold optimizer — assemble J from the verified deposit chain — increment i DONE (0.6.8)
 
 **Review:** §3.6 (`build_jacobian` is central-difference: **2·n full residual evaluations per LM iteration**, thick_opt.rs:305 called at :160), §19.1 (the analytic chain is independently verified: fold evaluator 2e-16, end-to-end gradient 2e-8–7e-7 vs solver FD, dispersion ladder bit-exact), §20.2 (the deposit machinery exists in the Rust fold).
 
@@ -1050,6 +1050,61 @@ and FD Jacobian untouched. What the plan did not say:
 **Effort.** M. **Sequencing:** after R4.4b (feeds it J directly), before R4.6 (TRF consumes the same J).
 
 ---
+
+**CORRECTIONS / NOTES (0.6.8).** Split into two increments; **increment i
+(fix-design item 2, the merit half) is DONE (0.6.8)**. Increment ii — item 1
+(per-point deposits), item 3 (J assembly), item 4 (`jacobian =
+"analytic" | "fd"`) and the bench gate — is open.
+
+* **The split is the point, not an accident of scheduling.** Item 2 is the
+  only half that can be verified without a solver in the loop: differencing
+  `residuals()` in *curve* space gives an exact oracle for ∂r/∂(curve value),
+  and `sensitivity_is_a_finite_difference_of_residuals` uses it over five
+  kinds × two transforms. When the deposits arrive, a disagreement with the
+  FD Jacobian has one place left to be.
+* **Item 2 says "a refactor of the existing fold accumulation into row-wise
+  form"; that is not what was done, on purpose.** The row-wise pass walks the
+  target grids a *second* time rather than threading a sink through
+  `residuals_into`. That function is bit-exactness-critical — pinned point for
+  point against the Python original — and threading a sink through it to save
+  one traversal would put every residual in the engine at risk to buy a
+  Jacobian. The duplication is the safer trade; the FD cross-check is what
+  keeps the two walks from drifting, and in debug builds
+  `curve_sensitivity` additionally asserts its row count against
+  `residuals()` itself.
+* **"Each target row's residual depends on one curve value" is not true of two
+  cases the engine supports.** Absorption rows read **two** curves
+  (A = 1 − R − T, both companions entering with −1), and interpolated target
+  grids read **two adjacent** simulated points with weights (1−f, f). A row is
+  therefore a *list* of terms, not one term. A one-term design would have
+  looked right on every aligned intensity spec — which is most of them.
+* **Phase and color rows are reported, not silently zeroed.** Neither chain is
+  carried here (phase because `arg()` plus the differential reference depends
+  on total thickness directly; color because `build_needle_targets` already
+  emits that derivative per solver point). They occupy their rows and are
+  listed in `uncovered`, so item 4's "FD remains the fallback for uncovered
+  channels" has something concrete to test: `is_complete()`.
+* **`n_residuals()` was wrong for integral frames** — it counted one component
+  per point where `residuals()` pushes one per *frame*. Found by the row-count
+  assertion this pass needs; fixed, with the residual grid-overlap caveat now
+  documented (a frame that misses the simulated grid contributes nothing, and
+  that cannot be known from the spec alone).
+* **Sub-gradient semantics at the kinks (risk (a)) are settled and tested.**
+  `a`/`b` are exactly flat on their satisfied side, `r` exactly flat inside
+  the band, `Log` exactly flat below its 1e-12 clamp — in every case the
+  derivative of the arm `kind_residual` itself takes, so the two agree on
+  which side of the boundary a point is on. An inactive constraint yields no
+  terms at all rather than zero-valued terms, so J assembly does no work for
+  it.
+* **Seven deliberate breaks, all caught** (dropped 1/n on the integral mean,
+  `Log` derivative replaced by the norm factor, absorption companion sign
+  flipped, sample reconstruction collapsed to the left grid point,
+  interpolation weights swapped, dead-zone derivative made live, grid-miss
+  frame emitting empty rows). The first draft of the interpolation test did
+  *not* catch two of them: under `Linear`/`Exact` the derivative is the same
+  number wherever the row is evaluated, so that pair pins the interpolation
+  weights and nothing else. The test now also runs `Log`, which pins the point
+  the derivative is taken *at*.
 
 ### R4.6 TRF backend — trust-region-reflective, the bounded-LS reference method
 
