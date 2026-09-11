@@ -3,6 +3,53 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.1] — Needle depth is range-checked in release builds (R3.2)
+
+`needle_slopes4_ddz` guarded its host-layer invariant with `debug_assert!`,
+which is compiled out of every release build — the one everybody runs. And
+`locate_depth_in` does not reject an out-of-range depth either: it falls
+through to the last layer of the range and returns a depth past that layer's
+thickness. So `z = 1000` on a 400 nm stack, or `z = -10`, returned a gradient
+for a needle that is not where the caller put it, with no error.
+
+### Fixed
+
+- **`z` outside the eligible span now raises `ValueError`**, naming the index,
+  the value and the span. The two paths have different spans *within the same
+  call* — the coherent kernels are confined to `[start_idx, end_idx]`, the
+  multiblock cascade walks every non-ambient layer — so each is checked only
+  when the request actually reaches it. A multiblock request is not held to
+  the block's narrower bound; a call using both must satisfy both.
+- **A non-finite `needle_n_per_wav` entry now raises**, naming the index. It
+  previously made the whole gradient NaN with nothing to point at. (Beyond
+  R3.2's stated scope, but the same check in the same place.)
+
+Both endpoints stay legal and a `1e-9` tolerance absorbs round-off: a caller
+writing `np.linspace(0, sum(d), k)` lands on the bottom endpoint with whatever
+error the sum accumulated, and rejecting that would make the obvious way to
+write the call fail intermittently.
+
+### Changed
+
+- The check lives in `solver::needle_gradient`, not in the two PyO3 entry
+  points. The plan put it binding-side; one implementation in the core covers
+  both bindings *and* Rust callers, and it returns `Result<_, String>` which
+  the bindings already map to `PyValueError` — so the user-visible error is
+  identical either way.
+- The kernel keeps its `debug_assert!`s as Rust-caller invariants, with
+  messages that now say which contract was skipped. A release `assert!` in an
+  O(1) hot kernel would trade a silent wrong answer for a panic, which is
+  worse on a library path.
+- `validation/review/garbage_in.py`: the three needle rows flip from
+  `silent-clean` / `NaN-in-output` to `raises`. The fourth (`n = 0.3`) stays
+  permissive — an index below 1 is a real metallic index, not garbage.
+
+### Added
+
+- 13 more rows in `validation/smoke/test_input_validation.py`, including that
+  `end_idx` narrows the span, that a multiblock request keeps the wide one,
+  and that both endpoints plus the tolerance band are accepted.
+
 ## [0.6.0] — `ScatterMatrix` rejects malformed input (R3.1)
 
 **Behaviour change.** The constructor now validates its inputs and raises

@@ -20,8 +20,8 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (599 passed +
-     2 skipped at 0.6.0, parity included; `PYTHONIOENCODING=utf-8` no longer
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (612 passed +
+     2 skipped at 0.6.1, parity included; `PYTHONIOENCODING=utf-8` no longer
      needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
@@ -584,7 +584,7 @@ expect the new errors (it currently *documents* the silent behavior).
 * Out of scope and still unvalidated: `roughness_values` (negative sigma) and
   `incoherent_flags`. No silent-wrong-answer path is known for either.
 
-### R3.2 Needle z-range: debug-assert → real error
+### R3.2 Needle z-range: debug-assert → real error — DONE (0.6.1)
 
 **Review:** §21.1 (`rust/navette/src/smatrix/needle_operator.rs:383-387`
 `debug_assert!(xi <= ds[j])` / `debug_assert!(xi >= -1e-9 && xi <= fields.ds[j] + 1e-9)`;
@@ -610,6 +610,26 @@ z-range rows (z = 1000 on a 400 nm stack; z = −1) asserting the precise
 `ValueError`.
 
 **Effort.** S.
+
+**NOTES (0.6.1).**
+
+* **The check went in the core, not the bindings.** The plan said
+  binding-side, before `py.detach`. One implementation in
+  `solver::needle_gradient` covers both PyO3 entry points *and* Rust callers;
+  it returns `Result<_, String>`, which the bindings already map to
+  `PyValueError`, so the user-visible error is identical. No panic is
+  introduced either way.
+* **There is no single span.** The coherent kernels are confined to
+  `[start_idx, end_idx]`; the multiblock cascade calls
+  `locate_depth_in(thicknesses, 0, nl - 1, z)` — the whole stack. A call can
+  request both. Checking one bound for both would reject legitimate
+  multiblock depths; each span is checked only when the request reaches that
+  path.
+* **Out-of-range z was not merely unasserted, it was silently relocated.**
+  `locate_depth_in`'s `j == end_idx - 1` arm returns the last layer for any z
+  past the end, with xi > d_j. The gradient came back finite and plausible.
+* Also closed here (beyond the plan's scope, same check, same place): a
+  non-finite `needle_n_per_wav` entry, which used to NaN the whole gradient.
 
 ### R3.3 Eigenmode `char_func` upper bound + `refine_mode` no-mode contract
 

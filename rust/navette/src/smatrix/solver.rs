@@ -781,6 +781,54 @@ pub fn needle_gradient(
         return Err(String::from("channel must be 0..=3"));
     }
 
+    // ---- R3.2: needle depth and index range -------------------------------
+    // `z` outside the eligible span used to be a `debug_assert!` only. Release
+    // builds located a host anyway -- `locate_depth_in` falls through to the
+    // last layer of the range and hands back a xi past its thickness -- and
+    // returned a plausible-looking gradient for a needle that is not where the
+    // caller put it.
+    //
+    // The two paths have different spans within the same call: the coherent
+    // kernels are confined to the block `[start_idx, idx_end]`, while the
+    // multiblock cascade walks every non-ambient layer. Each span is checked
+    // only when the request actually reaches that path, so a multiblock-only
+    // call is not held to the block's narrower bound -- and a call that uses
+    // both must satisfy both.
+    let span_of = |lo: usize, hi: usize| -> f64 {
+        thicknesses.iter().take(hi.min(thicknesses.len())).skip(lo).sum()
+    };
+    let mut spans: Vec<(&str, f64)> = Vec::new();
+    if want_p || want_pt || want_pa || want_pphi || want_ptb || want_prb
+        || want_pab || want_disp
+    {
+        spans.push(("coherent block", span_of(start_idx + 1, idx_end)));
+    }
+    if want_pmb || want_pmb_t || want_pmb_a || want_pmb_tb || want_pmb_rb
+        || want_pmb_ab
+    {
+        spans.push(("multiblock cascade", span_of(1, nl - 1)));
+    }
+    const Z_TOL: f64 = 1e-9;
+    for (i, &z) in z_grid.iter().enumerate() {
+        if !z.is_finite() {
+            return Err(format!("z_grid[{i}] is not finite ({z})"));
+        }
+        for (what, span) in &spans {
+            if z < -Z_TOL || z > span + Z_TOL {
+                return Err(format!(
+                    "z_grid[{i}] = {z} lies outside the needle-eligible depth span [0, {span}] of the {what}; depth is absolute, measured from the top of the first eligible layer"
+                ));
+            }
+        }
+    }
+    for (i, n) in needle_n_per_wav.iter().enumerate() {
+        if !n.re.is_finite() || !n.im.is_finite() {
+            return Err(format!(
+                "needle_n_per_wav[{i}] is not finite ({n}); a NaN needle index makes the whole gradient NaN with nothing naming the point"
+            ));
+        }
+    }
+
     // Optional per-point merit inputs (default: target 0, weight 1).
     // Scalars broadcast; full vectors are angle-major.
     let load_pair = |a: &Option<&[f64]>, name: &str| -> Result<Option<Vec<f64>>, String> {

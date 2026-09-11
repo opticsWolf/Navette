@@ -6,10 +6,9 @@ returned the numbers for a stack with that layer deleted, 120 deg aliased
 onto 60 deg, a duplicated wavelength produced NaN dispersion channels. None
 of it raised.
 
-R3.1 turned the ScatterMatrix cases into construction-time errors, so the
-script now asserts an expected verdict per case and exits non-zero when one
-drifts. The `needle_gradient` rows are still permissive -- they are R3.2's
-job, and are marked as such rather than quietly listed.
+R3.1 turned the ScatterMatrix cases into construction-time errors and R3.2
+the needle ones, so the script now asserts an expected verdict per case and
+exits non-zero when one drifts.
 
 Verdicts: `raises` | `silent-clean` | `NaN-in-output`.
 """
@@ -91,16 +90,16 @@ run("huge thickness 1e9 nm", "silent-clean",
 print("=== needle_gradient garbage-in ===")
 st = ScatterMatrix(N, D, wavelengths=WLS, angles=[30.0])
 NN = np.full(WLS.size, 1.8+0.05j, dtype=np.complex128)
-run("NaN needle index", "NaN-in-output",
+run("NaN needle index", "raises",
     lambda: needle_gradient(st, np.where(WLS == WLS[3], np.nan+0j, NN), [220.0],
-                            NeedleRequest.P, pol="s"), note="R3.2")
+                            NeedleRequest.P, pol="s"), note="R3.2 -- fixed")
 run("needle index below total-internal floor", "silent-clean",
     lambda: needle_gradient(st, np.full(WLS.size, 0.3+0j), [220.0],
-                            NeedleRequest.P, pol="s"), note="R3.2")
-run("z outside the stack (z=1000)", "silent-clean",
-    lambda: needle_gradient(st, NN, [1000.0], NeedleRequest.P, pol="s"), note="R3.2")
-run("negative z", "silent-clean",
-    lambda: needle_gradient(st, NN, [-10.0], NeedleRequest.P, pol="s"), note="R3.2")
+                            NeedleRequest.P, pol="s"), note="n < 1 is a real metallic index, not garbage")
+run("z outside the stack (z=1000)", "raises",
+    lambda: needle_gradient(st, NN, [1000.0], NeedleRequest.P, pol="s"), note="R3.2 -- fixed")
+run("negative z", "raises",
+    lambda: needle_gradient(st, NN, [-10.0], NeedleRequest.P, pol="s"), note="R3.2 -- fixed")
 
 print()
 if FAILURES:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Construction-time validation of ``ScatterMatrix`` inputs (R3.1).
+"""Input validation for the public solver entry points (R3.1, R3.2).
 
 The engine is permissive on purpose -- it is also the optimizer's inner loop.
 Before R3.1 that permissiveness reached the user unfiltered, and
@@ -13,9 +13,13 @@ Before R3.1 that permissiveness reached the user unfiltered, and
     kernels divide by the grid spacing);
   * a NaN index turned the whole output NaN with nothing naming the layer.
 
-None raised. None warned. These tests hold the line on both sides of it: the
-garbage must raise, with the offending index and value in the message, and
-the legitimately odd inputs must still go through untouched.
+None raised. None warned. The needle operator had the same hole one layer
+down, guarded by a ``debug_assert!`` that no release build compiles in (R3.2,
+bottom section).
+
+These tests hold the line on both sides of it: the garbage must raise, with
+the offending index and value in the message, and the legitimately odd inputs
+must still go through untouched.
 """
 
 import numpy as np
@@ -194,3 +198,107 @@ def test_validation_runs_before_the_native_solver_is_built():
         assert calls == [1], "native Solver was not constructed for a valid stack"
     finally:
         mod._NativeSolver = original
+
+
+# --------------------------------------------------------------------------
+# Needle depth and index range (R3.2)
+# --------------------------------------------------------------------------
+# `needle_slopes4_ddz` guarded its host-layer invariant with `debug_assert!`,
+# which is compiled out of every release build -- the one everybody actually
+# runs. `locate_depth_in` does not reject an out-of-range z either: it falls
+# through to the last layer of the range and returns a depth past that layer's
+# thickness, so the kernel computed a gradient for a needle that is not where
+# the caller put it, and returned it without complaint.
+#
+# The contract now lives once in `solver::needle_gradient`, which both PyO3
+# entry points funnel through. The kernel keeps its `debug_assert!`s as Rust-
+# caller invariants: a release `assert!` in an O(1) hot kernel would trade a
+# silent wrong answer for a panic, which is worse on a library path.
+
+_NEEDLE_N = np.array([1.0 + 0j, 2.35 + 0j, 1.46 + 0j, 2.10 + 0j, 1.52 + 0j])
+_NEEDLE_D = np.array([0.0, 120.0, 200.0, 80.0, 0.0])   # host span = 400 nm
+_NEEDLE_SPAN = 400.0
+
+
+def _needle_stack(**kw):
+    return ScatterMatrix(_NEEDLE_N, _NEEDLE_D, wavelengths=_WLS, angles=[30.0], **kw)
+
+
+def _needle(z, stack=None, n_prime=None, **kw):
+    from navette.smatrix.needle import NeedleRequest, needle_gradient
+
+    st = stack if stack is not None else _needle_stack()
+    nn = n_prime if n_prime is not None else np.full(_WLS.size, 1.8 + 0j,
+                                                     dtype=np.complex128)
+    kw.setdefault("pol", "s")
+    return needle_gradient(st, nn, np.atleast_1d(z), NeedleRequest.P, **kw)
+
+
+@pytest.mark.parametrize("z,fragments", [
+    (1000.0, ["z_grid[0]", "1000", "[0, 400]", "coherent block"]),
+    (-10.0, ["z_grid[0]", "-10", "[0, 400]"]),
+    (_NEEDLE_SPAN + 1e-3, ["z_grid[0]", "[0, 400]"]),
+    (np.nan, ["z_grid[0]", "not finite"]),
+    (np.inf, ["z_grid[0]", "not finite"]),
+], ids=["past_the_stack", "negative", "just_past_the_span", "nan", "inf"])
+def test_needle_depth_outside_the_span_raises(z, fragments):
+    with pytest.raises(ValueError) as excinfo:
+        _needle(z)
+    message = str(excinfo.value)
+    missing = [f for f in fragments if f not in message]
+    assert not missing, f"message does not name {missing}: {message!r}"
+
+
+@pytest.mark.parametrize("z", [0.0, 120.0, _NEEDLE_SPAN, _NEEDLE_SPAN + 1e-12,
+                               -1e-12],
+                         ids=["top", "interior", "bottom", "within_tol_high",
+                              "within_tol_low"])
+def test_legal_needle_depth_is_accepted(z):
+    """Both endpoints are legal, and the 1e-9 tolerance absorbs round-off.
+
+    A caller that builds its z grid as ``np.linspace(0, sum(d), k)`` lands on
+    the bottom endpoint with whatever error the sum accumulated. Rejecting
+    that would make the obvious way to write the call fail intermittently.
+    """
+    out = _needle(z)
+    assert np.all(np.isfinite(np.asarray(out["P_s"], float)))
+
+
+def test_the_span_follows_the_block_not_the_stack():
+    """``end_idx`` narrows the eligible span, and the error says by how much.
+
+    The coherent kernels are confined to ``[start_idx, end_idx]``; a z that is
+    inside the stack but outside the block has no host, and used to be clamped
+    into the block's last layer.
+    """
+    _needle(50.0, end_idx=2)                       # inside layer 1: fine
+    with pytest.raises(ValueError, match=r"\[0, 120\].*coherent block"):
+        _needle(200.0, end_idx=2)
+
+
+def test_the_multiblock_span_is_not_the_coherent_one():
+    """A multiblock request walks the whole stack, so it keeps the wider span.
+
+    Checking one span for both paths would reject legitimate multiblock depths
+    (or wave through illegitimate coherent ones). Each is checked only when the
+    request actually reaches that path.
+    """
+    from navette.smatrix.needle import NeedleRequest, needle_gradient
+
+    flags = np.array([0, 0, 1, 0, 0], dtype=np.int32)
+    st = _needle_stack(incoherent_flags=flags)
+    nn = np.full(_WLS.size, 1.8 + 0j, dtype=np.complex128)
+
+    # 350 nm sits in layer 3 -- past the default coherent block, inside the
+    # cascade. The multiblock request must accept it.
+    needle_gradient(st, nn, [350.0], NeedleRequest.P_MB, pol="s")
+    with pytest.raises(ValueError, match="multiblock cascade"):
+        needle_gradient(st, nn, [500.0], NeedleRequest.P_MB, pol="s")
+
+
+def test_non_finite_needle_index_raises():
+    """A NaN needle index made the entire gradient NaN with nothing to point at."""
+    nn = np.full(_WLS.size, 1.8 + 0j, dtype=np.complex128)
+    nn[3] = np.nan
+    with pytest.raises(ValueError, match=r"needle_n_per_wav\[3\]"):
+        _needle(200.0, n_prime=nn)

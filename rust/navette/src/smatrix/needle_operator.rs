@@ -383,11 +383,22 @@ pub fn needle_slopes4_ddz(
     lam: f64,
 ) -> [Complex64; 4] {
     let two_pi_lam = 2.0 * PI / lam;
+    // Invariants for Rust callers, checked in debug builds only. The
+    // user-facing contract is enforced once per call in
+    // `solver::needle_gradient` (R3.2), which returns a real error naming the
+    // offending z; a release `assert!` in this O(1) hot kernel would trade a
+    // silent wrong answer for a panic, which is worse on a library path.
     debug_assert!(
         fields.start < j && j < fields.end,
-        "needle host must be interior to the active block"
+        "needle host layer {j} must be interior to the active block ({}, {}) -- caller did not route z through locate_depth_in",
+        fields.start,
+        fields.end
     );
-    debug_assert!(xi >= -1e-9 && xi <= fields.ds[j] + 1e-9, "xi outside host layer");
+    debug_assert!(
+        xi >= -1e-9 && xi <= fields.ds[j] + 1e-9,
+        "needle depth xi = {xi} is outside host layer {j} (thickness {}) -- z was not range-checked before reaching the kernel",
+        fields.ds[j]
+    );
 
     let bj = fields.beta_nm[j];
     // Upper part: ambient → plane z (propagate xi into layer j).
