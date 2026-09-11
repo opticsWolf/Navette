@@ -332,8 +332,12 @@ fn star_dual(a: (CDual, CDual, CDual, CDual), b: (CDual, CDual, CDual, CDual)) -
     (s_rf, s_tb, s_tf, s_rb)
 }
 
-/// Needle slopes ρ̂ = −2iβ′r₁₂/(1−r₁₂²), τ̂ = 2iβ′/(1−r₁₂²) for a candidate
-/// material `n_prime` embedded in host medium (`n_host`, `cos_host`).
+/// Needle slopes ρ̂ = −2iβ′r₁₂/(1−r₁₂²), τ̂ = iβ′(1+r₁₂²)/(1−r₁₂²) for a
+/// candidate material `n_prime` embedded in host medium (`n_host`, `cos_host`).
+///
+/// The τ̂ numerator is `1 + r₁₂²`, not `2`: the doc said `2` until 0.6.17
+/// while the code below (and the module header, and the star-product test that
+/// pins both slopes to 1e-4) always had the Fabry–Pérot-enhanced form.
 #[inline]
 pub fn needle_slopes(
     n_host: Complex64,

@@ -875,6 +875,13 @@ fn derive_range(states: &[OpticalState], mut sinks: Sinks<'_>) {
 
     let s0r = rp + rs;
     let s1r = rp - rs;
+    // The `+ 0.0` is not dead weight: `-2.0 * 0.0` is `-0.0`, and Delta is
+    // `atan2(s3, s2)`, which answers -pi for a negative zero where it answers
+    // +pi for a positive one. An isotropic stack at normal incidence has
+    // `cross_r` exactly real, so this is the ordinary case, not a corner --
+    // dropping the term flips Delta_R by 2*pi there. IEEE 754 addition maps
+    // -0.0 + 0.0 -> +0.0, which is the normalization. The numba reference does
+    // the same at the same four places; parity depends on it.
     let s2r = -2.0 * s.cross_r.re + 0.0;
     let s3r = -2.0 * s.cross_r.im + 0.0;
     put!(b_s0r, k, s0r);
@@ -883,6 +890,7 @@ fn derive_range(states: &[OpticalState], mut sinks: Sinks<'_>) {
     put!(b_s3r, k, s3r);
     let s0t = tp + ts;
     let s1t = tp - ts;
+    // Same negative-zero flush as the reflected pair above.
     let s2t = 2.0 * s.cross_t.re + 0.0;
     let s3t = 2.0 * s.cross_t.im + 0.0;
     put!(b_s0t, k, s0t);
@@ -893,7 +901,14 @@ fn derive_range(states: &[OpticalState], mut sinks: Sinks<'_>) {
     put!(b_diatt_r, k, s1r / (s0r + 1e-20));
     put!(b_diatt_t, k, s1t / (s0t + 1e-20));
 
-    put!(b_dop_r, k, (s1r * s1r + s2r * s2r + s3r * s3r).sqrt() / (s0r + 1e-20));
+    // Both DOPs are clamped to 1. For transmission the excess is physical
+    // bookkeeping -- s2t/s3t are the single-pass cross term while s0t collects
+    // the multi-bounce intensity, so their ratio can drift above 1. For
+    // reflection the algebra is exact (s1r^2 + s2r^2 + s3r^2 = s0r^2 for a
+    // single coherent block) and the excess is pure round-off, measured at
+    // 1.0000000000000004. Either way a degree of polarization above 1 is not a
+    // number anyone can use, and the asymmetry was a review finding (R6.2).
+    put!(b_dop_r, k, ((s1r * s1r + s2r * s2r + s3r * s3r).sqrt() / (s0r + 1e-20)).min(1.0));
     put!(b_dop_t, k, ((s1t * s1t + s2t * s2t + s3t * s3t).sqrt() / (s0t + 1e-20)).min(1.0));
 
     put!(b_psi_r, k, if rs < RS_FLOOR { PI / 2.0 } else { (rp / rs).sqrt().atan() });
@@ -2694,6 +2709,71 @@ mod tests {
         b_cross_t,
       ],
     )
+  }
+
+  #[test]
+  fn dop_r_is_clamped_like_dop_t() {
+    // A degree of polarization above 1 is not a number anyone can use. The
+    // reflected one was left unclamped while the transmitted one was not
+    // (review §3.3); both are clamped since R6.2. Driven here with a cross
+    // term far larger than the intensities, which no physical stack produces
+    // -- the point is that the guard is in the expression, not that this
+    // state is reachable.
+    let mut st = states_for(1)[0];
+    st.rs = 0.25;
+    st.rp = 0.25;
+    st.cross_r = Complex64::new(10.0, 3.0);
+    st.cross_t = Complex64::new(10.0, 3.0);
+    st.ts = 0.25;
+    st.tp = 0.25;
+    let states = [st];
+    let mut dop_r = [f64::NAN];
+    let mut dop_t = [f64::NAN];
+    {
+      let mut sinks = Sinks::none();
+      sinks.b_dop_r = Some(&mut dop_r);
+      sinks.b_dop_t = Some(&mut dop_t);
+      derive_range(&states, sinks);
+    }
+    assert_eq!(dop_r[0], 1.0, "DOP_R must be clamped");
+    assert_eq!(dop_t[0], 1.0, "DOP_T must still be clamped");
+  }
+
+  #[test]
+  fn a_real_cross_term_puts_delta_r_at_plus_pi_not_minus_pi() {
+    // The `+ 0.0` on s2r/s3r is a negative-zero flush, not the no-op the
+    // review took it for: `-2.0 * 0.0` is `-0.0`, and `atan2(-0.0, negative)`
+    // is -pi where `atan2(+0.0, negative)` is +pi. An isotropic stack at
+    // normal incidence has `cross_r` exactly real, so this is the ordinary
+    // case; dropping the term would swing Delta_R by 2*pi there and break
+    // parity with the numba reference, which flushes at the same four places.
+    let mut st = states_for(1)[0];
+    st.rs = 0.2;
+    st.rp = 0.2;
+    st.cross_r = Complex64::new(0.2, 0.0);
+    let states = [st];
+    let mut delta_r = [f64::NAN];
+    {
+      let mut sinks = Sinks::none();
+      sinks.b_delta_r = Some(&mut delta_r);
+      derive_range(&states, sinks);
+    }
+    assert_eq!(delta_r[0], PI, "Delta_R = {}, expected +pi", delta_r[0]);
+
+    // The transmitted pair carries the same flush with the opposite sign
+    // convention, so a real negative cross_t is its +pi case.
+    let mut st = states_for(1)[0];
+    st.ts = 0.2;
+    st.tp = 0.2;
+    st.cross_t = Complex64::new(-0.2, 0.0);
+    let states = [st];
+    let mut delta_t = [f64::NAN];
+    {
+      let mut sinks = Sinks::none();
+      sinks.b_delta_t = Some(&mut delta_t);
+      derive_range(&states, sinks);
+    }
+    assert_eq!(delta_t[0], PI, "Delta_T = {}, expected +pi", delta_t[0]);
   }
 
   #[test]

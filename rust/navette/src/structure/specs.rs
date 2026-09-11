@@ -104,13 +104,21 @@ impl MaterialSpec {
       }
       "Sellmeier" => {
         let v = req_float(p, m, &["B1", "C1", "B2", "C2", "B3", "C3"])?;
-        crate::materials::sellmeier::sellmeier_nk(w, v[0], v[1], v[2], v[3], v[4], v[5])
+        let out = crate::materials::sellmeier::sellmeier_nk(w, v[0], v[1], v[2], v[3], v[4], v[5]);
+        crate::materials::sellmeier::sellmeier_domain_check(
+          w, &out, v[0], v[1], v[2], v[3], v[4], v[5],
+        )?;
+        out
       }
       "SellmeierUrbach" => {
         let v = req_float(p, m, &["B1", "C1", "B2", "C2", "B3", "C3", "alpha0", "Eu", "lambda_g"])?;
-        crate::materials::sellmeier::sellmeier_urbach_nk(
+        let out = crate::materials::sellmeier::sellmeier_urbach_nk(
           w, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
-        )
+        );
+        crate::materials::sellmeier::sellmeier_domain_check(
+          w, &out, v[0], v[1], v[2], v[3], v[4], v[5],
+        )?;
+        out
       }
       "Lorentz" => {
         let osc = req_osc(p, m, "osc", 3)?;

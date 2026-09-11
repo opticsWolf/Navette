@@ -25,7 +25,7 @@ must still go through untouched.
 import numpy as np
 import pytest
 
-from navette.smatrix.smatrix import Request, ScatterMatrix
+from navette.smatrix.smatrix import CoherenceMode, Request, ScatterMatrix
 
 _N = np.array([1.0 + 0j, 2.35 + 0j, 1.46 + 0j, 1.52 + 0j])
 _D = np.array([0.0, 120.0, 200.0, 0.0])
@@ -345,3 +345,65 @@ def test_a_long_index_cache_is_refused_too():
     long[3] = np.concatenate([args[3], np.zeros(2)])
     with pytest.raises(ValueError, match="index cache length"):
         engine(*long)
+
+
+# ---------------------------------------------------------------------------
+# The Sellmeier domain (R6.2)
+# ---------------------------------------------------------------------------
+
+# Schott BK7: the first resonance is at sqrt(C1) um = 77.46 nm.
+_BK7 = dict(B1=1.03961212, C1=0.00600069867, B2=0.231792344,
+            C2=0.0200179144, B3=1.01046945, C3=103.560653)
+
+
+def test_a_sellmeier_grid_inside_the_fit_evaluates():
+    from navette.materials import MaterialSpec, evaluate
+    n = evaluate(MaterialSpec("Sellmeier", dict(_BK7)), np.linspace(400.0, 800.0, 9))
+    assert np.all(np.isfinite(n.real))
+    assert abs(n[np.searchsorted(np.linspace(400.0, 800.0, 9), 550.0)].real - 1.5185) < 5e-3
+
+
+def test_a_sellmeier_grid_past_a_resonance_raises_instead_of_returning_nan():
+    """A NaN index is the worst kind of wrong answer: it survives every layer
+    and arrives at the user as a NaN spectrum with nothing pointing back at
+    the material that produced it."""
+    from navette.materials import MaterialSpec, evaluate
+    spec = MaterialSpec("Sellmeier", dict(_BK7))
+    with pytest.raises(ValueError, match="Sellmeier"):
+        evaluate(spec, np.array([550.0, 70.0]))
+    try:
+        evaluate(spec, np.array([70.0]))
+    except ValueError as e:
+        msg = str(e)
+    assert "77.4" in msg, msg
+    assert msg.isascii(), "the message must survive a cp1252 console"
+
+
+def test_the_urbach_variant_is_guarded_too():
+    from navette.materials import MaterialSpec, evaluate
+    p = dict(_BK7, alpha0=1e5, Eu=0.06, lambda_g=380.0)
+    with pytest.raises(ValueError, match="Sellmeier"):
+        evaluate(MaterialSpec("SellmeierUrbach", p), np.array([70.0]))
+
+
+def test_dop_r_never_exceeds_one():
+    """Reflected DOP was unclamped while transmitted was not (review 3.3);
+    round-off alone was measured at 1.0000000000000004."""
+    rng = np.random.default_rng(20260911)
+    worst = 0.0
+    for _ in range(40):
+        nl = int(rng.integers(3, 7))
+        n = np.array([1.0 + 0j]
+                     + [complex(rng.uniform(1.3, 3.5), rng.uniform(0.0, 0.4))
+                        for _ in range(nl - 2)]
+                     + [complex(1.515, 0.001)])
+        d = np.array([0.0] + [rng.uniform(5.0, 400.0) for _ in range(nl - 2)] + [0.0])
+        sm = ScatterMatrix(n, d, wavelengths=np.linspace(300.0, 1200.0, 301),
+                           angles=[float(rng.uniform(0.0, 85.0))],
+                           coherence_mode=CoherenceMode.COHERENCY_MATRIX)
+        out = sm.compute(Request.DOP_R | Request.DOP_T)
+        worst = max(worst, float(np.max(np.asarray(out["DOP_R"]))))
+        assert float(np.max(np.asarray(out["DOP_T"]))) <= 1.0
+    assert worst <= 1.0
+    # And the clamp is not hiding a channel that never gets near the bound.
+    assert worst > 0.99

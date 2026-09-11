@@ -3,6 +3,64 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.17] — The small physics nits, and which of them were real (R6.2)
+
+Four items the review filed as minor. Two were: a missing clamp and a stale
+docstring. One was the opposite of what it looked like — the `+ 0.0` the review
+called "a no-op … harmless" is load-bearing, and removing it would have swung
+Delta_R by 2π at normal incidence. The fourth needed a decision and got one.
+
+### Fixed
+
+- **`DOP_R` is clamped to ≤ 1**, as `DOP_T` already was. The asymmetry was the
+  review's finding; the excess on a physical stack is pure round-off
+  (`1.0000000000000004`, measured), but a degree of polarization above 1 is not
+  a number a caller can do anything with. **This changes output bits** — see
+  Changed.
+- **`needle_slopes` docstring**: τ̂ is `iβ′(1+r₁₂²)/(1−r₁₂²)`, not `2iβ′/(1−r₁₂²)`.
+  The code, the module header and the star-product test always had the right
+  form; only the one-line summary was stale.
+
+### Added
+
+- **Sellmeier domain guard.** `n² = 1 + Σ Bᵢλ²/(λ²−Cᵢ)` is only a function
+  between its poles: on a pole it is infinite, and inside the first resonance
+  n² < 0 and `sqrt` returns NaN — which then travels through every layer of the
+  stack and arrives as a NaN spectrum with nothing left pointing at the
+  material that produced it. `sellmeier_domain_check` now refuses that grid with
+  a message naming the wavelength and where the fit's resonances actually are.
+  Both user-facing entry points run it (the PyO3 binding and the spec
+  evaluator); the kernels themselves are untouched, so the check costs one scan
+  for a non-finite value and the arithmetic that works out *which* pole only
+  runs once something is already wrong.
+  - The domain edge is not the pole. For BK7 the first resonance is at 77.5 nm,
+    but n² stays positive down to ~70.7 nm (the other terms hold it up), so
+    50 nm evaluates to a finite, physically meaningless n = 0.47. The guard
+    catches non-finite values; it does not pretend to know where a fit stops
+    being *trustworthy*. That is what the coefficient set's paper is for.
+
+### Changed
+
+- **Solve fingerprint moved**, for the first time in this series:
+  `a99e8383…f154` → `30d96909…3c6c`. The delta is the `DOP_R` clamp and nothing
+  else — verified by recomputing the unclamped ratio from the `S0_R`…`S3_R`
+  channels (which stay unclamped) and asserting the emitted channel equals
+  `min(raw, 1)` at every one of the fingerprint's 170 points. 20 of those
+  exceeded 1: 18 by one ulp, and 2 by a lot (6.1 and 51.1) — those two come
+  from the fingerprint harness randomizing the *incident* medium to an
+  absorbing index, where `R = |r|²` is not an energy ratio at all and `Rs`
+  reaches 86 and `Rp` goes negative. With a real ambient the same stack's
+  worst `DOP_R` is 0.99997. Noted as an input-validation gap, not fixed here.
+
+### Documented
+
+- The `+ 0.0` on `s2r`/`s3r`/`s2t`/`s3t` is a negative-zero flush, not dead
+  weight: `-2.0 * 0.0` is `-0.0`, and `atan2(-0.0, negative)` answers −π where
+  `atan2(+0.0, negative)` answers +π. An isotropic stack at normal incidence
+  has `cross_r` exactly real, so this is the ordinary case, not a corner. The
+  numba reference carries the same flush at the same four places, with a
+  comment; the Rust side now has one too, plus a test pinning Delta_R = +π.
+
 ## [0.6.16] — The two argmin backends, and what they are worth (R4.4c-argmin)
 
 The last row left open under R4.4: `OptimizerBackend::ArgminGaussNewton` and

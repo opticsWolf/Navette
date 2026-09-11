@@ -63,6 +63,7 @@ coverage is thin.
 | R3.1 | `ScatterMatrix` input validation | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
 | R3.2 | needle z-range: debug-assert → error | P1 | release-build garbage | S | S | §21.1 |
 | R3.3 | eigenmode `char_func`/`refine_mode` bound | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
+| R3.4 | Absorbing incident medium accepted in silence — **NEW (found 0.6.17)** | P1 | `n[0] = 1.52 + 0.062i` constructs and solves; `R = |r|²` is not an energy ratio there, so `Rs` reaches 86 and `Rp` goes negative with no warning. Decide: refuse, warn, or define R against the incident-medium Poynting flux | M (a refusal breaks any caller doing it deliberately) | S–M | §21.2, R6.2 corrections |
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
@@ -73,7 +74,7 @@ coverage is thin.
 | ~~R5.2~~ | parallelize serial derive loop — **DONE (0.6.15)** | P3 | 1.42× at 20k and 1.73× at 60k on a twelve-channel request; ~1.03× on a four-channel one, which is the whole story (see corrections) | M (bit-identity) | M–L | §5.4 |
 | ~~R5.3~~ | `core_engine` — **DONE (0.6.14)**, and it was not the emit path | P2 | 1.4×–3.0× across the grid; the cost was `Solver::new` (see corrections). Now ~0.8–1.2× numba at 20k–60k points, still ~0.3–0.5× at 500 | M (must stay bit-identical) | M–L | §5, R2.4a |
 | R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
-| R6.2 | small physics nits batch | P3 | DOP_R clamp, docstring, `+0.0` | S | S | §3.3, §19.3 |
+| ~~R6.2~~ | small physics nits batch — **DONE (0.6.17)** | P3 | DOP_R clamped (fingerprint moved), τ̂ docstring fixed, Sellmeier domain guard added; the `+0.0` turned out to be load-bearing and stays (see corrections) | S | S | §3.3, §19.3 |
 | R6.3 | solver triplication (optional) | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
 | R6.4 | docs/hygiene batch | P3 | audit-trail rot | S | M | §6.3, §24.2, §18.4 |
 | R6.5 | `.pyi` stubs for `_smatrix`/`_spectralweave` | P3 | IDE/mypy coverage | S | M | §24.1 |
@@ -1844,7 +1845,7 @@ the existing harnesses were built to protect).
 
 **Effort.** XL.
 
-### R6.2 Small physics nits batch (one commit)
+### R6.2 Small physics nits batch (one commit) — DONE (0.6.17)
 
 - **DOP_R clamp** (§3.3): clamp reflected DOP to ≤ 1 symmetric with DOP_T;
   add one assert-row to the ellipsometry smoke coverage.
@@ -1857,6 +1858,66 @@ the existing harnesses were built to protect).
 **Validation.** Existing suites; `garbage_in.py` unchanged behavior rows.
 
 **Effort.** S.
+
+**CORRECTIONS / NOTES (0.6.17).** Three of the four items were as described.
+The fourth was backwards, and one of the three grew a decision the plan left
+open.
+
+* **`DOP_R` clamp — done, and it moves the fingerprint.** First bit-level
+  output change in this series: `a99e8383…f154` → `30d96909…3c6c`. Confined to
+  `DOP_R`, and shown to be so rather than asserted — the unclamped ratio was
+  recomputed from the `S0_R`…`S3_R` channels (themselves unclamped, and
+  unchanged) and the emitted channel equals `min(raw, 1)` at all 170 fingerprint
+  points.
+* **What the excess actually is.** The review called it "floating-point
+  round-off", and for a physical stack that is exactly right: the reflected
+  Stokes algebra is an identity (`s1r² + s2r² + s3r² = s0r²` for a single
+  coherent block), so the excess is one ulp — `1.0000000000000004`, measured.
+  18 of the 20 over-1 points are that. The other two are 6.1 and 51.1, and they
+  are **not** an engine fault: the fingerprint harness randomizes every layer
+  including the incident medium, and with an absorbing ambient `R = |r|²` is not
+  an energy ratio — that stack reports `Rs` up to 86 and `Rp` down to −4.2. Give
+  it a real ambient and the worst `DOP_R` is 0.99997.
+* **New finding, not fixed here: an absorbing incident medium is accepted in
+  silence.** `ScatterMatrix(n[0] = 1.52 + 0.062i, …)` constructs, solves, and
+  returns `Rs` > 1 and `Rp` < 0 with no warning anywhere. That belongs with
+  R3.1's validation family (the review's §21.2 class), not in a nits batch —
+  filed rather than folded in, because the fix is a policy decision (refuse,
+  warn, or define R against the incident-medium Poynting flux) and not a nit.
+* **The `+ 0.0` is not a no-op — the review's 🔵 item is wrong and the code
+  stays as it is.** `-2.0 * 0.0` is `-0.0`; `Delta = atan2(s3, s2)` answers −π
+  for a negative zero where it answers +π for a positive one. An isotropic
+  stack at normal incidence has `cross_r` exactly real, so `s3r` is exactly
+  zero there — the ordinary case, not a corner. Deleting the four terms would
+  have flipped `Delta_R` and `Delta_T` by 2π on every normal-incidence
+  spectrum and broken parity with the numba reference, **which carries the same
+  flush at the same four places and documents it**. Now commented on the Rust
+  side too, with a test (`a_real_cross_term_puts_delta_r_at_plus_pi_not_minus_pi`)
+  so the next reader who spots a "redundant" `+ 0.0` finds a red test instead of
+  a 2π error. Cosmetic clean-ups in numerical code are not cosmetic.
+* **Sellmeier: the decision is "refuse, at the boundary".** Not an error inside
+  `sellmeier_n` (it is a per-point `f64 -> f64` on the hot path and has no way
+  to report), and not a doc note alone (a NaN index is the worst class of wrong
+  answer — it survives every layer and arrives with nothing identifying its
+  source). `sellmeier_domain_check` scans the produced array for a non-finite
+  `n` and, only then, works out which pole was hit; both entry points that face
+  a user run it. Cost on the good path is one pass over an array that was just
+  written.
+* **And a thing worth knowing about Sellmeier fits.** The domain edge is not
+  the pole. BK7's first resonance is at 77.5 nm, but n² stays positive down to
+  ~70.7 nm because the other two terms hold it up — so 50 nm returns a finite,
+  entirely meaningless n = 0.47, and the guard says nothing. It catches
+  arithmetic that has broken, which is a different question from where a fit
+  stops being trustworthy; only the coefficient set's source answers that. Both
+  behaviours are pinned by tests so neither is mistaken for the other.
+* **`needle_slopes` docstring** fixed to `τ̂ = iβ′(1+r₁₂²)/(1−r₁₂²)`. The module
+  header, the in-function comment and the star-product test (1e-4 against the
+  exact thin-slab product) all already had it right; only the summary line was
+  stale.
+* **Verification.** cargo test 452 (default, up from 440: 6 Sellmeier + 2
+  solver, plus the 4 pytest rows); clippy clean; pytest 691 passed, 1 skipped;
+  ten review harnesses exit 0; `check_exposure`, `check_cie_sync`,
+  `bench_refold` all green.
 
 ### R6.3 Solver triplication (optional)
 

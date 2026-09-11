@@ -88,10 +88,19 @@ fn sellmeier_nk<'py>(
     c2: f64,
     b3: f64,
     c3: f64,
-) -> Bound<'py, PyArray1<Complex64>> {
+) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
     let wl = owned1(wavelength_nm);
-    let out = py.detach(move || core::sellmeier::sellmeier_nk(wl.view(), b1, c1, b2, c2, b3, c3));
-    to_py(py, out)
+    // A pole, or the negative-n² region below one: refuse rather than hand back
+    // inf/NaN that reappears as a NaN spectrum ten layers later (R6.2). Checked
+    // inside `detach` so the scan stays off the GIL with the evaluation.
+    let out = py
+        .detach(move || {
+            let out = core::sellmeier::sellmeier_nk(wl.view(), b1, c1, b2, c2, b3, c3);
+            core::sellmeier::sellmeier_domain_check(wl.view(), &out, b1, c1, b2, c2, b3, c3)?;
+            Ok::<_, String>(out)
+        })
+        .map_err(PyValueError::new_err)?;
+    Ok(to_py(py, out))
 }
 
 /// Sellmeier n plus Urbach absorption tail k.
@@ -109,12 +118,27 @@ fn sellmeier_urbach_nk<'py>(
     alpha0: f64,
     eu: f64,
     lambda_g: f64,
-) -> Bound<'py, PyArray1<Complex64>> {
+) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
     let wl = owned1(wavelength_nm);
-    let out = py.detach(move || {
-        core::sellmeier::sellmeier_urbach_nk(wl.view(), b1, c1, b2, c2, b3, c3, alpha0, eu, lambda_g)
-    });
-    to_py(py, out)
+    let out = py
+        .detach(move || {
+            let out = core::sellmeier::sellmeier_urbach_nk(
+                wl.view(),
+                b1,
+                c1,
+                b2,
+                c2,
+                b3,
+                c3,
+                alpha0,
+                eu,
+                lambda_g,
+            );
+            core::sellmeier::sellmeier_domain_check(wl.view(), &out, b1, c1, b2, c2, b3, c3)?;
+            Ok::<_, String>(out)
+        })
+        .map_err(PyValueError::new_err)?;
+    Ok(to_py(py, out))
 }
 
 /// Lorentz oscillators: osc rows are (E0, Gamma, f) in eV; returns sqrt(eps).
