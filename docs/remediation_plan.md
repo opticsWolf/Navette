@@ -20,8 +20,8 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (644 passed +
-     2 skipped at 0.6.4, parity included; `PYTHONIOENCODING=utf-8` no longer
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (656 passed +
+     2 skipped at 0.6.5, parity included; `PYTHONIOENCODING=utf-8` no longer
      needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
@@ -65,7 +65,7 @@ coverage is thin.
 | R3.3 | eigenmode `char_func`/`refine_mode` bound | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
 | R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
 | R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
-| R4.3 | fix + test all `examples/` | P1 | shipped example broken | S | S | §6.2 |
+| R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
 | R4.4 | Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers | P2 | synthesis robustness on ill-conditioned stacks | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | R4.5 | Analytic Jacobian for the refold optimizer (deposit chain, FD fallback) | P2 | 2n→1 solver sweeps per LM iteration; removes the FD noise floor; benefits every backend | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | R4.6 | TRF backend (trust-region-reflective — the bounded-LS reference method) | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
@@ -835,7 +835,7 @@ deposit semantics — they must not move).
   not run by CI, and a fix guarded only by something nobody runs is the R4.1
   failure mode again.
 
-### R4.3 Fix and continuously execute `examples/`
+### R4.3 Fix and continuously execute `examples/` — DONE (0.6.5)
 
 **Review:** §6.2 (`examples/spectralweave_example.py:22` fails on a fresh
 clone — API drift; opaque `Length mismatch` from deep inside native).
@@ -859,6 +859,37 @@ clone — API drift; opaque `Length mismatch` from deep inside native).
 **Validation.** Existing: none existed (§6.2). New: the runner.
 
 **Effort.** S.
+
+**CORRECTIONS/NOTES (0.6.5).**
+
+* **The example's bug was not only API drift.** §6.2 reads as a rename
+  problem; the deeper fault is that `unweave` distributes by **exact**
+  wavelength match (1e-12) and the example passed a `linspace` over the same
+  *range* as the stored frame. Same interval, different grid, one shared point
+  out of a hundred. Rewriting against `SimulationWeaver`/`OpticalFragment` was
+  necessary but would not by itself have made the script run.
+* **The DX fix is in the wrong place as specified.** Step 3 says
+  "`OpticalWeaver.unweave`: reject a non-`OpticalFragment` template argument".
+  That guard belongs on the wrapper (`SimulationWeaver.unweave` — the class is
+  not called `OpticalWeaver`; that name is the *native* type) and it was added
+  there. But a bad template never produced `Length mismatch`: it produced
+  `AttributeError: 'tuple' object has no attribute '_rust_key'`. The opaque
+  `Length mismatch` §6.2 complains about comes from
+  `SpectralDataFrame::set_data`, four levels down, and was fixed separately by
+  checking coverage in `unweave`/`unweave_collection` where the grid context
+  still exists.
+* **`unweave_batch` could not be called at all.** Its documented signature is
+  `dict[OpticalFragment, np.ndarray]`, but `OpticalFragment` is
+  `@dataclass(frozen=True)` over two numpy arrays, so the synthesised
+  `__hash__` raises `unhashable type: numpy.ndarray` (and `__eq__` raises the
+  ambiguous-truth-value error). `eq=False` fixes both. Not in this item's
+  scope as written; found by writing the example's last line, and left broken
+  it would have meant shipping an example that quietly avoids a dead API.
+* **The runner needs an empty-glob guard.** `examples/` holds exactly one
+  file; a parametrization over a glob that matches nothing passes silently,
+  so `test_the_examples_directory_is_not_empty` is there to make that visible.
+  The runner also asserts the example printed *something* — a script that
+  exits 0 having shown the reader nothing has not demonstrated anything.
 
 ---
 

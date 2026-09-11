@@ -223,7 +223,12 @@ impl SpectralDataFrame {
             }
         }
         if value.len() != self.wavelength.len() {
-            return Err("Length mismatch".to_string());
+            return Err(format!(
+                "SpectralDataFrame(uid={}): {} value(s) for a {}-point grid.",
+                self.uid,
+                value.len(),
+                self.wavelength.len()
+            ));
         }
 
         let mut guard = self.data.write();
@@ -553,6 +558,23 @@ impl OpticalWeaver {
 
     /// Distribute one long curve across frames per the cached plan.
     /// Returns the number of fragments written.
+    /// Explain a short gather before it reaches the frame as a bare count
+    /// mismatch. `unweave` distributes by **exact** wavelength match, so a
+    /// target curve that merely spans the same range -- a denser or coarser
+    /// linspace over the same interval, say -- lands on a handful of shared
+    /// points and nothing says why. Names what was covered and what the
+    /// contract is.
+    fn check_coverage(frm: &SpectralDataFrame, got: usize) -> Result<(), String> {
+        let want = frm.wavelength().len();
+        if got == want {
+            return Ok(());
+        }
+        let (lo, hi) = frm.wl_bounds();
+        Err(format!(
+            "unweave: the supplied grid carries {got} of the {want} wavelengths in the frame spanning [{lo}, {hi}] nm. A target curve is distributed by exact wavelength match (1e-12), not by interpolation, so it must contain every point of each frame it overlaps -- take the grid from get_weaved() rather than building a fresh linspace over the same range."
+        ))
+    }
+
     pub fn unweave(
         &self,
         key: OpticalKey,
@@ -568,6 +590,7 @@ impl OpticalWeaver {
         let mut updated = 0;
         for (frm, indices) in &plan {
             let subset = indices.gather(full_data, shared_data.as_ref());
+            Self::check_coverage(frm, subset.len())?;
             let is_new = frm.set_data(key.clone(), subset, None)?;
             if is_new {
                 self.inner.map_frame_to_key(&key, frm);
@@ -597,6 +620,7 @@ impl OpticalWeaver {
                 needs_shared.then(|| Arc::from(*full_data));
             for (frm, indices) in &plan {
                 let subset = indices.gather(full_data, shared_data.as_ref());
+                Self::check_coverage(frm, subset.len())?;
                 let is_new = frm.set_data(key.clone(), subset, None)?;
                 if is_new {
                     self.inner.map_frame_to_key(key, frm);

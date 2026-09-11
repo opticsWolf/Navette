@@ -3,6 +3,69 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.5] — The one shipped example did not run (R4.3)
+
+`examples/spectralweave_example.py` failed on a fresh clone, at line 22 of 24.
+Running it was how three separate defects came to light.
+
+### Fixed
+
+- **The example is rewritten against the documented API** and now runs end to
+  end. It used the raw native `OpticalWeaver` with a key tuple; the documented
+  path is `SimulationWeaver` + `OpticalFragment`. It also handed `unweave` a
+  `linspace` over the same *range* as the stored frame, which is not the same
+  thing as the same *grid* — it shared exactly one wavelength out of a hundred.
+  The example now weaves three fragments on three grids, takes the continuous
+  curve, unweaves an edited target back onto it, asserts the round trip, and
+  shows the rejection path deliberately.
+- **`unweave`'s error explains the contract instead of counting.** The failure
+  surfaced as `Length mismatch` raised four levels down in
+  `SpectralDataFrame::set_data`, which knows nothing about grids or targets.
+  `unweave` and `unweave_collection` now check coverage where the context
+  exists and say how many of the frame's wavelengths the supplied grid carried,
+  which frame (by span), that matching is exact to 1e-12 rather than
+  interpolated, and where to get a grid that works. `set_data`'s own message
+  now names the frame and both counts.
+- **`OpticalFragment` is hashable, so `unweave_batch` can be called at all.**
+  Its signature is `dict[OpticalFragment, np.ndarray]`, but `frozen=True` on a
+  dataclass holding two numpy arrays synthesises a `__hash__` over those
+  arrays, which raises `unhashable type: numpy.ndarray` — and a `__eq__` that
+  raises `truth value of an array is ambiguous`. `eq=False` gives identity
+  semantics for both, which is the honest answer for a container of mutable
+  buffers. Found by writing the example's last line.
+
+### Added
+
+- **`SimulationWeaver.unweave` rejects a non-`OpticalFragment` template** with
+  a `TypeError` naming what it got and how to build one. The backend's key
+  tuple is an implementation detail; passing one used to surface as
+  `AttributeError: 'tuple' object has no attribute '_rust_key'`. A curve whose
+  value count does not match its wavelength count is now caught here too,
+  rather than becoming a distribution-plan error about something else.
+- **`validation/smoke/test_examples.py`** — every `examples/*.py` runs in a
+  subprocess (repo root as cwd, `PYTHONIOENCODING=utf-8`, `MPLBACKEND=Agg`,
+  120 s timeout) and must exit 0 *and* print something. A subprocess keeps
+  pytest's process state and any module-level side effects out of the suite.
+  An empty `examples/` fails the guard rather than passing vacuously.
+- **`validation/smoke/test_spectralweave_wrapper.py`** — 10 tests over the
+  round trip, the coverage message's contents, the guards, and
+  `OpticalFragment` as a dict key. Includes the positive control that matters:
+  a grid covering *one* of two frames exactly is still accepted, so the new
+  check cannot start over-rejecting partial updates.
+
+### Evidence
+
+Teeth proven by dropping two probe files into `examples/`: one exiting 3
+(caught by the returncode assert) and one that runs silently (caught by the
+output assert). 656 passed + 2 skipped; cargo 376; zero `cargo check`
+warnings; all nine review harnesses exit 0.
+
+### Known gaps
+
+- `examples/` holds exactly one file. The runner is written to cover whatever
+  lands there, but there is no second example to prove the parametrization
+  against — the probe files above stood in for one.
+
 ## [0.6.4] — Color demands were optimized against zero in Python (R4.2)
 
 The documented Python needle flow is `build_needle_targets` →
