@@ -257,7 +257,10 @@ pub fn gate_document(raw: &Value) -> Result<(String, Option<String>, Value), Str
     return Err(format!("program kind {kind:?} unknown (expected one of {}).", kinds.join(", ")));
   }
   match top.get("schema_version").and_then(|v| v.as_u64()) {
-    Some(1) => {}
+    // Compare against the constant, not a literal: a bump of
+    // PROGRAM_SCHEMA_VERSION that left a hard-coded `Some(1)` here would
+    // reject the very version the error message claims to read.
+    Some(v) if v == PROGRAM_SCHEMA_VERSION as u64 => {}
     other => {
       return Err(format!(
         "program schema_version {other:?} unsupported (code reads {PROGRAM_SCHEMA_VERSION})."

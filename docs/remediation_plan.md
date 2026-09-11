@@ -20,8 +20,8 @@ coverage is thin.
    must print `release` (R2.1, landed 0.5.4). The benches enforce this
    themselves and exit on a debug build.
 2. **Suite commands.**
-   - Python: `.venv/Scripts/python.exe -m pytest validation` (504 passed +
-     2 skipped at 0.5.8, parity included; `PYTHONIOENCODING=utf-8` no longer
+   - Python: `.venv/Scripts/python.exe -m pytest validation` (569 passed +
+     2 skipped at 0.5.9, parity included; `PYTHONIOENCODING=utf-8` no longer
      needed after R2.2/R2.4)
    - Rust: `cargo test --workspace` (376 tests today)
    - Parity: the pytest-style parity tests after R2.4 makes them collectable
@@ -454,7 +454,7 @@ the parity layer.
 direction, but debugging it needs care with the ellipsometry channel order.
 **Effort.** M.
 
-### R2.5 Request-bit and schema sync tests
+### R2.5 Request-bit and schema sync tests — DONE (0.5.9)
 
 **Review:** §4.3 (49 `REQ_*` bits hand-copied in `smatrix.py:85+`, 18
 `NREQ_*` in `needle.py`; native exports the NREQ constants at
@@ -484,6 +484,35 @@ documentation of the bit map.
 **Validation.** Existing: none (that's the point). New: as above.
 
 **Effort.** S.
+
+**CORRECTIONS (0.5.9).**
+
+* **The `NREQ_*` constants are not hand-copied.** `needle.py` imports all 18
+  from `navette._smatrix` and binds them into the IntFlag, so their *values*
+  cannot drift. What can drift is *membership*: a constant added in Rust and
+  exported but never surfaced in `NeedleRequest` is unreachable from Python
+  and nothing notices. The test checks all three tables (Rust source ->
+  extension export -> IntFlag) for membership as well as value.
+* **There are two schema constants across the boundary, not one.**
+  `PROGRAM_SCHEMA_VERSION` (`config.rs` vs `config/program.py`) *and*
+  `SCHEMA_VERSION` (`structure/version.rs` vs `structure/types.py`). Both are
+  covered. Neither needed source parsing: `check_schema_version` and
+  `load_document` are thin shims over the native gates, so the version Rust
+  accepts is discoverable at runtime by probing.
+* **The semantic probe is necessary but not sufficient.** A `REQ_*` bit that
+  exists in Rust and was never mirrored in Python cannot be requested, so no
+  behavioural test can reach it. The file therefore also parses the Rust
+  constants and compares both directions exactly; that half skips on an
+  installed wheel, the behavioural half always runs.
+* **Found a live bug while writing the guard.** `gate_document` matched the
+  envelope version against a literal `Some(1)` while quoting
+  `PROGRAM_SCHEMA_VERSION` in its error message — the constant was
+  decorative, and a bump would have rejected the version the message claimed
+  to read. Fixed to compare against the constant, and proven both ways
+  (constant = 2 with the literal: gate still accepts 1, test green; constant
+  = 2 with the fix: test fails).
+* Size: the plan said "one pytest file", risk S — accurate, but it is 65
+  tests, not a handful, because the 49 bits and 6 bundles are parametrized.
 
 ---
 

@@ -3,6 +3,50 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.5.9] — Request-bit and schema sync guards (R2.5)
+
+Three constant tables are written once per language with nothing tying them
+together: the 49 `REQ_*` solver bits, the 18 `NREQ_*` needle bits, and two
+schema versions. Writing the guard found one of them already broken.
+
+### Fixed
+
+- **`PROGRAM_SCHEMA_VERSION` was decorative.** `config.rs`'s `gate_document`
+  matched the envelope version against the literal `Some(1)` while quoting the
+  constant in its rejection message, so bumping the constant would have made
+  the gate reject exactly the version it claimed to read, and accept the one
+  it claimed was stale. It compares against the constant now. Demonstrated:
+  with the literal in place, setting the constant to 2 left the gate accepting
+  1 and the new sync test green; with the fix, the same edit fails the test
+  (`python PROGRAM_SCHEMA_VERSION=1, rust accepts 2`).
+
+### Added
+
+- `validation/smoke/test_request_bits.py` — 65 tests, guarding each table from
+  both ends:
+  - **Source-level**, parsing `pub const REQ_*` / `NREQ_*` out of
+    `core_engine.rs` and `needle_engine.rs` and comparing name-for-name and
+    bit-for-bit against `Request` / `NeedleRequest`. Catches a constant added
+    on one side only — which the plan's semantic probe alone cannot see, since
+    a bit Python never mirrored is a bit Python can never request. Skips when
+    the Rust tree is absent (installed wheel).
+  - **Behavioural**, driving all 49 single bits through the engine and
+    asserting the returned channel keys exactly, plus the six convenience
+    bundles and an all-bits-at-once call. Catches a renumbering both source
+    tables agree on. Proven by swapping `RS`/`RP`: 3 failures.
+  - **Density/uniqueness** on both flags, and completeness of the bit ->
+    output-key map (two bits claiming one key is otherwise undetectable).
+  - **Schema**, probing the two native gates at runtime rather than parsing
+    them — `check_schema_version` and `load_document` are thin shims over
+    Rust, so the version Rust accepts is observable from Python, wheel or
+    checkout. Untagged states and untagged documents must be refused.
+
+### Known gaps
+
+- The `REQ_*` constants are still not exported by the extension, so the
+  source-level half is the only exact check and it needs the Rust tree. The
+  behavioural half covers the wheel case.
+
 ## [0.5.8] — Parity tests were passing without comparing anything (R2.4)
 
 `validation/conftest.py` had ignored the whole `parity/` tree, so nobody had
