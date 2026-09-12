@@ -8,10 +8,10 @@
 
 /// Photometry engine holding pre‑computed V(λ) and V'(λ) curves.
 pub struct PhotometryEngine {
-    vp: Vec<f64>,      // photopic V(λ)
-    vs: Vec<f64>,      // scotopic V'(λ)
-    pub km_p: f64,     // photopic efficacy (default 683.002 lm/W)
-    pub km_s: f64,     // scotopic efficacy (default 1700.05 lm/W)
+    vp: Vec<f64>,  // photopic V(λ)
+    vs: Vec<f64>,  // scotopic V'(λ)
+    pub km_p: f64, // photopic efficacy (default 683.002 lm/W)
+    pub km_s: f64, // scotopic efficacy (default 1700.05 lm/W)
 }
 
 /// Vision type for flux calculation.
@@ -83,13 +83,7 @@ impl PhotometryEngine {
     ///
     /// # Returns
     /// Luminous flux in lumens.
-    pub fn calculate_flux(
-        &self,
-        spd: &[f64],
-        vision: Vision,
-        m: f64,
-        interval: f64,
-    ) -> f64 {
+    pub fn calculate_flux(&self, spd: &[f64], vision: Vision, m: f64, interval: f64) -> f64 {
         let (w_p, w_s) = match vision {
             Vision::Photopic => (self.km_p, 0.0),
             Vision::Scotopic => (0.0, self.km_s),

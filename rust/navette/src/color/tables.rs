@@ -29,7 +29,7 @@
 /// One parsed CIE table: named float columns.
 #[derive(Clone, Debug)]
 pub struct CieTable {
-  columns: Vec<(String, Vec<f64>)>,
+    columns: Vec<(String, Vec<f64>)>,
 }
 
 /// Parse CIE DataCite JSON text into a [`CieTable`].
@@ -38,123 +38,130 @@ pub struct CieTable {
 /// mapping, columns without a `values` array, empty or non-numeric or
 /// non-finite values, and columns of unequal length.
 pub fn parse_cie_tables(text: &str) -> Result<CieTable, String> {
-  let root: serde_json::Value =
-    serde_json::from_str(text).map_err(|e| format!("CIE table: invalid JSON: {e}"))?;
-  let data = root
-    .get("data")
-    .and_then(|v| v.as_object())
-    .ok_or_else(|| {
-      "CIE table: missing 'data' mapping (not a CIE table document).".to_string()
-    })?;
-  if data.is_empty() {
-    return Err("CIE table: 'data' mapping is empty.".to_string());
-  }
-  let mut columns = Vec::with_capacity(data.len());
-  for (name, entry) in data.iter() {
-    let values = entry
-      .get("values")
-      .and_then(|v| v.as_array())
-      .ok_or_else(|| format!("CIE table: column '{name}' has no 'values' array."))?;
-    if values.is_empty() {
-      return Err(format!("CIE table: column '{name}' has no rows."));
+    let root: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("CIE table: invalid JSON: {e}"))?;
+    let data = root
+        .get("data")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            "CIE table: missing 'data' mapping (not a CIE table document).".to_string()
+        })?;
+    if data.is_empty() {
+        return Err("CIE table: 'data' mapping is empty.".to_string());
     }
-    let mut col = Vec::with_capacity(values.len());
-    for (i, v) in values.iter().enumerate() {
-      let x = v
-        .as_f64()
-        .ok_or_else(|| format!("CIE table: column '{name}' row {i} is not a number."))?;
-      if !x.is_finite() {
-        return Err(format!("CIE table: column '{name}' row {i} is not finite."));
-      }
-      col.push(x);
+    let mut columns = Vec::with_capacity(data.len());
+    for (name, entry) in data.iter() {
+        let values = entry
+            .get("values")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("CIE table: column '{name}' has no 'values' array."))?;
+        if values.is_empty() {
+            return Err(format!("CIE table: column '{name}' has no rows."));
+        }
+        let mut col = Vec::with_capacity(values.len());
+        for (i, v) in values.iter().enumerate() {
+            let x = v
+                .as_f64()
+                .ok_or_else(|| format!("CIE table: column '{name}' row {i} is not a number."))?;
+            if !x.is_finite() {
+                return Err(format!("CIE table: column '{name}' row {i} is not finite."));
+            }
+            col.push(x);
+        }
+        columns.push((name.clone(), col));
     }
-    columns.push((name.clone(), col));
-  }
-  let n0 = columns[0].1.len();
-  for (name, col) in &columns {
-    if col.len() != n0 {
-      return Err(format!(
-        "CIE table: column '{name}' has {} rows, expected {n0}.",
-        col.len()
-      ));
+    let n0 = columns[0].1.len();
+    for (name, col) in &columns {
+        if col.len() != n0 {
+            return Err(format!(
+                "CIE table: column '{name}' has {} rows, expected {n0}.",
+                col.len()
+            ));
+        }
     }
-  }
-  Ok(CieTable { columns })
+    Ok(CieTable { columns })
 }
 
 impl CieTable {
-  /// Column names (serde key order — compare as sets, not lists).
-  pub fn column_names(&self) -> Vec<&str> {
-    self.columns.iter().map(|(n, _)| n.as_str()).collect()
-  }
-
-  /// One column by exact name.
-  pub fn column(&self, name: &str) -> Option<&[f64]> {
-    self.columns.iter().find(|(n, _)| n == name).map(|(_, c)| c.as_slice())
-  }
-
-  /// The `lambda` wavelength axis, if the file carries one (`None` for
-  /// lambda-free tables such as the mesopic `K_m` adaptation table).
-  pub fn lambda(&self) -> Option<&[f64]> {
-    self.column("lambda")
-  }
-
-  /// XYZ-ish column names in x,y,z order, found by remainder-grouping.
-  ///
-  /// A candidate stem is a `(lambda)`-suffixed column whose name, lowercased
-  /// with `_`, `,`, whitespace stripped, starts with `x`/`y`/`z`; stems
-  /// group by remainder (`bar` → 1931, `bar10` → 1964, `barf`/`barf10` →
-  /// Stockman-Sharpe, `` → cc 1931, `10` → cc 1964). Exactly one full
-  /// `{x,y,z}` group must exist. MacLeod-Boynton (`l/m/s_MB`), `V'`,
-  /// `S_D65` and bare SDS names never qualify (wrong first letter or no
-  /// `(lambda)` suffix — the suffix rule is what keeps
-  /// `CIE illuminant C`-style columns out).
-  pub fn xyz_column_names(&self) -> Result<[String; 3], String> {
-    use std::collections::BTreeMap;
-    let mut groups: BTreeMap<String, BTreeMap<char, String>> = BTreeMap::new();
-    for (name, _) in &self.columns {
-      let Some((axis, rest)) = xyz_stem(name) else { continue };
-      groups.entry(rest).or_default().insert(axis, name.clone());
+    /// Column names (serde key order — compare as sets, not lists).
+    pub fn column_names(&self) -> Vec<&str> {
+        self.columns.iter().map(|(n, _)| n.as_str()).collect()
     }
-    let full: Vec<&BTreeMap<char, String>> = groups
-      .values()
-      .filter(|m| {
-        m.len() == 3 && m.contains_key(&'x') && m.contains_key(&'y') && m.contains_key(&'z')
-      })
-      .collect();
-    match full.as_slice() {
-      [m] => Ok([m[&'x'].clone(), m[&'y'].clone(), m[&'z'].clone()]),
-      [] => Err(format!(
-        "CIE table: no XYZ triplet found (columns: {}).",
-        self.column_names().join(", ")
-      )),
-      _ => {
-        let mut rests: Vec<&str> =
-          groups.keys().map(|r| if r.is_empty() { "(bare)" } else { r }).collect();
-        rests.sort_unstable();
-        Err(format!(
-          "CIE table: ambiguous XYZ triplets ({}) — qualify explicitly.",
-          rests.join(", ")
-        ))
-      }
+
+    /// One column by exact name.
+    pub fn column(&self, name: &str) -> Option<&[f64]> {
+        self.columns
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, c)| c.as_slice())
     }
-  }
+
+    /// The `lambda` wavelength axis, if the file carries one (`None` for
+    /// lambda-free tables such as the mesopic `K_m` adaptation table).
+    pub fn lambda(&self) -> Option<&[f64]> {
+        self.column("lambda")
+    }
+
+    /// XYZ-ish column names in x,y,z order, found by remainder-grouping.
+    ///
+    /// A candidate stem is a `(lambda)`-suffixed column whose name, lowercased
+    /// with `_`, `,`, whitespace stripped, starts with `x`/`y`/`z`; stems
+    /// group by remainder (`bar` → 1931, `bar10` → 1964, `barf`/`barf10` →
+    /// Stockman-Sharpe, `` → cc 1931, `10` → cc 1964). Exactly one full
+    /// `{x,y,z}` group must exist. MacLeod-Boynton (`l/m/s_MB`), `V'`,
+    /// `S_D65` and bare SDS names never qualify (wrong first letter or no
+    /// `(lambda)` suffix — the suffix rule is what keeps
+    /// `CIE illuminant C`-style columns out).
+    pub fn xyz_column_names(&self) -> Result<[String; 3], String> {
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<String, BTreeMap<char, String>> = BTreeMap::new();
+        for (name, _) in &self.columns {
+            let Some((axis, rest)) = xyz_stem(name) else {
+                continue;
+            };
+            groups.entry(rest).or_default().insert(axis, name.clone());
+        }
+        let full: Vec<&BTreeMap<char, String>> = groups
+            .values()
+            .filter(|m| {
+                m.len() == 3 && m.contains_key(&'x') && m.contains_key(&'y') && m.contains_key(&'z')
+            })
+            .collect();
+        match full.as_slice() {
+            [m] => Ok([m[&'x'].clone(), m[&'y'].clone(), m[&'z'].clone()]),
+            [] => Err(format!(
+                "CIE table: no XYZ triplet found (columns: {}).",
+                self.column_names().join(", ")
+            )),
+            _ => {
+                let mut rests: Vec<&str> = groups
+                    .keys()
+                    .map(|r| if r.is_empty() { "(bare)" } else { r })
+                    .collect();
+                rests.sort_unstable();
+                Err(format!(
+                    "CIE table: ambiguous XYZ triplets ({}) — qualify explicitly.",
+                    rests.join(", ")
+                ))
+            }
+        }
+    }
 }
 
 /// `(axis, remainder)` for triplet candidates; `None` for anything else.
 fn xyz_stem(name: &str) -> Option<(char, String)> {
-  let base = name.strip_suffix("(lambda)")?;
-  let norm: String = base
-    .to_lowercase()
-    .chars()
-    .filter(|c| !matches!(c, '_' | ',' | ' ' | '\t'))
-    .collect();
-  let mut chars = norm.chars();
-  let axis = chars.next()?;
-  if !matches!(axis, 'x' | 'y' | 'z') {
-    return None;
-  }
-  Some((axis, chars.collect()))
+    let base = name.strip_suffix("(lambda)")?;
+    let norm: String = base
+        .to_lowercase()
+        .chars()
+        .filter(|c| !matches!(c, '_' | ',' | ' ' | '\t'))
+        .collect();
+    let mut chars = norm.chars();
+    let axis = chars.next()?;
+    if !matches!(axis, 'x' | 'y' | 'z') {
+        return None;
+    }
+    Some((axis, chars.collect()))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,186 +179,218 @@ fn xyz_stem(name: &str) -> Option<(char, String)> {
 
 #[derive(serde::Deserialize)]
 struct CmfDefault {
-  wavelengths: Vec<f64>,
-  x: Vec<f64>,
-  y: Vec<f64>,
-  z: Vec<f64>,
+    wavelengths: Vec<f64>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
 }
 
 #[derive(serde::Deserialize)]
 struct IllumDefault {
-  wavelengths: Vec<f64>,
-  values: Vec<f64>,
+    wavelengths: Vec<f64>,
+    values: Vec<f64>,
 }
 
 /// Embedded default tables: 1931 2° CMF + D65, native grids.
 #[derive(Clone, Debug)]
 pub(crate) struct DefaultTables {
-  pub cmf_wl: Vec<f64>,
-  pub cmf_xyz: Vec<[f64; 3]>,
-  pub illum_wl: Vec<f64>,
-  pub illum: Vec<f64>,
+    pub cmf_wl: Vec<f64>,
+    pub cmf_xyz: Vec<[f64; 3]>,
+    pub illum_wl: Vec<f64>,
+    pub illum: Vec<f64>,
 }
 
 fn parse_embedded() -> Result<DefaultTables, String> {
-  let cmf: CmfDefault = serde_json::from_str(include_str!("../../data/cmf_1931_2deg.json"))
-    .map_err(|e| format!("embedded CMF default: invalid JSON: {e}"))?;
-  let illum: IllumDefault = serde_json::from_str(include_str!("../../data/illum_d65.json"))
-    .map_err(|e| format!("embedded D65 default: invalid JSON: {e}"))?;
-  let n = cmf.wavelengths.len();
-  if n == 0 || [cmf.x.len(), cmf.y.len(), cmf.z.len()].iter().any(|&l| l != n) {
-    return Err("embedded CMF default: column length mismatch.".to_string());
-  }
-  if illum.wavelengths.len() != illum.values.len() || illum.wavelengths.is_empty() {
-    return Err("embedded D65 default: column length mismatch.".to_string());
-  }
-  for (name, wl) in [("CMF", &cmf.wavelengths), ("D65", &illum.wavelengths)] {
-    if wl.windows(2).any(|w| !(w[0] < w[1])) {
-      return Err(format!("embedded {name} default: wavelengths not strictly increasing."));
+    let cmf: CmfDefault = serde_json::from_str(include_str!("../../data/cmf_1931_2deg.json"))
+        .map_err(|e| format!("embedded CMF default: invalid JSON: {e}"))?;
+    let illum: IllumDefault = serde_json::from_str(include_str!("../../data/illum_d65.json"))
+        .map_err(|e| format!("embedded D65 default: invalid JSON: {e}"))?;
+    let n = cmf.wavelengths.len();
+    if n == 0
+        || [cmf.x.len(), cmf.y.len(), cmf.z.len()]
+            .iter()
+            .any(|&l| l != n)
+    {
+        return Err("embedded CMF default: column length mismatch.".to_string());
     }
-    if wl.iter().any(|v| !v.is_finite()) {
-      return Err(format!("embedded {name} default: non-finite wavelength."));
+    if illum.wavelengths.len() != illum.values.len() || illum.wavelengths.is_empty() {
+        return Err("embedded D65 default: column length mismatch.".to_string());
     }
-  }
-  for (i, &v) in cmf.x.iter().chain(&cmf.y).chain(&cmf.z).chain(&illum.values).enumerate() {
-    if !v.is_finite() {
-      return Err(format!("embedded default: non-finite table value at flat index {i}."));
+    for (name, wl) in [("CMF", &cmf.wavelengths), ("D65", &illum.wavelengths)] {
+        if wl.windows(2).any(|w| !(w[0] < w[1])) {
+            return Err(format!(
+                "embedded {name} default: wavelengths not strictly increasing."
+            ));
+        }
+        if wl.iter().any(|v| !v.is_finite()) {
+            return Err(format!("embedded {name} default: non-finite wavelength."));
+        }
     }
-  }
-  let cmf_xyz = (0..n).map(|i| [cmf.x[i], cmf.y[i], cmf.z[i]]).collect();
-  Ok(DefaultTables { cmf_wl: cmf.wavelengths, cmf_xyz, illum_wl: illum.wavelengths, illum: illum.values })
+    for (i, &v) in cmf
+        .x
+        .iter()
+        .chain(&cmf.y)
+        .chain(&cmf.z)
+        .chain(&illum.values)
+        .enumerate()
+    {
+        if !v.is_finite() {
+            return Err(format!(
+                "embedded default: non-finite table value at flat index {i}."
+            ));
+        }
+    }
+    let cmf_xyz = (0..n).map(|i| [cmf.x[i], cmf.y[i], cmf.z[i]]).collect();
+    Ok(DefaultTables {
+        cmf_wl: cmf.wavelengths,
+        cmf_xyz,
+        illum_wl: illum.wavelengths,
+        illum: illum.values,
+    })
 }
 
 pub(crate) fn default_tables() -> &'static DefaultTables {
-  static CELL: std::sync::OnceLock<DefaultTables> = std::sync::OnceLock::new();
-  CELL.get_or_init(|| parse_embedded().expect("embedded CIE defaults are sync-checked"))
+    static CELL: std::sync::OnceLock<DefaultTables> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| parse_embedded().expect("embedded CIE defaults are sync-checked"))
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
+    use super::*;
 
-  fn doc(data: &str) -> String {
-    format!("{{\"data\": {{{data}}}}}")
-  }
-
-  fn col(name: &str, vals: &str) -> String {
-    format!("\"{name}\": {{\"values\": [{vals}], \"unit\": \"nm\"}}")
-  }
-
-  #[test]
-  fn cmf_1931_convention_triplet_in_order() {
-    let t = parse_cie_tables(&doc(&[
-      col("lambda", "360, 361"),
-      col("z_bar(lambda)", "0.0006, 0.0007"),
-      col("x_bar(lambda)", "0.0001, 0.0002"),
-      col("y_bar(lambda)", "0.0000, 0.0000"),
-    ]
-    .join(",")))
-    .unwrap();
-    assert_eq!(t.lambda().unwrap(), &[360.0, 361.0]);
-    assert_eq!(
-      t.xyz_column_names().unwrap(),
-      [
-        "x_bar(lambda)".to_string(),
-        "y_bar(lambda)".to_string(),
-        "z_bar(lambda)".to_string()
-      ]
-    );
-  }
-
-  #[test]
-  fn all_xyz_conventions_resolve() {
-    // (x-names, y-names, z-names) per family convention.
-    let families = [
-      (["x_bar(lambda)", "y_bar(lambda)", "z_bar(lambda)"]),
-      (["xbar_10(lambda)", "ybar_10(lambda)", "zbar_10(lambda)"]),
-      (["xbar_F(lambda)", "ybar_F(lambda)", "zbar_F(lambda)"]),
-      (["xbar_F,10(lambda)", "ybar_F,10(lambda)", "zbar_F,10(lambda)"]),
-      (["x(lambda)", "y(lambda)", "z(lambda)"]),
-      (["x_10(lambda)", "y_10(lambda)", "z_10(lambda)"]),
-    ];
-    for names in families {
-      let cols: Vec<String> = std::iter::once(col("lambda", "1, 2"))
-        .chain(names.iter().map(|n| col(n, "0.1, 0.2")))
-        .collect();
-      let t = parse_cie_tables(&doc(&cols.join(","))).unwrap();
-      let got = t.xyz_column_names().unwrap();
-      assert_eq!(got, names.map(str::to_string), "convention {names:?}");
+    fn doc(data: &str) -> String {
+        format!("{{\"data\": {{{data}}}}}")
     }
-  }
 
-  #[test]
-  fn macleod_boynton_is_no_triplet() {
-    let t = parse_cie_tables(&doc(&[
-      col("lambda", "390, 395"),
-      col("l_MB(lambda)", "0.69, 0.70"),
-      col("m_MB(lambda)", "0.31, 0.30"),
-      col("s_MB(lambda)", "0.85, 0.84"),
-    ]
-    .join(",")))
-    .unwrap();
-    let err = t.xyz_column_names().unwrap_err();
-    assert!(err.contains("no XYZ triplet"), "{err}");
-  }
+    fn col(name: &str, vals: &str) -> String {
+        format!("\"{name}\": {{\"values\": [{vals}], \"unit\": \"nm\"}}")
+    }
 
-  #[test]
-  fn sds_bare_names_parse_triplet_refused() {
-    let t = parse_cie_tables(&doc(&[
-      col("lambda", "380, 381"),
-      col("FL1", "1.0, 2.0"),
-    ]
-    .join(",")))
-    .unwrap();
-    assert_eq!(t.column_names(), ["FL1", "lambda"]);
-    assert_eq!(t.column("FL1").unwrap(), &[1.0, 2.0]);
-    let err = t.xyz_column_names().unwrap_err();
-    assert!(err.contains("FL1"), "{err}");
-  }
+    #[test]
+    fn cmf_1931_convention_triplet_in_order() {
+        let t = parse_cie_tables(&doc(&[
+            col("lambda", "360, 361"),
+            col("z_bar(lambda)", "0.0006, 0.0007"),
+            col("x_bar(lambda)", "0.0001, 0.0002"),
+            col("y_bar(lambda)", "0.0000, 0.0000"),
+        ]
+        .join(",")))
+        .unwrap();
+        assert_eq!(t.lambda().unwrap(), &[360.0, 361.0]);
+        assert_eq!(
+            t.xyz_column_names().unwrap(),
+            [
+                "x_bar(lambda)".to_string(),
+                "y_bar(lambda)".to_string(),
+                "z_bar(lambda)".to_string()
+            ]
+        );
+    }
 
-  #[test]
-  fn lambda_free_table_parses() {
-    let t = parse_cie_tables(&doc(&[
-      col("m", "0, 1"),
-      col("K_m,mes;m", "1700.13, 683"),
-    ]
-    .join(",")))
-    .unwrap();
-    assert!(t.lambda().is_none());
-    assert_eq!(t.column("K_m,mes;m").unwrap(), &[1700.13, 683.0]);
-  }
+    #[test]
+    fn all_xyz_conventions_resolve() {
+        // (x-names, y-names, z-names) per family convention.
+        let families = [
+            (["x_bar(lambda)", "y_bar(lambda)", "z_bar(lambda)"]),
+            (["xbar_10(lambda)", "ybar_10(lambda)", "zbar_10(lambda)"]),
+            (["xbar_F(lambda)", "ybar_F(lambda)", "zbar_F(lambda)"]),
+            ([
+                "xbar_F,10(lambda)",
+                "ybar_F,10(lambda)",
+                "zbar_F,10(lambda)",
+            ]),
+            (["x(lambda)", "y(lambda)", "z(lambda)"]),
+            (["x_10(lambda)", "y_10(lambda)", "z_10(lambda)"]),
+        ];
+        for names in families {
+            let cols: Vec<String> = std::iter::once(col("lambda", "1, 2"))
+                .chain(names.iter().map(|n| col(n, "0.1, 0.2")))
+                .collect();
+            let t = parse_cie_tables(&doc(&cols.join(","))).unwrap();
+            let got = t.xyz_column_names().unwrap();
+            assert_eq!(got, names.map(str::to_string), "convention {names:?}");
+        }
+    }
 
-  #[test]
-  fn ambiguous_triplet_refused() {
-    let t = parse_cie_tables(&doc(&[
-      col("lambda", "1, 2"),
-      col("x(lambda)", "0.1, 0.2"),
-      col("y(lambda)", "0.1, 0.2"),
-      col("z(lambda)", "0.1, 0.2"),
-      col("x_bar(lambda)", "0.1, 0.2"),
-      col("y_bar(lambda)", "0.1, 0.2"),
-      col("z_bar(lambda)", "0.1, 0.2"),
-    ]
-    .join(",")))
-    .unwrap();
-    let err = t.xyz_column_names().unwrap_err();
-    assert!(err.contains("ambiguous"), "{err}");
-  }
+    #[test]
+    fn macleod_boynton_is_no_triplet() {
+        let t = parse_cie_tables(&doc(&[
+            col("lambda", "390, 395"),
+            col("l_MB(lambda)", "0.69, 0.70"),
+            col("m_MB(lambda)", "0.31, 0.30"),
+            col("s_MB(lambda)", "0.85, 0.84"),
+        ]
+        .join(",")))
+        .unwrap();
+        let err = t.xyz_column_names().unwrap_err();
+        assert!(err.contains("no XYZ triplet"), "{err}");
+    }
 
-  #[test]
-  fn error_paths_name_the_culprit() {
-    assert!(parse_cie_tables("not json").unwrap_err().contains("invalid JSON"));
-    assert!(parse_cie_tables("{}").unwrap_err().contains("missing 'data'"));
-    assert!(parse_cie_tables("{\"data\": {}}").unwrap_err().contains("empty"));
-    let no_vals = doc("\"a\": {\"unit\": \"nm\"}");
-    assert!(parse_cie_tables(&no_vals).unwrap_err().contains("'a'"));
-    let empty = doc(&col("a", ""));
-    assert!(parse_cie_tables(&empty).unwrap_err().contains("'a'"));
-    let bad = doc(&[col("a", "1, 2"), col("b", "1, \"x\"")].join(","));
-    let err = parse_cie_tables(&bad).unwrap_err();
-    assert!(err.contains("'b'") && err.contains("row 1"), "{err}");
-    let uneven = doc(&[col("a", "1, 2"), col("b", "1, 2, 3")].join(","));
-    let err = parse_cie_tables(&uneven).unwrap_err();
-    assert!(err.contains("'b'") && err.contains("expected 2"), "{err}");
-  }
+    #[test]
+    fn sds_bare_names_parse_triplet_refused() {
+        let t = parse_cie_tables(&doc(
+            &[col("lambda", "380, 381"), col("FL1", "1.0, 2.0")].join(",")
+        ))
+        .unwrap();
+        assert_eq!(t.column_names(), ["FL1", "lambda"]);
+        assert_eq!(t.column("FL1").unwrap(), &[1.0, 2.0]);
+        let err = t.xyz_column_names().unwrap_err();
+        assert!(err.contains("FL1"), "{err}");
+    }
+
+    #[test]
+    fn lambda_free_table_parses() {
+        let t = parse_cie_tables(&doc(
+            &[col("m", "0, 1"), col("K_m,mes;m", "1700.13, 683")].join(",")
+        ))
+        .unwrap();
+        assert!(t.lambda().is_none());
+        assert_eq!(t.column("K_m,mes;m").unwrap(), &[1700.13, 683.0]);
+    }
+
+    #[test]
+    fn ambiguous_triplet_refused() {
+        let t = parse_cie_tables(&doc(&[
+            col("lambda", "1, 2"),
+            col("x(lambda)", "0.1, 0.2"),
+            col("y(lambda)", "0.1, 0.2"),
+            col("z(lambda)", "0.1, 0.2"),
+            col("x_bar(lambda)", "0.1, 0.2"),
+            col("y_bar(lambda)", "0.1, 0.2"),
+            col("z_bar(lambda)", "0.1, 0.2"),
+        ]
+        .join(",")))
+        .unwrap();
+        let err = t.xyz_column_names().unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+    }
+
+    #[test]
+    fn error_paths_name_the_culprit() {
+        assert!(
+            parse_cie_tables("not json")
+                .unwrap_err()
+                .contains("invalid JSON")
+        );
+        assert!(
+            parse_cie_tables("{}")
+                .unwrap_err()
+                .contains("missing 'data'")
+        );
+        assert!(
+            parse_cie_tables("{\"data\": {}}")
+                .unwrap_err()
+                .contains("empty")
+        );
+        let no_vals = doc("\"a\": {\"unit\": \"nm\"}");
+        assert!(parse_cie_tables(&no_vals).unwrap_err().contains("'a'"));
+        let empty = doc(&col("a", ""));
+        assert!(parse_cie_tables(&empty).unwrap_err().contains("'a'"));
+        let bad = doc(&[col("a", "1, 2"), col("b", "1, \"x\"")].join(","));
+        let err = parse_cie_tables(&bad).unwrap_err();
+        assert!(err.contains("'b'") && err.contains("row 1"), "{err}");
+        let uneven = doc(&[col("a", "1, 2"), col("b", "1, 2, 3")].join(","));
+        let err = parse_cie_tables(&uneven).unwrap_err();
+        assert!(err.contains("'b'") && err.contains("expected 2"), "{err}");
+    }
 }

@@ -35,8 +35,8 @@ use rayon::prelude::*;
 use crate::smatrix::needle_operator::{
     build_stack_fields_range, p_coherent_a_from_fields, p_coherent_ab_from_fields,
     p_coherent_from_fields, p_coherent_grad_r_from_fields, p_coherent_grad_t_from_fields,
-    p_coherent_phi_from_fields, p_coherent_rb_from_fields,
-    p_coherent_t_from_fields, p_coherent_tb_from_fields,
+    p_coherent_phi_from_fields, p_coherent_rb_from_fields, p_coherent_t_from_fields,
+    p_coherent_tb_from_fields,
 };
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
 use crate::smatrix::synthesis::merit::{CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves};
@@ -60,7 +60,10 @@ pub struct ScanSite {
 /// multiples of `scan_step_nm` inside each admissible film.
 ///
 /// `films` are the film layers; host admissibility = `layer.needle`.
-pub fn build_scan_sites(films: &[crate::smatrix::synthesis::structure::LayerSpec], scan_step_nm: f64) -> Vec<ScanSite> {
+pub fn build_scan_sites(
+    films: &[crate::smatrix::synthesis::structure::LayerSpec],
+    scan_step_nm: f64,
+) -> Vec<ScanSite> {
     assert!(scan_step_nm > 0.0, "scan_step_nm must be positive");
     let mut sites = Vec::new();
     let mut cumulative = 0.0f64;
@@ -151,7 +154,7 @@ fn sample_op_value(
         OpRows::Absorption(r, t2) => {
             1.0 - interp_clamped(&sim.wavelengths, r, twl_i)
                 - interp_clamped(&sim.wavelengths, t2, twl_i)
-        },
+        }
         OpRows::Phase(c) => {
             let mut a = cinterp_clamped(&sim.wavelengths, c, twl_i).arg();
             if let Some(passes) = t.differential_passes {
@@ -164,7 +167,7 @@ fn sample_op_value(
                 );
             }
             a
-        },
+        }
     }
 }
 
@@ -199,8 +202,7 @@ pub fn build_needle_targets(
     let na = angles.len();
     let nw = wavelengths.len();
     let zero = || (vec![0.0f64; na * nw], vec![0.0f64; na * nw]);
-    let mut buckets: [(Vec<f64>, Vec<f64>); 6] =
-        [zero(), zero(), zero(), zero(), zero(), zero()];
+    let mut buckets: [(Vec<f64>, Vec<f64>); 6] = [zero(), zero(), zero(), zero(), zero(), zero()];
     let mut phi: [(Vec<f64>, Vec<f64>); 4] = [zero(), zero(), zero(), zero()];
     let mut phi_gain_shift = [0.0f64; 4];
 
@@ -210,8 +212,12 @@ pub fn build_needle_targets(
         let bucket = if t.phase {
             match key.curve.phase_channel() {
                 Some(ch) => BucketKind::Phi(ch),
-                None => return Err(format!(
-                    "phase demand on {:?}: no S-matrix element", key.curve)),
+                None => {
+                    return Err(format!(
+                        "phase demand on {:?}: no S-matrix element",
+                        key.curve
+                    ));
+                }
             }
         } else {
             BucketKind::Pair(match key.curve {
@@ -224,10 +230,11 @@ pub fn build_needle_targets(
             })
         };
         if t.phase {
-            if !matches!(t.transform,
-                crate::smatrix::synthesis::merit::SimTransform::Linear |
-                crate::smatrix::synthesis::merit::SimTransform::Phase)
-            {
+            if !matches!(
+                t.transform,
+                crate::smatrix::synthesis::merit::SimTransform::Linear
+                    | crate::smatrix::synthesis::merit::SimTransform::Phase
+            ) {
                 return Err(format!(
                     "phase demands need linear/phase normalization; got {:?}",
                     t.transform
@@ -266,7 +273,11 @@ pub fn build_needle_targets(
                     None
                 } else {
                     let irow = |id: CurveId| -> Option<&[f64]> {
-                        let arc = if id.is_back() { sim.back_curve(id) } else { sim.curve(id) };
+                        let arc = if id.is_back() {
+                            sim.back_curve(id)
+                        } else {
+                            sim.curve(id)
+                        };
                         arc.map(|c| sim_row(c, ar, nws))
                     };
                     if t.phase {
@@ -287,7 +298,7 @@ pub fn build_needle_targets(
                         }
                     }
                 }
-            },
+            }
         };
 
         let twl: &[f64] = &t.wavelengths;
@@ -295,16 +306,32 @@ pub fn build_needle_targets(
         // Hoisted — the per-point loop below must stay lean for
         // intensity-only demand sets.
         let n_inc = current_sim.map(|sim| {
-            if key.curve.is_back() { sim.n_back_re } else { sim.n_front_re }
+            if key.curve.is_back() {
+                sim.n_back_re
+            } else {
+                sim.n_front_re
+            }
         });
         // Integral demands fold the MEAN (own two-pass block below): the
         // mean-form merit is non-diagonal, so the fold matches its UNIFORM
         // gradient (exact at the op point, values up to dropped constants —
         // same loss class as the +1/overlap terms). Pointwise continues.
         if t.integral {
-            fold_integral_demand(t, key, twl, current_sim, &op, n_inc,
-                row, wavelengths, nw, bucket, &mut buckets, &mut phi,
-                &mut phi_gain_shift)?;
+            fold_integral_demand(
+                t,
+                key,
+                twl,
+                current_sim,
+                &op,
+                n_inc,
+                row,
+                wavelengths,
+                nw,
+                bucket,
+                &mut buckets,
+                &mut phi,
+                &mut phi_gain_shift,
+            )?;
             continue;
         }
         for &twl_i in twl.iter() {
@@ -312,7 +339,11 @@ pub fn build_needle_targets(
             // onto this solver wavelength (edge-clamped; ascending grids).
             let tgt_norm = interp_clamped(twl, &t.normalized_targets, twl_i);
             let tol = interp_clamped(twl, &t.tolerances, twl_i).max(1e-300);
-            let bw = if t.band.is_empty() { 0.0 } else { interp_clamped(twl, &t.band, twl_i).max(0.0) };
+            let bw = if t.band.is_empty() {
+                0.0
+            } else {
+                interp_clamped(twl, &t.band, twl_i).max(0.0)
+            };
             let raw_target = tgt_norm / t.norm_factor;
             let nf2 = t.norm_factor * t.norm_factor;
 
@@ -321,12 +352,10 @@ pub fn build_needle_targets(
             // the companion rows; phase samples arg() of the complex row
             // minus the differential reference (`PDts`/`PDtp`) when set.
             // Residuals wrap exactly when the evaluator would (Phase mode).
-            let wrap_phase = t.phase
-                && t.transform == crate::smatrix::synthesis::merit::SimTransform::Phase;
+            let wrap_phase =
+                t.phase && t.transform == crate::smatrix::synthesis::merit::SimTransform::Phase;
             let s_op: Option<f64> = match (current_sim, &op) {
-                (Some(sim), Some(rows)) => {
-                    Some(sample_op_value(rows, sim, twl_i, t, key, n_inc))
-                },
+                (Some(sim), Some(rows)) => Some(sample_op_value(rows, sim, twl_i, t, key, n_inc)),
                 _ => None,
             };
             let d_opt: Option<f64> = s_op.map(|v| {
@@ -341,7 +370,7 @@ pub fn build_needle_targets(
             let folded: Option<(f64, f64)> = match t.kind {
                 crate::smatrix::synthesis::merit::ConstraintKind::Exact => {
                     Some((raw_target, nf2 / (tol * tol)))
-                },
+                }
                 crate::smatrix::synthesis::merit::ConstraintKind::Above => match d_opt {
                     Some(d) if d >= 0.0 => None,
                     _ => Some((raw_target, nf2 / (tol * tol))),
@@ -359,9 +388,9 @@ pub fn build_needle_targets(
                         Some(d) => {
                             let edge_raw = (tgt_norm + d.signum() * bw_eff) / t.norm_factor;
                             Some((edge_raw, nf2 / (tol * tol)))
-                        },
+                        }
                     }
-                },
+                }
                 crate::smatrix::synthesis::merit::ConstraintKind::CenterBand => {
                     if bw <= 0.0 {
                         Some((raw_target, nf2 / (tol * tol)))
@@ -376,10 +405,10 @@ pub fn build_needle_targets(
                             Some(d) => {
                                 let edge_raw = (tgt_norm + d.signum() * bw) / t.norm_factor;
                                 Some((edge_raw, nf2 / (tol * tol)))
-                            },
+                            }
                         }
                     }
-                },
+                }
             };
             let Some((rt, w)) = folded else { continue };
             // User weight + count normalization, applied once at emission:
@@ -393,7 +422,7 @@ pub fn build_needle_targets(
                 BucketKind::Pair(i) => {
                     buckets[i].1[k] += w;
                     buckets[i].0[k] += w * rt;
-                },
+                }
                 BucketKind::Phi(ch) => {
                     phi[ch].1[k] += w;
                     phi[ch].0[k] += w * rt;
@@ -402,23 +431,24 @@ pub fn build_needle_targets(
                     // pair (holds for every kind arm — verified per-arm in
                     // the `phi_gain_shift_matches_fd` test). Skipped points
                     // (folded None) and the no-sim arm (s unknown) add 0.
-                    if let (Some(passes), Some(s), Some(n)) =
-                        (t.differential_passes, s_op, n_inc)
-                    {
+                    if let (Some(passes), Some(s), Some(n)) = (t.differential_passes, s_op, n_inc) {
                         let kz = passes
                             * crate::smatrix::optics_core::reference_wavenumber(
                                 twl_i, n, key.angle,
                             );
                         phi_gain_shift[ch] += -2.0 * kz * w * (s - rt);
                     }
-                },
+                }
             }
         }
     }
 
     // Accumulate W and W·t separately, then divide once (exact fold).
-    for (bt, bw_) in buckets.iter_mut().map(|(t, w)| (t, w))
-        .chain(phi.iter_mut().map(|(t, w)| (t, w))) {
+    for (bt, bw_) in buckets
+        .iter_mut()
+        .map(|(t, w)| (t, w))
+        .chain(phi.iter_mut().map(|(t, w)| (t, w)))
+    {
         for k in 0..bt.len() {
             if bw_[k] > 0.0 {
                 bt[k] /= bw_[k];
@@ -487,7 +517,18 @@ pub fn build_needle_targets(
             }
         }
     }
-    Ok(NeedleTargets { r, t, a, rb, tb, ab, phi, phi_gain_shift, grad_r, grad_t })
+    Ok(NeedleTargets {
+        r,
+        t,
+        a,
+        rb,
+        tb,
+        ab,
+        phi,
+        phi_gain_shift,
+        grad_r,
+        grad_t,
+    })
 }
 
 /// How an integral demand emits after mean activation.
@@ -530,8 +571,7 @@ fn fold_integral_demand(
     use crate::smatrix::synthesis::merit::{ConstraintKind, SimTransform};
     let n = twl.len() as f64;
     let nf = t.norm_factor;
-    let wrap_phase =
-        t.phase && t.transform == SimTransform::Phase;
+    let wrap_phase = t.phase && t.transform == SimTransform::Phase;
     // Pass 1: means of normalized target / tol / band.
     let mut t_bar = 0.0;
     let mut tol_sum = 0.0;
@@ -568,7 +608,7 @@ fn fold_integral_demand(
                 d += dj;
             }
             Some((m / n, d / n))
-        },
+        }
         _ => None,
     };
     let w_centre = t.weight * nf * nf / (tol_bar * tol_bar);
@@ -595,7 +635,7 @@ fn fold_integral_demand(
                 Some((_, d_bar)) if d_bar.abs() <= bw_eff => IntGap::Skip,
                 Some(_) => IntGap::EdgeMean(bw_eff),
             }
-        },
+        }
         ConstraintKind::CenterBand => {
             if bw_bar <= 0.0 {
                 // Degrades to Exact (mirrors the pointwise rule).
@@ -610,7 +650,7 @@ fn fold_integral_demand(
                     Some(_) => IntGap::EdgeMean(bw_bar),
                 }
             }
-        },
+        }
     };
     if matches!(gap, IntGap::Skip) {
         return Ok(());
@@ -624,20 +664,20 @@ fn fold_integral_demand(
             IntGap::Conservative => {
                 let tj = interp_clamped(twl, &t.normalized_targets, twl_i) / nf;
                 (tj, w_centre / (n * n))
-            },
+            }
             IntGap::CentreMean(m) => (s_vals[j] - n * (m - t_raw), w_centre / (n * n)),
             IntGap::InsideMean(m) => (s_vals[j] - n * (m - t_raw), w_inside / (n * n)),
             IntGap::EdgeMean(bw_eff) => {
                 let g = d_bar.signum() * (d_bar.abs() - bw_eff) / nf;
                 (s_vals[j] - n * g, w_centre / (n * n))
-            },
+            }
         };
         let k = row * nw + solver_wav_index(wavelengths, twl_i);
         match bucket {
             BucketKind::Pair(i) => {
                 buckets[i].1[k] += w_j;
                 buckets[i].0[k] += w_j * rt_j;
-            },
+            }
             BucketKind::Phi(ch) => {
                 phi[ch].1[k] += w_j;
                 phi[ch].0[k] += w_j * rt_j;
@@ -652,7 +692,7 @@ fn fold_integral_demand(
                         * crate::smatrix::optics_core::reference_wavenumber(twl_i, nn, key.angle);
                     phi_gain_shift[ch] += -2.0 * kz * w_j * (s - rt_j);
                 }
-            },
+            }
         }
     }
     Ok(())
@@ -775,7 +815,10 @@ pub struct NeedlePassInput<'a> {
 /// Run the analytic P(z) sweep. Sites come from `build_scan_sites`; the
 /// profile accumulates the half-gradient over all spectral points and both
 /// polarization branches (caller folds U-targets by enabling both branches).
-pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Result<NeedlePassResult, String> {
+pub fn needle_pass_scan(
+    input: &NeedlePassInput<'_>,
+    sites: &[ScanSite],
+) -> Result<NeedlePassResult, String> {
     let nl = input.n_layers;
     let nw = input.wavls.len();
     let na = input.sin_theta.len();
@@ -787,13 +830,20 @@ pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Resu
     if input.n_stack_cache.len() != nw * nl * 2 {
         return Err("n_stack_cache layout mismatch".into());
     }
-    if input.thicknesses.len() != nl || input.rough_types.len() != nl || input.rough_vals.len() != nl {
+    if input.thicknesses.len() != nl
+        || input.rough_types.len() != nl
+        || input.rough_vals.len() != nl
+    {
         return Err("per-layer array length mismatch".into());
     }
     let bucket_ok = |p: &(Vec<f64>, Vec<f64>)| p.0.len() == na * nw && p.1.len() == na * nw;
     let f0 = input.fold;
-    if !(bucket_ok(&f0.r) && bucket_ok(&f0.t) && bucket_ok(&f0.a)
-        && bucket_ok(&f0.rb) && bucket_ok(&f0.tb) && bucket_ok(&f0.ab)
+    if !(bucket_ok(&f0.r)
+        && bucket_ok(&f0.t)
+        && bucket_ok(&f0.a)
+        && bucket_ok(&f0.rb)
+        && bucket_ok(&f0.tb)
+        && bucket_ok(&f0.ab)
         && f0.phi.iter().all(bucket_ok))
     {
         return Err("fold buckets must be angle-major na*nw".into());
@@ -813,7 +863,10 @@ pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Resu
         return Err("block must contain at least one host layer".into());
     }
     if nz == 0 {
-        return Ok(NeedlePassResult { sites: Vec::new(), p_profile: Vec::new() });
+        return Ok(NeedlePassResult {
+            sites: Vec::new(),
+            p_profile: Vec::new(),
+        });
     }
     let z_grid: Vec<f64> = sites.iter().map(|s| s.z_nm).collect();
 
@@ -834,7 +887,12 @@ pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Resu
             let sin_t = input.sin_theta[a];
             let base = w * nl * 2;
             let ns: Vec<Complex64> = (0..nl)
-                .map(|l| Complex64::new(input.n_stack_cache[base + l * 2], input.n_stack_cache[base + l * 2 + 1]))
+                .map(|l| {
+                    Complex64::new(
+                        input.n_stack_cache[base + l * 2],
+                        input.n_stack_cache[base + l * 2 + 1],
+                    )
+                })
                 .collect();
             let nsin_fi = ns[0] * Complex64::new(sin_t, 0.0);
             let np_c = input.needle_n_per_wav[w];
@@ -849,8 +907,15 @@ pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Resu
                     continue;
                 }
                 let fields = build_stack_fields_range(
-                    si, ei, &ns, th, input.rough_vals, input.rough_types,
-                    lam, nsin_fi, pi as i32,
+                    si,
+                    ei,
+                    &ns,
+                    th,
+                    input.rough_vals,
+                    input.rough_types,
+                    lam,
+                    nsin_fi,
+                    pi as i32,
                 );
                 let pol = pi as i32;
                 // One call per quantity; weight-0 points are exact zeros
@@ -862,44 +927,132 @@ pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Resu
                     }
                 };
                 if fold.r.1[k] != 0.0 {
-                    add(p_coherent_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.r.0[k], fold.r.1[k], th, si, ei, &z_grid));
+                    add(p_coherent_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.r.0[k],
+                        fold.r.1[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 if fold.t.1[k] != 0.0 {
-                    add(p_coherent_t_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.t.0[k], fold.t.1[k], th, si, ei, &z_grid));
+                    add(p_coherent_t_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.t.0[k],
+                        fold.t.1[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 if fold.a.1[k] != 0.0 {
-                    add(p_coherent_a_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.a.0[k], fold.a.1[k], th, si, ei, &z_grid));
+                    add(p_coherent_a_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.a.0[k],
+                        fold.a.1[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 if fold.tb.1[k] != 0.0 {
-                    add(p_coherent_tb_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.tb.0[k], fold.tb.1[k], th, si, ei, &z_grid));
+                    add(p_coherent_tb_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.tb.0[k],
+                        fold.tb.1[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 if fold.rb.1[k] != 0.0 {
-                    add(p_coherent_rb_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.rb.0[k], fold.rb.1[k], th, si, ei, &z_grid));
+                    add(p_coherent_rb_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.rb.0[k],
+                        fold.rb.1[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 if fold.ab.1[k] != 0.0 {
-                    add(p_coherent_ab_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.ab.0[k], fold.ab.1[k], th, si, ei, &z_grid));
+                    add(p_coherent_ab_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.ab.0[k],
+                        fold.ab.1[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 // Option-B color buckets: chain-rule factor rides the R/T
                 // channels (zero-skip = existing pattern; color-free sets
                 // pay one float compare per point, bitwise-inert).
                 if fold.grad_r[k] != 0.0 {
-                    add(p_coherent_grad_r_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.grad_r[k], th, si, ei, &z_grid));
+                    add(p_coherent_grad_r_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.grad_r[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 if fold.grad_t[k] != 0.0 {
-                    add(p_coherent_grad_t_from_fields(&fields, nsin_fi, lam, pol, np_c,
-                        fold.grad_t[k], th, si, ei, &z_grid));
+                    add(p_coherent_grad_t_from_fields(
+                        &fields,
+                        nsin_fi,
+                        lam,
+                        pol,
+                        np_c,
+                        fold.grad_t[k],
+                        th,
+                        si,
+                        ei,
+                        &z_grid,
+                    ));
                 }
                 for (ch, pair) in fold.phi.iter().enumerate() {
                     if pair.1[k] != 0.0 {
-                        add(p_coherent_phi_from_fields(&fields, nsin_fi, lam, pol,
-                            np_c, ch, pair.0[k], pair.1[k], th, si, ei, &z_grid));
+                        add(p_coherent_phi_from_fields(
+                            &fields, nsin_fi, lam, pol, np_c, ch, pair.0[k], pair.1[k], th, si, ei,
+                            &z_grid,
+                        ));
                     }
                 }
             }
@@ -914,11 +1067,18 @@ pub fn needle_pass_scan(input: &NeedlePassInput<'_>, sites: &[ScanSite]) -> Resu
         }
     }
 
-    Ok(NeedlePassResult { sites: sites.to_vec(), p_profile })
+    Ok(NeedlePassResult {
+        sites: sites.to_vec(),
+        p_profile,
+    })
 }
 
 /// Convenience wrapper: scan sites + selection in one call.
-pub fn run_needle_pass(input: &NeedlePassInput<'_>, films: &[crate::smatrix::synthesis::structure::LayerSpec], scan_step_nm: f64) -> Result<NeedlePassResult, String> {
+pub fn run_needle_pass(
+    input: &NeedlePassInput<'_>,
+    films: &[crate::smatrix::synthesis::structure::LayerSpec],
+    scan_step_nm: f64,
+) -> Result<NeedlePassResult, String> {
     let sites = build_scan_sites(films, scan_step_nm);
     needle_pass_scan(input, &sites)
 }
@@ -931,9 +1091,7 @@ pub fn run_needle_pass(input: &NeedlePassInput<'_>, films: &[crate::smatrix::syn
 mod tests {
     use super::*;
     use crate::smatrix::optics_core::cplx;
-    use crate::smatrix::synthesis::merit::{
-        ConstraintKind, MeritKey, MeritTarget, SimTransform,
-    };
+    use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
     use crate::smatrix::synthesis::structure::LayerSpec;
 
     const NW: usize = 6;
@@ -1009,8 +1167,12 @@ mod tests {
     fn scan_sites_mirror_python_loop() {
         let films = vec![
             LayerSpec::constant("H", 2.35, 0.0, 10.0, NW), // step 2 → 4 sites
-            { let mut l = LayerSpec::constant("X", 1.0, 0.0, 7.0, NW); l.needle = false; l }, // skipped, advances 7
-            LayerSpec::constant("L", 1.46, 0.0, 5.0, NW),  // step 2 → 1 site (k=1: 2<5; k=2: 4 ≥ int(5/2)=2 stops)
+            {
+                let mut l = LayerSpec::constant("X", 1.0, 0.0, 7.0, NW);
+                l.needle = false;
+                l
+            }, // skipped, advances 7
+            LayerSpec::constant("L", 1.46, 0.0, 5.0, NW), // step 2 → 1 site (k=1: 2<5; k=2: 4 ≥ int(5/2)=2 stops)
         ];
         let sites = build_scan_sites(&films, 2.0);
         let got: Vec<(usize, f64, f64)> = sites
@@ -1127,10 +1289,15 @@ mod tests {
         .unwrap();
         let (site, p) = res.best().expect("expected an improving site");
         assert!(p < 0.0);
-        assert_eq!(p, res.p_profile.iter().cloned().fold(f64::INFINITY, f64::min));
+        assert_eq!(
+            p,
+            res.p_profile.iter().cloned().fold(f64::INFINITY, f64::min)
+        );
         // Site must lie inside its claimed film.
         let film_top: f64 = films[..site.film_idx].iter().map(|f| f.d_nm).sum();
-        assert!(site.depth_into_layer_nm > 0.0 && site.depth_into_layer_nm < films[site.film_idx].d_nm);
+        assert!(
+            site.depth_into_layer_nm > 0.0 && site.depth_into_layer_nm < films[site.film_idx].d_nm
+        );
         assert!((site.z_nm - (film_top + site.depth_into_layer_nm)).abs() < 1e-12);
     }
 
@@ -1250,8 +1417,14 @@ mod tests {
         use std::f64::consts::{PI, TAU};
         let ref_of = |wl: f64| TAU * 100.0 / wl;
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Ts });
-        let tgt: Vec<f64> = [400.0, 500.0].iter().map(|&w| 0.3 - ref_of(w) + 0.01).collect();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
+        let tgt: Vec<f64> = [400.0, 500.0]
+            .iter()
+            .map(|&w| 0.3 - ref_of(w) + 0.01)
+            .collect();
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![400.0, 500.0].into(),
@@ -1280,10 +1453,13 @@ mod tests {
                 n_front_re: 1.0,
                 n_back_re: 1.0,
             };
-            sim.cplx[3] = Some(vec![
-                Complex64::from_polar(0.7, 0.3),
-                Complex64::from_polar(0.7, 0.3),
-            ].into());
+            sim.cplx[3] = Some(
+                vec![
+                    Complex64::from_polar(0.7, 0.3),
+                    Complex64::from_polar(0.7, 0.3),
+                ]
+                .into(),
+            );
             sim
         };
         let angles = [0.0];
@@ -1291,10 +1467,17 @@ mod tests {
         let nt = build_needle_targets(&spec, &angles, &wavs, Some(&mk_sim(100.0))).unwrap();
         // Hand calc: 2·(−0.2)·(−kz/0.05) per point = 8·kz summed.
         let expect = 8.0 * (TAU / 400.0 + TAU / 500.0);
-        assert!((nt.phi_gain_shift[2] - expect).abs() < 1e-9,
-            "shift={} expect={}", nt.phi_gain_shift[2], expect);
-        assert!(nt.phi_gain_shift[0] == 0.0 && nt.phi_gain_shift[1] == 0.0
-            && nt.phi_gain_shift[3] == 0.0);
+        assert!(
+            (nt.phi_gain_shift[2] - expect).abs() < 1e-9,
+            "shift={} expect={}",
+            nt.phi_gain_shift[2],
+            expect
+        );
+        assert!(
+            nt.phi_gain_shift[0] == 0.0
+                && nt.phi_gain_shift[1] == 0.0
+                && nt.phi_gain_shift[3] == 0.0
+        );
         // Finite difference of the true merit over D.
         let h = 1e-3;
         let m_hi = spec.merit(&mk_sim(100.0 + h), 1e6);
@@ -1313,7 +1496,10 @@ mod tests {
         // Exact Rs demand, nf = 1, tol 0.1 → base folded w = 100 at 400.
         // weight 3 + count 2 → 150; raw target untouched.
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![400.0].into(),
@@ -1338,24 +1524,28 @@ mod tests {
         use std::f64::consts::TAU;
         let ref_of = |wl: f64| TAU * 100.0 / wl;
         let mut pspec = MeritSpec::new();
-        let pk = pspec.add_key(MeritKey { angle: 0.0, curve: CurveId::Ts });
+        let pk = pspec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
         let tgt: Vec<f64> = [400.0].iter().map(|&w| 0.3 - ref_of(w) + 0.01).collect();
-        pspec.add_target(MeritTarget {
-            key_idx: pk as u32,
-            wavelengths: vec![400.0].into(),
-            kind: ConstraintKind::Exact,
-            transform: SimTransform::Phase,
-            norm_factor: 1.0,
-            normalized_targets: tgt.into(),
-            tolerances: vec![0.05].into(),
-            band: vec![].into(),
-            phase: true,
-            differential_passes: Some(1.0),
-            integral: false,
-            weight: 2.0,
-            count_norm: None,
-        })
-        .unwrap();
+        pspec
+            .add_target(MeritTarget {
+                key_idx: pk as u32,
+                wavelengths: vec![400.0].into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: tgt.into(),
+                tolerances: vec![0.05].into(),
+                band: vec![].into(),
+                phase: true,
+                differential_passes: Some(1.0),
+                integral: false,
+                weight: 2.0,
+                count_norm: None,
+            })
+            .unwrap();
         let mut sim = SimCurves {
             angles: vec![0.0].into(),
             wavelengths: vec![400.0].into(),
@@ -1371,13 +1561,20 @@ mod tests {
         let pnt = build_needle_targets(&pspec, &[0.0], &[400.0], Some(&sim)).unwrap();
         // Hand: −2·kz·w·Δ with w = 2/0.05² = 800, Δ = −0.01.
         let expect = -2.0 * (TAU / 400.0) * 800.0 * (-0.01);
-        assert!((pnt.phi_gain_shift[2] - expect).abs() < 1e-9,
-            "shift={} expect={}", pnt.phi_gain_shift[2], expect);
+        assert!(
+            (pnt.phi_gain_shift[2] - expect).abs() < 1e-9,
+            "shift={} expect={}",
+            pnt.phi_gain_shift[2],
+            expect
+        );
     }
 
     fn spec_integral(angle: f64, kind: ConstraintKind) -> MeritSpec {
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle, curve: CurveId::Rs });
+        let k = spec.add_key(MeritKey {
+            angle,
+            curve: CurveId::Rs,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![400.0, 500.0, 600.0].into(),
@@ -1419,14 +1616,23 @@ mod tests {
         // reproduce exactly that: 2·w_i·(s_i−t_i) == g for every i.
         let spec = spec_integral(0.0, ConstraintKind::Exact);
         let sim = sim_rs([0.7, 0.6, 0.5]);
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0],
-            Some(&sim)).unwrap();
+        let nt = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0], Some(&sim)).unwrap();
         let g = 2.0 * 100.0 * 0.1 / 3.0;
         // Direct: folded w_i = W/N² = 100/9, t_i = s_i − N·G = s_i − 0.3.
         for i in 0..3 {
-            assert!((nt.r.1[i] - 100.0 / 9.0).abs() < 1e-9, "w[{}]={}", i, nt.r.1[i]);
+            assert!(
+                (nt.r.1[i] - 100.0 / 9.0).abs() < 1e-9,
+                "w[{}]={}",
+                i,
+                nt.r.1[i]
+            );
             let expect_t = [0.7, 0.6, 0.5][i] - 0.3;
-            assert!((nt.r.0[i] - expect_t).abs() < 1e-12, "t[{}]={}", i, nt.r.0[i]);
+            assert!(
+                (nt.r.0[i] - expect_t).abs() < 1e-12,
+                "t[{}]={}",
+                i,
+                nt.r.0[i]
+            );
             // Per-point folded gradient 2·w·(s−t) equals the uniform g.
             let gi = 2.0 * nt.r.1[i] * ([0.7, 0.6, 0.5][i] - nt.r.0[i]);
             assert!((gi - g).abs() < 1e-9, "g[{i}]={gi} expect={g}");
@@ -1446,13 +1652,11 @@ mod tests {
         // (spec_integral has empty band → bare-r fallback ±tol = ±0.1;
         // mean diff 0.04 is inside → skip.)
         let sim = sim_rs([0.54, 0.54, 0.54]);
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0],
-            Some(&sim)).unwrap();
+        let nt = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0], Some(&sim)).unwrap();
         assert!(nt.r.1.iter().all(|&w| w == 0.0));
         // Mean diff 0.2 → violated: uniform edge pairs, w = 100/9 each.
         let sim2 = sim_rs([0.7, 0.7, 0.7]);
-        let nt2 = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0],
-            Some(&sim2)).unwrap();
+        let nt2 = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0], Some(&sim2)).unwrap();
         for i in 0..3 {
             assert!((nt2.r.1[i] - 100.0 / 9.0).abs() < 1e-9);
             // edge gap G = (0.2−0.1)/1 = 0.1 → t = 0.7 − 0.3 = 0.4.
@@ -1491,7 +1695,10 @@ mod tests {
         // Two entries demanding different raw targets at the SAME solver
         // point: quadratic forms fold exactly to the weighted mean.
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rp });
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rp,
+        });
         let mk = |norm_t: f64, tol: f64, nf: f64| MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![500.0].into(),
@@ -1511,7 +1718,9 @@ mod tests {
         spec.add_target(mk(0.4 * nfa, 0.1, nfa)).unwrap();
         spec.add_target(mk(0.6 * nfb, 0.2, nfb)).unwrap();
 
-        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[500.0], None).unwrap().r;
+        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[500.0], None)
+            .unwrap()
+            .r;
         let wa = nfa * nfa / 0.01;
         let wb = nfb * nfb / 0.04;
         let expect_t = (wa * 0.4 + wb * 0.6) / (wa + wb);
@@ -1543,14 +1752,16 @@ mod tests {
         };
         sim.curves[CurveId::Ru.index()] = Some(vec![0.7f64].into()); // above → satisfied
 
-        let (tgt, wgt) =
-            build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim)).unwrap().r;
+        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim))
+            .unwrap()
+            .r;
         assert_eq!(wgt[0], 0.0);
         assert_eq!(tgt[0], 0.0);
 
         sim.curves[CurveId::Ru.index()] = Some(vec![0.3f64].into()); // violated → active
-        let (tgt, wgt) =
-            build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim)).unwrap().r;
+        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim))
+            .unwrap()
+            .r;
         assert!(wgt[0] > 0.0);
         assert!((tgt[0] - 0.5).abs() < 1e-14);
     }
@@ -1558,24 +1769,40 @@ mod tests {
     #[test]
     fn targets_builder_range_folds_to_edge_or_masks() {
         // Centre 0.5 (nf=1), tol 0.1, band 0.05 → edges at 0.45/0.55, w=100.
-        let spec = spec_banded(0.0, CurveId::Rs, &[400.0], &[0.5], &[0.1],
-            &[0.05], 1.0, ConstraintKind::Range);
+        let spec = spec_banded(
+            0.0,
+            CurveId::Rs,
+            &[400.0],
+            &[0.5],
+            &[0.1],
+            &[0.05],
+            1.0,
+            ConstraintKind::Range,
+        );
         // In-band operating point → masked out.
         let sim_in = sim_single(0.0, 400.0, CurveId::Rs, 0.52);
-        let (_, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_in)).unwrap().r;
+        let (_, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_in))
+            .unwrap()
+            .r;
         assert_eq!(w[0], 0.0);
         // Violated above → nearest (upper) edge drives.
         let sim_hi = sim_single(0.0, 400.0, CurveId::Rs, 0.6);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_hi)).unwrap().r;
+        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_hi))
+            .unwrap()
+            .r;
         assert!((t[0] - 0.55).abs() < 1e-14);
         assert!((w[0] - 100.0).abs() < 1e-9);
         // Violated below → lower edge drives.
         let sim_lo = sim_single(0.0, 400.0, CurveId::Rs, 0.3);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_lo)).unwrap().r;
+        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_lo))
+            .unwrap()
+            .r;
         assert!((t[0] - 0.45).abs() < 1e-14);
         assert!((w[0] - 100.0).abs() < 1e-9);
         // No sim yet → conservative exact fold at the centre.
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap().r;
+        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], None)
+            .unwrap()
+            .r;
         assert!((t[0] - 0.5).abs() < 1e-14);
         assert!((w[0] - 100.0).abs() < 1e-9);
     }
@@ -1583,15 +1810,27 @@ mod tests {
     #[test]
     fn targets_builder_centerband_reduced_weight_inside() {
         // Centre 0.5 (nf=1), tol 0.1, band 0.05: inside w = 1/0.05² = 400.
-        let spec = spec_banded(0.0, CurveId::Rs, &[400.0], &[0.5], &[0.1],
-            &[0.05], 1.0, ConstraintKind::CenterBand);
+        let spec = spec_banded(
+            0.0,
+            CurveId::Rs,
+            &[400.0],
+            &[0.5],
+            &[0.1],
+            &[0.05],
+            1.0,
+            ConstraintKind::CenterBand,
+        );
         let sim_in = sim_single(0.0, 400.0, CurveId::Rs, 0.52);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_in)).unwrap().r;
+        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_in))
+            .unwrap()
+            .r;
         assert!((t[0] - 0.5).abs() < 1e-14);
         assert!((w[0] - 400.0).abs() < 1e-9);
         // Outside → upper edge with the outer weight.
         let sim_hi = sim_single(0.0, 400.0, CurveId::Rs, 0.6);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_hi)).unwrap().r;
+        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_hi))
+            .unwrap()
+            .r;
         assert!((t[0] - 0.55).abs() < 1e-14);
         assert!((w[0] - 100.0).abs() < 1e-9);
     }
@@ -1599,8 +1838,15 @@ mod tests {
     #[test]
     fn targets_builder_transmission_folds_to_t_bucket() {
         // T demand folds exactly like R but lands in the t bucket.
-        let spec = spec_single(0.0, CurveId::Ts, &[400.0], &[0.3], &[0.1], 1.0,
-            ConstraintKind::Exact);
+        let spec = spec_single(
+            0.0,
+            CurveId::Ts,
+            &[400.0],
+            &[0.3],
+            &[0.1],
+            1.0,
+            ConstraintKind::Exact,
+        );
         let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
         assert!((nt.t.0[0] - 0.3).abs() < 1e-14);
         assert!((nt.t.1[0] - 100.0).abs() < 1e-9);
@@ -1612,8 +1858,15 @@ mod tests {
     fn targets_builder_absorption_folds_from_companions() {
         // A demand 0.2 (nf=1), tol 0.1; sim R=0.6/T=0.3 → A=0.1, shortfall
         // of 0.1 → active with the R-style weight at the centre.
-        let spec = spec_single(0.0, CurveId::As, &[400.0], &[0.2], &[0.1], 1.0,
-            ConstraintKind::Exact);
+        let spec = spec_single(
+            0.0,
+            CurveId::As,
+            &[400.0],
+            &[0.2],
+            &[0.1],
+            1.0,
+            ConstraintKind::Exact,
+        );
         let mut sim = sim_single(0.0, 400.0, CurveId::Rs, 0.6);
         sim.curves[CurveId::Ts.index()] = Some(vec![0.3f64].into());
         let nt = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim)).unwrap();
@@ -1621,8 +1874,15 @@ mod tests {
         assert!((nt.a.1[0] - 100.0).abs() < 1e-9);
         assert_eq!(nt.r.1[0], 0.0);
         // Satisfied Above on A → masked.
-        let spec2 = spec_single(0.0, CurveId::As, &[400.0], &[0.05], &[0.1], 1.0,
-            ConstraintKind::Above);
+        let spec2 = spec_single(
+            0.0,
+            CurveId::As,
+            &[400.0],
+            &[0.05],
+            &[0.1],
+            1.0,
+            ConstraintKind::Above,
+        );
         let nt2 = build_needle_targets(&spec2, &[0.0], &[400.0], Some(&sim)).unwrap();
         assert_eq!(nt2.a.1[0], 0.0);
     }
@@ -1630,8 +1890,15 @@ mod tests {
     #[test]
     fn targets_builder_back_buckets() {
         // RBs demand folds to the rb bucket (mirrors the R path).
-        let spec = spec_single(0.0, CurveId::RBs, &[400.0], &[0.4], &[0.1], 1.0,
-            ConstraintKind::Exact);
+        let spec = spec_single(
+            0.0,
+            CurveId::RBs,
+            &[400.0],
+            &[0.4],
+            &[0.1],
+            1.0,
+            ConstraintKind::Exact,
+        );
         let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
         assert!((nt.rb.0[0] - 0.4).abs() < 1e-14);
         assert!((nt.rb.1[0] - 100.0).abs() < 1e-9);
@@ -1643,8 +1910,15 @@ mod tests {
         // Phase demand on Rs folds to phi[0] with the outer weight;
         // on Ts to phi[2]. No sim → conservative exact fold at centre.
         for (curve, ch) in [(CurveId::Rs, 0), (CurveId::Ts, 2)] {
-            let spec = spec_single_phase(0.0, curve, &[400.0], &[1.0], &[0.1], 1.0,
-                ConstraintKind::Exact);
+            let spec = spec_single_phase(
+                0.0,
+                curve,
+                &[400.0],
+                &[1.0],
+                &[0.1],
+                1.0,
+                ConstraintKind::Exact,
+            );
             let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
             assert!((nt.phi[ch].0[0] - 1.0).abs() < 1e-14);
             assert!((nt.phi[ch].1[0] - 100.0).abs() < 1e-9);
@@ -1656,7 +1930,10 @@ mod tests {
         }
         // Phase demand with a log transform cannot fold.
         let mut spec_log = MeritSpec::new();
-        let k = spec_log.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
+        let k = spec_log.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        });
         let mut tgt = entry_for_phase(k as u32);
         tgt.transform = SimTransform::Log;
         spec_log.add_target(tgt).unwrap();
@@ -1667,31 +1944,44 @@ mod tests {
     fn targets_builder_rejects_log() {
         // Log transform cannot fold → must be rejected.
         let mut spec_log = MeritSpec::new();
-        let k = spec_log.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
-        spec_log.add_target(MeritTarget {
-            key_idx: k as u32,
-            wavelengths: vec![400.0].into(),
-            kind: ConstraintKind::Exact,
-            transform: SimTransform::Log,
-            norm_factor: 1.0,
-            normalized_targets: vec![1.0].into(),
-            tolerances: vec![0.01].into(),
-            band: vec![].into(),
-            phase: false,
-            differential_passes: None,
-            integral: false,
-            weight: 1.0,
-            count_norm: None,
-        })
-        .unwrap();
+        let k = spec_log.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        });
+        spec_log
+            .add_target(MeritTarget {
+                key_idx: k as u32,
+                wavelengths: vec![400.0].into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Log,
+                norm_factor: 1.0,
+                normalized_targets: vec![1.0].into(),
+                tolerances: vec![0.01].into(),
+                band: vec![].into(),
+                phase: false,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
         assert!(build_needle_targets(&spec_log, &[0.0], &[400.0], None).is_err());
     }
 
     #[test]
     fn interp_clamped_edges() {
-        assert_eq!(super::interp_clamped(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 0.5), 10.0);
-        assert_eq!(super::interp_clamped(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 9.0), 30.0);
-        assert!((super::interp_clamped(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 2.5) - 25.0).abs() < 1e-14);
+        assert_eq!(
+            super::interp_clamped(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 0.5),
+            10.0
+        );
+        assert_eq!(
+            super::interp_clamped(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 9.0),
+            30.0
+        );
+        assert!(
+            (super::interp_clamped(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], 2.5) - 25.0).abs()
+                < 1e-14
+        );
     }
 
     #[test]
@@ -1733,22 +2023,24 @@ mod tests {
             .collect();
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey { angle: 0.0, curve });
-        spec
-            .add_color_demand(
-                R4Demand::new(
-                    k as u32,
-                    cmf,
-                    wl.clone(),
-                    vec![1.0; NW],
-                    wl,
-                    R4Qty::XyY,
-                    R4Ref::Triple(reference),
-                    R4Dist::Channels,
-                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
-                )
-                .unwrap(),
+        spec.add_color_demand(
+            R4Demand::new(
+                k as u32,
+                cmf,
+                wl.clone(),
+                vec![1.0; NW],
+                wl,
+                R4Qty::XyY,
+                R4Ref::Triple(reference),
+                R4Dist::Channels,
+                1.0,
+                crate::smatrix::synthesis::color_merit::E313_CX_D65_10,
+                crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
+                None,
             )
-            .unwrap();
+            .unwrap(),
+        )
+        .unwrap();
         spec
     }
 
@@ -1824,7 +2116,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn color_fold_chain_rule_holds_per_quantity() {
         // R4 re-run for P2: LCh (hue wrap live), Oklab (adapt live), Y
@@ -1839,12 +2130,12 @@ mod tests {
         // holds hue constant, useless for LCh).
         let wl: Vec<f64> = TEST_WAVLS.to_vec();
         let cmf: Vec<[f64; 3]> = vec![
-          [0.30, 0.05, 0.00],
-          [0.50, 0.30, 0.05],
-          [0.20, 0.60, 0.20],
-          [0.05, 0.50, 0.50],
-          [0.00, 0.20, 0.70],
-          [0.00, 0.05, 0.40],
+            [0.30, 0.05, 0.00],
+            [0.50, 0.30, 0.05],
+            [0.20, 0.60, 0.20],
+            [0.05, 0.50, 0.50],
+            [0.00, 0.20, 0.70],
+            [0.00, 0.05, 0.40],
         ];
         let cases: Vec<(QQty, QRef)> = vec![
             (QQty::Lab, QRef::Triple([60.0, 10.0, -20.0])),
@@ -1867,23 +2158,28 @@ mod tests {
         };
         for (q, r) in cases {
             let mut spec = MeritSpec::new();
-            let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
-            spec
-                .add_color_demand(
-                    QDemand::new(
-                        k as u32,
-                        cmf.clone(),
-                        wl.clone(),
-                        vec![1.0; NW],
-                        wl.clone(),
-                        q,
-                        r,
-                        QDist::Channels,
-                        1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
-                    )
-                    .unwrap(),
+            let k = spec.add_key(MeritKey {
+                angle: 0.0,
+                curve: CurveId::Rs,
+            });
+            spec.add_color_demand(
+                QDemand::new(
+                    k as u32,
+                    cmf.clone(),
+                    wl.clone(),
+                    vec![1.0; NW],
+                    wl.clone(),
+                    q,
+                    r,
+                    QDist::Channels,
+                    1.0,
+                    crate::smatrix::synthesis::color_merit::E313_CX_D65_10,
+                    crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
+                    None,
                 )
-                .unwrap();
+                .unwrap(),
+            )
+            .unwrap();
             let fold =
                 build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&mk(base.clone()))).unwrap();
             let delta = 1e-6;
@@ -1900,7 +2196,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn color_fold_chain_rule_holds_for_domwl() {
         // DomWl needs a genuine locus (tri-lobe CMF — the affine toy is
@@ -1911,31 +2206,36 @@ mod tests {
         };
         let wl: Vec<f64> = TEST_WAVLS.to_vec();
         let cmf: Vec<[f64; 3]> = vec![
-          [0.30, 0.05, 0.00],
-          [0.50, 0.30, 0.05],
-          [0.20, 0.60, 0.20],
-          [0.05, 0.50, 0.50],
-          [0.00, 0.20, 0.70],
-          [0.00, 0.05, 0.40],
+            [0.30, 0.05, 0.00],
+            [0.50, 0.30, 0.05],
+            [0.20, 0.60, 0.20],
+            [0.05, 0.50, 0.50],
+            [0.00, 0.20, 0.70],
+            [0.00, 0.05, 0.40],
         ];
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
-        spec
-            .add_color_demand(
-                DDemand::new(
-                    k as u32,
-                    cmf,
-                    wl.clone(),
-                    vec![1.0; NW],
-                    wl.clone(),
-                    DQty::DomWl,
-                    DRef::Pair([540.0, 0.7]),
-                    DDist::Channels,
-                    1.0, crate::smatrix::synthesis::color_merit::E313_CX_D65_10, crate::smatrix::synthesis::color_merit::E313_CZ_D65_10, None,
-                )
-                .unwrap(),
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        });
+        spec.add_color_demand(
+            DDemand::new(
+                k as u32,
+                cmf,
+                wl.clone(),
+                vec![1.0; NW],
+                wl.clone(),
+                DQty::DomWl,
+                DRef::Pair([540.0, 0.7]),
+                DDist::Channels,
+                1.0,
+                crate::smatrix::synthesis::color_merit::E313_CX_D65_10,
+                crate::smatrix::synthesis::color_merit::E313_CZ_D65_10,
+                None,
             )
-            .unwrap();
+            .unwrap(),
+        )
+        .unwrap();
         let base = vec![0.55, 0.50, 0.45, 0.60, 0.52, 0.48];
         let mk = |row: Vec<f64>| {
             let mut sim = color_sim_r4(0.0);
@@ -2023,24 +2323,26 @@ mod tests {
         // A color-free fold carries zeroed grad buckets; the hot pass
         // skip-guards make them exactly inert (R4 grad-free regression).
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Rs });
-        spec
-            .add_target(MeritTarget {
-                key_idx: k as u32,
-                wavelengths: TEST_WAVLS.to_vec().into(),
-                kind: ConstraintKind::Exact,
-                transform: SimTransform::Linear,
-                norm_factor: 1.0,
-                normalized_targets: vec![0.02; NW].into(),
-                tolerances: vec![0.01; NW].into(),
-                band: vec![].into(),
-                phase: false,
-                differential_passes: None,
-                integral: false,
-                weight: 50.0,
-                count_norm: None,
-            })
-            .unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        });
+        spec.add_target(MeritTarget {
+            key_idx: k as u32,
+            wavelengths: TEST_WAVLS.to_vec().into(),
+            kind: ConstraintKind::Exact,
+            transform: SimTransform::Linear,
+            norm_factor: 1.0,
+            normalized_targets: vec![0.02; NW].into(),
+            tolerances: vec![0.01; NW].into(),
+            band: vec![].into(),
+            phase: false,
+            differential_passes: None,
+            integral: false,
+            weight: 50.0,
+            count_norm: None,
+        })
+        .unwrap();
         let fold = build_needle_targets(&spec, &[0.0], &TEST_WAVLS, None).unwrap();
         assert!(fold.grad_r.iter().all(|&v| v == 0.0));
         assert!(fold.grad_t.iter().all(|&v| v == 0.0));
@@ -2048,12 +2350,10 @@ mod tests {
         let needle_n = nk_const(1.46);
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
         let sites = build_scan_sites(&films, 3.0);
-        let via_fold = needle_pass_scan(
-            &pass_input(&cache, &d, &rt, &rv, &fold, &needle_n),
-            &sites,
-        )
-        .unwrap()
-        .p_profile;
+        let via_fold =
+            needle_pass_scan(&pass_input(&cache, &d, &rt, &rv, &fold, &needle_n), &sites)
+                .unwrap()
+                .p_profile;
         let manual = NeedleTargets {
             r: (fold.r.0.clone(), fold.r.1.clone()),
             t: (vec![0.0; NW], vec![0.0; NW]),
@@ -2090,15 +2390,32 @@ mod tests {
         let (cache, d, rt, rv) = test_stack_arrays();
         let nl = d.len();
         let lam = TEST_WAVLS[2];
-        let ns: Vec<Complex64> =
-            (0..nl).map(|l| Complex64::new(cache[2 * nl * 2 + l * 2], cache[2 * nl * 2 + l * 2 + 1])).collect();
+        let ns: Vec<Complex64> = (0..nl)
+            .map(|l| Complex64::new(cache[2 * nl * 2 + l * 2], cache[2 * nl * 2 + l * 2 + 1]))
+            .collect();
         let nsin = ns[0] * Complex64::new(0.0, 0.0);
         let np_c = Complex64::new(1.46, 0.0);
         let fields = build_stack_fields_range(0, nl - 1, &ns, &d, &rv, &rt, lam, nsin, 0);
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
-        let z_grid: Vec<f64> = build_scan_sites(&films, 3.0).iter().map(|s| s.z_nm).collect();
-        let a = p_coherent_from_fields(&fields, nsin, lam, 0, np_c, 0.02, 50.0, &d, 0, nl - 1, &z_grid);
-        let b = p_coherent_grad_r_from_fields(&fields, nsin, lam, 0, np_c, 3.7, &d, 0, nl - 1, &z_grid);
+        let z_grid: Vec<f64> = build_scan_sites(&films, 3.0)
+            .iter()
+            .map(|s| s.z_nm)
+            .collect();
+        let a = p_coherent_from_fields(
+            &fields,
+            nsin,
+            lam,
+            0,
+            np_c,
+            0.02,
+            50.0,
+            &d,
+            0,
+            nl - 1,
+            &z_grid,
+        );
+        let b =
+            p_coherent_grad_r_from_fields(&fields, nsin, lam, 0, np_c, 3.7, &d, 0, nl - 1, &z_grid);
         let mut ratio: Option<f64> = None;
         for (x, y) in a.iter().zip(b.iter()) {
             if x.abs() > 1e-300 {
@@ -2111,8 +2428,21 @@ mod tests {
             }
         }
         assert!(ratio.is_some());
-        let at = p_coherent_t_from_fields(&fields, nsin, lam, 0, np_c, 0.02, 50.0, &d, 0, nl - 1, &z_grid);
-        let bt = p_coherent_grad_t_from_fields(&fields, nsin, lam, 0, np_c, 3.7, &d, 0, nl - 1, &z_grid);
+        let at = p_coherent_t_from_fields(
+            &fields,
+            nsin,
+            lam,
+            0,
+            np_c,
+            0.02,
+            50.0,
+            &d,
+            0,
+            nl - 1,
+            &z_grid,
+        );
+        let bt =
+            p_coherent_grad_t_from_fields(&fields, nsin, lam, 0, np_c, 3.7, &d, 0, nl - 1, &z_grid);
         let mut ratio_t: Option<f64> = None;
         for (x, y) in at.iter().zip(bt.iter()) {
             if x.abs() > 1e-300 {

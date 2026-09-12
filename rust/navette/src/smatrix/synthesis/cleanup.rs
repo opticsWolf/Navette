@@ -177,10 +177,7 @@ mod tests {
             Err("mock context has no simulator".into())
         }
 
-        fn optimize_thicknesses(
-            &mut self,
-            stack: &mut DesignStack,
-        ) -> Result<f64, String> {
+        fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
             self.n_opt_calls += 1;
             for i in 0..stack.films().len() {
                 if stack.films()[i].optimize && i < self.targets.len() {
@@ -205,13 +202,18 @@ mod tests {
         //   drop idx2 → [H1 L50] → (1−30)² + (50−30)² = 841+400 = 1241
         // → idx0 removed first (lowest trial MF), then re-opt pulls the
         //   survivors to their slot targets → no thin layers remain.
-        let mut stack =
-            DesignStack::with_films(air(), sub(), vec![film("H", 1.0), film("L", 50.0), film("H", 2.0)])
-                .unwrap();
-        let mut ctx = MockCtx { targets: vec![30.0, 30.0, 40.0], n_opt_calls: 0 };
+        let mut stack = DesignStack::with_films(
+            air(),
+            sub(),
+            vec![film("H", 1.0), film("L", 50.0), film("H", 2.0)],
+        )
+        .unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![30.0, 30.0, 40.0],
+            n_opt_calls: 0,
+        };
 
-        let removed =
-            remove_thin_layers(&mut ctx, &mut stack, Some(3.0), None).unwrap();
+        let removed = remove_thin_layers(&mut ctx, &mut stack, Some(3.0), None).unwrap();
         assert_eq!(removed, 1);
         assert_eq!(ctx.n_opt_calls, 1);
         let fs = stack.films();
@@ -229,15 +231,15 @@ mod tests {
         // the budget cuts it off at 2. Derived rows (optimize=false) are
         // never candidates — cleanup removes free parameters, not physics.
         let mk_thin = |d: f64| film("H", d);
-        let mut stack = DesignStack::with_films(
-            air(), sub(),
-            vec![mk_thin(1.0), mk_thin(1.5), mk_thin(1.7)],
-        )
-        .unwrap();
-        let mut ctx = MockCtx { targets: vec![1.0, 1.5, 1.7], n_opt_calls: 0 };
+        let mut stack =
+            DesignStack::with_films(air(), sub(), vec![mk_thin(1.0), mk_thin(1.5), mk_thin(1.7)])
+                .unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![1.0, 1.5, 1.7],
+            n_opt_calls: 0,
+        };
 
-        let removed =
-            remove_thin_layers(&mut ctx, &mut stack, Some(3.0), Some(2)).unwrap();
+        let removed = remove_thin_layers(&mut ctx, &mut stack, Some(3.0), Some(2)).unwrap();
         assert_eq!(removed, 2);
         assert_eq!(stack.films().len(), 1); // budget stopped before third
     }
@@ -251,7 +253,10 @@ mod tests {
         derived.needle = false;
         let mut stack =
             DesignStack::with_films(air(), sub(), vec![film("L", 0.2), derived]).unwrap();
-        let mut ctx = MockCtx { targets: vec![0.2, 0.2], n_opt_calls: 0 };
+        let mut ctx = MockCtx {
+            targets: vec![0.2, 0.2],
+            n_opt_calls: 0,
+        };
         let removed = remove_thin_layers(&mut ctx, &mut stack, Some(0.5), None).unwrap();
         assert_eq!(removed, 1);
         assert_eq!(stack.films().len(), 1);
@@ -260,9 +265,11 @@ mod tests {
 
     #[test]
     fn no_candidates_noop() {
-        let mut stack =
-            DesignStack::with_films(air(), sub(), vec![film("H", 30.0)]).unwrap();
-        let mut ctx = MockCtx { targets: vec![30.0], n_opt_calls: 0 };
+        let mut stack = DesignStack::with_films(air(), sub(), vec![film("H", 30.0)]).unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![30.0],
+            n_opt_calls: 0,
+        };
         let removed = remove_thin_layers(&mut ctx, &mut stack, Some(3.0), None).unwrap();
         assert_eq!(removed, 0);
         assert_eq!(ctx.n_opt_calls, 0);
@@ -282,7 +289,10 @@ mod tests {
         )
         .unwrap();
         // After merge: L(30) H(40.8) — nothing below threshold 3.
-        let mut ctx = MockCtx { targets: vec![30.0, 40.0], n_opt_calls: 0 };
+        let mut ctx = MockCtx {
+            targets: vec![30.0, 40.0],
+            n_opt_calls: 0,
+        };
 
         let res = cleanup_design(&mut ctx, &mut stack, Some(3.0), None, false).unwrap();
         assert_eq!(res.layers_merged, 1);
@@ -300,9 +310,11 @@ mod tests {
     #[test]
     fn cleanup_with_final_reoptimize() {
         let mut stack =
-            DesignStack::with_films(air(), sub(), vec![film("L", 25.0), film("H", 45.0)])
-                .unwrap();
-        let mut ctx = MockCtx { targets: vec![30.0, 40.0], n_opt_calls: 0 };
+            DesignStack::with_films(air(), sub(), vec![film("L", 25.0), film("H", 45.0)]).unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![30.0, 40.0],
+            n_opt_calls: 0,
+        };
         let res = cleanup_design(&mut ctx, &mut stack, Some(3.0), None, true).unwrap();
         assert_eq!(ctx.n_opt_calls, 1); // final re-opt ran
         assert!((res.merit_after - 0.0).abs() < 1e-12); // perfect mock optimizer
@@ -311,7 +323,10 @@ mod tests {
     #[test]
     fn empty_stack_edge() {
         let mut stack = DesignStack::with_films(air(), sub(), vec![]).unwrap();
-        let mut ctx = MockCtx { targets: vec![], n_opt_calls: 0 };
+        let mut ctx = MockCtx {
+            targets: vec![],
+            n_opt_calls: 0,
+        };
         // No films: cleanup must not call optimize (Python guard
         // `layer_count > 0`) and must not panic.
         let res = cleanup_design(&mut ctx, &mut stack, Some(3.0), None, true).unwrap();

@@ -31,15 +31,14 @@
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ahash::AHashMap;
 use lru::LruCache;
+use parking_lot::RwLock;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use parking_lot::RwLock;
-
 
 // ---------------------------------------------------------------------------
 // Unit system
@@ -237,7 +236,8 @@ impl SpectralDataFrame {
         wavelength: Option<&[f64]>,
     ) -> Result<bool, String> {
         if let Some(wl) = wavelength
-            && !wl_bits_eq(&self.wavelength, wl) {
+            && !wl_bits_eq(&self.wavelength, wl)
+        {
             return Err(format!(
                 "SpectralDataFrame(uid={}): wavelength grid conflict.",
                 self.uid
@@ -372,7 +372,10 @@ impl OpticalCollection {
         self.frames.read().clone()
     }
     /// Frames holding fragments of `key` (inline for the common ≤ 2 case).
-    pub fn frames_for_key(&self, key: &OpticalKey) -> Option<SmallVec<[Arc<SpectralDataFrame>; 2]>> {
+    pub fn frames_for_key(
+        &self,
+        key: &OpticalKey,
+    ) -> Option<SmallVec<[Arc<SpectralDataFrame>; 2]>> {
         self.key_map.read().get(key).cloned()
     }
 
@@ -449,15 +452,20 @@ impl OpticalCollection {
 
     /// Fetch the frame for `wl_arr` (bit-exact grid match) or create it.
     /// Returns the frame plus whether it is newly created.
-    fn get_or_create_frame(&self, wl_arr: &[f64]) -> Result<(Arc<SpectralDataFrame>, bool), String> {
+    fn get_or_create_frame(
+        &self,
+        wl_arr: &[f64],
+    ) -> Result<(Arc<SpectralDataFrame>, bool), String> {
         let sig = wl_signature(wl_arr);
         if let Some(frm) = self.wl_fingerprints.read().get(&sig)
-            && wl_bits_eq(frm.wavelength(), wl_arr) {
+            && wl_bits_eq(frm.wavelength(), wl_arr)
+        {
             return Ok((frm.clone(), false));
         }
         let mut fp = self.wl_fingerprints.write();
         if let Some(frm) = fp.get(&sig)
-            && wl_bits_eq(frm.wavelength(), wl_arr) {
+            && wl_bits_eq(frm.wavelength(), wl_arr)
+        {
             return Ok((frm.clone(), false));
         }
         let new_frame = Arc::new(SpectralDataFrame::new(wl_arr)?);
@@ -623,14 +631,17 @@ impl OpticalWeaver {
     /// All keys re-assembled, grouped by woven grid: one entry per distinct
     /// grid with the curves sampled on it.
     pub fn get_weaved_collections(&self) -> Vec<(Vec<f64>, AHashMap<OpticalKey, Vec<f64>>)> {
-        let mut groups: AHashMap<WlSig, (Vec<f64>, AHashMap<OpticalKey, Vec<f64>>)> = AHashMap::new();
+        let mut groups: AHashMap<WlSig, (Vec<f64>, AHashMap<OpticalKey, Vec<f64>>)> =
+            AHashMap::new();
         for key in self.inner.keys() {
             if let Ok((wl, data)) = self.get_weaved(&key) {
                 if wl.is_empty() {
                     continue;
                 }
                 let sig = wl_signature(&wl);
-                let entry = groups.entry(sig).or_insert_with(|| (wl.clone(), AHashMap::new()));
+                let entry = groups
+                    .entry(sig)
+                    .or_insert_with(|| (wl.clone(), AHashMap::new()));
                 entry.1.insert(key, data);
             }
         }
@@ -768,8 +779,7 @@ impl OpticalWeaver {
         }
         let plan = self.resolve_plan(common_wavelength)?;
         Self::check_plan(&plan)?;
-        let items: Vec<(&OpticalKey, &[f64])> =
-            data_batch.iter().map(|(k, d)| (k, *d)).collect();
+        let items: Vec<(&OpticalKey, &[f64])> = data_batch.iter().map(|(k, d)| (k, *d)).collect();
         for (key, full_data) in &items {
             Self::check_length(key, full_data.len(), common_wavelength.len())?;
         }
@@ -808,16 +818,17 @@ impl OpticalWeaver {
         {
             let mut cache = self.distribution_cache.write();
             if let Some((cached_gen, cached_wl, plan)) = cache.get(&sig)
-                && *cached_gen == current_gen && wl_bits_eq(cached_wl, full_wavelength) {
+                && *cached_gen == current_gen
+                && wl_bits_eq(cached_wl, full_wavelength)
+            {
                 return Ok(plan.clone());
             }
             cache.pop(&sig);
         }
         let plan = self.build_distribution_plan(full_wavelength)?;
-        self.distribution_cache.write().put(
-            sig,
-            (current_gen, Arc::from(full_wavelength), plan.clone()),
-        );
+        self.distribution_cache
+            .write()
+            .put(sig, (current_gen, Arc::from(full_wavelength), plan.clone()));
         Ok(plan)
     }
 
@@ -883,7 +894,6 @@ impl OpticalWeaver {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -904,8 +914,14 @@ mod tests {
         let seed = key(0.0, "seed");
         for f in 0..frames {
             let sub = &grid[f * block..(f + 1) * block];
-            w.set_data(seed.clone(), &vec![0.0; sub.len()], sub, Unit::NM, Unit::RAW)
-                .unwrap();
+            w.set_data(
+                seed.clone(),
+                &vec![0.0; sub.len()],
+                sub,
+                Unit::NM,
+                Unit::RAW,
+            )
+            .unwrap();
         }
         (w, grid)
     }
@@ -1062,8 +1078,14 @@ mod tests {
         let w = OpticalWeaver::new(8);
         let seed = key(0.0, "seed");
         for (lo, hi) in [(300, 450), (450, 600)] {
-            w.set_data(seed.clone(), &vec![0.0; hi - lo], &grid[lo..hi], Unit::NM, Unit::RAW)
-                .unwrap();
+            w.set_data(
+                seed.clone(),
+                &vec![0.0; hi - lo],
+                &grid[lo..hi],
+                Unit::NM,
+                Unit::RAW,
+            )
+            .unwrap();
         }
         let c = curve(&grid, 3.0);
         let k = key(500.0, "s");
@@ -1082,8 +1104,14 @@ mod tests {
         let grid: Vec<f64> = (0..200).map(|i| i as f64).collect();
         let strided: Vec<f64> = grid.iter().step_by(2).copied().collect();
         let w = OpticalWeaver::new(8);
-        w.set_data(key(0.0, "seed"), &vec![0.0; strided.len()], &strided, Unit::NM, Unit::RAW)
-            .unwrap();
+        w.set_data(
+            key(0.0, "seed"),
+            &vec![0.0; strided.len()],
+            &strided,
+            Unit::NM,
+            Unit::RAW,
+        )
+        .unwrap();
         let c = curve(&grid, 2.0);
         let k = key(500.0, "s");
         assert_eq!(w.unweave(k.clone(), &grid, &c).unwrap(), 1);

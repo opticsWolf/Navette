@@ -166,8 +166,7 @@ pub fn forward_branch(cos_theta: Complex64, _n: Complex64) -> Complex64 {
 /// warning. The Python `ScatterMatrix` door emits the same sentences from its
 /// own copy of the rule; `test_both_doors_explain_it_the_same_way` pins the
 /// two together so they cannot drift apart.
-pub const AMBIENT_DROP_EXPLANATION: &str =
-    "Its absorption has been dropped -- the stack is solved with a transparent \
+pub const AMBIENT_DROP_EXPLANATION: &str = "Its absorption has been dropped -- the stack is solved with a transparent \
      ambient of index Re(n[0]). Reflectance is not defined against an absorbing \
      ambient: R = |r|^2 stops being an energy ratio (R + T climbs past 1), and at \
      oblique incidence the transverse wavevector goes complex, so a real angle of \
@@ -376,7 +375,11 @@ pub fn redheffer_product_real_inner(
     rb_rb: f64,
 ) -> (f64, f64, f64, f64) {
     let denom = 1.0 - ra_rb * rb_rf;
-    let inv_denom = if denom.abs() < DBL_EPS { 0.0 } else { 1.0 / denom };
+    let inv_denom = if denom.abs() < DBL_EPS {
+        0.0
+    } else {
+        1.0 / denom
+    };
 
     let rf = ra_rf + ra_tb * rb_rf * ra_tf * inv_denom;
     let tb = ra_tb * rb_tb * inv_denom;
@@ -451,7 +454,10 @@ mod tests {
         // λ = 500 nm, n = 1, θ = 0°, D = 100 nm, 1 pass:
         // 2π·1·100·1/500 = 2π/5 = 1.2566370614...
         let p = reference_phase(500.0, 1.0, 0.0, 100.0, 1.0);
-        assert!((p - 2.0 * std::f64::consts::PI / 5.0).abs() < 1e-12, "p={p}");
+        assert!(
+            (p - 2.0 * std::f64::consts::PI / 5.0).abs() < 1e-12,
+            "p={p}"
+        );
         // Oblique: θ = 60° halves the axial projection.
         let po = reference_phase(500.0, 1.0, 60.0, 100.0, 1.0);
         assert!((po - p / 2.0).abs() < 1e-12, "po={po}");
@@ -467,11 +473,7 @@ mod tests {
     /// consolidated them. Kept here as the oracle: `forward_branch` must be
     /// this, bit for bit, forever.
     fn old_inline_rule(c: Complex64) -> Complex64 {
-        if c.im < 0.0 {
-            -c
-        } else {
-            c
-        }
+        if c.im < 0.0 { -c } else { c }
     }
 
     /// `cos` from `nsin` the way the sites compute it, without the branch.

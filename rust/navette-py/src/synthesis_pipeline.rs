@@ -25,12 +25,12 @@ use pyo3::types::{IntoPyDict, PyAny, PyDict};
 
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
-use navette::smatrix::synthesis::design_config::{DesignRequest, build_design};
 use navette::smatrix::synthesis::cycle::{ContrastMap, NeedleCycleConfig};
+use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
+use navette::smatrix::synthesis::optimizer::OptimizerBackend;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
 use navette::smatrix::synthesis::structure::{DesignStack, LayerSpec};
-use navette::smatrix::synthesis::optimizer::OptimizerBackend;
 use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
@@ -156,8 +156,6 @@ impl PyLayerSpec {
     }
 }
 
-
-
 fn layer_dict<'a>(py: Python<'a>, l: &'a LayerSpec) -> PyResult<Bound<'a, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("material", l.material.as_ref())?;
@@ -218,7 +216,7 @@ pub(crate) fn assemble_design(
     seeds: Vec<(String, String, Vec<Complex64>)>,
     wavelengths: PyReadonlyArray1<'_, f64>,
 ) -> PyResult<(Py<PyDesignStack>, Py<PyDict>)> {
-    use navette::smatrix::synthesis::driver::{ArrayFilm, assemble_stack};
+    use navette::smatrix::synthesis::driver::{assemble_stack, ArrayFilm};
     let w = wavelengths.as_slice()?;
     let af: Vec<ArrayFilm> = films
         .iter()
@@ -266,7 +264,13 @@ pub(crate) fn assemble_design(
         );
     }
     let (stack, warnings) = assemble_stack(
-        &ambient_name, ambient_nk, &substrate_name, substrate_nk, &af, &gm, w,
+        &ambient_name,
+        ambient_nk,
+        &substrate_name,
+        substrate_nk,
+        &af,
+        &gm,
+        w,
     )
     .map_err(PyValueError::new_err)?;
     crate::structure::emit_warnings(py, "assemble_design", &warnings)?;
@@ -303,7 +307,7 @@ pub(crate) fn run_design(
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyDict>> {
-    use navette::smatrix::synthesis::driver::{ArrayFilm, ArraySeed, run_design as core_run};
+    use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArraySeed};
     let w = wavelengths.as_slice()?.to_vec();
     let a = angles_deg.as_slice()?.to_vec();
     let cfg = pipeline_config
@@ -317,21 +321,19 @@ pub(crate) fn run_design(
         .unwrap_or_default();
     let af: Vec<ArrayFilm> = films
         .iter()
-        .map(|f| {
-            ArrayFilm {
-                name: f.name.clone(),
-                nk: f.nk.as_slice().unwrap_or(&[]).to_vec(),
-                d_nm: f.d_nm,
-                coherent: f.coherent,
-                roughness: f.roughness,
-                rough_type: f.rough_type,
-                inhomogen: f.inhomogen,
-                inh_delta: f.inh_delta,
-                interface: f.interface,
-                interface_thickness: f.interface_thickness,
-                optimize: f.optimize,
-                needle: f.needle,
-            }
+        .map(|f| ArrayFilm {
+            name: f.name.clone(),
+            nk: f.nk.as_slice().unwrap_or(&[]).to_vec(),
+            d_nm: f.d_nm,
+            coherent: f.coherent,
+            roughness: f.roughness,
+            rough_type: f.rough_type,
+            inhomogen: f.inhomogen,
+            inh_delta: f.inh_delta,
+            interface: f.interface,
+            interface_thickness: f.interface_thickness,
+            optimize: f.optimize,
+            needle: f.needle,
         })
         .collect();
     let gm: std::collections::HashMap<String, navette::structure::Group> = groups
@@ -340,15 +342,30 @@ pub(crate) fn run_design(
         .collect();
     let sd: Vec<ArraySeed> = seeds
         .into_iter()
-        .map(|(host, seed_name, nk)| ArraySeed { host, seed_name, nk })
+        .map(|(host, seed_name, nk)| ArraySeed {
+            host,
+            seed_name,
+            nk,
+        })
         .collect();
     let (res, stack, warnings) = py
         .detach({
             let spec_inner = spec.inner().clone();
             move || {
                 core_run(
-                    &ambient_name, ambient_nk, &substrate_name, substrate_nk, &af, &gm,
-                    &sd, &w, &a, &spec_inner, cfg, needle_cfg, lm_cfg,
+                    &ambient_name,
+                    ambient_nk,
+                    &substrate_name,
+                    substrate_nk,
+                    &af,
+                    &gm,
+                    &sd,
+                    &w,
+                    &a,
+                    &spec_inner,
+                    cfg,
+                    needle_cfg,
+                    lm_cfg,
                     |cycle, phase| match &callback {
                         None => Ok(()),
                         Some(cb) => Python::attach(|py| {
@@ -411,11 +428,11 @@ impl PyDesignStack {
     ) -> PyResult<Self> {
         let mut a = ambient.bind(py).borrow().inner.clone();
         let s = substrate.bind(py).borrow().inner.clone();
-        let f: Vec<LayerSpec> =
-            films.iter().map(|l| l.bind(py).borrow().inner.clone()).collect();
-        if let Some((fixed, msg)) =
-            navette::smatrix::optics_core::sanitize_incident_index(&a.nk)
-        {
+        let f: Vec<LayerSpec> = films
+            .iter()
+            .map(|l| l.bind(py).borrow().inner.clone())
+            .collect();
+        if let Some((fixed, msg)) = navette::smatrix::optics_core::sanitize_incident_index(&a.nk) {
             a.nk = fixed.into();
             crate::structure::emit_warnings(py, "DesignStack", &[msg])?;
         }
@@ -450,7 +467,8 @@ impl PyDesignStack {
         let nk_map: HashMap<std::sync::Arc<str>, Vec<Complex64>> = nk
             .iter()
             .map(|(k, v)| {
-                v.as_slice().map(|sl| (std::sync::Arc::from(k.as_str()), sl.to_vec()))
+                v.as_slice()
+                    .map(|sl| (std::sync::Arc::from(k.as_str()), sl.to_vec()))
             })
             .collect::<Result<_, _>>()?;
         let gm: HashMap<String, navette::structure::Group> = groups
@@ -465,11 +483,7 @@ impl PyDesignStack {
         if !warnings.is_empty() {
             let mod_warn = py.import("warnings")?;
             for w in &warnings {
-                mod_warn.call_method(
-                    "warn",
-                    (w,),
-                    Some(&[("stacklevel", 3)].into_py_dict(py)?),
-                )?;
+                mod_warn.call_method("warn", (w,), Some(&[("stacklevel", 3)].into_py_dict(py)?))?;
             }
         }
         Ok(PyDesignStack::from_inner(stack))
@@ -515,7 +529,11 @@ impl PyDesignStack {
     /// Films as a list of dicts (ambient/substrate excluded); round-trips
     /// through `LayerSpec(**{material, nk, thickness, ...})`.
     fn films(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
-        self.inner.films().iter().map(|l| layer_dict(py, l).map(|d| d.unbind())).collect()
+        self.inner
+            .films()
+            .iter()
+            .map(|l| layer_dict(py, l).map(|d| d.unbind()))
+            .collect()
     }
 
     /// Full stack incl. ambient/substrate (+ grid size).
@@ -530,7 +548,9 @@ impl PyDesignStack {
 
     /// Set film thickness (films indexing; ambient/substrate excluded).
     fn set_thickness(&mut self, film_idx: usize, thickness: f64) -> PyResult<()> {
-        self.inner.set_thickness(film_idx, thickness).map_err(PyValueError::new_err)
+        self.inner
+            .set_thickness(film_idx, thickness)
+            .map_err(PyValueError::new_err)
     }
 
     /// Split film `film_idx` and insert `seed` (host portions keep flags).
@@ -564,9 +584,7 @@ impl PyDesignStack {
     /// returns `(n_removed, n_capped)`.
     fn clamp_all(&mut self, min_nm: f64, max_nm: f64) -> PyResult<(usize, usize)> {
         if !(min_nm >= 0.0) || !(max_nm > min_nm) {
-            return Err(PyValueError::new_err(
-                "need 0 <= min_nm < max_nm",
-            ));
+            return Err(PyValueError::new_err("need 0 <= min_nm < max_nm"));
         }
         Ok(self.inner.clamp_all(min_nm, max_nm))
     }
@@ -673,15 +691,24 @@ impl PyLmConfig {
         jacobian: &str,
         optimizer: &str,
     ) -> PyResult<Self> {
-        for (name, v) in [("ftol", ftol), ("xtol", xtol), ("gtol", gtol),
-                          ("lambda_init", lambda_init), ("lambda_up", lambda_up),
-                          ("lambda_down", lambda_down)] {
+        for (name, v) in [
+            ("ftol", ftol),
+            ("xtol", xtol),
+            ("gtol", gtol),
+            ("lambda_init", lambda_init),
+            ("lambda_up", lambda_up),
+            ("lambda_down", lambda_down),
+        ] {
             if !(v.is_finite() && v > 0.0) {
-                return Err(PyValueError::new_err(format!("{name} must be finite and > 0")));
+                return Err(PyValueError::new_err(format!(
+                    "{name} must be finite and > 0"
+                )));
             }
         }
         if max_iterations == 0 || max_evals == 0 {
-            return Err(PyValueError::new_err("max_iterations/max_evals must be > 0"));
+            return Err(PyValueError::new_err(
+                "max_iterations/max_evals must be > 0",
+            ));
         }
         let damping = match damping {
             "gain_ratio" => LmDamping::GainRatio,
@@ -690,7 +717,7 @@ impl PyLmConfig {
                 return Err(PyValueError::new_err(format!(
                     "damping must be 'gain_ratio' or 'fixed', got {other:?}"
                 )))
-            },
+            }
         };
         let jacobian = match jacobian {
             "analytic" => JacobianMode::Analytic,
@@ -699,7 +726,7 @@ impl PyLmConfig {
                 return Err(PyValueError::new_err(format!(
                     "jacobian must be 'analytic' or 'fd', got {other:?}"
                 )))
-            },
+            }
         };
         let backend = OptimizerBackend::parse(optimizer).map_err(PyValueError::new_err)?;
         if !backend.is_available() {
@@ -737,8 +764,11 @@ impl PyLmConfig {
                 "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?}, ",
                 "jacobian={:?}, optimizer={:?})"
             ),
-            self.inner.max_iterations, self.inner.ftol, self.inner.damping,
-            self.inner.jacobian, self.inner.backend.as_str()
+            self.inner.max_iterations,
+            self.inner.ftol,
+            self.inner.damping,
+            self.inner.jacobian,
+            self.inner.backend.as_str()
         )
     }
 }
@@ -899,7 +929,9 @@ impl PySmatrixContext {
         let a = angles_deg.as_slice()?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
-            return Err(PyValueError::new_err("angles/wavelengths must be non-empty"));
+            return Err(PyValueError::new_err(
+                "angles/wavelengths must be non-empty",
+            ));
         }
         if !(clamp_min >= 0.0) || !(clamp_max > clamp_min) {
             return Err(PyValueError::new_err("need 0 <= clamp_min < clamp_max"));
@@ -942,11 +974,7 @@ impl PySmatrixContext {
 
     /// Bounded LM over optimize-flagged films, in place; sub-min films
     /// removed, above-max capped. Returns the post-optimization merit.
-    fn optimize_thicknesses(
-        &mut self,
-        py: Python<'_>,
-        stack: &mut PyDesignStack,
-    ) -> PyResult<f64> {
+    fn optimize_thicknesses(&mut self, py: Python<'_>, stack: &mut PyDesignStack) -> PyResult<f64> {
         py.detach({
             let inner = &mut self.inner;
             let st = &mut stack.inner;
@@ -997,7 +1025,12 @@ impl PySmatrixContext {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-fn insertion_dict(py: Python<'_>, film_idx: usize, depth_nm: f64, material: &str) -> PyResult<Py<PyDict>> {
+fn insertion_dict(
+    py: Python<'_>,
+    film_idx: usize,
+    depth_nm: f64,
+    material: &str,
+) -> PyResult<Py<PyDict>> {
     let d = PyDict::new(py);
     d.set_item("film_idx", film_idx)?;
     d.set_item("depth_into_layer_nm", depth_nm)?;
@@ -1026,7 +1059,12 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
         match &r.insertion {
             Some(ins) => rd.set_item(
                 "insertion",
-                insertion_dict(py, ins.film_idx, ins.depth_into_layer_nm, ins.material.as_ref())?,
+                insertion_dict(
+                    py,
+                    ins.film_idx,
+                    ins.depth_into_layer_nm,
+                    ins.material.as_ref(),
+                )?,
             )?,
             None => rd.set_item("insertion", py.None())?,
         }
@@ -1043,7 +1081,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
             cd.set_item("layers_removed_thin", c.layers_removed_thin)?;
             cd.set_item("layers_merged", c.layers_merged)?;
             d.set_item("cleanup", cd)?;
-        },
+        }
         None => d.set_item("cleanup", py.None())?,
     }
     match &phase.inflate_result {
@@ -1057,7 +1095,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
             id.set_item("addon_qwot", r.addon_qwot)?;
             id.set_item("reference_wavelength", r.reference_wavelength)?;
             d.set_item("inflate", id)?;
-        },
+        }
         None => d.set_item("inflate", py.None())?,
     }
     Ok(d)
@@ -1100,7 +1138,9 @@ impl PyNeedlePipeline {
         let a = angles_deg.as_slice()?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
-            return Err(PyValueError::new_err("angles/wavelengths must be non-empty"));
+            return Err(PyValueError::new_err(
+                "angles/wavelengths must be non-empty",
+            ));
         }
         let nw = w.len();
         if stack.inner.num_wavs() != nw {
@@ -1131,8 +1171,8 @@ impl PyNeedlePipeline {
             }
             cmap.insert(Arc::from(mat.as_str()), t);
         }
-        let spectral = SpectralInputs::from_spec(spec.inner(), a, w)
-            .map_err(PyValueError::new_err)?;
+        let spectral =
+            SpectralInputs::from_spec(spec.inner(), a, w).map_err(PyValueError::new_err)?;
         let inner = NeedlePipeline::new(
             stack.inner.clone(),
             spectral,
@@ -1190,10 +1230,10 @@ impl PyNeedlePipeline {
         )
     }
 
-
-
-
     fn __repr__(&self) -> String {
-        format!("NeedlePipeline({})", PyDesignStack::from_inner(self.inner.stack.clone()).__repr__())
+        format!(
+            "NeedlePipeline({})",
+            PyDesignStack::from_inner(self.inner.stack.clone()).__repr__()
+        )
     }
 }

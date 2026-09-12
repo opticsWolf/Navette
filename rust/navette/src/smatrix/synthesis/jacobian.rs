@@ -29,8 +29,7 @@ use crate::smatrix::synthesis::merit::{CurveId, MeritSensitivity};
 /// order [`CurveDeposits`] stores them. Everything else is either derived
 /// from these (absorption: A = 1 − R − T) or not simulated at all, in which
 /// case the residual pass has already failed on the missing curve.
-pub const DEPOSIT_CHANNELS: [CurveId; 4] =
-    [CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp];
+pub const DEPOSIT_CHANNELS: [CurveId; 4] = [CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp];
 
 /// Storage slot for a curve, or `None` when this pass carries no deposits
 /// for it.
@@ -78,11 +77,14 @@ impl CurveDeposits {
         ];
         for (p, row) in rows.iter().enumerate() {
             for (c, block) in data.iter_mut().enumerate() {
-                block[p * n_par..(p + 1) * n_par]
-                    .copy_from_slice(&row[c * n_par..(c + 1) * n_par]);
+                block[p * n_par..(p + 1) * n_par].copy_from_slice(&row[c * n_par..(c + 1) * n_par]);
             }
         }
-        Ok(CurveDeposits { n_points, n_par, data })
+        Ok(CurveDeposits {
+            n_points,
+            n_par,
+            data,
+        })
     }
 
     pub fn n_points(&self) -> usize {

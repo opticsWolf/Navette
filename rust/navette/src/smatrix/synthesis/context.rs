@@ -31,6 +31,5 @@ pub trait DesignContext {
     /// Mirrors `ClampedNeedleSynthesizer.optimize_thicknesses`: optimizes
     /// all films flagged `optimize`, enforces bounds, removes films driven
     /// below the minimum. Returns the post-optimization merit.
-    fn optimize_thicknesses(&mut self, stack: &mut DesignStack)
-        -> Result<f64, String>;
+    fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String>;
 }

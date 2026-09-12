@@ -65,11 +65,7 @@ fn round_half_even(x: f64) -> f64 {
     let r = x.round(); // half away from zero
     if (x - x.trunc()).abs() == 0.5 {
         // exactly .5: choose the even neighbor
-        if r % 2.0 != 0.0 {
-            r - x.signum()
-        } else {
-            r
-        }
+        if r % 2.0 != 0.0 { r - x.signum() } else { r }
     } else {
         r
     }
@@ -243,10 +239,7 @@ mod tests {
         fn simulate(&self, _stack: &DesignStack) -> Result<SimCurves, String> {
             Err("mock context has no simulator".into())
         }
-        fn optimize_thicknesses(
-            &mut self,
-            stack: &mut DesignStack,
-        ) -> Result<f64, String> {
+        fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
             self.n_opt_calls += 1;
             for i in 0..stack.films().len() {
                 if stack.films()[i].optimize && i < self.targets.len() {
@@ -294,7 +287,11 @@ mod tests {
         let stack = DesignStack::with_films(
             air(),
             sub(),
-            vec![film("A", 2.35, 30.0), film("B", 1.46, 30.0), film("C", 2.35, 30.0)],
+            vec![
+                film("A", 2.35, 30.0),
+                film("B", 1.46, 30.0),
+                film("C", 2.35, 30.0),
+            ],
         )
         .unwrap();
         let targets = vec![40.0, 40.0, 30.0];
@@ -307,9 +304,11 @@ mod tests {
         let mf_c: f64 = sq(30.0 - 40.0) + sq(30.0 - 40.0) + sq(30.0 + d_a - 30.0);
 
         let mut st = stack.clone();
-        let mut ctx = MockCtx { targets, n_opt_calls: 0 };
-        let res =
-            inflate_design(&mut ctx, &mut st, &wavls(), 1.0, 550.0, Some(1), true).unwrap();
+        let mut ctx = MockCtx {
+            targets,
+            n_opt_calls: 0,
+        };
+        let res = inflate_design(&mut ctx, &mut st, &wavls(), 1.0, 550.0, Some(1), true).unwrap();
 
         // Expect the winner to be whichever trial MF is lowest.
         let expected_idx = if mf_a <= mf_b && mf_a <= mf_c {
@@ -344,9 +343,11 @@ mod tests {
             vec![film("A", 2.35, 30.0), film("B", 1.46, 20.0)],
         )
         .unwrap();
-        let mut ctx = MockCtx { targets: vec![0.0; 2], n_opt_calls: 0 };
-        let res =
-            inflate_design(&mut ctx, &mut stack, &wavls(), 0.5, 550.0, None, false).unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![0.0; 2],
+            n_opt_calls: 0,
+        };
+        let res = inflate_design(&mut ctx, &mut stack, &wavls(), 0.5, 550.0, None, false).unwrap();
 
         let d_a = 0.5 * (550.0 / 9.4);
         let d_b = 0.5 * (550.0 / 5.84);
@@ -358,9 +359,11 @@ mod tests {
 
     #[test]
     fn inflate_negative_addon_clamps_at_zero() {
-        let mut stack =
-            DesignStack::with_films(air(), sub(), vec![film("A", 2.35, 10.0)]).unwrap();
-        let mut ctx = MockCtx { targets: vec![0.0], n_opt_calls: 0 };
+        let mut stack = DesignStack::with_films(air(), sub(), vec![film("A", 2.35, 10.0)]).unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![0.0],
+            n_opt_calls: 0,
+        };
         // −1 QWOT ≈ −58.5 nm on a 10 nm film → clamps to 0.
         inflate_design(&mut ctx, &mut stack, &wavls(), -1.0, 550.0, None, false).unwrap();
         assert!((stack.films()[0].d_nm - 0.0).abs() < 1e-12);
@@ -375,7 +378,10 @@ mod tests {
             vec![film("H", 2.35, 100.0), film("L", 2.35, 5.0)],
         )
         .unwrap();
-        let mut ctx = MockCtx { targets: vec![0.0; 2], n_opt_calls: 0 };
+        let mut ctx = MockCtx {
+            targets: vec![0.0; 2],
+            n_opt_calls: 0,
+        };
 
         round_to_qwot(&mut ctx, &mut stack, &wavls(), 550.0, 1.0, false).unwrap();
         // Film 0: 100/q = 1.709 → round 2 → 2q
@@ -411,7 +417,10 @@ mod tests {
             vec![film("H", 2.2, 2.5 * q2)], // ratio exactly 2.5 → rounds to 2
         )
         .unwrap();
-        let mut ctx = MockCtx { targets: vec![0.0], n_opt_calls: 0 };
+        let mut ctx = MockCtx {
+            targets: vec![0.0],
+            n_opt_calls: 0,
+        };
         round_to_qwot(&mut ctx, &mut stack, &wavls(), 550.0, 1.0, false).unwrap();
         assert!((stack.films()[0].d_nm - 2.0 * q2).abs() < 1e-10);
         assert!((q - q2) != 0.0); // silence unused var in a meaningful way
@@ -420,7 +429,10 @@ mod tests {
     #[test]
     fn round_rejects_nonpositive_resolution() {
         let mut stack = DesignStack::with_films(air(), sub(), vec![film("H", 2.35, 50.0)]).unwrap();
-        let mut ctx = MockCtx { targets: vec![0.0], n_opt_calls: 0 };
+        let mut ctx = MockCtx {
+            targets: vec![0.0],
+            n_opt_calls: 0,
+        };
         assert!(round_to_qwot(&mut ctx, &mut stack, &wavls(), 550.0, 0.0, false).is_err());
         assert!(round_to_qwot(&mut ctx, &mut stack, &wavls(), 550.0, -1.0, false).is_err());
     }

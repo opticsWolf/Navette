@@ -43,7 +43,10 @@ where
     {
         if n >= PAR_THRESHOLD {
             return if n1 == n2 {
-                lab1.par_iter().zip(lab2.par_iter()).map(|(a, b)| f(a, b)).collect()
+                lab1.par_iter()
+                    .zip(lab2.par_iter())
+                    .map(|(a, b)| f(a, b))
+                    .collect()
             } else if n1 == 1 {
                 let a = &lab1[0];
                 lab2.par_iter().map(|b| f(a, b)).collect()
@@ -72,10 +75,7 @@ where
 /// Internal helper to broadcast a single reference against many samples,
 /// returning two vectors of equal length (both allocated as `Vec<[f64;3]>`).
 #[doc(hidden)]
-pub fn broadcast_pair(
-    lab1: &[[f64; 3]],
-    lab2: &[[f64; 3]],
-) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+pub fn broadcast_pair(lab1: &[[f64; 3]], lab2: &[[f64; 3]]) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
     let n1 = lab1.len();
     let n2 = lab2.len();
 

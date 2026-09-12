@@ -42,6 +42,8 @@
 
 /// CIE color science: spaces, conversions, delta-E, whites.
 pub mod color;
+/// Program documents: versioned envelopes + section assembly.
+pub mod config;
 /// Univariate interpolation (linear / pchip / makima).
 pub mod interpolate;
 /// Optical dispersion models (Cauchy … UBF, tables, EMA, KK).
@@ -52,5 +54,3 @@ pub mod smatrix;
 pub mod spectralweave;
 /// Stack model: layers, groups, providers, expansion, architect.
 pub mod structure;
-/// Program documents: versioned envelopes + section assembly.
-pub mod config;

@@ -91,17 +91,11 @@ impl PySimCurves {
 
     /// Store one intensity row (`Rs/…/ABu`; absorption ids rejected —
     /// absorptance derives from companions).
-    fn set_curve(
-        &mut self,
-        curve_id: String,
-        values: PyReadonlyArray1<'_, f64>,
-    ) -> PyResult<()> {
+    fn set_curve(&mut self, curve_id: String, values: PyReadonlyArray1<'_, f64>) -> PyResult<()> {
         // Thin over the core setter (key rules + lengths validated there).
         let id = parse_curve(&curve_id)?;
         let arc: Arc<[f64]> = Arc::from(values.as_slice()?);
-        self.inner
-            .set_curve(id, arc)
-            .map_err(PyValueError::new_err)
+        self.inner.set_curve(id, arc).map_err(PyValueError::new_err)
     }
 
     /// Store one complex-amplitude row for phase demands (`Rs/Rp/Ts/Tp`,
@@ -140,9 +134,10 @@ impl PyMeritSpec {
 /// `targets::compile_merit_spec`): the `build_merit_spec` path.
 #[pyfunction]
 pub(crate) fn compile_merit_spec(request_json: &str) -> PyResult<PyMeritSpec> {
-    let set: navette::smatrix::synthesis::targets::TargetSet =
-        serde_json::from_str(request_json)
-            .map_err(|e| PyValueError::new_err(format!("compile_merit_spec: invalid request: {e}")))?;
+    let set: navette::smatrix::synthesis::targets::TargetSet = serde_json::from_str(request_json)
+        .map_err(|e| {
+        PyValueError::new_err(format!("compile_merit_spec: invalid request: {e}"))
+    })?;
     navette::smatrix::synthesis::targets::compile_merit_spec(&set)
         .map(PyMeritSpec::from_inner)
         .map_err(PyValueError::new_err)
@@ -152,7 +147,9 @@ pub(crate) fn compile_merit_spec(request_json: &str) -> PyResult<PyMeritSpec> {
 impl PyMeritSpec {
     #[new]
     fn new() -> Self {
-        PyMeritSpec { inner: MeritSpec::new() }
+        PyMeritSpec {
+            inner: MeritSpec::new(),
+        }
     }
 
     /// Register a `(angle, curve)` demand group; returns its key index.
@@ -215,19 +212,18 @@ impl PyMeritSpec {
     }
 
     /// Scalar merit: Σ residual² + `missing_penalty` per missing key group.
-    fn merit(
-        &self,
-        py: Python<'_>,
-        sim: &PySimCurves,
-        missing_penalty: f64,
-    ) -> f64 {
+    fn merit(&self, py: Python<'_>, sim: &PySimCurves, missing_penalty: f64) -> f64 {
         let inner = &self.inner;
         let sim_inner = &sim.inner;
         py.detach(move || inner.merit(sim_inner, missing_penalty))
     }
 
     /// Fixed-length residual vector (zeros where inactive).
-    fn residuals(&self, py: Python<'_>, sim: &PySimCurves) -> PyResult<Py<PyArray<f64, numpy::Ix1>>> {
+    fn residuals(
+        &self,
+        py: Python<'_>,
+        sim: &PySimCurves,
+    ) -> PyResult<Py<PyArray<f64, numpy::Ix1>>> {
         let mut out = Vec::new();
         self.inner
             .residuals(&sim.inner, &mut out)
@@ -262,10 +258,10 @@ pub fn reference_rotation(
 /// core kernel): returns the rotated rows.
 #[pyfunction]
 pub(crate) fn rotate_rows(rows: Vec<Complex64>, rot: Vec<Complex64>) -> PyResult<Vec<Complex64>> {
-  use navette::smatrix::synthesis::merit::rotate_rows as core_rotate;
-  let mut out = rows;
-  core_rotate(&mut out, &rot).map_err(PyValueError::new_err)?;
-  Ok(out)
+    use navette::smatrix::synthesis::merit::rotate_rows as core_rotate;
+    let mut out = rows;
+    core_rotate(&mut out, &rot).map_err(PyValueError::new_err)?;
+    Ok(out)
 }
 
 /// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major).
@@ -289,11 +285,13 @@ pub fn build_needle_targets(
 ) -> PyResult<Py<PyDict>> {
     let a = angles.as_slice()?.to_vec();
     let w = wavelengths.as_slice()?.to_vec();
-    let nt = py.detach({
-        let spec_inner = &spec.inner;
-        let sim_inner = sim.map(|s| &s.inner);
-        move || core_fold(spec_inner, &a, &w, sim_inner)
-    }).map_err(PyValueError::new_err)?;
+    let nt = py
+        .detach({
+            let spec_inner = &spec.inner;
+            let sim_inner = sim.map(|s| &s.inner);
+            move || core_fold(spec_inner, &a, &w, sim_inner)
+        })
+        .map_err(PyValueError::new_err)?;
     let d = PyDict::new(py);
     let pair = |py: Python<'_>, name: &str, p: (Vec<f64>, Vec<f64>)| -> PyResult<()> {
         let inner = PyDict::new(py);

@@ -6,11 +6,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use navette::spectralweave::opticalweaver::{OpticalKey, SpectralData, wl_bits_eq};
+use navette::spectralweave::opticalweaver::{wl_bits_eq, OpticalKey, SpectralData};
 use navette::spectralweave::targetweaver::{ResolvedNormMode, TargetKind, TargetWeaver};
 
 use super::spectralweave_optical::PyOpticalWeaver;
-
 
 // ---------------------------------------------------------------------------
 // Python bindings
@@ -25,7 +24,7 @@ pub struct PyTargetWeaver {
 impl PyTargetWeaver {
     #[new]
     #[pyo3(signature = (cache_size=128, tolerance_floor=1e-12))]
-/// Target store with plan cache and merit-denominator floor.
+    /// Target store with plan cache and merit-denominator floor.
     fn new(cache_size: usize, tolerance_floor: f64) -> Self {
         PyTargetWeaver {
             inner: Arc::new(TargetWeaver::new(cache_size, tolerance_floor)),
@@ -33,12 +32,12 @@ impl PyTargetWeaver {
     }
 
     #[pyo3(signature = (wavelengths, values, tolerances, angle, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false))]
-/// Ingest one target curve over wavelengths (kind e/a/b/r/c, norm mode).
-/// `band` holds optional per-point half-widths for `r`/`c` (raw units).
-/// `weight` scales the frame's merit sum; `normalize_count` divides it by
-/// the point count (target-level equal say regardless of sampling density).
-/// `integral` constrains the MEAN of the scaled diffs (single residual);
-/// it rejects `normalize_count` (the mean already is one).
+    /// Ingest one target curve over wavelengths (kind e/a/b/r/c, norm mode).
+    /// `band` holds optional per-point half-widths for `r`/`c` (raw units).
+    /// `weight` scales the frame's merit sum; `normalize_count` divides it by
+    /// the point count (target-level equal say regardless of sampling density).
+    /// `integral` constrains the MEAN of the scaled diffs (single residual);
+    /// it rejects `normalize_count` (the mean already is one).
     fn add_spectral_target(
         &self,
         py: Python<'_>,
@@ -55,8 +54,9 @@ impl PyTargetWeaver {
         normalize_count: bool,
         integral: bool,
     ) -> PyResult<()> {
-        let k = TargetKind::from_str(&kind)
-            .ok_or_else(|| PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')"))?;
+        let k = TargetKind::from_str(&kind).ok_or_else(|| {
+            PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')")
+        })?;
         if !weight.is_finite() || weight < 0.0 {
             return Err(PyValueError::new_err(format!(
                 "weight must be finite and >= 0 (got {weight})"
@@ -73,14 +73,19 @@ impl PyTargetWeaver {
         let band_sl = band.as_ref().map(|b| b.as_slice()).transpose()?;
         if let Some(b) = band_sl.as_ref() {
             if b.len() != val.len() {
-                return Err(PyValueError::new_err("band length must match values length"));
+                return Err(PyValueError::new_err(
+                    "band length must match values length",
+                ));
             }
         }
         let key = OpticalKey::from((angle, polarization, spectral));
 
-        let wl_ptr = wl.as_ptr() as usize; let wl_len = wl.len();
-        let val_ptr = val.as_ptr() as usize; let val_len = val.len();
-        let tol_ptr = tol.as_ptr() as usize; let tol_len = tol.len();
+        let wl_ptr = wl.as_ptr() as usize;
+        let wl_len = wl.len();
+        let val_ptr = val.as_ptr() as usize;
+        let val_len = val.len();
+        let tol_ptr = tol.as_ptr() as usize;
+        let tol_len = tol.len();
         let (band_ptr, band_len) = match band_sl.as_ref() {
             Some(b) => (b.as_ptr() as usize, b.len()),
             None => (0usize, 0usize),
@@ -107,7 +112,10 @@ impl PyTargetWeaver {
             self.inner.inner.inner.map_frame_to_key(&key, &frame);
 
             let count_norm = normalize_count.then_some(val_len as f64);
-            self.inner.register_metadata(frame.uid, key, val_data, tol_data, k, &norm_mode, band_data, weight, count_norm, integral);
+            self.inner.register_metadata(
+                frame.uid, key, val_data, tol_data, k, &norm_mode, band_data, weight, count_norm,
+                integral,
+            );
             Ok(())
         })
     }
@@ -137,8 +145,14 @@ impl PyTargetWeaver {
                 d.set_item("polarization", polarization)?;
                 d.set_item("spectral", spectral)?;
                 d.set_item("wavelengths", PyArray::from_vec(py, wl.clone()))?;
-                d.set_item("targets", PyArray::from_vec(py, entry.normalized_targets.to_vec()))?;
-                d.set_item("tolerances", PyArray::from_vec(py, entry.tolerances.to_vec()))?;
+                d.set_item(
+                    "targets",
+                    PyArray::from_vec(py, entry.normalized_targets.to_vec()),
+                )?;
+                d.set_item(
+                    "tolerances",
+                    PyArray::from_vec(py, entry.tolerances.to_vec()),
+                )?;
                 d.set_item("band", PyArray::from_vec(py, entry.band.to_vec()))?;
                 d.set_item("kind", entry.kind.as_str())?;
                 d.set_item("mode", entry.resolved_mode.as_str())?;
@@ -153,12 +167,12 @@ impl PyTargetWeaver {
     }
 
     #[pyo3(signature = (wavelength, angles, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false))]
-/// Ingest one target curve over angles (kind e/a/b/r/c, norm mode).
-/// `band` holds optional per-point half-widths for `r`/`c` (raw units).
-/// `weight` scales the target's merit sum; `normalize_count` divides by
-/// the TARGET-level angle count (shared across this target's single-point
-/// entries — per-entry counts would no-op at 1). `integral` constrains the
-/// mean over angles (rejects `normalize_count`).
+    /// Ingest one target curve over angles (kind e/a/b/r/c, norm mode).
+    /// `band` holds optional per-point half-widths for `r`/`c` (raw units).
+    /// `weight` scales the target's merit sum; `normalize_count` divides by
+    /// the TARGET-level angle count (shared across this target's single-point
+    /// entries — per-entry counts would no-op at 1). `integral` constrains the
+    /// mean over angles (rejects `normalize_count`).
     fn add_angular_target(
         &self,
         py: Python<'_>,
@@ -175,8 +189,9 @@ impl PyTargetWeaver {
         normalize_count: bool,
         integral: bool,
     ) -> PyResult<()> {
-        let k = TargetKind::from_str(&kind)
-            .ok_or_else(|| PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')"))?;
+        let k = TargetKind::from_str(&kind).ok_or_else(|| {
+            PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')")
+        })?;
         if !weight.is_finite() || weight < 0.0 {
             return Err(PyValueError::new_err(format!(
                 "weight must be finite and >= 0 (got {weight})"
@@ -193,7 +208,9 @@ impl PyTargetWeaver {
         let band_sl = band.as_ref().map(|b| b.as_slice()).transpose()?;
         if let Some(b) = band_sl.as_ref() {
             if b.len() != vals.len() {
-                return Err(PyValueError::new_err("band length must match values length"));
+                return Err(PyValueError::new_err(
+                    "band length must match values length",
+                ));
             }
         }
 
@@ -201,9 +218,12 @@ impl PyTargetWeaver {
         // it across points (per-point resolution would weight each angle by
         // its own magnitude, unlike spectral targets).
         let (shared_mode, shared_nf) = TargetWeaver::resolve_norm(vals, &norm_mode);
-        let a_ptr = angs.as_ptr() as usize; let a_len = angs.len();
-        let v_ptr = vals.as_ptr() as usize; let v_len = vals.len();
-        let t_ptr = tols.as_ptr() as usize; let t_len = tols.len();
+        let a_ptr = angs.as_ptr() as usize;
+        let a_len = angs.len();
+        let v_ptr = vals.as_ptr() as usize;
+        let v_len = vals.len();
+        let t_ptr = tols.as_ptr() as usize;
+        let t_len = tols.len();
         let (band_ptr, band_len) = match band_sl.as_ref() {
             Some(b) => (b.as_ptr() as usize, b.len()),
             None => (0usize, 0usize),
@@ -231,7 +251,11 @@ impl PyTargetWeaver {
                 let key = OpticalKey::from((a_data[i], pol.clone(), spec.clone()));
                 let val_arr = vec![v_data[i]];
                 let tol_arr = vec![t_data[i]];
-                let band_arr = if b_data.is_empty() { vec![] } else { vec![b_data[i]] };
+                let band_arr = if b_data.is_empty() {
+                    vec![]
+                } else {
+                    vec![b_data[i]]
+                };
 
                 frame
                     .set_data(
@@ -244,7 +268,19 @@ impl PyTargetWeaver {
 
                 // Target-level count shared across this target's entries.
                 let count_norm = normalize_count.then_some(a_len as f64);
-                self.inner.register_metadata_resolved(frame.uid, key, &val_arr, &tol_arr, k, shared_mode, shared_nf, &band_arr, weight, count_norm, integral);
+                self.inner.register_metadata_resolved(
+                    frame.uid,
+                    key,
+                    &val_arr,
+                    &tol_arr,
+                    k,
+                    shared_mode,
+                    shared_nf,
+                    &band_arr,
+                    weight,
+                    count_norm,
+                    integral,
+                );
             }
             Ok(())
         })
@@ -267,8 +303,12 @@ fn kind_contribution(kind: TargetKind, scaled_diff: f64, tol: f64, band: f64) ->
             // the tolerance as half-width (paired a/b).
             let bw_eff = if band <= 0.0 { tol } else { band };
             let ad = scaled_diff.abs();
-            if ad <= bw_eff { 0.0 } else { ((ad - bw_eff) / tol).powi(2) }
-        },
+            if ad <= bw_eff {
+                0.0
+            } else {
+                ((ad - bw_eff) / tol).powi(2)
+            }
+        }
         TargetKind::CenterBand => {
             // Soft box: reduced `(d/bw)^2` inside (exact scaled
             // by `(tol/bw)^2`), exceedance plus continuity outside.
@@ -276,10 +316,13 @@ fn kind_contribution(kind: TargetKind, scaled_diff: f64, tol: f64, band: f64) ->
                 (scaled_diff / tol).powi(2)
             } else {
                 let ad = scaled_diff.abs();
-                if ad <= band { (scaled_diff / band).powi(2) }
-                else { ((ad - band) / tol).powi(2) + 1.0 }
+                if ad <= band {
+                    (scaled_diff / band).powi(2)
+                } else {
+                    ((ad - band) / tol).powi(2) + 1.0
+                }
             }
-        },
+        }
         _ => 0.0,
     }
 }
@@ -318,7 +361,9 @@ pub fn calculate_merit(
 
             for frm in target_frames {
                 let t_wl = frm.wavelength();
-                if t_wl.is_empty() { continue; }
+                if t_wl.is_empty() {
+                    continue;
+                }
 
                 let entry = match meta_guard.get(&frm.uid).and_then(|m| m.entries.get(&key)) {
                     Some(e) => e,
@@ -404,8 +449,12 @@ pub fn calculate_merit(
                         int_tol += tol;
                         int_bw += entry.band.get(i).copied().unwrap_or(0.0);
                     } else {
-                        frame_sum += kind_contribution(entry.kind, scaled_diff, tol,
-                            entry.band.get(i).copied().unwrap_or(0.0));
+                        frame_sum += kind_contribution(
+                            entry.kind,
+                            scaled_diff,
+                            tol,
+                            entry.band.get(i).copied().unwrap_or(0.0),
+                        );
                     }
                 }
                 if entry.integral {
@@ -415,8 +464,8 @@ pub fn calculate_merit(
                     // at ingestion — the mean already is one).
                     let n = t_wl.len() as f64;
                     let tol_bar = (int_tol / n).max(1e-300);
-                    total_merit += entry.weight * kind_contribution(
-                        entry.kind, int_d / n, tol_bar, int_bw / n);
+                    total_merit += entry.weight
+                        * kind_contribution(entry.kind, int_d / n, tol_bar, int_bw / n);
                 } else {
                     total_merit += frame_sum * entry.weight / entry.count_norm.unwrap_or(1.0);
                 }

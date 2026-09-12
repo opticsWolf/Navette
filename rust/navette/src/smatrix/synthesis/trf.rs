@@ -80,8 +80,8 @@
 //!   as there are films.
 
 use super::thick_opt::{
-    back_substitute, build_jacobian, householder_qr_in_place, JacobianSource, LmConfig, LmResult,
-    LmTermination,
+    JacobianSource, LmConfig, LmResult, LmTermination, back_substitute, build_jacobian,
+    householder_qr_in_place,
 };
 
 /// scipy's `EPS`, used in the same two places: the rank threshold and
@@ -234,7 +234,11 @@ where
             // (a zero Jacobian column forces g[k] = 0, hence dv[k] = 0 and
             // C[k] = 0), so its step component is zero whatever we put here.
             // The QR, unlike scipy's SVD, refuses to factor it: give it a 1.
-            aug[(m + k) * n + k] = if col_sq > 0.0 { diag_h[k].max(0.0).sqrt() } else { 1.0 };
+            aug[(m + k) * n + k] = if col_sq > 0.0 {
+                diag_h[k].max(0.0).sqrt()
+            } else {
+                1.0
+            };
         }
         let mut qtf = vec![0.0f64; rows];
         qtf[..m].copy_from_slice(&f);
@@ -262,17 +266,17 @@ where
                     Err(_) => {
                         termination = Some(LmTermination::Stalled);
                         break;
-                    },
+                    }
                 };
             alpha = new_alpha;
             let p: Vec<f64> = d.iter().zip(&p_h).map(|(&di, &pi)| di * pi).collect();
 
-            let (step, step_h, predicted_reduction) =
-                select_step(&x, &jh, &diag_h, &g_h, &p, &p_h, &d, delta, lb, ub, theta, m, n);
+            let (step, step_h, predicted_reduction) = select_step(
+                &x, &jh, &diag_h, &g_h, &p, &p_h, &d, delta, lb, ub, theta, m, n,
+            );
 
             let x_new = {
-                let trial: Vec<f64> =
-                    x.iter().zip(&step).map(|(&xi, &si)| xi + si).collect();
+                let trial: Vec<f64> = x.iter().zip(&step).map(|(&xi, &si)| xi + si).collect();
                 make_strictly_feasible(&trial, lb, ub, 0.0)
             };
             residuals(&x_new, &mut f_new)?;
@@ -398,11 +402,11 @@ where
                 ));
             }
             *analytic += 1;
-        },
+        }
         None => {
             let added = build_jacobian(residuals, x, jac)?;
             *evals += added;
-        },
+        }
     }
     Ok(())
 }
@@ -473,7 +477,11 @@ fn solve_lsq_trust_region(
         let (pa, p_norm, q_norm) = damped_step(r_tri, qtf, n, alpha)?;
         p = pa;
         let phi = p_norm - delta;
-        let phi_prime = if p_norm > 0.0 { -(q_norm * q_norm) / p_norm } else { 0.0 };
+        let phi_prime = if p_norm > 0.0 {
+            -(q_norm * q_norm) / p_norm
+        } else {
+            0.0
+        };
         if phi < 0.0 {
             alpha_upper = alpha;
         }
@@ -619,7 +627,11 @@ fn select_step(
         let l = (1.0 - theta) * p_stride / r_stride;
         // The upper limit is the bound (held back by theta) or the region
         // boundary, whichever the reflection reaches first.
-        let u = if r_stride == to_bound { theta * to_bound } else { to_tr.unwrap_or(0.0) };
+        let u = if r_stride == to_bound {
+            theta * to_bound
+        } else {
+            to_tr.unwrap_or(0.0)
+        };
         (l, u)
     } else {
         (0.0, -1.0)
@@ -650,7 +662,11 @@ fn select_step(
     let ag_value = if ag_norm > 0.0 {
         let to_tr = delta / ag_norm;
         let (to_bound, _) = step_size_to_bound(x, &ag, lb, ub);
-        let cap = if to_bound < to_tr { theta * to_bound } else { to_tr };
+        let cap = if to_bound < to_tr {
+            theta * to_bound
+        } else {
+            to_tr
+        };
         let (a, b, _) = build_quadratic_1d(jh, g_h, &ag_h, diag_h, None, m, n);
         let (stride, value) = minimize_quadratic_1d(a, b, 0.0, cap, 0.0);
         for k in 0..n {
@@ -695,7 +711,10 @@ fn cl_scaling_vector(x: &[f64], g: &[f64], lb: &[f64], ub: &[f64]) -> (Vec<f64>,
 }
 
 fn in_bounds(x: &[f64], lb: &[f64], ub: &[f64]) -> bool {
-    x.iter().zip(lb).zip(ub).all(|((&xi, &l), &u)| xi >= l && xi <= u)
+    x.iter()
+        .zip(lb)
+        .zip(ub)
+        .all(|((&xi, &l), &u)| xi >= l && xi <= u)
 }
 
 /// How far along `s` the box lets us go, and which coordinates stop us.
@@ -710,7 +729,9 @@ fn step_size_to_bound(x: &[f64], s: &[f64], lb: &[f64], ub: &[f64]) -> (f64, Vec
         }
     }
     let min_step = steps.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let hits: Vec<bool> = (0..n).map(|i| s[i] != 0.0 && steps[i] == min_step).collect();
+    let hits: Vec<bool> = (0..n)
+        .map(|i| s[i] != 0.0 && steps[i] == min_step)
+        .collect();
     (min_step, hits)
 }
 
@@ -778,7 +799,11 @@ fn next_toward(x: f64, toward: f64) -> f64 {
     if x.is_nan() || toward.is_nan() || x == toward {
         return toward;
     }
-    if toward > x { x.next_up() } else { x.next_down() }
+    if toward > x {
+        x.next_up()
+    } else {
+        x.next_down()
+    }
 }
 
 /// Where the ray `x + t·s` crosses `‖·‖ = Δ`. `None` when the ray is
@@ -814,7 +839,11 @@ fn intersect_trust_region(x: &[f64], s: &[f64], delta: f64) -> Option<(f64, f64)
 fn evaluate_quadratic(jh: &[f64], g_h: &[f64], s: &[f64], diag: &[f64], m: usize, n: usize) -> f64 {
     let js = mat_vec(jh, s, m, n);
     let mut q = dot(&js, &js);
-    q += s.iter().zip(diag).map(|(&si, &di)| si * di * si).sum::<f64>();
+    q += s
+        .iter()
+        .zip(diag)
+        .map(|(&si, &di)| si * di * si)
+        .sum::<f64>();
     0.5 * q + dot(s, g_h)
 }
 
@@ -830,7 +859,11 @@ fn build_quadratic_1d(
 ) -> (f64, f64, f64) {
     let v = mat_vec(jh, s, m, n);
     let mut a = dot(&v, &v);
-    a += s.iter().zip(diag).map(|(&si, &di)| si * di * si).sum::<f64>();
+    a += s
+        .iter()
+        .zip(diag)
+        .map(|(&si, &di)| si * di * si)
+        .sum::<f64>();
     a *= 0.5;
     let mut b = dot(g_h, s);
     let mut c = 0.0;
@@ -838,7 +871,12 @@ fn build_quadratic_1d(
         let u = mat_vec(jh, s0, m, n);
         b += dot(&u, &v);
         c = 0.5 * dot(&u, &u) + dot(g_h, s0);
-        b += s0.iter().zip(diag).zip(s).map(|((&z, &di), &si)| z * di * si).sum::<f64>();
+        b += s0
+            .iter()
+            .zip(diag)
+            .zip(s)
+            .map(|((&z, &di), &si)| z * di * si)
+            .sum::<f64>();
         c += 0.5 * s0.iter().zip(diag).map(|(&z, &di)| z * di * z).sum::<f64>();
     }
     (a, b, c)
@@ -1104,7 +1142,10 @@ mod tests {
             check_termination(1e-12, 1.0, 10.0, 1.0, 0.9, 1e-8, 1e-8),
             Some(LmTermination::Cost)
         );
-        assert_eq!(check_termination(1e-12, 1.0, 10.0, 1.0, 0.1, 1e-8, 1e-8), None);
+        assert_eq!(
+            check_termination(1e-12, 1.0, 10.0, 1.0, 0.1, 1e-8, 1e-8),
+            None
+        );
     }
 
     // -- the subproblem ----------------------------------------------------
@@ -1166,7 +1207,10 @@ mod tests {
         let (_, dn, _) = damped_step(&r, &qtf, n, alpha - h).unwrap();
         let fd = (up - dn) / (2.0 * h);
         let analytic = -(q_norm * q_norm) / p_norm;
-        assert!((fd - analytic).abs() < 1e-6 * analytic.abs().max(1.0), "{fd} vs {analytic}");
+        assert!(
+            (fd - analytic).abs() < 1e-6 * analytic.abs().max(1.0),
+            "{fd} vs {analytic}"
+        );
     }
 
     #[test]
@@ -1180,7 +1224,10 @@ mod tests {
         let g_norm = norm(&jt_times(&b_mat, &f, rows, n));
         let (p, alpha) = solve_lsq_trust_region(&r, &qtf, rows, n, g_norm, 10.0, 0.0).unwrap();
         assert_eq!(alpha, 0.0);
-        assert!((p[0] + 0.5).abs() < 1e-12 && (p[1] - 0.25).abs() < 1e-12, "{p:?}");
+        assert!(
+            (p[0] + 0.5).abs() < 1e-12 && (p[1] - 0.25).abs() < 1e-12,
+            "{p:?}"
+        );
     }
 
     #[test]
@@ -1272,7 +1319,10 @@ mod tests {
             &[0.5, 0.5],
             &lb,
             &ub,
-            &LmConfig { max_iterations: 20, ..cfg() },
+            &LmConfig {
+                max_iterations: 20,
+                ..cfg()
+            },
         )
         .unwrap();
         let _ = r;
@@ -1384,7 +1434,11 @@ mod tests {
         )
         .unwrap();
         assert!(r.analytic_jacobians > 0);
-        assert!((r.x[0] - 1.0).abs() < 1e-9 && (r.x[1] + 1.5).abs() < 1e-9, "{:?}", r.x);
+        assert!(
+            (r.x[0] - 1.0).abs() < 1e-9 && (r.x[1] + 1.5).abs() < 1e-9,
+            "{:?}",
+            r.x
+        );
     }
 
     #[test]
@@ -1400,15 +1454,8 @@ mod tests {
             out.push(p[0] - 1.0);
             Ok(())
         };
-        let r = trust_region_reflective(
-            &f,
-            Some(&Declines),
-            &[0.0],
-            &[-5.0],
-            &[5.0],
-            &cfg(),
-        )
-        .unwrap();
+        let r =
+            trust_region_reflective(&f, Some(&Declines), &[0.0], &[-5.0], &[5.0], &cfg()).unwrap();
         assert_eq!(r.analytic_jacobians, 0);
         assert!((r.x[0] - 1.0).abs() < 1e-9);
     }
@@ -1422,9 +1469,7 @@ mod tests {
         };
         let c = cfg();
         assert!(trust_region_reflective(&f, None::<&NoJacobian>, &[], &[], &[], &c).is_err());
-        assert!(
-            trust_region_reflective(&f, None::<&NoJacobian>, &[0.0], &[0.0], &[], &c).is_err()
-        );
+        assert!(trust_region_reflective(&f, None::<&NoJacobian>, &[0.0], &[0.0], &[], &c).is_err());
         let e = trust_region_reflective(&f, None::<&NoJacobian>, &[5.0], &[0.0], &[1.0], &c)
             .unwrap_err();
         assert!(e.contains("outside"), "{e}");
@@ -1454,7 +1499,10 @@ mod tests {
             &[-1.2, 1.0],
             &[-5.0, -5.0],
             &[5.0, 5.0],
-            &LmConfig { max_evals: 12, ..cfg() },
+            &LmConfig {
+                max_evals: 12,
+                ..cfg()
+            },
         )
         .unwrap();
         // The budget is a floor-and-overshoot, not a hard cut: a Jacobian

@@ -140,7 +140,11 @@ impl UniInterpolator {
             }
         }
         if y.ncols() != n {
-            return Err(format!("y row length ({}) must match x length ({})", y.ncols(), n));
+            return Err(format!(
+                "y row length ({}) must match x length ({})",
+                y.ncols(),
+                n
+            ));
         }
         if d >= n {
             d = n.saturating_sub(1);
@@ -160,7 +164,16 @@ impl UniInterpolator {
             "floater_hormann" | "fh" => AuxData::FHWeights(calc_fh_weights(&x, d)),
             _ => AuxData::None,
         };
-        Ok(Self { x, y, method, robust, d, is_batch, aux_data, extrap: extrap_mode })
+        Ok(Self {
+            x,
+            y,
+            method,
+            robust,
+            d,
+            is_batch,
+            aux_data,
+            extrap: extrap_mode,
+        })
     }
 
     /// Evaluate all signals at `tgt_x`, returning `(n_signals, n_tgt)` values.
@@ -210,7 +223,9 @@ impl UniInterpolator {
         let n_tgt = tgt_x.len();
         let n_signals = self.y.nrows();
         let mut out = Array2::<f64>::zeros((n_signals, n_tgt));
-        if n_tgt == 0 { return out; }
+        if n_tgt == 0 {
+            return out;
+        }
         let is_sorted = sorted_hint.unwrap_or_else(|| is_sorted_slice(tgt_x));
         let x_slice = self.x.as_slice().unwrap();
         let method_str = self.method.as_str();
@@ -219,46 +234,91 @@ impl UniInterpolator {
         if n_signals == 1 {
             let y_view = self.y.row(0);
             let y_slice = y_view.as_slice().unwrap();
-            let slopes_row0 = match &self.aux_data { AuxData::Slopes(s) => Some(s.row(0)), _ => None };
+            let slopes_row0 = match &self.aux_data {
+                AuxData::Slopes(s) => Some(s.row(0)),
+                _ => None,
+            };
             let d_opt = slopes_row0.as_ref().map(|r| r.as_slice().unwrap());
-            let w_opt = match &self.aux_data { AuxData::FHWeights(w) => Some(w.as_slice().unwrap()), _ => None };
+            let w_opt = match &self.aux_data {
+                AuxData::FHWeights(w) => Some(w.as_slice().unwrap()),
+                _ => None,
+            };
             let out_flat = out.as_slice_mut().unwrap();
             if n_tgt >= PAR_TARGET_THRESHOLD {
                 let nthreads = rayon::current_num_threads().max(1);
                 let chunk = n_tgt.div_ceil(nthreads).max(MIN_PAR_CHUNK);
-                out_flat.par_chunks_mut(chunk).zip(tgt_x.par_chunks(chunk)).for_each(|(o, t)| {
-                    run_kernel(method_str, robust, t, x_slice, y_slice, d_opt, w_opt, o, deriv, is_sorted, extrap);
-                });
+                out_flat
+                    .par_chunks_mut(chunk)
+                    .zip(tgt_x.par_chunks(chunk))
+                    .for_each(|(o, t)| {
+                        run_kernel(
+                            method_str, robust, t, x_slice, y_slice, d_opt, w_opt, o, deriv,
+                            is_sorted, extrap,
+                        );
+                    });
             } else {
-                run_kernel(method_str, robust, tgt_x, x_slice, y_slice, d_opt, w_opt, out_flat, deriv, is_sorted, extrap);
+                run_kernel(
+                    method_str, robust, tgt_x, x_slice, y_slice, d_opt, w_opt, out_flat, deriv,
+                    is_sorted, extrap,
+                );
             }
         } else {
-            let slopes_ref = match &self.aux_data { AuxData::Slopes(s) => Some(s), _ => None };
-            let w_opt = match &self.aux_data { AuxData::FHWeights(w) => Some(w.as_slice().unwrap()), _ => None };
-            out.as_slice_mut().unwrap().par_chunks_exact_mut(n_tgt).enumerate().for_each(|(k, out_slice)| {
-                let y_view = self.y.row(k);
-                let y_slice = y_view.as_slice().unwrap();
-                let d_view = slopes_ref.map(|s| s.row(k));
-                let d_opt = d_view.as_ref().map(|r| r.as_slice().unwrap());
-                run_kernel(method_str, robust, tgt_x, x_slice, y_slice, d_opt, w_opt, out_slice, deriv, is_sorted, extrap);
-            });
+            let slopes_ref = match &self.aux_data {
+                AuxData::Slopes(s) => Some(s),
+                _ => None,
+            };
+            let w_opt = match &self.aux_data {
+                AuxData::FHWeights(w) => Some(w.as_slice().unwrap()),
+                _ => None,
+            };
+            out.as_slice_mut()
+                .unwrap()
+                .par_chunks_exact_mut(n_tgt)
+                .enumerate()
+                .for_each(|(k, out_slice)| {
+                    let y_view = self.y.row(k);
+                    let y_slice = y_view.as_slice().unwrap();
+                    let d_view = slopes_ref.map(|s| s.row(k));
+                    let d_opt = d_view.as_ref().map(|r| r.as_slice().unwrap());
+                    run_kernel(
+                        method_str, robust, tgt_x, x_slice, y_slice, d_opt, w_opt, out_slice,
+                        deriv, is_sorted, extrap,
+                    );
+                });
         }
         out
     }
 
     /// Cloned knot vector (binding accessor).
-    pub fn x_clone(&self) -> Array1<f64> { self.x.clone() }
+    pub fn x_clone(&self) -> Array1<f64> {
+        self.x.clone()
+    }
     /// Cloned value rows (binding accessor).
-    pub fn y_clone(&self) -> Array2<f64> { self.y.clone() }
+    pub fn y_clone(&self) -> Array2<f64> {
+        self.y.clone()
+    }
     pub fn slopes_clone(&self) -> Option<Array2<f64>> {
-        match &self.aux_data { AuxData::Slopes(s) => Some(s.clone()), _ => None }
+        match &self.aux_data {
+            AuxData::Slopes(s) => Some(s.clone()),
+            _ => None,
+        }
     }
     /// Canonical method name chosen at construction.
-    pub fn method(&self) -> &str { &self.method }
-    pub fn robust(&self) -> bool { self.robust }
-    pub fn fh_d(&self) -> usize { self.d }
-    pub fn is_batch(&self) -> bool { self.is_batch }
-    pub fn extrap_str(&self) -> &'static str { self.extrap.as_str() }
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+    pub fn robust(&self) -> bool {
+        self.robust
+    }
+    pub fn fh_d(&self) -> usize {
+        self.d
+    }
+    pub fn is_batch(&self) -> bool {
+        self.is_batch
+    }
+    pub fn extrap_str(&self) -> &'static str {
+        self.extrap.as_str()
+    }
 }
 
 // Single-signal dispatcher (operates purely on slices, no Python state)
@@ -302,7 +362,9 @@ fn run_kernel(
                     eval_sprague_general(tgt_x, x, y, out, robust, extrap);
                 }
             } else {
-                finite_diff(method, robust, tgt_x, x, y, d_opt, w_opt, out, sorted, extrap);
+                finite_diff(
+                    method, robust, tgt_x, x, y, d_opt, w_opt, out, sorted, extrap,
+                );
             }
         }
         "floater_hormann" | "fh" => {
@@ -310,7 +372,9 @@ fn run_kernel(
             if deriv == 0 {
                 eval_fh(tgt_x, x, y, w, out, extrap);
             } else {
-                finite_diff(method, robust, tgt_x, x, y, d_opt, w_opt, out, sorted, extrap);
+                finite_diff(
+                    method, robust, tgt_x, x, y, d_opt, w_opt, out, sorted, extrap,
+                );
             }
         }
         _ => {}
@@ -342,8 +406,12 @@ fn finite_diff(
     let mut yp = vec![0.0; n];
     let mut ym = vec![0.0; n];
 
-    run_kernel(method, robust, &tp, x, y, d_opt, w_opt, &mut yp, 0, sorted, extrap);
-    run_kernel(method, robust, &tm, x, y, d_opt, w_opt, &mut ym, 0, sorted, extrap);
+    run_kernel(
+        method, robust, &tp, x, y, d_opt, w_opt, &mut yp, 0, sorted, extrap,
+    );
+    run_kernel(
+        method, robust, &tm, x, y, d_opt, w_opt, &mut ym, 0, sorted, extrap,
+    );
 
     for i in 0..n {
         out[i] = (yp[i] - ym[i]) * inv;
@@ -365,27 +433,34 @@ fn is_sorted_slice(data: &[f64]) -> bool {
 /// `Error` produces NaN *here* because this is a per-point inline kernel with
 /// nowhere to report to; the refusal happens once, up front, in
 /// [`UniInterpolator::evaluate`]. Nothing reaches a caller with this NaN in it.
-fn extrap_value(
-    xi: f64,
-    x: &[f64],
-    y: &[f64],
-    n: usize,
-    left: bool,
-    extrap: ExtrapMode,
-) -> f64 {
+fn extrap_value(xi: f64, x: &[f64], y: &[f64], n: usize, left: bool, extrap: ExtrapMode) -> f64 {
     match extrap {
         ExtrapMode::Linear => {
             if left {
                 let dx = x[1] - x[0];
                 let dy = y[1] - y[0];
-                if dx != 0.0 { y[0] + dy * (xi - x[0]) / dx } else { y[0] }
+                if dx != 0.0 {
+                    y[0] + dy * (xi - x[0]) / dx
+                } else {
+                    y[0]
+                }
             } else {
                 let dx = x[n - 1] - x[n - 2];
                 let dy = y[n - 1] - y[n - 2];
-                if dx != 0.0 { y[n - 1] + dy * (xi - x[n - 1]) / dx } else { y[n - 1] }
+                if dx != 0.0 {
+                    y[n - 1] + dy * (xi - x[n - 1]) / dx
+                } else {
+                    y[n - 1]
+                }
             }
         }
-        ExtrapMode::Clamp => if left { y[0] } else { y[n - 1] },
+        ExtrapMode::Clamp => {
+            if left {
+                y[0]
+            } else {
+                y[n - 1]
+            }
+        }
         ExtrapMode::Error => f64::NAN,
     }
 }
@@ -437,7 +512,11 @@ fn eval_linear_general(
                 extrap_value(xi, x, y, n, false, extrap)
             } else {
                 let dx = x[n - 1] - x[n - 2];
-                if dx != 0.0 { (y[n - 1] - y[n - 2]) / dx } else { 0.0 }
+                if dx != 0.0 {
+                    (y[n - 1] - y[n - 2]) / dx
+                } else {
+                    0.0
+                }
             };
             continue;
         }
@@ -803,8 +882,8 @@ fn calc_pchip_slopes(x: &Array1<f64>, y_batch: &Array2<f64>) -> Array2<f64> {
                 if delta[k - 1] * delta[k] > 0.0 {
                     let w1 = 2.0 * h[k] + h[k - 1];
                     let w2 = h[k] + 2.0 * h[k - 1];
-                    d[k] = (w1 + w2) * delta[k - 1] * delta[k]
-                        / (w1 * delta[k] + w2 * delta[k - 1]);
+                    d[k] =
+                        (w1 + w2) * delta[k - 1] * delta[k] / (w1 * delta[k] + w2 * delta[k - 1]);
                 }
             }
             let end_deriv = |h0: f64, h1: f64, del0: f64, del1: f64| -> f64 {
@@ -936,7 +1015,10 @@ mod tests {
         // has said they do not want.
         let e = line("error").evaluate(&[1.0, 4.0], 0, None).unwrap_err();
         assert!(e.contains("extrap='error'"), "{e}");
-        assert!(e.contains("target point 1"), "the offender must be named: {e}");
+        assert!(
+            e.contains("target point 1"),
+            "the offender must be named: {e}"
+        );
         assert!(e.contains("[0, 3]"), "the valid range must be named: {e}");
         // Below the range too, not just above.
         assert!(line("error").evaluate(&[-0.5], 0, None).is_err());
@@ -976,6 +1058,10 @@ mod tests {
                 .unwrap()[[0, 0]]
         };
         assert!((mk("pchip") - 52.0).abs() < 1e-12, "pchip: {}", mk("pchip"));
-        assert!((mk("linear") - 46.0).abs() < 1e-12, "linear: {}", mk("linear"));
+        assert!(
+            (mk("linear") - 46.0).abs() < 1e-12,
+            "linear: {}",
+            mk("linear")
+        );
     }
 }

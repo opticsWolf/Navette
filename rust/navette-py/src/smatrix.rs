@@ -6,13 +6,19 @@
 //! the GIL while rayon-parallel kernels run, and return NumPy.
 
 use num_complex::{Complex64, ComplexFloat};
-use numpy::{PyArray, PyArray1, PyArray2, PyArrayDyn, PyArrayMethods, PyReadonlyArray1,
-            PyReadonlyArray2, PyReadonlyArrayDyn};
+use numpy::{
+    PyArray, PyArray1, PyArray2, PyArrayDyn, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2,
+    PyReadonlyArrayDyn,
+};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use navette::smatrix::coherent_block::*;
-use navette::smatrix::needle_engine::{NREQ_DFOD, NREQ_DGDD, NREQ_DGD, NREQ_DPHI, NREQ_DTOD, NREQ_P, NREQ_P_A, NREQ_P_AB, NREQ_P_MB, NREQ_P_MB_A, NREQ_P_MB_AB, NREQ_P_MB_RB, NREQ_P_MB_T, NREQ_P_MB_TB, NREQ_P_PHI, NREQ_P_RB, NREQ_P_T, NREQ_P_TB};
+use navette::smatrix::needle_engine::{
+    NREQ_DFOD, NREQ_DGD, NREQ_DGDD, NREQ_DPHI, NREQ_DTOD, NREQ_P, NREQ_P_A, NREQ_P_AB, NREQ_P_MB,
+    NREQ_P_MB_A, NREQ_P_MB_AB, NREQ_P_MB_RB, NREQ_P_MB_T, NREQ_P_MB_TB, NREQ_P_PHI, NREQ_P_RB,
+    NREQ_P_T, NREQ_P_TB,
+};
 use navette::smatrix::optics_core::*;
 use navette::smatrix::solver::NeedleDemands;
 
@@ -24,8 +30,14 @@ pub fn w_function(q: Complex64, rough_type: i32) -> PyResult<Complex64> {
 
 #[pyfunction]
 pub fn redheffer_product_complex_field(
-    r_a_front: Complex64, t_a_back: Complex64, t_a_fwd: Complex64, r_a_back: Complex64,
-    r_b_front: Complex64, t_b_back: Complex64, t_b_fwd: Complex64, r_b_back: Complex64,
+    r_a_front: Complex64,
+    t_a_back: Complex64,
+    t_a_fwd: Complex64,
+    r_a_back: Complex64,
+    r_b_front: Complex64,
+    t_b_back: Complex64,
+    t_b_fwd: Complex64,
+    r_b_back: Complex64,
 ) -> PyResult<(Complex64, Complex64, Complex64, Complex64)> {
     Ok(redheffer_product_complex_field_inner(
         r_a_front, t_a_back, t_a_fwd, r_a_back, r_b_front, t_b_back, t_b_fwd, r_b_back,
@@ -34,19 +46,35 @@ pub fn redheffer_product_complex_field(
 
 #[pyfunction]
 pub fn redheffer_product_real(
-    ra_rf: f64, ra_tb: f64, ra_tf: f64, ra_rb: f64,
-    rb_rf: f64, rb_tb: f64, rb_tf: f64, rb_rb: f64,
+    ra_rf: f64,
+    ra_tb: f64,
+    ra_tf: f64,
+    ra_rb: f64,
+    rb_rf: f64,
+    rb_tb: f64,
+    rb_tf: f64,
+    rb_rb: f64,
 ) -> PyResult<(f64, f64, f64, f64)> {
-    Ok(redheffer_product_real_inner(ra_rf, ra_tb, ra_tf, ra_rb, rb_rf, rb_tb, rb_tf, rb_rb))
+    Ok(redheffer_product_real_inner(
+        ra_rf, ra_tb, ra_tf, ra_rb, rb_rf, rb_tb, rb_tf, rb_rb,
+    ))
 }
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn redheffer_product_cross(
-    a_cf: Complex64, a_db: Complex64, a_df: Complex64, a_cb: Complex64,
-    b_cf: Complex64, b_db: Complex64, b_df: Complex64, b_cb: Complex64,
+    a_cf: Complex64,
+    a_db: Complex64,
+    a_df: Complex64,
+    a_cb: Complex64,
+    b_cf: Complex64,
+    b_db: Complex64,
+    b_df: Complex64,
+    b_cb: Complex64,
 ) -> PyResult<(Complex64, Complex64, Complex64, Complex64)> {
-    Ok(redheffer_product_cross_inner(a_cf, a_db, a_df, a_cb, b_cf, b_db, b_df, b_cb))
+    Ok(redheffer_product_cross_inner(
+        a_cf, a_db, a_df, a_cb, b_cf, b_db, b_df, b_cb,
+    ))
 }
 
 // ---- coherent_block wrapper (verbatim from core) ----
@@ -142,8 +170,10 @@ impl PySolver {
         coherence_mode: i32,
         angles_in_radians: bool,
     ) -> PyResult<Self> {
-        let opt_f = |o: &Option<PyReadonlyArray1<f64>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
-        let opt_i = |o: &Option<PyReadonlyArray1<i32>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
+        let opt_f =
+            |o: &Option<PyReadonlyArray1<f64>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
+        let opt_i =
+            |o: &Option<PyReadonlyArray1<i32>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
         let tf = opt_f(&thicknesses);
         let cf = opt_i(&incoherent_flags);
         let rt = opt_i(&roughness_types);
@@ -195,7 +225,15 @@ impl PySolver {
         wav_index: Option<usize>,
     ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
         self.inner
-            .landscape(real_range, imag_range, points_real, points_imag, pol, wavelength, wav_index)
+            .landscape(
+                real_range,
+                imag_range,
+                points_real,
+                points_imag,
+                pol,
+                wavelength,
+                wav_index,
+            )
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
@@ -231,8 +269,15 @@ impl PySolver {
     ) -> PyResult<Vec<Complex64>> {
         self.inner
             .find_eigenmodes(
-                real_range, imag_range, points.0, points.1, median_factor, refine, pol,
-                wavelength, wav_index,
+                real_range,
+                imag_range,
+                points.0,
+                points.1,
+                median_factor,
+                refine,
+                pol,
+                wavelength,
+                wav_index,
             )
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
@@ -305,9 +350,20 @@ impl PySolver {
             .transpose()
             .map_err(|e| -> pyo3::PyErr { e.into() })?;
         let (tr, wr, tt, wt, ta, wa, tp, wp, ttb, wtb, trb, wrb, tab, wab) = (
-            t(&targets_r), t(&weights_r), t(&targets_t), t(&weights_t), t(&targets_a),
-            t(&weights_a), t(&targets_phi), t(&weights_phi), t(&targets_tb),
-            t(&weights_tb), t(&targets_rb), t(&weights_rb), t(&targets_ab), t(&weights_ab),
+            t(&targets_r),
+            t(&weights_r),
+            t(&targets_t),
+            t(&weights_t),
+            t(&targets_a),
+            t(&weights_a),
+            t(&targets_phi),
+            t(&weights_phi),
+            t(&targets_tb),
+            t(&weights_tb),
+            t(&targets_rb),
+            t(&weights_rb),
+            t(&targets_ab),
+            t(&weights_ab),
         );
         // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
         let (gr, gt) = (t(&grads_r), t(&grads_t));
@@ -336,8 +392,17 @@ impl PySolver {
         let sol = py
             .detach(|| {
                 self.inner.needle_gradient(
-                    &npn, &zg, requested, inc.as_deref(), &demands,
-                    start_idx, end_idx, channel, calc_s, calc_p, hm.as_deref(),
+                    &npn,
+                    &zg,
+                    requested,
+                    inc.as_deref(),
+                    &demands,
+                    start_idx,
+                    end_idx,
+                    channel,
+                    calc_s,
+                    calc_p,
+                    hm.as_deref(),
                     gain_shift_phi,
                 )
             })
@@ -348,8 +413,8 @@ impl PySolver {
             out.set_item(k, PyArray::from_vec(py, b.clone()).reshape(shape)?)?;
         }
         Ok(out.into())
-    }}
-
+    }
+}
 
 // ---- view request masks + energy kernel (thin over solver) ----
 #[pyfunction]
@@ -560,9 +625,20 @@ pub fn needle_engine<'py>(
         .map_err(|e| -> pyo3::PyErr { e.into() })?;
     let t = |o: &Option<PyReadonlyArray1<f64>>| opt(o).unwrap();
     let (tr, wr, tt, wt, ta, wa, tp, wp, ttb, wtb, trb, wrb, tab, wab) = (
-        t(&targets_r), t(&weights_r), t(&targets_t), t(&weights_t), t(&targets_a),
-        t(&weights_a), t(&targets_phi), t(&weights_phi), t(&targets_tb),
-        t(&weights_tb), t(&targets_rb), t(&weights_rb), t(&targets_ab), t(&weights_ab),
+        t(&targets_r),
+        t(&weights_r),
+        t(&targets_t),
+        t(&weights_t),
+        t(&targets_a),
+        t(&weights_a),
+        t(&targets_phi),
+        t(&weights_phi),
+        t(&targets_tb),
+        t(&weights_tb),
+        t(&targets_rb),
+        t(&weights_rb),
+        t(&targets_ab),
+        t(&weights_ab),
     );
     // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
     let (gr, gt) = (t(&grads_r), t(&grads_t));
@@ -591,9 +667,25 @@ pub fn needle_engine<'py>(
     let sol = py
         .detach(|| {
             core_needle(
-                &wv, &st, n_layers as usize, &cache, &th, &rt, &rv, &npn, &zg,
-                requested, inc.as_deref(), &demands,
-                start_idx, end_idx, channel, calc_s, calc_p, hm.as_deref(), 0.0,
+                &wv,
+                &st,
+                n_layers as usize,
+                &cache,
+                &th,
+                &rt,
+                &rv,
+                &npn,
+                &zg,
+                requested,
+                inc.as_deref(),
+                &demands,
+                start_idx,
+                end_idx,
+                channel,
+                calc_s,
+                calc_p,
+                hm.as_deref(),
+                0.0,
             )
         })
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -633,12 +725,23 @@ pub fn scan_landscape(
     );
     let (real_vals, imag_vals, flat) = py.detach(|| {
         navette::smatrix::solver::scan_box(
-            &ns, &th, &rt, &rv, lam, pol, real_min, real_max, imag_min, imag_max,
-            points_real, points_imag,
+            &ns,
+            &th,
+            &rt,
+            &rv,
+            lam,
+            pol,
+            real_min,
+            real_max,
+            imag_min,
+            imag_max,
+            points_real,
+            points_imag,
         )
     });
-    let land_arr =
-        PyArray1::from_vec(py, flat).reshape([points_imag, points_real]).unwrap();
+    let land_arr = PyArray1::from_vec(py, flat)
+        .reshape([points_imag, points_real])
+        .unwrap();
     Ok((real_vals, imag_vals, land_arr.into()))
 }
 
@@ -658,7 +761,12 @@ pub fn find_local_minima(
     let (n_imag, n_real) = (land.shape()[0], land.shape()[1]);
     let flat: Vec<f64> = land.iter().copied().collect();
     navette::smatrix::solver::find_minima(
-        &flat, n_real, n_imag, &real_vals, &imag_vals, median_factor,
+        &flat,
+        n_real,
+        n_imag,
+        &real_vals,
+        &imag_vals,
+        median_factor,
     )
 }
 
@@ -738,17 +846,32 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(needle_engine, m)?)?;
     m.add_class::<crate::synthesis_merit::PySimCurves>()?;
     m.add_class::<crate::synthesis_merit::PyMeritSpec>()?;
-    m.add_function(wrap_pyfunction!(crate::synthesis_merit::build_needle_targets, m)?)?;
-    m.add_function(wrap_pyfunction!(crate::synthesis_merit::reference_rotation, m)?)?;
-    m.add_function(wrap_pyfunction!(crate::synthesis_merit::compile_merit_spec, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::synthesis_merit::build_needle_targets,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::synthesis_merit::reference_rotation,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::synthesis_merit::compile_merit_spec,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(crate::synthesis_merit::rotate_rows, m)?)?;
     m.add_function(wrap_pyfunction!(crate::synthesis_pipeline::run_design, m)?)?;
-    m.add_function(wrap_pyfunction!(crate::synthesis_pipeline::assemble_design, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::synthesis_pipeline::assemble_design,
+        m
+    )?)?;
     m.add_class::<crate::synthesis_pipeline::PyLayerSpec>()?;
     m.add_class::<crate::synthesis_pipeline::PyDesignStack>()?;
     m.add_class::<crate::synthesis_pipeline::PySmatrixContext>()?;
     m.add_class::<crate::synthesis_pipeline::PyLmConfig>()?;
-    m.add_function(wrap_pyfunction!(crate::synthesis_pipeline::available_optimizers, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::synthesis_pipeline::available_optimizers,
+        m
+    )?)?;
     m.add_class::<crate::synthesis_pipeline::PyPipelineConfig>()?;
     m.add_class::<crate::synthesis_pipeline::PyNeedleCycleConfig>()?;
     m.add_class::<crate::synthesis_pipeline::PyNeedlePipeline>()?;

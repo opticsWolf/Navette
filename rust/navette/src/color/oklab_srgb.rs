@@ -10,9 +10,7 @@
 //! `oklab_xyz::xyz_to_oklab` / `oklab_to_xyz`.
 
 use crate::color::common::{clip01, gamma_srgb, inverse_gamma_srgb, mat3_mul_vec, signed_pow};
-use crate::color::matrices::{
-    M1_OKLAB_SRGB, M1_OKLAB_SRGB_INV, M2_OKLAB_SRGB, M2_OKLAB_SRGB_INV,
-};
+use crate::color::matrices::{M1_OKLAB_SRGB, M1_OKLAB_SRGB_INV, M2_OKLAB_SRGB, M2_OKLAB_SRGB_INV};
 
 /// Convert sRGB (gamma‑encoded, [0,1]) to Oklab.
 ///
@@ -104,11 +102,11 @@ mod tests {
     fn round_trip_in_gamut() {
         // Test a set of in‑gamut sRGB colours
         let rgb_in = [
-            [0.0, 0.0, 0.0],     // black
-            [1.0, 1.0, 1.0],     // white
-            [0.5, 0.5, 0.5],     // grey
-            [0.2, 0.6, 0.9],     // some blueish colour
-            [0.9, 0.1, 0.3],     // reddish
+            [0.0, 0.0, 0.0], // black
+            [1.0, 1.0, 1.0], // white
+            [0.5, 0.5, 0.5], // grey
+            [0.2, 0.6, 0.9], // some blueish colour
+            [0.9, 0.1, 0.3], // reddish
         ];
         let mut oklab = [[0.0; 3]; 5];
         let mut rgb_out = [[0.0; 3]; 5];

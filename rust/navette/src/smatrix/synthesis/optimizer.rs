@@ -30,7 +30,7 @@
 //! to a different solver.
 
 use super::thick_opt::{
-    levenberg_marquardt_with, JacobianSource, LmConfig, LmResult, LmTermination,
+    JacobianSource, LmConfig, LmResult, LmTermination, levenberg_marquardt_with,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ impl OptimizerBackend {
             OptimizerBackend::Trf => true,
             OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
                 cfg!(feature = "opt-argmin")
-            },
+            }
         }
     }
 
@@ -151,7 +151,7 @@ impl OptimizerBackend {
             OptimizerBackend::Trf => None,
             OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
                 Some("opt-argmin")
-            },
+            }
         }
     }
 
@@ -185,7 +185,11 @@ pub const ALL_BACKENDS: [OptimizerBackend; 5] = [
 
 /// The names this build can actually run. `["builtin"]` on a standard build.
 pub fn available_backends() -> Vec<&'static str> {
-    ALL_BACKENDS.iter().filter(|b| b.is_available()).map(|b| b.as_str()).collect()
+    ALL_BACKENDS
+        .iter()
+        .filter(|b| b.is_available())
+        .map(|b| b.as_str())
+        .collect()
 }
 
 /// What every backend returns.
@@ -381,13 +385,11 @@ where
         OptimizerBackend::BuiltinLm => {
             levenberg_marquardt_with(residuals, jacobian, x0, lb, ub, cfg)
                 .map(|r| OptimizerResult::from_lm(r, backend))
-        },
-        OptimizerBackend::Trf => {
-            crate::smatrix::synthesis::trf::trust_region_reflective(
-                residuals, jacobian, x0, lb, ub, cfg,
-            )
-            .map(|r| OptimizerResult::from_lm(r, backend))
-        },
+        }
+        OptimizerBackend::Trf => crate::smatrix::synthesis::trf::trust_region_reflective(
+            residuals, jacobian, x0, lb, ub, cfg,
+        )
+        .map(|r| OptimizerResult::from_lm(r, backend)),
         OptimizerBackend::MinpackLm => {
             #[cfg(feature = "opt-minpack-lm")]
             {
@@ -398,7 +400,7 @@ where
                 let _ = (residuals, jacobian, x0, lb, ub);
                 Err(backend.unavailable())
             }
-        },
+        }
         OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
             #[cfg(feature = "opt-argmin")]
             {
@@ -409,7 +411,7 @@ where
                 let _ = (residuals, jacobian, x0, lb, ub);
                 Err(backend.unavailable())
             }
-        },
+        }
     }
 }
 
@@ -483,7 +485,7 @@ mod minpack {
                 Some(Err(e)) => {
                     self.fail(e);
                     return None;
-                },
+                }
                 Some(Ok(Some(m))) => (m, true),
                 // No source, or a source that declined: difference it here.
                 // The crate never differences on its own — its
@@ -493,11 +495,11 @@ mod minpack {
                         let (r, j, a) = self.counts.get();
                         self.counts.set((r + added, j, a));
                         (jac.len() / n, false)
-                    },
+                    }
                     Err(e) => {
                         self.fail(e);
                         return None;
-                    },
+                    }
                 },
             };
 
@@ -519,13 +521,13 @@ mod minpack {
             TerminationReason::Converged { .. } => Ok(LmTermination::Cost),
             TerminationReason::LostPatience => Ok(LmTermination::MaxIterations),
             TerminationReason::NoImprovementPossible(_) => Ok(LmTermination::Stalled),
-            TerminationReason::User(w) => Err(format!("minpack_lm: problem reported failure ({w})")),
-            TerminationReason::Numerical(w) => {
-                Err(format!("minpack_lm: non-finite value in {w}"))
-            },
+            TerminationReason::User(w) => {
+                Err(format!("minpack_lm: problem reported failure ({w})"))
+            }
+            TerminationReason::Numerical(w) => Err(format!("minpack_lm: non-finite value in {w}")),
             TerminationReason::WrongDimensions(w) => {
                 Err(format!("minpack_lm: inconsistent problem shape ({w})"))
-            },
+            }
             TerminationReason::NoParameters => Err("minpack_lm: empty parameter vector".into()),
             TerminationReason::NoResiduals => Err("minpack_lm: empty residual vector".into()),
         }
@@ -556,9 +558,13 @@ mod minpack {
         // nothing at all, since differences taken in `u` need no correction.
         let map = IntervalMap::new(lb, ub)?;
         let u0 = map.to_unbounded(x0);
-        let mapped_r =
-            |u: &[f64], out: &mut Vec<f64>| -> Result<(), String> { residuals(&map.to_bounded(u), out) };
-        let mapped_j = jacobian.map(|j| MappedJacobian { inner: j, map: &map });
+        let mapped_r = |u: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+            residuals(&map.to_bounded(u), out)
+        };
+        let mapped_j = jacobian.map(|j| MappedJacobian {
+            inner: j,
+            map: &map,
+        });
 
         let problem = Problem {
             residuals: &mapped_r,
@@ -605,8 +611,8 @@ mod argmin_backends {
     use super::super::thick_opt::build_jacobian;
     use super::*;
     use argmin::core::{
-        CostFunction, Error as ArgminError, Executor, Gradient, Hessian, Jacobian as ArgminJacobian,
-        Operator, State, TerminationReason, TerminationStatus,
+        CostFunction, Error as ArgminError, Executor, Gradient, Hessian,
+        Jacobian as ArgminJacobian, Operator, State, TerminationReason, TerminationStatus,
     };
     use argmin::solver::gaussnewton::GaussNewton;
     use argmin::solver::trustregion::{Steihaug, TrustRegion};
@@ -647,12 +653,12 @@ mod argmin_backends {
                 Some(Err(e)) => return Err(ArgminError::msg(e)),
                 Some(Ok(Some(m))) => (m, true),
                 _ => {
-                    let added =
-                        build_jacobian(&self.residuals, x.as_slice(), &mut jac).map_err(ArgminError::msg)?;
+                    let added = build_jacobian(&self.residuals, x.as_slice(), &mut jac)
+                        .map_err(ArgminError::msg)?;
                     let (r, j, a) = self.counts.get();
                     self.counts.set((r + added, j, a));
                     (jac.len() / n, false)
-                },
+                }
             };
             let (r, j, a) = self.counts.get();
             self.counts.set((r, j + 1, a + usize::from(analytic)));
@@ -735,12 +741,10 @@ mod argmin_backends {
             TerminationReason::TargetCostReached => Ok(LmTermination::Cost),
             TerminationReason::MaxItersReached => Ok(LmTermination::MaxIterations),
             TerminationReason::Timeout => Ok(LmTermination::MaxIterations),
-            TerminationReason::Interrupt => {
-                Err(format!("{}: interrupted", backend.as_str()))
-            },
+            TerminationReason::Interrupt => Err(format!("{}: interrupted", backend.as_str())),
             TerminationReason::SolverExit(w) => {
                 Err(format!("{}: solver stopped ({w})", backend.as_str()))
-            },
+            }
         }
     }
 
@@ -800,7 +804,10 @@ mod argmin_backends {
         let mapped_r = |u: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
             residuals(&map.to_bounded(u), out)
         };
-        let mapped_j = jacobian.map(|j| MappedJacobian { inner: j, map: &map });
+        let mapped_j = jacobian.map(|j| MappedJacobian {
+            inner: j,
+            map: &map,
+        });
 
         let problem = Problem {
             residuals: &mapped_r,
@@ -827,15 +834,24 @@ mod argmin_backends {
                 // Gauss-Newton's state cost is ‖r‖, not ½‖r‖²; square it to
                 // reach Navette's ‖r‖².
                 let c = st.get_best_cost();
-                let counts = out.problem.problem.map(|p| p.counts.get()).unwrap_or_default();
-                (best, c * c, st.get_iter() as usize, st.get_termination_status().clone(), counts)
-            },
+                let counts = out
+                    .problem
+                    .problem
+                    .map(|p| p.counts.get())
+                    .unwrap_or_default();
+                (
+                    best,
+                    c * c,
+                    st.get_iter() as usize,
+                    st.get_termination_status().clone(),
+                    counts,
+                )
+            }
             OptimizerBackend::ArgminTrustRegion => {
                 // Steihaug's iteration cap is the subproblem's, not the
                 // solver's: it is the CG budget for one step. `n` is the
                 // dimension, and exact CG terminates in at most `n` steps.
-                let sub: Steihaug<DVector<f64>, f64> =
-                    Steihaug::new().with_max_iters(n as u64);
+                let sub: Steihaug<DVector<f64>, f64> = Steihaug::new().with_max_iters(n as u64);
                 let solver = TrustRegion::new(sub);
                 let out = Executor::new(problem, solver)
                     .configure(|st| st.param(start).max_iters(max_iters))
@@ -848,9 +864,19 @@ mod argmin_backends {
                     .clone();
                 // This one's cost *is* ½‖r‖² (see `CostFunction` above).
                 let c = st.get_best_cost();
-                let counts = out.problem.problem.map(|p| p.counts.get()).unwrap_or_default();
-                (best, 2.0 * c, st.get_iter() as usize, st.get_termination_status().clone(), counts)
-            },
+                let counts = out
+                    .problem
+                    .problem
+                    .map(|p| p.counts.get())
+                    .unwrap_or_default();
+                (
+                    best,
+                    2.0 * c,
+                    st.get_iter() as usize,
+                    st.get_termination_status().clone(),
+                    counts,
+                )
+            }
             _ => return Err(format!("{name}: not an argmin backend")),
         };
 
@@ -878,7 +904,7 @@ mod argmin_backends {
 
 #[cfg(test)]
 mod tests {
-    use super::super::thick_opt::{build_jacobian, NoJacobian};
+    use super::super::thick_opt::{NoJacobian, build_jacobian};
     use super::*;
 
     /// r_i(x) = a_i·x_0 + b_i·x_1 − y_i — an exactly linear least-squares
@@ -940,17 +966,29 @@ mod tests {
         let av = available_backends();
         assert!(av.contains(&"builtin"));
         for name in &av {
-            assert!(OptimizerBackend::parse(name).unwrap().is_available(), "{name}");
+            assert!(
+                OptimizerBackend::parse(name).unwrap().is_available(),
+                "{name}"
+            );
         }
         assert_eq!(av.contains(&"minpack_lm"), cfg!(feature = "opt-minpack-lm"));
-        assert_eq!(av.contains(&"argmin_gauss_newton"), cfg!(feature = "opt-argmin"));
-        assert_eq!(av.contains(&"argmin_trust_region"), cfg!(feature = "opt-argmin"));
+        assert_eq!(
+            av.contains(&"argmin_gauss_newton"),
+            cfg!(feature = "opt-argmin")
+        );
+        assert_eq!(
+            av.contains(&"argmin_trust_region"),
+            cfg!(feature = "opt-argmin")
+        );
     }
 
     #[test]
     fn an_unknown_backend_name_lists_the_known_ones() {
         let e = OptimizerBackend::parse("scipy").unwrap_err();
-        assert!(e.contains("builtin") && e.contains("minpack_lm"), "got: {e}");
+        assert!(
+            e.contains("builtin") && e.contains("minpack_lm"),
+            "got: {e}"
+        );
     }
 
     #[test]
@@ -963,7 +1001,10 @@ mod tests {
         // And on a build without it, the dispatcher refuses rather than
         // quietly handing the problem to the built-in.
         if !b.is_available() {
-            let cfg = LmConfig { backend: b, ..Default::default() };
+            let cfg = LmConfig {
+                backend: b,
+                ..Default::default()
+            };
             let err = run_optimizer(
                 &linear,
                 None::<&NoJacobian>,
@@ -1022,7 +1063,10 @@ mod tests {
                 um[k] = u - h;
                 let fd = (map.to_bounded(&up)[k] - map.to_bounded(&um)[k]) / (2.0 * h);
                 let an = map.slope(k, u);
-                assert!((fd - an).abs() < 1e-6 * an.abs().max(1e-3), "k={k} u={u}: {fd} vs {an}");
+                assert!(
+                    (fd - an).abs() < 1e-6 * an.abs().max(1e-3),
+                    "k={k} u={u}: {fd} vs {an}"
+                );
             }
         }
     }
@@ -1044,7 +1088,10 @@ mod tests {
     #[test]
     fn the_mapped_jacobian_is_the_chain_rule() {
         let map = IntervalMap::new(&[-4.0, -4.0], &[4.0, 4.0]).unwrap();
-        let mapped = MappedJacobian { inner: &LinearJac, map: &map };
+        let mapped = MappedJacobian {
+            inner: &LinearJac,
+            map: &map,
+        };
         let u = [0.4, -0.9];
         let mut jac = Vec::new();
         let m = mapped.fill(&u, &mut jac).unwrap().unwrap();
@@ -1069,7 +1116,8 @@ mod tests {
         let x0 = [0.0, 0.0];
         let lb = [-5.0, -5.0];
         let ub = [5.0, 5.0];
-        let direct = levenberg_marquardt_with(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg).unwrap();
+        let direct =
+            levenberg_marquardt_with(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg).unwrap();
         let via = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg).unwrap();
         assert_eq!(via.backend, OptimizerBackend::BuiltinLm);
         assert_eq!(via.x, direct.x);
@@ -1083,7 +1131,10 @@ mod tests {
         use super::*;
 
         fn cfg() -> LmConfig {
-            LmConfig { backend: OptimizerBackend::MinpackLm, ..Default::default() }
+            LmConfig {
+                backend: OptimizerBackend::MinpackLm,
+                ..Default::default()
+            }
         }
 
         #[test]
@@ -1091,14 +1142,25 @@ mod tests {
             let x0 = [0.0, 0.0];
             let lb = [-5.0, -5.0];
             let ub = [5.0, 5.0];
-            let a = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &LmConfig::default())
-                .unwrap();
+            let a = run_optimizer(
+                &linear,
+                Some(&LinearJac),
+                &x0,
+                &lb,
+                &ub,
+                &LmConfig::default(),
+            )
+            .unwrap();
             let b = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg()).unwrap();
             assert_eq!(b.backend, OptimizerBackend::MinpackLm);
             for (p, q) in a.x.iter().zip(b.x.iter()) {
                 assert!((p - q).abs() < 1e-7, "{a:?} vs {b:?}");
             }
-            assert!((b.x[0] - 1.0).abs() < 1e-7 && (b.x[1] + 2.0).abs() < 1e-7, "{:?}", b.x);
+            assert!(
+                (b.x[0] - 1.0).abs() < 1e-7 && (b.x[1] + 2.0).abs() < 1e-7,
+                "{:?}",
+                b.x
+            );
             assert!(b.cost < 1e-18, "cost {}", b.cost);
         }
 
@@ -1124,11 +1186,21 @@ mod tests {
             // "arbitrarily close to the bound", never past it.
             let lb = [1.5, -1.0];
             let ub = [4.0, 3.0];
-            let r = run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg()).unwrap();
+            let r =
+                run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg()).unwrap();
             for (k, &v) in r.x.iter().enumerate() {
-                assert!(v > lb[k] && v < ub[k], "x[{k}]={v} left [{}, {}]", lb[k], ub[k]);
+                assert!(
+                    v > lb[k] && v < ub[k],
+                    "x[{k}]={v} left [{}, {}]",
+                    lb[k],
+                    ub[k]
+                );
             }
-            assert!((r.x[0] - 1.5).abs() < 1e-3, "expected the bound, got {}", r.x[0]);
+            assert!(
+                (r.x[0] - 1.5).abs() < 1e-3,
+                "expected the bound, got {}",
+                r.x[0]
+            );
         }
 
         #[test]
@@ -1152,7 +1224,8 @@ mod tests {
                 out.push(4.0);
                 Ok(())
             };
-            let r = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg()).unwrap();
+            let r =
+                run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg()).unwrap();
             assert!((r.cost - 25.0).abs() < 1e-9, "cost {}", r.cost);
         }
     }
@@ -1162,11 +1235,16 @@ mod tests {
         use super::*;
 
         fn cfg(b: OptimizerBackend) -> LmConfig {
-            LmConfig { backend: b, ..Default::default() }
+            LmConfig {
+                backend: b,
+                ..Default::default()
+            }
         }
 
-        const BOTH: [OptimizerBackend; 2] =
-            [OptimizerBackend::ArgminGaussNewton, OptimizerBackend::ArgminTrustRegion];
+        const BOTH: [OptimizerBackend; 2] = [
+            OptimizerBackend::ArgminGaussNewton,
+            OptimizerBackend::ArgminTrustRegion,
+        ];
 
         #[test]
         fn both_find_the_interior_optimum_the_builtin_finds() {
@@ -1180,8 +1258,12 @@ mod tests {
             for b in BOTH {
                 let r = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
                 assert_eq!(r.backend, b);
-                assert!((r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] + 2.0).abs() < 1e-6,
-                    "{}: {:?}", b.as_str(), r.x);
+                assert!(
+                    (r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] + 2.0).abs() < 1e-6,
+                    "{}: {:?}",
+                    b.as_str(),
+                    r.x
+                );
                 assert!(r.cost < 1e-12, "{}: cost {}", b.as_str(), r.cost);
             }
         }
@@ -1194,12 +1276,21 @@ mod tests {
             let lb = [1.5, -1.0];
             let ub = [4.0, 3.0];
             let b = OptimizerBackend::ArgminTrustRegion;
-            let r = run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg(b))
-                .unwrap();
+            let r =
+                run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg(b)).unwrap();
             for (k, &v) in r.x.iter().enumerate() {
-                assert!(v > lb[k] && v < ub[k], "x[{k}]={v} left [{}, {}]", lb[k], ub[k]);
+                assert!(
+                    v > lb[k] && v < ub[k],
+                    "x[{k}]={v} left [{}, {}]",
+                    lb[k],
+                    ub[k]
+                );
             }
-            assert!((r.x[0] - 1.5).abs() < 1e-2, "expected the bound, got {}", r.x[0]);
+            assert!(
+                (r.x[0] - 1.5).abs() < 1e-2,
+                "expected the bound, got {}",
+                r.x[0]
+            );
             for b in BOTH {
                 assert!(!b.bounds_are_native());
             }
@@ -1213,12 +1304,21 @@ mod tests {
             // undefined. That is the algorithm, not a bug in the adapter --
             // but the message has to say so, or the user reads "non-invertible
             // matrix" and goes looking for a broken stack.
-            let e = run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &[1.5, -1.0],
-                &[4.0, 3.0], &cfg(OptimizerBackend::ArgminGaussNewton))
-                .unwrap_err();
+            let e = run_optimizer(
+                &linear,
+                Some(&LinearJac),
+                &[2.0, 0.0],
+                &[1.5, -1.0],
+                &[4.0, 3.0],
+                &cfg(OptimizerBackend::ArgminGaussNewton),
+            )
+            .unwrap_err();
             assert!(e.contains("singular"), "got: {e}");
             assert!(e.contains("undamped"), "got: {e}");
-            assert!(e.contains("trf"), "the message must name a backend that copes: {e}");
+            assert!(
+                e.contains("trf"),
+                "the message must name a backend that copes: {e}"
+            );
         }
 
         #[test]
@@ -1232,15 +1332,26 @@ mod tests {
                 out.push(4.0);
                 Ok(())
             };
-            let e = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0],
-                &cfg(OptimizerBackend::ArgminGaussNewton))
-                .unwrap_err();
+            let e = run_optimizer(
+                &flat,
+                None::<&NoJacobian>,
+                &[0.5],
+                &[0.0],
+                &[1.0],
+                &cfg(OptimizerBackend::ArgminGaussNewton),
+            )
+            .unwrap_err();
             assert!(e.contains("singular"), "got: {e}");
             // The damped backends do not blink at it.
             for b in [OptimizerBackend::BuiltinLm, OptimizerBackend::Trf] {
                 let r = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg(b))
                     .unwrap();
-                assert!((r.cost - 25.0).abs() < 1e-9, "{}: cost {}", b.as_str(), r.cost);
+                assert!(
+                    (r.cost - 25.0).abs() < 1e-9,
+                    "{}: cost {}",
+                    b.as_str(),
+                    r.cost
+                );
             }
         }
 
@@ -1258,11 +1369,22 @@ mod tests {
                 Ok(())
             };
             for b in BOTH {
-                let r = run_optimizer(&offset, None::<&NoJacobian>, &[0.5], &[-5.0], &[5.0],
-                    &cfg(b))
-                    .unwrap();
+                let r = run_optimizer(
+                    &offset,
+                    None::<&NoJacobian>,
+                    &[0.5],
+                    &[-5.0],
+                    &[5.0],
+                    &cfg(b),
+                )
+                .unwrap();
                 assert!((r.x[0] - 1.0).abs() < 1e-5, "{}: x {:?}", b.as_str(), r.x);
-                assert!((r.cost - 9.0).abs() < 1e-8, "{}: cost {}", b.as_str(), r.cost);
+                assert!(
+                    (r.cost - 9.0).abs() < 1e-8,
+                    "{}: cost {}",
+                    b.as_str(),
+                    r.cost
+                );
             }
         }
 
@@ -1291,7 +1413,13 @@ mod tests {
                 assert_eq!(fd.analytic_jacobians, 0, "{}", b.as_str());
                 // Differencing costs 2n evaluations per Jacobian; the analytic
                 // source costs none.
-                assert!(fd.evals > an.evals, "{}: {} vs {}", b.as_str(), fd.evals, an.evals);
+                assert!(
+                    fd.evals > an.evals,
+                    "{}: {} vs {}",
+                    b.as_str(),
+                    fd.evals,
+                    an.evals
+                );
             }
         }
 
@@ -1312,8 +1440,15 @@ mod tests {
                 max_iterations: 7,
                 ..cfg(OptimizerBackend::ArgminTrustRegion)
             };
-            let r = run_optimizer(&linear, Some(&LinearJac), &[0.0, 0.0], &[-5.0, -5.0],
-                &[5.0, 5.0], &cfg).unwrap();
+            let r = run_optimizer(
+                &linear,
+                Some(&LinearJac),
+                &[0.0, 0.0],
+                &[-5.0, -5.0],
+                &[5.0, 5.0],
+                &cfg,
+            )
+            .unwrap();
             assert_eq!(r.termination, LmTermination::MaxIterations);
             assert_eq!(r.iterations, 7);
             // And it still got the right answer on the way.
@@ -1329,8 +1464,15 @@ mod tests {
                 max_iterations: 500,
                 ..cfg(OptimizerBackend::ArgminGaussNewton)
             };
-            let r = run_optimizer(&linear, Some(&LinearJac), &[0.0, 0.0], &[-5.0, -5.0],
-                &[5.0, 5.0], &cfg).unwrap();
+            let r = run_optimizer(
+                &linear,
+                Some(&LinearJac),
+                &[0.0, 0.0],
+                &[-5.0, -5.0],
+                &[5.0, 5.0],
+                &cfg,
+            )
+            .unwrap();
             assert_eq!(r.termination, LmTermination::Cost);
             assert!(r.iterations < 20, "took {} iterations", r.iterations);
         }

@@ -18,9 +18,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
-use crate::smatrix::synthesis::needle_pass::{
-    build_scan_sites, run_needle_pass, NeedlePassInput,
-};
+use crate::smatrix::synthesis::needle_pass::{NeedlePassInput, build_scan_sites, run_needle_pass};
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{DesignStack, LayerSpec};
 
@@ -271,8 +269,8 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 mod tests {
     use super::*;
     // Only the tests build NeedleTargets by hand; the pass returns them.
-    use crate::smatrix::synthesis::needle_pass::NeedleTargets;
     use crate::smatrix::synthesis::merit::{MeritSpec, SimCurves};
+    use crate::smatrix::synthesis::needle_pass::NeedleTargets;
     use std::sync::Arc;
 
     /// Frozen context: merit constant, optimization a no-op (keeps the
@@ -377,8 +375,7 @@ mod tests {
         substrate.needle = false;
         let mut host = LayerSpec::constant("G", 1.52, 0.0, 200.0, nw);
         host.needle = false; // contrast entry exists, host flag refuses
-        let mut stack =
-            DesignStack::with_films(ambient, substrate, vec![host]).unwrap();
+        let mut stack = DesignStack::with_films(ambient, substrate, vec![host]).unwrap();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("t", 2.0));
         let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
@@ -395,14 +392,8 @@ mod tests {
         let (mut stack, r0) = glass_stack();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("r", r0));
-        let hist = run_needle_cycles(
-            &mut ctx,
-            &mut stack,
-            &spectral,
-            &contrast_h(),
-            &cycle_cfg(),
-        )
-        .unwrap();
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
+            .unwrap();
         assert_eq!(hist.len(), 1);
         assert!(hist[0].insertion.is_none());
         assert!(hist[0].best_p.map(|p| p > -1e-9).unwrap_or(true));
@@ -422,7 +413,10 @@ mod tests {
         use crate::smatrix::synthesis::thick_opt::LmConfig;
 
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: crate::smatrix::synthesis::merit::CurveId::Rs });
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: crate::smatrix::synthesis::merit::CurveId::Rs,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![1000.0].into(),
@@ -449,14 +443,8 @@ mod tests {
         };
         let spectral = SpectralInputs::from_spec(&spec, &[0.0], &[1000.0]).unwrap();
         let (mut stack, _) = glass_stack();
-        let hist = run_needle_cycles(
-            &mut ctx,
-            &mut stack,
-            &spectral,
-            &contrast_h(),
-            &cycle_cfg(),
-        )
-        .unwrap();
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
+            .unwrap();
         assert!(hist.iter().all(|h| h.insertion.is_none()));
         assert_eq!(stack.films().len(), 1);
     }
@@ -469,14 +457,8 @@ mod tests {
         let (mut stack, _) = glass_stack();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("t", 0.0));
-        let hist = run_needle_cycles(
-            &mut ctx,
-            &mut stack,
-            &spectral,
-            &contrast_h(),
-            &cycle_cfg(),
-        )
-        .unwrap();
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
+            .unwrap();
         // max_needles = 2 and T stays violated → two insertions
         // (1 → 3 → 5 films), both H into the original host lineage.
         assert_eq!(hist.len(), 2);

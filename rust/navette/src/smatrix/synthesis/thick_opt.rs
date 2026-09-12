@@ -321,15 +321,19 @@ where
                 if rows != m || jac.len() != m * n {
                     return Err(format!(
                         "levenberg_marquardt: analytic jacobian is {rows}×{} where the                          residual vector is {m} long",
-                        if rows == 0 { 0 } else { jac.len() / rows.max(1) }
+                        if rows == 0 {
+                            0
+                        } else {
+                            jac.len() / rows.max(1)
+                        }
                     ));
                 }
                 analytic_jacobians += 1;
-            },
+            }
             None => {
                 build_jacobian(residuals, &x, &mut jac)
                     .map(|added| evals.set(evals.get() + added))?;
-            },
+            }
         }
 
         // ---- g = Jᵀr and the column norms, in one pass ----
@@ -355,9 +359,7 @@ where
             termination = Some(LmTermination::Gradient);
             break;
         }
-        if cfg.gtol_scale_invariant
-            && gradient_cosine(&jtr, &col_sq, cost.sqrt()) <= cfg.gtol
-        {
+        if cfg.gtol_scale_invariant && gradient_cosine(&jtr, &col_sq, cost.sqrt()) <= cfg.gtol {
             termination = Some(LmTermination::Gradient);
             break;
         }
@@ -443,14 +445,18 @@ where
                 cost = new_cost;
                 accepted = true;
 
-                gain_ratio = if predicted > 0.0 { actual / predicted } else { f64::NAN };
+                gain_ratio = if predicted > 0.0 {
+                    actual / predicted
+                } else {
+                    f64::NAN
+                };
 
                 match cfg.damping {
                     LmDamping::GainRatio if predicted > 0.0 => {
                         let rho = gain_ratio;
                         lambda *= (1.0 - (2.0 * rho - 1.0).powi(3)).max(1.0 / 3.0);
                         nu = 2.0;
-                    },
+                    }
                     // A non-positive prediction means the linear model did not
                     // expect this step to help, yet the cost fell: the model is
                     // stale rather than over-confident, so shrink λ the plain
@@ -468,7 +474,7 @@ where
                 LmDamping::GainRatio => {
                     lambda *= nu;
                     nu *= 2.0;
-                },
+                }
                 LmDamping::Fixed => lambda *= cfg.lambda_up,
             }
             if lambda > 1e18 {
@@ -555,7 +561,11 @@ fn gradient_cosine(jtr: &[f64], col_sq: &[f64], r_norm: f64) -> f64 {
     }
     jtr.iter().zip(col_sq).fold(0.0f64, |acc, (&g, &cs)| {
         let cn = cs.sqrt();
-        if cn > 0.0 { acc.max(g.abs() / (cn * r_norm)) } else { acc }
+        if cn > 0.0 {
+            acc.max(g.abs() / (cn * r_norm))
+        } else {
+            acc
+        }
     })
 }
 
@@ -860,9 +870,10 @@ fn gauss_solve(a: &[f64], b: &[f64], out: &mut [f64]) -> Result<(), String> {
 
     for col in 0..n {
         // Partial pivot.
-        let (piv, _) = (col..n)
-            .map(|r| (r, m[r * (n + 1) + col].abs()))
-            .fold((col, 0.0f64), |(br, bv), (r, v)| if v > bv { (r, v) } else { (br, bv) });
+        let (piv, _) = (col..n).map(|r| (r, m[r * (n + 1) + col].abs())).fold(
+            (col, 0.0f64),
+            |(br, bv), (r, v)| if v > bv { (r, v) } else { (br, bv) },
+        );
         if m[piv * (n + 1) + col].abs() < 1e-300 {
             return Err("singular normal-equation system".into());
         }
@@ -934,8 +945,14 @@ mod tests {
             }
             Ok(())
         };
-        let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-100., -100.], &[100., 100.], &cfg_precise())
-            .unwrap();
+        let res = levenberg_marquardt(
+            &f,
+            &[0.0, 0.0],
+            &[-100., -100.],
+            &[100., 100.],
+            &cfg_precise(),
+        )
+        .unwrap();
         assert!((res.x[0] - 2.0).abs() < 1e-8, "slope {:?}", res.x);
         assert!((res.x[1] + 1.0).abs() < 1e-8, "intercept {:?}", res.x);
         assert!(res.cost < 1e-18, "cost {}", res.cost);
@@ -968,14 +985,12 @@ mod tests {
             out.push(x[0] - 5.0);
             Ok(())
         };
-        let res =
-            levenberg_marquardt(&f, &[0.0], &[-10.0], &[3.0], &cfg_fast()).unwrap();
+        let res = levenberg_marquardt(&f, &[0.0], &[-10.0], &[3.0], &cfg_fast()).unwrap();
         assert!((res.x[0] - 3.0).abs() < 1e-9, "x {:?}", res.x);
         assert!((res.cost - 4.0).abs() < 1e-9);
 
         // Mirror case at lower bound.
-        let res_lo =
-            levenberg_marquardt(&f, &[8.0], &[7.0], &[20.0], &cfg_fast()).unwrap();
+        let res_lo = levenberg_marquardt(&f, &[8.0], &[7.0], &[20.0], &cfg_fast()).unwrap();
         assert!((res_lo.x[0] - 7.0).abs() < 1e-9);
     }
 
@@ -988,14 +1003,8 @@ mod tests {
             out.push(x[1] - 3.0);
             Ok(())
         };
-        let res = levenberg_marquardt(
-            &f,
-            &[10.0, 10.0],
-            &[2.5, 3.5],
-            &[100.0, 100.0],
-            &cfg_fast(),
-        )
-        .unwrap();
+        let res = levenberg_marquardt(&f, &[10.0, 10.0], &[2.5, 3.5], &[100.0, 100.0], &cfg_fast())
+            .unwrap();
         assert!((res.x[0] - 2.5).abs() < 1e-9, "x {:?}", res.x);
         assert!((res.x[1] - 3.5).abs() < 1e-9, "y {:?}", res.x);
         assert!((res.cost - 0.5).abs() < 1e-9);
@@ -1011,14 +1020,8 @@ mod tests {
             out.push(x[1]);
             Ok(())
         };
-        let res = levenberg_marquardt(
-            &f,
-            &[5.0, 0.0],
-            &[-50.0, -50.0],
-            &[50.0, 2.0],
-            &cfg_fast(),
-        )
-        .unwrap();
+        let res = levenberg_marquardt(&f, &[5.0, 0.0], &[-50.0, -50.0], &[50.0, 2.0], &cfg_fast())
+            .unwrap();
         assert!((res.x[0] - 1.0).abs() < 1e-9);
         assert!((res.x[1]).abs() < 1e-9); // interior: bound irrelevant
     }
@@ -1079,14 +1082,7 @@ mod tests {
             Ok(())
         };
         assert!(levenberg_marquardt(&f, &[], &[], &[], &LmConfig::default()).is_err());
-        assert!(levenberg_marquardt(
-            &f,
-            &[0.0],
-            &[1.0],
-            &[-1.0],
-            &LmConfig::default()
-        )
-        .is_err());
+        assert!(levenberg_marquardt(&f, &[0.0], &[1.0], &[-1.0], &LmConfig::default()).is_err());
     }
 
     #[test]
@@ -1114,7 +1110,9 @@ mod tests {
 
     /// A deterministic, reproducible matrix generator (no `rand` dependency).
     fn lcg(seed: &mut u64) -> f64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
     }
 
@@ -1133,9 +1131,14 @@ mod tests {
     }
 
     /// The QR path, driven exactly as `levenberg_marquardt` drives it.
-    fn qr_step(jac: &[f64], r: &[f64], d_scale: &[f64], lambda: f64, m: usize, n: usize)
-        -> Vec<f64>
-    {
+    fn qr_step(
+        jac: &[f64],
+        r: &[f64],
+        d_scale: &[f64],
+        lambda: f64,
+        m: usize,
+        n: usize,
+    ) -> Vec<f64> {
         let mut qrj = jac.to_vec();
         let mut qtr = r.to_vec();
         householder_qr_in_place(&mut qrj, &mut qtr, m, n).expect("QR of a full-rank J");
@@ -1151,8 +1154,15 @@ mod tests {
     /// The damped linear least-squares objective the step is supposed to
     /// minimize: ||J d + r||^2 + lambda*||D d||^2. Lower is a better step,
     /// whichever way it was obtained.
-    fn step_objective(jac: &[f64], r: &[f64], d_scale: &[f64], lambda: f64,
-                      step: &[f64], m: usize, n: usize) -> f64 {
+    fn step_objective(
+        jac: &[f64],
+        r: &[f64],
+        d_scale: &[f64],
+        lambda: f64,
+        step: &[f64],
+        m: usize,
+        n: usize,
+    ) -> f64 {
         let mut acc = 0.0;
         for i in 0..m {
             let mut s = r[i];
@@ -1187,9 +1197,19 @@ mod tests {
                 .expect("legacy solve");
 
             let scale = qr.iter().fold(0.0f64, |a, v| a.max(v.abs()));
-            assert!(scale > 0.0, "lambda={lambda}: degenerate test, step is exactly zero");
-            let dev = qr.iter().zip(&legacy).fold(0.0f64, |a, (p, q)| a.max((p - q).abs()));
-            assert!(dev / scale < 1e-8, "lambda={lambda}: rel dev {}", dev / scale);
+            assert!(
+                scale > 0.0,
+                "lambda={lambda}: degenerate test, step is exactly zero"
+            );
+            let dev = qr
+                .iter()
+                .zip(&legacy)
+                .fold(0.0f64, |a, (p, q)| a.max((p - q).abs()));
+            assert!(
+                dev / scale < 1e-8,
+                "lambda={lambda}: rel dev {}",
+                dev / scale
+            );
         }
 
         // Non-degeneracy, checked where the step is largest: heavy damping
@@ -1235,11 +1255,16 @@ mod tests {
 
         let o_qr = step_objective(&jac, &r, &d_scale, lambda, &qr, m, n);
         let o_legacy = step_objective(&jac, &r, &d_scale, lambda, &legacy, m, n);
-        assert!(o_qr <= o_legacy, "QR step {o_qr} is worse than legacy {o_legacy}");
+        assert!(
+            o_qr <= o_legacy,
+            "QR step {o_qr} is worse than legacy {o_legacy}"
+        );
         // And the gap is real, not round-off: this is the regression the
         // condition-squaring critique predicts.
-        assert!(o_qr < o_legacy * (1.0 - 1e-4),
-                "no measurable advantage: qr={o_qr} legacy={o_legacy}");
+        assert!(
+            o_qr < o_legacy * (1.0 - 1e-4),
+            "no measurable advantage: qr={o_qr} legacy={o_legacy}"
+        );
     }
 
     #[test]
@@ -1261,11 +1286,19 @@ mod tests {
 
         let p_full = predicted_reduction(&jac, &jtr, &full, m, n);
         let p_clip = predicted_reduction(&jac, &jtr, &clipped, m, n);
-        assert!(p_full > 0.0, "the LM step must predict a reduction: {p_full}");
-        assert!(p_clip < p_full,
-                "clipping removed a descent component but the prediction did \
-                 not shrink: full={p_full} clipped={p_clip}");
-        assert!(p_clip > 0.0, "the surviving components still descend: {p_clip}");
+        assert!(
+            p_full > 0.0,
+            "the LM step must predict a reduction: {p_full}"
+        );
+        assert!(
+            p_clip < p_full,
+            "clipping removed a descent component but the prediction did \
+                 not shrink: full={p_full} clipped={p_clip}"
+        );
+        assert!(
+            p_clip > 0.0,
+            "the surviving components still descend: {p_clip}"
+        );
 
         // The clipped step is still a descent step on the true residual.
         let mut cost0 = 0.0;
@@ -1323,18 +1356,27 @@ mod tests {
                 &[1.0, 0.2],
                 &bounds_lo,
                 &bounds_hi,
-                &LmConfig { damping, ..cfg_precise() },
+                &LmConfig {
+                    damping,
+                    ..cfg_precise()
+                },
             )
             .expect("run")
         };
         let gain = run(LmDamping::GainRatio);
         let fixed = run(LmDamping::Fixed);
 
-        assert!((gain.x[0] - 2.5).abs() < 1e-6 && (gain.x[1] - 0.7).abs() < 1e-6,
-                "gain-ratio optimum {:?}", gain.x);
-        assert!((gain.x[0] - fixed.x[0]).abs() < 1e-6
-                && (gain.x[1] - fixed.x[1]).abs() < 1e-6,
-                "{:?} vs {:?}", gain.x, fixed.x);
+        assert!(
+            (gain.x[0] - 2.5).abs() < 1e-6 && (gain.x[1] - 0.7).abs() < 1e-6,
+            "gain-ratio optimum {:?}",
+            gain.x
+        );
+        assert!(
+            (gain.x[0] - fixed.x[0]).abs() < 1e-6 && (gain.x[1] - fixed.x[1]).abs() < 1e-6,
+            "{:?} vs {:?}",
+            gain.x,
+            fixed.x
+        );
     }
 
     #[test]
@@ -1358,7 +1400,10 @@ mod tests {
         // ...whereas the scale-dependent measure moved by three orders.
         let inf_base = jtr.iter().fold(0.0f64, |a, v| a.max(v.abs()));
         let inf_scaled = scaled_g.iter().fold(0.0f64, |a, v| a.max(v.abs()));
-        assert!(inf_scaled > inf_base * 100.0, "the contrast this test exists for is gone");
+        assert!(
+            inf_scaled > inf_base * 100.0,
+            "the contrast this test exists for is gone"
+        );
     }
 
     #[test]
@@ -1395,17 +1440,32 @@ mod tests {
         };
 
         for invariant in [true, false] {
-            let cfg = LmConfig { gtol_scale_invariant: invariant, ..cfg_precise() };
+            let cfg = LmConfig {
+                gtol_scale_invariant: invariant,
+                ..cfg_precise()
+            };
             let a = levenberg_marquardt(&plain, &[0.0, 0.0], &[-1e3, -1e3], &[1e3, 1e3], &cfg)
                 .expect("plain");
             let b = levenberg_marquardt(&scaled, &[0.0, 0.0], &[-1e7, -1e7], &[1e7, 1e7], &cfg)
                 .expect("scaled");
-            assert!((a.x[0] - b.x[0] / scale).abs() < 1e-6,
-                    "invariant={invariant}: {} vs {}", a.x[0], b.x[0] / scale);
-            assert!((a.x[1] - b.x[1]).abs() < 1e-6,
-                    "invariant={invariant}: {} vs {}", a.x[1], b.x[1]);
-            assert!((a.cost - b.cost).abs() / a.cost < 1e-9,
-                    "invariant={invariant}: {} vs {}", a.cost, b.cost);
+            assert!(
+                (a.x[0] - b.x[0] / scale).abs() < 1e-6,
+                "invariant={invariant}: {} vs {}",
+                a.x[0],
+                b.x[0] / scale
+            );
+            assert!(
+                (a.x[1] - b.x[1]).abs() < 1e-6,
+                "invariant={invariant}: {} vs {}",
+                a.x[1],
+                b.x[1]
+            );
+            assert!(
+                (a.cost - b.cost).abs() / a.cost < 1e-9,
+                "invariant={invariant}: {} vs {}",
+                a.cost,
+                b.cost
+            );
         }
     }
 
@@ -1422,11 +1482,17 @@ mod tests {
             Ok(())
         };
         for invariant in [true, false] {
-            let cfg = LmConfig { gtol_scale_invariant: invariant, ..cfg_precise() };
+            let cfg = LmConfig {
+                gtol_scale_invariant: invariant,
+                ..cfg_precise()
+            };
             let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-10.0, -10.0], &[10.0, 10.0], &cfg)
                 .expect("run");
-            assert!((res.x[0] - 2.0).abs() < 1e-8 && (res.x[1] + 1.0).abs() < 1e-8,
-                    "invariant={invariant}: {:?}", res.x);
+            assert!(
+                (res.x[0] - 2.0).abs() < 1e-8 && (res.x[1] + 1.0).abs() < 1e-8,
+                "invariant={invariant}: {:?}",
+                res.x
+            );
         }
     }
 
@@ -1475,9 +1541,12 @@ mod tests {
         let res = levenberg_marquardt(&f, &[0.5, 0.5], &[0.0, 0.0], &[1.0, 1.0], &cfg_precise())
             .expect("clamped run");
         assert_eq!(res.x, vec![1.0, 1.0], "the corner nearest the optimum");
-        assert!((res.gain_ratio - 1.0).abs() < 1e-6,
-                "rho = {} for an exact linear model; the prediction was not \
-                 taken for the clamped step", res.gain_ratio);
+        assert!(
+            (res.gain_ratio - 1.0).abs() < 1e-6,
+            "rho = {} for an exact linear model; the prediction was not \
+                 taken for the clamped step",
+            res.gain_ratio
+        );
     }
 
     #[test]
@@ -1509,8 +1578,10 @@ mod tests {
 
         let mut a = vec![1.0, 1.0];
         let mut b = vec![1.0];
-        assert!(householder_qr_in_place(&mut a, &mut b, 1, 2).is_err(),
-                "fewer rows than columns is not a factorable system");
+        assert!(
+            householder_qr_in_place(&mut a, &mut b, 1, 2).is_err(),
+            "fewer rows than columns is not a factorable system"
+        );
     }
 
     #[test]
@@ -1527,11 +1598,13 @@ mod tests {
             }
             Ok(())
         };
-        let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-10.0, -10.0], &[10.0, 10.0],
-                                      &cfg_fast())
+        let res = levenberg_marquardt(&f, &[0.0, 0.0], &[-10.0, -10.0], &[10.0, 10.0], &cfg_fast())
             .expect("degenerate run");
-        assert!((res.x[0] + res.x[1] - 3.0).abs() < 1e-6,
-                "sum {} should reach 3", res.x[0] + res.x[1]);
+        assert!(
+            (res.x[0] + res.x[1] - 3.0).abs() < 1e-6,
+            "sum {} should reach 3",
+            res.x[0] + res.x[1]
+        );
     }
 
     // -- R4.5 increment ii: the analytic-Jacobian hook ----------------------
@@ -1628,7 +1701,9 @@ mod tests {
             assert!(
                 b.evals >= a.evals + 4 * a.analytic_jacobians,
                 "analytic {} evals / {} jacobians, differenced {} evals",
-                a.evals, a.analytic_jacobians, b.evals
+                a.evals,
+                a.analytic_jacobians,
+                b.evals
             );
         }
 

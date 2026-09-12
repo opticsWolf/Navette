@@ -7,7 +7,7 @@
 //! contains two independent guards: one to recover (u',v') when L > 1e-12,
 //! and another to recover X and Z when both L > 1e-12 and v' > 1e-12.
 
-use crate::color::common::{lab_f, lab_f_inv, xyz_to_uv_prime, REF_WHITE_D65};
+use crate::color::common::{REF_WHITE_D65, lab_f, lab_f_inv, xyz_to_uv_prime};
 
 /// Convert CIE XYZ to CIELUV under a given illuminant.
 ///
@@ -110,11 +110,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let xyz_in = [
-            [0.1, 0.2, 0.3],
-            [0.0, 0.0, 0.0],
-            [0.95047, 1.0, 1.08883],
-        ];
+        let xyz_in = [[0.1, 0.2, 0.3], [0.0, 0.0, 0.0], [0.95047, 1.0, 1.08883]];
         let mut luv = [[0.0; 3]; 3];
         let mut xyz_out = [[0.0; 3]; 3];
         xyz_to_luv(&xyz_in, &REF_WHITE_D65, &mut luv);

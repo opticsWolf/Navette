@@ -9,8 +9,8 @@
 //! The normalisation constant k = 1 / Σ E(λ)·ȳ(λ)·Δλ ensures that a perfect
 //! reflecting diffuser yields Y = 1.
 
-use crate::color::common::{xyz_to_srgb, REF_WHITE_D65};
 use crate::color::bradford::adapt;
+use crate::color::common::{REF_WHITE_D65, xyz_to_srgb};
 
 /// Convert a spectral power distribution to a single sRGB colour.
 ///
@@ -38,10 +38,12 @@ pub fn spectral_to_srgb(
     assert_eq!(illum.len(), n, "Illuminant length mismatch");
 
     // 1. Normalisation factor k = 1 / Σ E(λ)·ȳ(λ)·Δλ
-    let denom: f64 = (0..n)
-        .map(|i| illum[i] * cmfs[i][1] * interval)
-        .sum();
-    let k = if denom.abs() > 1e-12 { 1.0 / denom } else { 1.0 };
+    let denom: f64 = (0..n).map(|i| illum[i] * cmfs[i][1] * interval).sum();
+    let k = if denom.abs() > 1e-12 {
+        1.0 / denom
+    } else {
+        1.0
+    };
 
     // 2. Integrate to obtain XYZ
     let mut xyz = [0.0; 3];
@@ -64,7 +66,11 @@ pub fn spectral_to_srgb(
         }
         // Normalise so that Y = 1
         let source_white = if raw_white[1] > 1e-12 {
-            [raw_white[0] / raw_white[1], 1.0, raw_white[2] / raw_white[1]]
+            [
+                raw_white[0] / raw_white[1],
+                1.0,
+                raw_white[2] / raw_white[1],
+            ]
         } else {
             raw_white
         };

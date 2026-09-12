@@ -2,10 +2,12 @@
 // src/composites.rs
 //! Convenience composite functions and Gamut Mapping.
 
-use crate::color::common::{srgb_to_xyz, xyz_to_lab, lab_to_xyz, xyz_to_srgb, REF_WHITE_D65, clip01};
-use crate::color::xyy::{xyz_to_xyy, xyy_to_xyz};
+use crate::color::common::{
+    REF_WHITE_D65, clip01, lab_to_xyz, srgb_to_xyz, xyz_to_lab, xyz_to_srgb,
+};
 use crate::color::lch::{lab_to_lch, lch_to_lab};
-use crate::color::luv::{xyz_to_luv, luv_to_xyz};
+use crate::color::luv::{luv_to_xyz, xyz_to_luv};
+use crate::color::xyy::{xyy_to_xyz, xyz_to_xyy};
 
 /// sRGB → CIELAB (D65) via XYZ. Input is gamma-encoded sRGB in [0, 1];
 /// values are clipped (display-referred) before conversion.

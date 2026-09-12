@@ -61,8 +61,8 @@ use std::f64::consts::PI;
 
 pub use crate::smatrix::optics_core::cexp_fast;
 use crate::smatrix::optics_core::{
-    cplx, csqrt_fast, forward_branch, nevot_croce_factors, redheffer_product_complex_field_inner,
-    redheffer_product_real_inner, w_function_inner, C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN,
+    C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN, cplx, csqrt_fast, forward_branch, nevot_croce_factors,
+    redheffer_product_complex_field_inner, redheffer_product_real_inner, w_function_inner,
 };
 
 /// S-matrix element in the crate-wide convention.
@@ -88,7 +88,8 @@ pub fn admittance(is_s: bool, n: Complex64, cos: Complex64) -> Complex64 {
             cos
         };
         n / c
-    }}
+    }
+}
 
 // ─── Plain Redheffer star product (delegates to optics_core) ────────────────
 
@@ -200,7 +201,17 @@ pub fn build_stack_fields(
 ) -> StackFields {
     let nl = n_slice.len();
     // Full stack: media 0..nl, substrate index nl-1 excluded as half-space.
-    build_stack_fields_range(0, nl - 1, n_slice, d_slice, rv_slice, rt_slice, lam, nsin_fi, pol)
+    build_stack_fields_range(
+        0,
+        nl - 1,
+        n_slice,
+        d_slice,
+        rv_slice,
+        rt_slice,
+        lam,
+        nsin_fi,
+        pol,
+    )
 }
 
 /// Build the partial-matrix decomposition confined to the sub-block
@@ -227,10 +238,7 @@ pub fn build_stack_fields_range(
     let is_s = pol == 0;
     let nl = n_slice.len();
 
-    let cos: Vec<Complex64> = n_slice
-        .iter()
-        .map(|&n| cos_from_nsin(nsin_fi, n))
-        .collect();
+    let cos: Vec<Complex64> = n_slice.iter().map(|&n| cos_from_nsin(nsin_fi, n)).collect();
 
     let beta_nm: Vec<Complex64> = n_slice
         .iter()
@@ -239,11 +247,19 @@ pub fn build_stack_fields_range(
             let mut b = two_pi_lam * n * c;
             if b.im < 0.0 {
                 b = cplx(b.re, -b.im);
-            }            b
+            }
+            b
         })
         .collect();
 
-    let id = || (cplx(0.0, 0.0), cplx(1.0, 0.0), cplx(1.0, 0.0), cplx(0.0, 0.0));
+    let id = || {
+        (
+            cplx(0.0, 0.0),
+            cplx(1.0, 0.0),
+            cplx(1.0, 0.0),
+            cplx(0.0, 0.0),
+        )
+    };
     let mut s_left: Vec<S4> = vec![id(); nl];
     let mut s_right: Vec<S4> = vec![id(); nl];
 
@@ -251,17 +267,32 @@ pub fn build_stack_fields_range(
     for i in start_idx..end_idx {
         let mut sg = s_left[i];
         if i > start_idx && d_slice[i] > 1e-12 {
-            sg = star(sg, prop(cexp_fast(cplx(0.0, 1.0) * beta_nm[i] * d_slice[i])));
-        }        sg = star(sg, interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s));
+            sg = star(
+                sg,
+                prop(cexp_fast(cplx(0.0, 1.0) * beta_nm[i] * d_slice[i])),
+            );
+        }
+        sg = star(
+            sg,
+            interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s),
+        );
         s_left[i + 1] = sg;
-    }    // s_right: block exit → bottom of layer j.
+    } // s_right: block exit → bottom of layer j.
     for i in (start_idx..end_idx).rev() {
         let mut sg = s_right[i + 1];
         if i + 1 < end_idx && d_slice[i + 1] > 1e-12 {
-            sg = star(prop(cexp_fast(cplx(0.0, 1.0) * beta_nm[i + 1] * d_slice[i + 1])), sg);
-        }        sg = star(interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s), sg);
+            sg = star(
+                prop(cexp_fast(cplx(0.0, 1.0) * beta_nm[i + 1] * d_slice[i + 1])),
+                sg,
+            );
+        }
+        sg = star(
+            interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s),
+            sg,
+        );
         s_right[i] = sg;
-    }    StackFields {
+    }
+    StackFields {
         s_left,
         s_right,
         n: n_slice.to_vec(),
@@ -270,7 +301,8 @@ pub fn build_stack_fields_range(
         ds: d_slice.to_vec(),
         start: start_idx,
         end: end_idx,
-    }}
+    }
+}
 
 // ─── Complex dual numbers: value + d/dδ slope ──────────────────────────────
 
@@ -285,47 +317,70 @@ struct CDual {
 impl CDual {
     #[inline(always)]
     fn cst(v: Complex64) -> Self {
-        CDual { v, d: cplx(0.0, 0.0) }
-    }    #[inline(always)]
+        CDual {
+            v,
+            d: cplx(0.0, 0.0),
+        }
+    }
+    #[inline(always)]
     fn mul(self, o: CDual) -> CDual {
         CDual {
             v: self.v * o.v,
             d: self.d * o.v + self.v * o.d,
-        }    }    #[inline(always)]
+        }
+    }
+    #[inline(always)]
     fn sub(self, o: CDual) -> CDual {
         CDual {
             v: self.v - o.v,
             d: self.d - o.d,
-        }    }    #[inline(always)]
+        }
+    }
+    #[inline(always)]
     fn recip(self) -> CDual {
         let inv = self.v.recip();
         CDual {
             v: inv,
             d: -(inv * self.d * inv),
-        }    }}
+        }
+    }
+}
 
 /// Dual-valued star product — mechanical translation of `star` above.
 /// The regularization acts on the value component and rescales the slope by
 /// the same complex factor, preserving consistency far from singularities
 /// (where it never activates in normal operation anyway).
 #[inline]
-fn star_dual(a: (CDual, CDual, CDual, CDual), b: (CDual, CDual, CDual, CDual)) -> (CDual, CDual, CDual, CDual) {
+fn star_dual(
+    a: (CDual, CDual, CDual, CDual),
+    b: (CDual, CDual, CDual, CDual),
+) -> (CDual, CDual, CDual, CDual) {
     let one = CDual::cst(cplx(1.0, 0.0));
     let mut denom = one.sub(a.3.mul(b.0));
     if denom.v.norm() < LOG_MIN {
         let phase = denom.v / (denom.v.abs() + 1e-300);
         let repl = cplx(LOG_MIN, 0.0) * phase + 1e-300;
         let fac = repl / denom.v;
-        denom = CDual { v: repl, d: denom.d * fac };
-    }    let inv_denom = denom.recip();
+        denom = CDual {
+            v: repl,
+            d: denom.d * fac,
+        };
+    }
+    let inv_denom = denom.recip();
 
     // s_rf = a.0 + a.1*b.0*a.2*inv ; etc., all dual ops.
     let term = a.1.mul(b.0).mul(a.2).mul(inv_denom);
-    let s_rf = CDual { v: a.0.v + term.v, d: a.0.d + term.d };
+    let s_rf = CDual {
+        v: a.0.v + term.v,
+        d: a.0.d + term.d,
+    };
     let s_tb = a.1.mul(b.1).mul(inv_denom);
     let s_tf = b.2.mul(a.2).mul(inv_denom);
     let term_b = b.2.mul(a.3).mul(b.1).mul(inv_denom);
-    let s_rb = CDual { v: b.3.v + term_b.v, d: b.3.d + term_b.d };
+    let s_rb = CDual {
+        v: b.3.v + term_b.v,
+        d: b.3.d + term_b.d,
+    };
     (s_rf, s_tb, s_tf, s_rb)
 }
 
@@ -421,10 +476,22 @@ pub fn needle_slopes4_ddz(
     // Needle S-matrix to first order: symmetric slab ⇒ equal front/back
     // reflection slopes; transmission phase slope identical both ways.
     let needle = (
-        CDual { v: cplx(0.0, 0.0), d: rho_hat },
-        CDual { v: cplx(1.0, 0.0), d: tau_hat },
-        CDual { v: cplx(1.0, 0.0), d: tau_hat },
-        CDual { v: cplx(0.0, 0.0), d: rho_hat },
+        CDual {
+            v: cplx(0.0, 0.0),
+            d: rho_hat,
+        },
+        CDual {
+            v: cplx(1.0, 0.0),
+            d: tau_hat,
+        },
+        CDual {
+            v: cplx(1.0, 0.0),
+            d: tau_hat,
+        },
+        CDual {
+            v: cplx(0.0, 0.0),
+            d: rho_hat,
+        },
     );
     let du = (
         CDual::cst(u.0),
@@ -477,8 +544,10 @@ pub fn locate_depth_in(ds: &[f64], start_idx: usize, end_idx: usize, z: f64) -> 
         let bottom = cursor + ds[j];
         if z < bottom || j == end_idx - 1 {
             return (j, z - cursor);
-        }        cursor = bottom;
-    }    unreachable!("host loop always terminates via end-of-block arm")
+        }
+        cursor = bottom;
+    }
+    unreachable!("host loop always terminates via end-of-block arm")
 }
 
 // ─── Per-point kernels (grid drivers and parallel engines build on these) ──
@@ -796,7 +865,8 @@ pub fn locate_hosts_multiblock(
             ));
         }
         if let Some(mask) = host_mask
-            && !mask.get(j).copied().unwrap_or(false) {
+            && !mask.get(j).copied().unwrap_or(false)
+        {
             continue;
         }
         let bi = blocks
@@ -850,7 +920,17 @@ pub fn p_multiblock_point(
     let fields: Vec<StackFields> = blocks
         .iter()
         .map(|&(bs, be)| {
-            build_stack_fields_range(bs, be, n_slice, thicknesses, rough_vals, rough_types, lam, nsin_fi, pol)
+            build_stack_fields_range(
+                bs,
+                be,
+                n_slice,
+                thicknesses,
+                rough_vals,
+                rough_types,
+                lam,
+                nsin_fi,
+                pol,
+            )
         })
         .collect();
 
@@ -900,10 +980,7 @@ pub fn p_multiblock_point(
             PmbQuantity::RB => wv[c][3],
             PmbQuantity::AB => -(wv[c][3] + wv[c][1]),
         };
-        let dot = wrow(0) * g_int[0]
-            + wrow(1) * g_int[1]
-            + wrow(2) * g_int[2]
-            + wrow(3) * g_int[3];
+        let dot = wrow(0) * g_int[0] + wrow(1) * g_int[1] + wrow(2) * g_int[2] + wrow(3) * g_int[3];
         out[zi] = resid * dot;
     }
     out
@@ -949,7 +1026,8 @@ pub fn p_function(
         return Err("block must contain at least one host layer".into());
     }
     let total_points = num_wavs * num_angles;
-    if target_r.len() != total_points || weights.len() != total_points
+    if target_r.len() != total_points
+        || weights.len() != total_points
         || needle_n_per_wav.len() != num_wavs
         || n_stack_cache.len() != num_wavs * n_layers * 2
     {
@@ -965,16 +1043,36 @@ pub fn p_function(
             let mut n_slice = Vec::with_capacity(n_layers);
             let base = w * n_layers * 2;
             for l in 0..n_layers {
-                n_slice.push(cplx(n_stack_cache[base + l * 2], n_stack_cache[base + l * 2 + 1]));
-            }            let nsin_fi = n_slice[0] * cplx(sin_theta_arr[a], 0.0);
+                n_slice.push(cplx(
+                    n_stack_cache[base + l * 2],
+                    n_stack_cache[base + l * 2 + 1],
+                ));
+            }
+            let nsin_fi = n_slice[0] * cplx(sin_theta_arr[a], 0.0);
 
             let fields = build_stack_fields_range(
-                start_idx, end_idx,
-                &n_slice, thicknesses, rough_vals, rough_types, lam, nsin_fi, pol,
+                start_idx,
+                end_idx,
+                &n_slice,
+                thicknesses,
+                rough_vals,
+                rough_types,
+                lam,
+                nsin_fi,
+                pol,
             );
             let contrib = p_coherent_from_fields(
-                &fields, nsin_fi, lam, pol, needle_n_per_wav[w],
-                target_r[k], weights[k], thicknesses, start_idx, end_idx, z_grid,
+                &fields,
+                nsin_fi,
+                lam,
+                pol,
+                needle_n_per_wav[w],
+                target_r[k],
+                weights[k],
+                thicknesses,
+                start_idx,
+                end_idx,
+                z_grid,
             );
             for (zi, cv) in contrib.iter().enumerate() {
                 acc[zi] += cv;
@@ -1022,7 +1120,11 @@ pub fn star_real(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 #[inline]
 pub fn cascade_step(a: &CascadeTrack, b: [f64; 4], new_params: Option<()>) -> CascadeTrack {
     let denom = 1.0 - a.v[3] * b[0];
-    let v = if denom.abs() < DBL_EPS { 0.0 } else { 1.0 / denom };
+    let v = if denom.abs() < DBL_EPS {
+        0.0
+    } else {
+        1.0 / denom
+    };
     let v2 = v * v;
 
     let out = [
@@ -1035,7 +1137,12 @@ pub fn cascade_step(a: &CascadeTrack, b: [f64; 4], new_params: Option<()>) -> Ca
     // ∂out/∂A (rows: out element e, cols: A element x):
     // out.g[p][e] += JA[e][x] · a.g[p][x].
     let ja: [[f64; 4]; 4] = [
-        [1.0, b[0] * a.v[2] * v, a.v[1] * b[0] * v, a.v[1] * b[0] * a.v[2] * b[0] * v2],
+        [
+            1.0,
+            b[0] * a.v[2] * v,
+            a.v[1] * b[0] * v,
+            a.v[1] * b[0] * a.v[2] * b[0] * v2,
+        ],
         [0.0, b[1] * v, 0.0, a.v[1] * b[1] * b[0] * v2],
         [0.0, 0.0, b[2] * v, b[2] * a.v[2] * b[0] * v2],
         [0.0, 0.0, 0.0, b[2] * b[1] * (v + a.v[3] * b[0] * v2)],
@@ -1046,7 +1153,12 @@ pub fn cascade_step(a: &CascadeTrack, b: [f64; 4], new_params: Option<()>) -> Ca
         [a.v[1] * a.v[2] * v2, 0.0, 0.0, 0.0],
         [a.v[1] * b[1] * a.v[3] * v2, a.v[1] * v, 0.0, 0.0],
         [b[2] * a.v[2] * a.v[3] * v2, 0.0, a.v[2] * v, 0.0],
-        [b[2] * a.v[3] * b[1] * a.v[3] * v2, b[2] * a.v[3] * v, a.v[3] * b[1] * v, 1.0],
+        [
+            b[2] * a.v[3] * b[1] * a.v[3] * v2,
+            b[2] * a.v[3] * v,
+            a.v[3] * b[1] * v,
+            1.0,
+        ],
     ];
 
     let n_old = a.g.len();
@@ -1079,7 +1191,10 @@ pub struct CascadeTrack {
 
 impl CascadeTrack {
     pub fn identity() -> Self {
-        CascadeTrack { v: [0.0, 1.0, 1.0, 0.0], g: Vec::new() }
+        CascadeTrack {
+            v: [0.0, 1.0, 1.0, 0.0],
+            g: Vec::new(),
+        }
     }
 }
 
@@ -1215,7 +1330,6 @@ pub fn p_function_multiblock(
         return Err("per-layer arrays must all have n_layers entries".into());
     }
 
-
     // Geometry is wavelength-independent: map every z once via the shared
     // host-locator (reference plane: top of film layer 1).
     let locs = locate_hosts_multiblock(thicknesses, incoherent_flags, z_grid, host_mask)?;
@@ -1226,12 +1340,27 @@ pub fn p_function_multiblock(
             let k = a * num_wavs + w;
             let base_n = w * nl * 2;
             let ns: Vec<Complex64> = (0..nl)
-                .map(|l| cplx(n_stack_cache[base_n + l * 2], n_stack_cache[base_n + l * 2 + 1]))
+                .map(|l| {
+                    cplx(
+                        n_stack_cache[base_n + l * 2],
+                        n_stack_cache[base_n + l * 2 + 1],
+                    )
+                })
                 .collect();
             let contrib = p_multiblock_point(
-                wavls[w], sin_theta_arr[a], &ns, thicknesses, incoherent_flags,
-                rough_vals, rough_types, needle_n_per_wav[w],
-                quantity, target_r[k], weights[k], &locs, pol,
+                wavls[w],
+                sin_theta_arr[a],
+                &ns,
+                thicknesses,
+                incoherent_flags,
+                rough_vals,
+                rough_types,
+                needle_n_per_wav[w],
+                quantity,
+                target_r[k],
+                weights[k],
+                &locs,
+                pol,
             );
             for (zi, cv) in contrib.iter().enumerate() {
                 p_out[zi] += cv;
@@ -1240,7 +1369,6 @@ pub fn p_function_multiblock(
     }
     Ok(p_out)
 }
-
 
 // ─── Dispersion (GD/GDD) sensitivity via spectral differentiation ─────────
 //
@@ -1359,7 +1487,15 @@ pub fn phase_dispersion_sensitivity(
             let sin_v = sin_theta_arr[a];
             let nsin_fi = ns[0] * cplx(sin_v, 0.0);
             let fields = build_stack_fields_range(
-                start_idx, end_idx, &ns, thicknesses, rough_vals, rough_types, lam, nsin_fi, pol,
+                start_idx,
+                end_idx,
+                &ns,
+                thicknesses,
+                rough_vals,
+                rough_types,
+                lam,
+                nsin_fi,
+                pol,
             );
             let amp = match channel {
                 0 => fields.s_left[end_idx].0,
@@ -1388,7 +1524,9 @@ pub fn phase_dispersion_sensitivity(
     let mut out = vec![q];
     for _ in 0..deriv_order {
         let prev = out.last().unwrap();
-        out.push(spectral_gradient_step(prev, &omega, num_wavs, num_angles, nz));
+        out.push(spectral_gradient_step(
+            prev, &omega, num_wavs, num_angles, nz,
+        ));
     }
     Ok(out)
 }
@@ -1401,21 +1539,29 @@ mod tests {
 
     fn n_(re: f64, im: f64) -> Complex64 {
         cplx(re, im)
-    }    /// Stack builder: (material, thickness nm) list, ambient first, substrate
+    }
+    /// Stack builder: (material, thickness nm) list, ambient first, substrate
     /// last. Roughness arrays default to zero (abrupt interfaces).
     fn make_stack(layers: &[(Complex64, f64)]) -> (Vec<Complex64>, Vec<f64>, Vec<f64>, Vec<i32>) {
         let n: Vec<Complex64> = layers.iter().map(|&(m, _)| m).collect();
         let d: Vec<f64> = layers.iter().map(|&(_, t)| t).collect();
         let len = layers.len();
         (n, d, vec![0.0; len], vec![0; len])
-    }    fn solve_r(
-        n: &[Complex64], d: &[f64], rv: &[f64], rt: &[i32],
-        lam: f64, sin_t: f64, pol: i32,
+    }
+    fn solve_r(
+        n: &[Complex64],
+        d: &[f64],
+        rv: &[f64],
+        rt: &[i32],
+        lam: f64,
+        sin_t: f64,
+        pol: i32,
     ) -> Complex64 {
         let nsin = n[0] * cplx(sin_t, 0.0);
         let f = build_stack_fields(n, d, rv, rt, lam, nsin, pol);
         f.s_left[f.s_left.len() - 1].0
-    }    const LAM: f64 = 550.0;
+    }
+    const LAM: f64 = 550.0;
 
     fn stack_a() -> (Vec<Complex64>, Vec<f64>, Vec<f64>, Vec<i32>) {
         make_stack(&[
@@ -1425,7 +1571,8 @@ mod tests {
             (n_(2.35, 0.0), 30.0),
             (n_(1.52, 0.0), 0.0), // glass
         ])
-    }    fn stack_absorbing() -> (Vec<Complex64>, Vec<f64>, Vec<f64>, Vec<i32>) {
+    }
+    fn stack_absorbing() -> (Vec<Complex64>, Vec<f64>, Vec<f64>, Vec<i32>) {
         make_stack(&[
             (n_(1.0, 0.0), 0.0),
             (n_(2.35, 0.0), 40.0),
@@ -1433,12 +1580,19 @@ mod tests {
             (n_(1.45, 0.0), 70.0),
             (n_(1.52, 0.0), 0.0),
         ])
-    }    /// Insert a physical needle slab of thickness delta at depth xi inside
+    }
+    /// Insert a physical needle slab of thickness delta at depth xi inside
     /// layer j; returns modified arrays. Internal interfaces are abrupt; all
     /// original interface roughness entries shift past the insertion point.
     fn insert_needle(
-        n: &[Complex64], d: &[f64], rv: &[f64], rt: &[i32],
-        j: usize, xi: f64, n_prime: Complex64, delta: f64,
+        n: &[Complex64],
+        d: &[f64],
+        rv: &[f64],
+        rt: &[i32],
+        j: usize,
+        xi: f64,
+        n_prime: Complex64,
+        delta: f64,
     ) -> (Vec<Complex64>, Vec<f64>, Vec<f64>, Vec<i32>) {
         let nl = n.len();
         // Host layer j splits into top part + needle + bottom part: the host
@@ -1469,12 +1623,16 @@ mod tests {
         tt.extend_from_slice(&rt[j + 1..]);
 
         (nn, dd, rr, tt)
-    }    /// Finite-difference oracle vs analytic sensitivity.
+    }
+    /// Finite-difference oracle vs analytic sensitivity.
     fn check_fd_case(
         name: &str,
         (n, d, rv, rt): &(Vec<Complex64>, Vec<f64>, Vec<f64>, Vec<i32>),
-        j: usize, xi: f64,
-        n_prime: Complex64, sin_t: f64, pol: i32,
+        j: usize,
+        xi: f64,
+        n_prime: Complex64,
+        sin_t: f64,
+        pol: i32,
     ) {
         let nsin = n[0] * cplx(sin_t, 0.0);
         let fields = build_stack_fields(n, d, rv, rt, LAM, nsin, pol);
@@ -1493,10 +1651,16 @@ mod tests {
             err < 2e-3,
             "{name}: fd={fd:.6e} analytic={an:.6e} rel_err={err:.2e}"
         );
-    }    /// Full composed amplitudes + forward flux factor (front incidence).
+    }
+    /// Full composed amplitudes + forward flux factor (front incidence).
     fn solve_all(
-        n: &[Complex64], d: &[f64], rv: &[f64], rt: &[i32],
-        lam: f64, sin_t: f64, pol: i32,
+        n: &[Complex64],
+        d: &[f64],
+        rv: &[f64],
+        rt: &[i32],
+        lam: f64,
+        sin_t: f64,
+        pol: i32,
     ) -> ((Complex64, Complex64, Complex64, Complex64), f64) {
         let nsin = n[0] * cplx(sin_t, 0.0);
         let f = build_stack_fields(n, d, rv, rt, lam, nsin, pol);
@@ -1517,7 +1681,18 @@ mod tests {
             let fields = build_stack_fields_range(0, end, &n, &d, &rv, &rt, LAM, nsin, pol);
             let z = d[1] + xi; // absolute, from top of layer 1
             let p = p_coherent_t_from_fields(
-                &fields, nsin, LAM, pol, n_prime, 0.0, 1.0, &d, 0, end, &[z]);
+                &fields,
+                nsin,
+                LAM,
+                pol,
+                n_prime,
+                0.0,
+                1.0,
+                &d,
+                0,
+                end,
+                &[z],
+            );
             let (m0, f0) = solve_all(&n, &d, &rv, &rt, LAM, sin_t, pol);
             let t0 = m0.2.norm_sqr() * f0;
             let delta = 5e-4_f64;
@@ -1529,7 +1704,11 @@ mod tests {
             let fd = (t1 * t1 - t0 * t0) / delta / 2.0;
             let scale = fd.abs().max(p[0].abs()).max(1e-12);
             let err = (fd - p[0]).abs() / scale;
-            assert!(err < 2e-3, "T pol={pol}: fd={fd:.6e} analytic={:.6e} rel_err={err:.2e}", p[0]);
+            assert!(
+                err < 2e-3,
+                "T pol={pol}: fd={fd:.6e} analytic={:.6e} rel_err={err:.2e}",
+                p[0]
+            );
         }
     }
 
@@ -1546,7 +1725,18 @@ mod tests {
             let fields = build_stack_fields_range(0, end, &n, &d, &rv, &rt, LAM, nsin, pol);
             let z = d[1] + xi;
             let p = p_coherent_a_from_fields(
-                &fields, nsin, LAM, pol, n_prime, 0.0, 1.0, &d, 0, end, &[z]);
+                &fields,
+                nsin,
+                LAM,
+                pol,
+                n_prime,
+                0.0,
+                1.0,
+                &d,
+                0,
+                end,
+                &[z],
+            );
             let (m0, f0) = solve_all(&n, &d, &rv, &rt, LAM, sin_t, pol);
             let a0 = 1.0 - m0.0.norm_sqr() - m0.2.norm_sqr() * f0;
             assert!(a0 > 1e-3, "test stack should absorb: A0={a0}");
@@ -1558,7 +1748,11 @@ mod tests {
             let fd = (a1 * a1 - a0 * a0) / delta / 2.0;
             let scale = fd.abs().max(p[0].abs()).max(1e-12);
             let err = (fd - p[0]).abs() / scale;
-            assert!(err < 2e-3, "A pol={pol}: fd={fd:.6e} analytic={:.6e} rel_err={err:.2e}", p[0]);
+            assert!(
+                err < 2e-3,
+                "A pol={pol}: fd={fd:.6e} analytic={:.6e} rel_err={err:.2e}",
+                p[0]
+            );
         }
     }
 
@@ -1580,17 +1774,50 @@ mod tests {
             let (nn, dd, rr, tt) = insert_needle(&n, &d, &rv, &rt, j, xi, n_prime, delta);
             let (m1, _) = solve_all(&nn, &dd, &rr, &tt, LAM, sin_t, pol);
             // Flux factor is boundary-invariant; recompute proves it.
-            let f0 = block_flux_factors(
-                &build_stack_fields(&n, &d, &rv, &rt, LAM, nsin, pol), pol)[1];
-            let f1 = block_flux_factors(
-                &build_stack_fields(&nn, &dd, &rr, &tt, LAM, nsin, pol), pol)[1];
-            assert!((f0 - f1).abs() < 1e-12, "backward flux must be needle-invariant");
-            let cases: [(fn(&StackFields, Complex64, f64, i32, Complex64, f64, f64, &[f64], usize, usize, &[f64]) -> Vec<f64>, f64, f64, &str); 3] = [
-                (p_coherent_tb_from_fields, m0.1.norm_sqr() * f0, m1.1.norm_sqr() * f1, "TB"),
-                (p_coherent_rb_from_fields, m0.3.norm_sqr(), m1.3.norm_sqr(), "RB"),
-                (p_coherent_ab_from_fields,
+            let f0 =
+                block_flux_factors(&build_stack_fields(&n, &d, &rv, &rt, LAM, nsin, pol), pol)[1];
+            let f1 =
+                block_flux_factors(&build_stack_fields(&nn, &dd, &rr, &tt, LAM, nsin, pol), pol)[1];
+            assert!(
+                (f0 - f1).abs() < 1e-12,
+                "backward flux must be needle-invariant"
+            );
+            let cases: [(
+                fn(
+                    &StackFields,
+                    Complex64,
+                    f64,
+                    i32,
+                    Complex64,
+                    f64,
+                    f64,
+                    &[f64],
+                    usize,
+                    usize,
+                    &[f64],
+                ) -> Vec<f64>,
+                f64,
+                f64,
+                &str,
+            ); 3] = [
+                (
+                    p_coherent_tb_from_fields,
+                    m0.1.norm_sqr() * f0,
+                    m1.1.norm_sqr() * f1,
+                    "TB",
+                ),
+                (
+                    p_coherent_rb_from_fields,
+                    m0.3.norm_sqr(),
+                    m1.3.norm_sqr(),
+                    "RB",
+                ),
+                (
+                    p_coherent_ab_from_fields,
                     1.0 - m0.3.norm_sqr() - m0.1.norm_sqr() * f0,
-                    1.0 - m1.3.norm_sqr() - m1.1.norm_sqr() * f1, "AB"),
+                    1.0 - m1.3.norm_sqr() - m1.1.norm_sqr() * f1,
+                    "AB",
+                ),
             ];
             for (fun, x0, x1, name) in cases {
                 // target 0, weight 1 → P = 2·X0·(dX-part); half convention.
@@ -1598,7 +1825,11 @@ mod tests {
                 let fd = (x1 * x1 - x0 * x0) / delta / 2.0;
                 let scale = fd.abs().max(p[0].abs()).max(1e-12);
                 let err = (fd - p[0]).abs() / scale;
-                assert!(err < 2e-3, "{name} pol={pol}: fd={fd:.6e} analytic={:.6e} err={err:.2e}", p[0]);
+                assert!(
+                    err < 2e-3,
+                    "{name} pol={pol}: fd={fd:.6e} analytic={:.6e} err={err:.2e}",
+                    p[0]
+                );
             }
         }
     }
@@ -1620,7 +1851,19 @@ mod tests {
             let phi0 = m0.2.arg();
             let tgt = phi0 - 0.05;
             let p = p_coherent_phi_from_fields(
-                &fields, nsin, LAM, pol, n_prime, 2, tgt, 1.0, &d, 0, end, &[z]);
+                &fields,
+                nsin,
+                LAM,
+                pol,
+                n_prime,
+                2,
+                tgt,
+                1.0,
+                &d,
+                0,
+                end,
+                &[z],
+            );
             let wrap = |x: f64| x - std::f64::consts::TAU * (x / std::f64::consts::TAU).round();
             let delta = 5e-4_f64;
             let (nn, dd, rr, tt) = insert_needle(&n, &d, &rv, &rt, j, xi, n_prime, delta);
@@ -1628,7 +1871,11 @@ mod tests {
             let fd = (wrap(m1.2.arg() - tgt).powi(2) - 0.05f64.powi(2)) / delta;
             let scale = fd.abs().max(p[0].abs()).max(1e-12);
             let err = (fd - p[0]).abs() / scale;
-            assert!(err < 2e-3, "phi pol={pol}: fd={fd:.6e} analytic={:.6e} rel_err={err:.2e}", p[0]);
+            assert!(
+                err < 2e-3,
+                "phi pol={pol}: fd={fd:.6e} analytic={:.6e} rel_err={err:.2e}",
+                p[0]
+            );
         }
     }
 
@@ -1659,7 +1906,8 @@ mod tests {
         let dr_range = needle_dr_ddz(&f_range, nsin, 2, 33.0, n_prime, 0, LAM);
         let dr_sliced = needle_dr_ddz(&f_sliced, nsin, 1, 33.0, n_prime, 0, LAM);
         assert!((dr_range - dr_sliced).norm() / dr_range.norm() < 1e-12);
-    }    #[test]
+    }
+    #[test]
     fn fd_oracle_confined_to_subblock() {
         // Needles inside block [1, 4): finite-difference reference computed by
         // solving ONLY the sliced block (layers outside are excluded from the
@@ -1718,8 +1966,20 @@ mod tests {
         let z = [33.0f64];
 
         let p = p_function(
-            &wavls, &angles, start, end, nl, &cache, &d, &rt, &rv,
-            &needle_per_wav, &target, &weights, &z, 0,
+            &wavls,
+            &angles,
+            start,
+            end,
+            nl,
+            &cache,
+            &d,
+            &rt,
+            &rv,
+            &needle_per_wav,
+            &target,
+            &weights,
+            &z,
+            0,
         )
         .unwrap();
 
@@ -1762,10 +2022,7 @@ mod tests {
                 };
                 // One-sided FD at h=1e-6 carries O(h) truncation (~1e-6);
                 // agreement to 1e-5 still validates the Jacobians deeply.
-                assert!(
-                    (fd - an).abs() < 1e-5,
-                    "c={c}: fd={fd:.9e} an={an:.9e}"
-                );
+                assert!((fd - an).abs() < 1e-5, "c={c}: fd={fd:.9e} an={an:.9e}");
             }
         }
     }
@@ -1800,13 +2057,37 @@ mod tests {
         let flags = [0i32; 5];
 
         let p_ref = p_function(
-            &wavls, &angles, 0, nl - 1, nl, &cache, &d, &rt, &rv,
-            &needle_per_wav, &target, &weights, &z, 0,
+            &wavls,
+            &angles,
+            0,
+            nl - 1,
+            nl,
+            &cache,
+            &d,
+            &rt,
+            &rv,
+            &needle_per_wav,
+            &target,
+            &weights,
+            &z,
+            0,
         )
         .unwrap();
         let p_mb = p_function_multiblock(
-            &wavls, &angles, &cache, &d, &flags, &rt, &rv,
-            &needle_per_wav, PmbQuantity::R, &target, &weights, &z, None, 0,
+            &wavls,
+            &angles,
+            &cache,
+            &d,
+            &flags,
+            &rt,
+            &rv,
+            &needle_per_wav,
+            PmbQuantity::R,
+            &target,
+            &weights,
+            &z,
+            None,
+            0,
         )
         .unwrap();
         for (a, b) in p_ref.iter().zip(&p_mb) {
@@ -1818,8 +2099,14 @@ mod tests {
     /// same machinery the engine uses — block matrices from range-built
     /// fields, flux-normalized intensities, plain real-star cascade.
     fn solve_r_mode_a(
-        n: &[Complex64], d: &[f64], rv: &[f64], rt: &[i32], flags: &[i32],
-        lam: f64, sin_t: f64, pol: i32,
+        n: &[Complex64],
+        d: &[f64],
+        rv: &[f64],
+        rt: &[i32],
+        flags: &[i32],
+        lam: f64,
+        sin_t: f64,
+        pol: i32,
     ) -> f64 {
         let nsin = n[0] * cplx(sin_t, 0.0);
         let (blocks, spacers) = partition_blocks(flags);
@@ -1872,15 +2159,27 @@ mod tests {
         // L3 [100,150) T, L4 [150,180) S.
         // (z, host j, xi, sin_theta)
         for &(z, j, xi, sin_t) in &[
-            (15.0f64, 1usize, 15.0f64, 0.0f64),  // block 0
-            (120.0, 3, 20.0, 0.0),               // block 1, first film
-            (15.0, 1, 15.0, 0.4),                // oblique
-            (160.0, 4, 10.0, 0.4),               // block 1, second film
-            (135.0, 3, 35.0, 0.25),              // deeper plane in block 1
+            (15.0f64, 1usize, 15.0f64, 0.0f64), // block 0
+            (120.0, 3, 20.0, 0.0),              // block 1, first film
+            (15.0, 1, 15.0, 0.4),               // oblique
+            (160.0, 4, 10.0, 0.4),              // block 1, second film
+            (135.0, 3, 35.0, 0.25),             // deeper plane in block 1
         ] {
             let p = p_function_multiblock(
-                &[lam], &[sin_t], &cache, &d, &flags, &rt, &rv,
-                &np, PmbQuantity::R, &target, &weights, &[z], None, 0,
+                &[lam],
+                &[sin_t],
+                &cache,
+                &d,
+                &flags,
+                &rt,
+                &rv,
+                &np,
+                PmbQuantity::R,
+                &target,
+                &weights,
+                &[z],
+                None,
+                0,
             )
             .unwrap()[0];
 
@@ -1907,11 +2206,16 @@ mod tests {
         }
     }
 
-
     /// Full cascade intensities [R, Tb, Tf, Rb] under Mode A (T/A oracles).
     fn solve_int_mode_a(
-        n: &[Complex64], d: &[f64], rv: &[f64], rt: &[i32], flags: &[i32],
-        lam: f64, sin_t: f64, pol: i32,
+        n: &[Complex64],
+        d: &[f64],
+        rv: &[f64],
+        rt: &[i32],
+        flags: &[i32],
+        lam: f64,
+        sin_t: f64,
+        pol: i32,
     ) -> [f64; 4] {
         let nsin = n[0] * cplx(sin_t, 0.0);
         let (blocks, spacers) = partition_blocks(flags);
@@ -1950,13 +2254,22 @@ mod tests {
         let target = [0.0f64];
         let weights = [1.0f64];
         for &pol in &[0i32, 1] {
-            for &(z, j, xi, sin_t) in &[
-                (15.0f64, 1usize, 15.0f64, 0.0f64),
-                (120.0, 3, 20.0, 0.0),
-            ] {
+            for &(z, j, xi, sin_t) in &[(15.0f64, 1usize, 15.0f64, 0.0f64), (120.0, 3, 20.0, 0.0)] {
                 let p = p_function_multiblock(
-                    &[lam], &[sin_t], &cache, &d, &flags, &rt, &rv,
-                    &np, PmbQuantity::T, &target, &weights, &[z], None, pol,
+                    &[lam],
+                    &[sin_t],
+                    &cache,
+                    &d,
+                    &flags,
+                    &rt,
+                    &rv,
+                    &np,
+                    PmbQuantity::T,
+                    &target,
+                    &weights,
+                    &[z],
+                    None,
+                    pol,
                 )
                 .unwrap()[0];
                 let delta = 5e-4_f64;
@@ -1972,7 +2285,10 @@ mod tests {
                 let fd = (t1 * t1 - t0 * t0) / delta / 2.0;
                 let scale = fd.abs().max(p.abs()).max(1e-12);
                 let err = (fd - p).abs() / scale;
-                assert!(err < 2e-3, "PmbT pol={pol} z={z}: fd={fd:.6e} p={p:.6e} err={err:.2e}");
+                assert!(
+                    err < 2e-3,
+                    "PmbT pol={pol} z={z}: fd={fd:.6e} p={p:.6e} err={err:.2e}"
+                );
             }
         }
     }
@@ -2004,8 +2320,20 @@ mod tests {
             assert!(a0 > 1e-3, "pol={pol}: test stack should absorb (A={a0})");
             for &(z, j, xi) in &[(15.0f64, 1usize, 15.0f64), (120.0, 3, 20.0)] {
                 let p = p_function_multiblock(
-                    &[lam], &[0.0], &cache, &d, &flags, &rt, &rv,
-                    &np, PmbQuantity::A, &target, &weights, &[z], None, pol,
+                    &[lam],
+                    &[0.0],
+                    &cache,
+                    &d,
+                    &flags,
+                    &rt,
+                    &rv,
+                    &np,
+                    PmbQuantity::A,
+                    &target,
+                    &weights,
+                    &[z],
+                    None,
+                    pol,
                 )
                 .unwrap()[0];
                 let delta = 5e-4_f64;
@@ -2020,7 +2348,10 @@ mod tests {
                 let fd = (a1 * a1 - a0 * a0) / delta / 2.0;
                 let scale = fd.abs().max(p.abs()).max(1e-12);
                 let err = (fd - p).abs() / scale;
-                assert!(err < 2e-3, "PmbA pol={pol} z={z}: fd={fd:.6e} p={p:.6e} err={err:.2e}");
+                assert!(
+                    err < 2e-3,
+                    "PmbA pol={pol} z={z}: fd={fd:.6e} p={p:.6e} err={err:.2e}"
+                );
             }
         }
     }
@@ -2059,8 +2390,20 @@ mod tests {
             for &q in &[PmbQuantity::TB, PmbQuantity::RB, PmbQuantity::AB] {
                 for &(z, j, xi) in &[(15.0f64, 1usize, 15.0f64), (120.0, 3, 20.0)] {
                     let p = p_function_multiblock(
-                        &[lam], &[0.0], &cache, &d, &flags, &rt, &rv,
-                        &np, q, &target, &weights, &[z], None, pol,
+                        &[lam],
+                        &[0.0],
+                        &cache,
+                        &d,
+                        &flags,
+                        &rt,
+                        &rv,
+                        &np,
+                        q,
+                        &target,
+                        &weights,
+                        &[z],
+                        None,
+                        pol,
                     )
                     .unwrap()[0];
                     let delta = 5e-4_f64;
@@ -2076,7 +2419,10 @@ mod tests {
                     let fd = (x1 * x1 - x0 * x0) / delta / 2.0;
                     let scale = fd.abs().max(p.abs()).max(1e-12);
                     let err = (fd - p).abs() / scale;
-                    assert!(err < 2e-3, "Pmb{q:?} pol={pol} z={z}: fd={fd:.6e} p={p:.6e} err={err:.2e}");
+                    assert!(
+                        err < 2e-3,
+                        "Pmb{q:?} pol={pol} z={z}: fd={fd:.6e} p={p:.6e} err={err:.2e}"
+                    );
                 }
             }
         }
@@ -2093,11 +2439,26 @@ mod tests {
             let f = build_stack_fields(&n, &d, &rv, &rt, lam, nsin, pol);
             let phi0 = f.s_left.last().unwrap().0.arg();
             // z depths from top of layer 1; layer tops: L1=0, L2=40, L3=120.
-            for &(z, j, xi) in &[(15.0f64, 1usize, 15.0f64), (80.0, 2, 40.0), (130.0, 3, 10.0)] {
+            for &(z, j, xi) in &[
+                (15.0f64, 1usize, 15.0f64),
+                (80.0, 2, 40.0),
+                (130.0, 3, 10.0),
+            ] {
                 let np = [n_(2.6, 0.0)];
                 let out = phase_dispersion_sensitivity(
-                    &[lam], &[sin_t], 0, nl_last_idx(&n), &cache_of(&n),
-                    &d, &rt, &rv, &np, &[z], pol, 0, 0,
+                    &[lam],
+                    &[sin_t],
+                    0,
+                    nl_last_idx(&n),
+                    &cache_of(&n),
+                    &d,
+                    &rt,
+                    &rv,
+                    &np,
+                    &[z],
+                    pol,
+                    0,
+                    0,
                 )
                 .unwrap();
                 let q_an = out[0][0][0];
@@ -2157,7 +2518,11 @@ mod tests {
         // neighbour on the next sweep (same behaviour as func_4's chain).
         for w in 1..num_wavs - 1 {
             let expect1 = 2.0 - 6.0 * omega[w];
-            assert!((d1[w][0] - expect1).abs() < 1e-9, "w={w}: {} vs {expect1}", d1[w][0]);
+            assert!(
+                (d1[w][0] - expect1).abs() < 1e-9,
+                "w={w}: {} vs {expect1}",
+                d1[w][0]
+            );
         }
         for w in 2..num_wavs - 2 {
             assert!((d2[w][0] + 6.0).abs() < 1e-9, "w={w}: {}", d2[w][0]);
@@ -2190,8 +2555,19 @@ mod tests {
         let z = [60.0f64]; // middle of film layer 2
 
         let out = phase_dispersion_sensitivity(
-            &wavls, &[sin_t], 0, nl - 1, &cache, &d, &rt, &rv,
-            &np, &z, pol, 0, 2,
+            &wavls,
+            &[sin_t],
+            0,
+            nl - 1,
+            &cache,
+            &d,
+            &rt,
+            &rv,
+            &np,
+            &z,
+            pol,
+            0,
+            2,
         )
         .unwrap();
 
@@ -2221,7 +2597,10 @@ mod tests {
             let an_gd = out[1][w][0];
             if fd_gd.abs() > 1e-6 {
                 let err = (an_gd - fd_gd).abs() / fd_gd.abs();
-                assert!(err < 5e-2, "GD w={w}: an={an_gd:.4e} fd={fd_gd:.4e} err={err:.2e}");
+                assert!(
+                    err < 5e-2,
+                    "GD w={w}: an={an_gd:.4e} fd={fd_gd:.4e} err={err:.2e}"
+                );
             }
         }
         // GDD rows.
@@ -2231,7 +2610,10 @@ mod tests {
             let scale = fd.abs().max(an.abs());
             if scale > 1e-6 {
                 let err = (an - fd).abs() / scale;
-                assert!(err < 8e-2, "GDD w={wi}: an={an:.4e} fd={fd:.4e} err={err:.2e}");
+                assert!(
+                    err < 8e-2,
+                    "GDD w={wi}: an={an:.4e} fd={fd:.4e} err={err:.2e}"
+                );
             }
         }
     }
@@ -2280,21 +2662,51 @@ mod tests {
 
         // Coherent kernel vs p_function.
         let pref = p_function(
-            &wavls, &angles, 0, nl - 1, nl, &cache, &d, &rt, &rv,
-            &npw, &target, &weights, &z, 0,
+            &wavls,
+            &angles,
+            0,
+            nl - 1,
+            nl,
+            &cache,
+            &d,
+            &rt,
+            &rv,
+            &npw,
+            &target,
+            &weights,
+            &z,
+            0,
         )
         .unwrap();
         let mut acc = vec![0.0; z.len()];
         for a in 0..angles.len() {
             for w in 0..num_wavs {
                 let base = w * nl * 2;
-                let ns: Vec<Complex64> =
-                    (0..nl).map(|l| cplx(cache[base + l * 2], cache[base + l * 2 + 1])).collect();
+                let ns: Vec<Complex64> = (0..nl)
+                    .map(|l| cplx(cache[base + l * 2], cache[base + l * 2 + 1]))
+                    .collect();
                 let c = p_coherent_from_fields(
-                    &build_stack_fields_range(0, nl - 1, &ns, &d, &rv, &rt, wavls[w], ns[0] * cplx(angles[a], 0.0), 0),
-                    ns[0] * cplx(angles[a], 0.0), wavls[w], 0, npw[w],
-                    target[a * num_wavs + w], weights[a * num_wavs + w],
-                    &d, 0, nl - 1, &z,
+                    &build_stack_fields_range(
+                        0,
+                        nl - 1,
+                        &ns,
+                        &d,
+                        &rv,
+                        &rt,
+                        wavls[w],
+                        ns[0] * cplx(angles[a], 0.0),
+                        0,
+                    ),
+                    ns[0] * cplx(angles[a], 0.0),
+                    wavls[w],
+                    0,
+                    npw[w],
+                    target[a * num_wavs + w],
+                    weights[a * num_wavs + w],
+                    &d,
+                    0,
+                    nl - 1,
+                    &z,
                 );
                 for (zi, cv) in c.iter().enumerate() {
                     acc[zi] += cv;
@@ -2309,8 +2721,12 @@ mod tests {
         let flags = [0i32, 0, 1, 0, 0, 0];
         // 6-layer stack with spacer at index 2
         let layers6 = [
-            (n_(1.0, 0.0), 0.0), (n_(2.35, 0.0), 40.0), (n_(1.45, 0.0), 60.0),
-            (n_(2.35, 0.0), 50.0), (n_(1.45, 0.0), 30.0), (n_(1.52, 0.0), 0.0),
+            (n_(1.0, 0.0), 0.0),
+            (n_(2.35, 0.0), 40.0),
+            (n_(1.45, 0.0), 60.0),
+            (n_(2.35, 0.0), 50.0),
+            (n_(1.45, 0.0), 30.0),
+            (n_(1.52, 0.0), 0.0),
         ];
         let n6: Vec<Complex64> = layers6.iter().map(|&(m, _)| m).collect();
         let d6: Vec<f64> = layers6.iter().map(|&(_, t)| t).collect();
@@ -2329,8 +2745,20 @@ mod tests {
         let z6 = [15.0f64, 120.0];
 
         let pmb = p_function_multiblock(
-            &wavls, &angles, &cache6, &d6, &flags, &rt6, &rv6,
-            &npw6, PmbQuantity::R, &t6, &w6, &z6, None, 0,
+            &wavls,
+            &angles,
+            &cache6,
+            &d6,
+            &flags,
+            &rt6,
+            &rv6,
+            &npw6,
+            PmbQuantity::R,
+            &t6,
+            &w6,
+            &z6,
+            None,
+            0,
         )
         .unwrap();
         let locs = locate_hosts_multiblock(&d6, &flags, &z6, None).unwrap();
@@ -2338,11 +2766,23 @@ mod tests {
         for a in 0..angles.len() {
             for w in 0..num_wavs {
                 let base = w * 6 * 2;
-                let ns: Vec<Complex64> =
-                    (0..6).map(|l| cplx(cache6[base + l * 2], cache6[base + l * 2 + 1])).collect();
+                let ns: Vec<Complex64> = (0..6)
+                    .map(|l| cplx(cache6[base + l * 2], cache6[base + l * 2 + 1]))
+                    .collect();
                 let c = p_multiblock_point(
-                    wavls[w], angles[a], &ns, &d6, &flags, &rv6, &rt6,
-                    npw6[w], PmbQuantity::R, t6[a * num_wavs + w], w6[a * num_wavs + w], &locs, 0,
+                    wavls[w],
+                    angles[a],
+                    &ns,
+                    &d6,
+                    &flags,
+                    &rv6,
+                    &rt6,
+                    npw6[w],
+                    PmbQuantity::R,
+                    t6[a * num_wavs + w],
+                    w6[a * num_wavs + w],
+                    &locs,
+                    0,
                 );
                 for (zi, cv) in c.iter().enumerate() {
                     acc6[zi] += cv;
@@ -2375,7 +2815,10 @@ mod tests {
                     (composed - direct).norm() < 1e-12,
                     "pol={pol} sin_t={sin_t}: {composed} vs {direct}"
                 );
-            }        }    }    #[test]
+            }
+        }
+    }
+    #[test]
     fn energy_conservation_lossless_normal_incidence() {
         let (n, d, rv, rt) = stack_a();
         let nsin = n[0] * cplx(0.0, 0.0);
@@ -2388,7 +2831,8 @@ mod tests {
         let rr = r_amp.norm_sqr();
         let tt = t_amp.norm_sqr() * (y_sub / y_amb);
         assert!((rr + tt - 1.0).abs() < 1e-10, "R+T={}", rr + tt);
-    }    #[test]
+    }
+    #[test]
     fn thin_slab_linearization_matches_exact_slab() {
         // Bare slab in uniform host: exact star-product reflection vs the
         // derived slopes — pins the rho_hat / tau_hat algebra.
@@ -2422,7 +2866,8 @@ mod tests {
             (((slab.2 - cplx(1.0, 0.0)) / 1e-6) - tau_hat).norm() / tau_hat.norm() < 1e-4,
             "tau_hat mismatch"
         );
-    }    #[test]
+    }
+    #[test]
     fn fd_oracle_lossless_stack() {
         let st = stack_a();
         let np_hi = n_(2.6, 0.0);
@@ -2437,13 +2882,15 @@ mod tests {
         // oblique incidence, both polarizations
         check_fd_case("oblique s", &st, 2, 33.0, np_hi, 0.5, 0);
         check_fd_case("oblique p", &st, 2, 47.0, np_lo, 0.5, 1);
-    }    #[test]
+    }
+    #[test]
     fn fd_oracle_absorbing_stack() {
         let st = stack_absorbing();
         check_fd_case("absorbing mid s", &st, 2, 25.0, n_(2.35, 0.0), 0.0, 0);
         check_fd_case("absorbing mid p", &st, 2, 25.0, n_(1.6, 0.0), 0.3, 1);
         check_fd_case("absorbing needle abs", &st, 1, 10.0, n_(1.9, 0.3), 0.0, 0);
-    }    #[test]
+    }
+    #[test]
     fn p_function_reduces_to_weighted_sum_of_sensitivities() {
         // Consistency: P at a single z equals the hand-computed weighted sum
         // over two spectral points.
@@ -2464,14 +2911,28 @@ mod tests {
             for m in layers {
                 cache.push(m.re);
                 cache.push(m.im);
-            }        }        let needle_per_wav = [n_(1.9, 0.0), n_(1.9, 0.0)];
+            }
+        }
+        let needle_per_wav = [n_(1.9, 0.0), n_(1.9, 0.0)];
         let target = [0.05f64, 0.02];
         let weights = [1.0, 2.0];
         let z = [60.0f64];
 
         let p = p_function(
-            &wavls, &angles, 0, nl - 1, nl, &cache, &d, &rt, &rv,
-            &needle_per_wav, &target, &weights, &z, 0,
+            &wavls,
+            &angles,
+            0,
+            nl - 1,
+            nl,
+            &cache,
+            &d,
+            &rt,
+            &rv,
+            &needle_per_wav,
+            &target,
+            &weights,
+            &z,
+            0,
         )
         .unwrap();
 
@@ -2480,8 +2941,12 @@ mod tests {
         for (wi, &lam) in wavls.iter().enumerate() {
             let mut ns = Vec::new();
             for l in 0..nl {
-                ns.push(cplx(cache[wi * nl * 2 + l * 2], cache[wi * nl * 2 + l * 2 + 1]));
-            }            let nsin = ns[0] * cplx(angles[0], 0.0);
+                ns.push(cplx(
+                    cache[wi * nl * 2 + l * 2],
+                    cache[wi * nl * 2 + l * 2 + 1],
+                ));
+            }
+            let nsin = ns[0] * cplx(angles[0], 0.0);
             let f = build_stack_fields(&ns, &d, &rv, &rt, lam, nsin, 0);
             let r = f.s_left.last().unwrap().0;
             let dr = {
@@ -2489,5 +2954,12 @@ mod tests {
                 needle_dr_ddz(&f, nsin, loc.0, loc.1, needle_per_wav[wi], 0, lam)
             };
             expect += 2.0 * weights[wi] * (r.norm_sqr() - target[wi]) * (r.conj() * dr).re;
-        }        assert!((p[0] - expect).abs() < 1e-12, "p={} expect={}", p[0], expect);
-    }}
+        }
+        assert!(
+            (p[0] - expect).abs() < 1e-12,
+            "p={} expect={}",
+            p[0],
+            expect
+        );
+    }
+}

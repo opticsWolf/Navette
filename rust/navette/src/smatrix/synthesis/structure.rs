@@ -56,13 +56,7 @@ pub struct LayerSpec {
 
 impl LayerSpec {
     /// Constant-index helper for tests and synthetic designs.
-    pub fn constant(
-        material: &str,
-        n_re: f64,
-        n_im: f64,
-        d_nm: f64,
-        num_wavs: usize,
-    ) -> Self {
+    pub fn constant(material: &str, n_re: f64, n_im: f64, d_nm: f64, num_wavs: usize) -> Self {
         LayerSpec {
             material: Arc::from(material),
             nk: vec![cplx(n_re, n_im); num_wavs].into(),
@@ -124,7 +118,12 @@ impl DesignStack {
                 ));
             }
         }
-        Ok(DesignStack { ambient, substrate, films, num_wavs })
+        Ok(DesignStack {
+            ambient,
+            substrate,
+            films,
+            num_wavs,
+        })
     }
 
     // -- properties ---------------------------------------------------------
@@ -301,7 +300,11 @@ impl DesignStack {
         seed: LayerSpec,
     ) -> Result<(), String> {
         let original = self.films.get(film_idx).ok_or_else(|| {
-            format!("film_idx {} out of range ({} films)", film_idx, self.films.len())
+            format!(
+                "film_idx {} out of range ({} films)",
+                film_idx,
+                self.films.len()
+            )
         })?;
         let d_total = original.d_nm;
         let d_bot = d_total - depth_into_layer_nm;
@@ -508,8 +511,16 @@ mod tests {
         ];
         films[1].interface = true;
         films[1].interface_thickness = 5.0;
-        let (stack, warns) =
-            DesignStack::from_design(air(0.0), sub(0.0), &films, &nk, &HashMap::new(), &wl, &HashSet::new()).unwrap();
+        let (stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
         assert!(warns.is_empty());
         // Plain film + slice + bulk (ambient/substrate flank outside films).
         assert_eq!(stack.films().len(), 3);
@@ -523,8 +534,16 @@ mod tests {
         let mut graded = vec![crate::structure::Layer::film(50.0, "H")];
         graded[0].inhomogen = true;
         graded[0].inh_delta = 0.2;
-        let (gstack, warns) =
-            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &HashSet::new()).unwrap();
+        let (gstack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &graded,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(warns.len(), 1);
         assert!(warns[0].contains("homogeneous"));
         assert_eq!(gstack.films().len(), 1);
@@ -532,7 +551,8 @@ mod tests {
         // Background graded: profile expands (11 sublayers), all pinned.
         let bg: std::collections::HashSet<String> = ["H".to_string()].into_iter().collect();
         let (bstack, bwarns) =
-            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg).unwrap();
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
         assert!(bwarns.is_empty());
         assert_eq!(bstack.films().len(), 11);
         assert!(bstack.films().iter().all(|f| !f.optimize && !f.needle));
@@ -557,23 +577,54 @@ mod tests {
         absorbing_sub.nk = vec![Complex64::new(1.52, 0.1); NW].into();
 
         let (stack, warns) = DesignStack::from_design(
-            amb, absorbing_sub, &films, &nk, &HashMap::new(), &wl, &HashSet::new(),
+            amb,
+            absorbing_sub,
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
         )
         .unwrap();
 
         assert_eq!(warns.len(), 1, "{warns:?}");
-        assert!(warns[0].contains("incident medium (layer 0) is absorbing"), "{}", warns[0]);
-        assert!(warns[0].contains(&format!("{NW} of {NW} wavelengths")), "{}", warns[0]);
+        assert!(
+            warns[0].contains("incident medium (layer 0) is absorbing"),
+            "{}",
+            warns[0]
+        );
+        assert!(
+            warns[0].contains(&format!("{NW} of {NW} wavelengths")),
+            "{}",
+            warns[0]
+        );
 
         // Layer 0 is flattened; the real part is kept, not replaced.
         assert!(stack.ambient().nk.iter().all(|z| z.im == 0.0));
-        assert!(stack.ambient().nk.iter().all(|z| (z.re - 1.33).abs() < 1e-15));
+        assert!(
+            stack
+                .ambient()
+                .nk
+                .iter()
+                .all(|z| (z.re - 1.33).abs() < 1e-15)
+        );
 
         // Nothing else is touched. An absorbing substrate and absorbing films
         // are ordinary physics -- the gate is about layer 0 only, and a gate
         // that quietly flattened the rest would be far worse than no gate.
-        assert!(stack.substrate().nk.iter().all(|z| (z.im - 0.1).abs() < 1e-15));
-        assert!(stack.films()[0].nk.iter().all(|z| (z.im - 0.3).abs() < 1e-15));
+        assert!(
+            stack
+                .substrate()
+                .nk
+                .iter()
+                .all(|z| (z.im - 0.1).abs() < 1e-15)
+        );
+        assert!(
+            stack.films()[0]
+                .nk
+                .iter()
+                .all(|z| (z.im - 0.3).abs() < 1e-15)
+        );
 
         // Once is enough: the ambient is private with no mutator, so the
         // stack operations the pipeline runs thousands of times cannot put
@@ -592,16 +643,32 @@ mod tests {
         grid[3] = Complex64::new(1.0, 1e-12);
         spotty.nk = grid.into();
         let (_, warns) = DesignStack::from_design(
-            spotty, sub(0.0), &films, &nk, &HashMap::new(), &wl, &HashSet::new(),
+            spotty,
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
         )
         .unwrap();
         assert_eq!(warns.len(), 1);
-        assert!(warns[0].contains(&format!("1 of {NW} wavelengths")), "{}", warns[0]);
+        assert!(
+            warns[0].contains(&format!("1 of {NW} wavelengths")),
+            "{}",
+            warns[0]
+        );
         assert!(warns[0].contains("first at index 3"), "{}", warns[0]);
 
         // And a transparent ambient stays silent -- the common path.
         let (_, warns) = DesignStack::from_design(
-            air(0.0), sub(0.0), &films, &nk, &HashMap::new(), &wl, &HashSet::new(),
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
         )
         .unwrap();
         assert!(warns.is_empty(), "{warns:?}");

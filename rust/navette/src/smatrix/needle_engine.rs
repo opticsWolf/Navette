@@ -23,7 +23,6 @@
 //! merit gradients at the call site:
 //!   ∂F/∂δ(z) = Σ_k 2·w_k·(GDD_k − GDD_t_k)·dGDD[k][z]
 
-
 // clippy::doc_overindented_list_items: the request-bit list above is a
 // hand-aligned table (constant / description / parenthetical). Clippy's
 // two-space continuation rule would break the columns, and the columns
@@ -32,7 +31,6 @@
 
 /// Speed of light in nm/fs (group-delay conversions).
 pub const C_NM_PER_FS: f64 = 299.792458;
-
 
 // ─── Request bits ────────────────────────────────────────────────────────────
 /// Request coherent absorptance profile P(z).
@@ -87,4 +85,3 @@ pub fn max_disp_order(requested: u64) -> Option<usize> {
         .map(|(_, order)| *order)
         .max()
 }
-

@@ -67,7 +67,8 @@ impl UniInterpolator {
             return Err(PyValueError::new_err("y must be a 1D or 2D numpy array"));
         };
         let _ = &mut d;
-        let inner = Core::new(x_arr, y_arr, is_batch, method, robust, d, extrap).map_err(map_err)?;
+        let inner =
+            Core::new(x_arr, y_arr, is_batch, method, robust, d, extrap).map_err(map_err)?;
         Ok(Self { inner })
     }
 

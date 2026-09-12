@@ -17,23 +17,23 @@
 use ndarray::{Array1, Array2, ArrayView1};
 use num_complex::Complex64;
 
-pub mod units;
 pub mod common;
 pub mod grid;
+pub mod units;
 
 pub mod cauchy;
-pub mod sellmeier;
-pub mod lorentz;
 pub mod drude;
 pub mod ema;
+pub mod lorentz;
+pub mod sellmeier;
 
 // Next-phase scaffolds (documented contracts, no behaviour yet).
-pub mod forouhi_bloomer;
 pub mod cody_lorentz;
-pub mod ubf;
-pub mod tauc_lorentz;
-pub mod table;
+pub mod forouhi_bloomer;
 pub mod kk;
+pub mod table;
+pub mod tauc_lorentz;
+pub mod ubf;
 
 /// Shared evaluation interface: complex refractive index at wavelengths [nm].
 ///
@@ -75,17 +75,39 @@ pub enum Model {
     /// Cauchy polynomial; `a, b, c` with λ in µm (`n = A + B/λ² + C/λ⁴`), k = 0.
     Cauchy { a: f64, b: f64, c: f64 },
     /// Cauchy `n` plus Urbach tail `k` (`alpha0` [1/cm], `eu` [eV], `lambda_g` [nm]).
-    CauchyUrbach { a: f64, b: f64, c: f64, alpha0: f64, eu: f64, lambda_g: f64 },
+    CauchyUrbach {
+        a: f64,
+        b: f64,
+        c: f64,
+        alpha0: f64,
+        eu: f64,
+        lambda_g: f64,
+    },
     /// Up-to-three-term Sellmeier; `b/c` coefficient triples, λ in µm.
     Sellmeier { b: [f64; 3], c: [f64; 3] },
     /// Sellmeier `n` plus Urbach tail `k` (same tail params as above).
-    SellmeierUrbach { b: [f64; 3], c: [f64; 3], alpha0: f64, eu: f64, lambda_g: f64 },
+    SellmeierUrbach {
+        b: [f64; 3],
+        c: [f64; 3],
+        alpha0: f64,
+        eu: f64,
+        lambda_g: f64,
+    },
     /// Lorentz oscillators; `osc` is (N, 3) rows of (E0, Γ, f) in eV.
     Lorentz { osc: Array2<f64>, eps_inf: f64 },
     /// Drude free carriers; `omega_p` plasma energy, `gamma` damping [eV].
-    Drude { omega_p: f64, gamma: f64, eps_inf: f64 },
+    Drude {
+        omega_p: f64,
+        gamma: f64,
+        eps_inf: f64,
+    },
     /// Combined Drude + Lorentz terms (metals with interband structure).
-    DrudeLorentz { omega_p: f64, gamma_d: f64, eps_inf: f64, osc: Array2<f64> },
+    DrudeLorentz {
+        omega_p: f64,
+        gamma_d: f64,
+        eps_inf: f64,
+        osc: Array2<f64>,
+    },
     // Effective { host, inclusion, fraction, rule } — phase 3 (see kk/cody phase 4).
 }
 
@@ -93,22 +115,38 @@ impl Dispersion for Model {
     fn nk(&self, wl: ArrayView1<f64>) -> Array1<Complex64> {
         match self {
             Model::Cauchy { a, b, c } => cauchy::cauchy_nk(wl, *a, *b, *c),
-            Model::CauchyUrbach { a, b, c, alpha0, eu, lambda_g } => {
-                cauchy::cauchy_urbach_nk(wl, *a, *b, *c, *alpha0, *eu, *lambda_g)
-            }
+            Model::CauchyUrbach {
+                a,
+                b,
+                c,
+                alpha0,
+                eu,
+                lambda_g,
+            } => cauchy::cauchy_urbach_nk(wl, *a, *b, *c, *alpha0, *eu, *lambda_g),
             Model::Sellmeier { b, c } => {
                 sellmeier::sellmeier_nk(wl, b[0], c[0], b[1], c[1], b[2], c[2])
             }
-            Model::SellmeierUrbach { b, c, alpha0, eu, lambda_g } => {
-                sellmeier::sellmeier_urbach_nk(
-                    wl, b[0], c[0], b[1], c[1], b[2], c[2], *alpha0, *eu, *lambda_g,
-                )
-            }
+            Model::SellmeierUrbach {
+                b,
+                c,
+                alpha0,
+                eu,
+                lambda_g,
+            } => sellmeier::sellmeier_urbach_nk(
+                wl, b[0], c[0], b[1], c[1], b[2], c[2], *alpha0, *eu, *lambda_g,
+            ),
             Model::Lorentz { osc, eps_inf } => lorentz::lorentz_nk(wl, osc.view(), *eps_inf),
-            Model::Drude { omega_p, gamma, eps_inf } => drude::drude_nk(wl, *omega_p, *gamma, *eps_inf),
-            Model::DrudeLorentz { omega_p, gamma_d, eps_inf, osc } => {
-                drude::drude_lorentz_nk(wl, *omega_p, *gamma_d, *eps_inf, osc.view())
-            }
+            Model::Drude {
+                omega_p,
+                gamma,
+                eps_inf,
+            } => drude::drude_nk(wl, *omega_p, *gamma, *eps_inf),
+            Model::DrudeLorentz {
+                omega_p,
+                gamma_d,
+                eps_inf,
+                osc,
+            } => drude::drude_lorentz_nk(wl, *omega_p, *gamma_d, *eps_inf, osc.view()),
         }
     }
 }

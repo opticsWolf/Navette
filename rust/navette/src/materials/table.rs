@@ -12,11 +12,7 @@ use num_complex::Complex64;
 use crate::materials::kk::interp;
 
 /// Wavelength-independent `n + ik`.
-pub fn konstant_nk(
-    wavelength_nm: ArrayView1<f64>,
-    n: f64,
-    k: f64,
-) -> Array1<Complex64> {
+pub fn konstant_nk(wavelength_nm: ArrayView1<f64>, n: f64, k: f64) -> Array1<Complex64> {
     let nk = Complex64::new(n, k);
     wavelength_nm.mapv(|_| nk)
 }

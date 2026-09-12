@@ -25,7 +25,11 @@ use crate::materials::units::energy_ev;
 #[inline]
 fn fb_term(e: f64, eg: f64, a: f64, b: f64, c: f64) -> Complex64 {
     let disc = 4.0 * c - b * b;
-    let q = if disc <= 1e-12 { 1e-6 } else { 0.5 * disc.sqrt() };
+    let q = if disc <= 1e-12 {
+        1e-6
+    } else {
+        0.5 * disc.sqrt()
+    };
     let b0 = (a / q) * (-(b * b / 2.0) + eg * b - eg * eg + c);
     let c0 = (a / q) * ((eg * eg + c) * (b / 2.0) - 2.0 * eg * c);
 

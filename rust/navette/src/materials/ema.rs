@@ -20,15 +20,25 @@ fn eps_of(n: Complex64) -> Complex64 {
 }
 
 /// Lichtenecker logarithmic mixing: ε_eff = exp(f·ln ε_i + (1−f)·ln ε_h).
-pub fn lichtenecker(n_i: ArrayView1<Complex64>, n_h: ArrayView1<Complex64>, f: f64) -> Array1<Complex64> {
+pub fn lichtenecker(
+    n_i: ArrayView1<Complex64>,
+    n_h: ArrayView1<Complex64>,
+    f: f64,
+) -> Array1<Complex64> {
     let inv = 1.0 - f;
-    Array1::from_iter(n_i.iter().zip(n_h.iter()).map(|(&ni, &nh)| {
-        (f * eps_of(ni).ln() + inv * eps_of(nh).ln()).exp()
-    }))
+    Array1::from_iter(
+        n_i.iter()
+            .zip(n_h.iter())
+            .map(|(&ni, &nh)| (f * eps_of(ni).ln() + inv * eps_of(nh).ln()).exp()),
+    )
 }
 
 /// Looyenga (Landau–Lifshitz–Looyenga): (ε_eff)^⅓ = f·ε_i^⅓ + (1−f)·ε_h^⅓.
-pub fn looyenga(n_i: ArrayView1<Complex64>, n_h: ArrayView1<Complex64>, f: f64) -> Array1<Complex64> {
+pub fn looyenga(
+    n_i: ArrayView1<Complex64>,
+    n_h: ArrayView1<Complex64>,
+    f: f64,
+) -> Array1<Complex64> {
     let inv = 1.0 - f;
     let p = 1.0 / 3.0;
     Array1::from_iter(n_i.iter().zip(n_h.iter()).map(|(&ni, &nh)| {
@@ -57,7 +67,11 @@ pub fn general_power_law(
 }
 
 /// Maxwell-Garnett (dilute spherical inclusions in host).
-pub fn maxwell_garnett(n_i: ArrayView1<Complex64>, n_h: ArrayView1<Complex64>, f: f64) -> Array1<Complex64> {
+pub fn maxwell_garnett(
+    n_i: ArrayView1<Complex64>,
+    n_h: ArrayView1<Complex64>,
+    f: f64,
+) -> Array1<Complex64> {
     Array1::from_iter(n_i.iter().zip(n_h.iter()).map(|(&ni, &nh)| {
         let ei = eps_of(ni);
         let eh = eps_of(nh);
@@ -99,14 +113,19 @@ pub fn wiener_bounds(
         let eh = eps_of(nh);
         (ei * eh) / (f * eh + inv * ei)
     }));
-    let upper = Array1::from_iter(n_i.iter().zip(n_h.iter()).map(|(&ni, &nh)| {
-        f * eps_of(ni) + inv * eps_of(nh)
-    }));
+    let upper = Array1::from_iter(
+        n_i.iter()
+            .zip(n_h.iter())
+            .map(|(&ni, &nh)| f * eps_of(ni) + inv * eps_of(nh)),
+    );
     (lower, upper)
 }
 
 /// 50:50 roughness interface = Looyenga at f = 0.5.
-pub fn roughness_interface(n_bottom: ArrayView1<Complex64>, n_top: ArrayView1<Complex64>) -> Array1<Complex64> {
+pub fn roughness_interface(
+    n_bottom: ArrayView1<Complex64>,
+    n_top: ArrayView1<Complex64>,
+) -> Array1<Complex64> {
     looyenga(n_bottom, n_top, 0.5)
 }
 

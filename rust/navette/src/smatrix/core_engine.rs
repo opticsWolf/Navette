@@ -18,7 +18,9 @@ use num_complex::Complex64;
 use num_complex::ComplexFloat;
 use std::f64::consts::PI;
 
-use crate::smatrix::coherent_block::{solve_coherent_block_fields_dual, solve_coherent_block_fields_inner};
+use crate::smatrix::coherent_block::{
+    solve_coherent_block_fields_dual, solve_coherent_block_fields_inner,
+};
 use crate::smatrix::optics_core::{
     grad_nonuniform as gradient, redheffer_product_cross_inner, redheffer_product_real_inner,
 };
@@ -158,26 +160,79 @@ pub const REQ_TBP_C: u64 = 1 << 48;
 // forces both polarizations regardless of the per-polarization usage masks.
 
 // Polarization usage: which branch each observable reads from.
-pub const USES_S: u64 = REQ_RS | REQ_TS | REQ_A_S | REQ_PHI_RS | REQ_PHI_TS
-    | REQ_RS_C | REQ_TS_C | REQ_DISP_R_S | REQ_DISP_T_S
-    | REQ_PHI_RBS | REQ_PHI_TBS | REQ_RBS_C | REQ_TBS_C;
-pub const USES_P: u64 = REQ_RP | REQ_TP | REQ_A_P | REQ_PHI_RP | REQ_PHI_TP
-    | REQ_RP_C | REQ_TP_C | REQ_DISP_R_P | REQ_DISP_T_P
-    | REQ_PHI_RBP | REQ_PHI_TBP | REQ_RBP_C | REQ_TBP_C;
-pub const USES_BOTH: u64 = REQ_R_AVG | REQ_T_AVG | REQ_A_AVG | REQ_PSI_R | REQ_PSI_T
-    | REQ_DIATT_R | REQ_DIATT_T | REQ_S0_R | REQ_S1_R | REQ_S0_T | REQ_S1_T;
+pub const USES_S: u64 = REQ_RS
+    | REQ_TS
+    | REQ_A_S
+    | REQ_PHI_RS
+    | REQ_PHI_TS
+    | REQ_RS_C
+    | REQ_TS_C
+    | REQ_DISP_R_S
+    | REQ_DISP_T_S
+    | REQ_PHI_RBS
+    | REQ_PHI_TBS
+    | REQ_RBS_C
+    | REQ_TBS_C;
+pub const USES_P: u64 = REQ_RP
+    | REQ_TP
+    | REQ_A_P
+    | REQ_PHI_RP
+    | REQ_PHI_TP
+    | REQ_RP_C
+    | REQ_TP_C
+    | REQ_DISP_R_P
+    | REQ_DISP_T_P
+    | REQ_PHI_RBP
+    | REQ_PHI_TBP
+    | REQ_RBP_C
+    | REQ_TBP_C;
+pub const USES_BOTH: u64 = REQ_R_AVG
+    | REQ_T_AVG
+    | REQ_A_AVG
+    | REQ_PSI_R
+    | REQ_PSI_T
+    | REQ_DIATT_R
+    | REQ_DIATT_T
+    | REQ_S0_R
+    | REQ_S1_R
+    | REQ_S0_T
+    | REQ_S1_T;
 
 // Compute-level demand. NEEDS_COMPLEX: observables that need the first-block
 // complex amplitudes (absolute phase, dispersion, raw complex coefficients).
 // NEEDS_CROSS: observables that need the p-s coherency channel.
-pub const NEEDS_COMPLEX: u64 = REQ_PHI_RS | REQ_PHI_RP | REQ_PHI_TS | REQ_PHI_TP
-    | REQ_RS_C | REQ_RP_C | REQ_TS_C | REQ_TP_C
-    | REQ_DISP_R_S | REQ_DISP_R_P | REQ_DISP_T_S | REQ_DISP_T_P
-    | REQ_PHI_RBS | REQ_PHI_RBP | REQ_PHI_TBS | REQ_PHI_TBP
-    | REQ_RBS_C | REQ_RBP_C | REQ_TBS_C | REQ_TBP_C;
-pub const NEEDS_CROSS: u64 = REQ_DELTA_R | REQ_DELTA_T | REQ_DOP_R | REQ_DOP_T
-    | REQ_S2_R | REQ_S3_R | REQ_S2_T | REQ_S3_T
-    | REQ_CROSS_R | REQ_CROSS_T | REQ_RETARD_R | REQ_RETARD_T;
+pub const NEEDS_COMPLEX: u64 = REQ_PHI_RS
+    | REQ_PHI_RP
+    | REQ_PHI_TS
+    | REQ_PHI_TP
+    | REQ_RS_C
+    | REQ_RP_C
+    | REQ_TS_C
+    | REQ_TP_C
+    | REQ_DISP_R_S
+    | REQ_DISP_R_P
+    | REQ_DISP_T_S
+    | REQ_DISP_T_P
+    | REQ_PHI_RBS
+    | REQ_PHI_RBP
+    | REQ_PHI_TBS
+    | REQ_PHI_TBP
+    | REQ_RBS_C
+    | REQ_RBP_C
+    | REQ_TBS_C
+    | REQ_TBP_C;
+pub const NEEDS_CROSS: u64 = REQ_DELTA_R
+    | REQ_DELTA_T
+    | REQ_DOP_R
+    | REQ_DOP_T
+    | REQ_S2_R
+    | REQ_S3_R
+    | REQ_S2_T
+    | REQ_S3_T
+    | REQ_CROSS_R
+    | REQ_CROSS_T
+    | REQ_RETARD_R
+    | REQ_RETARD_T;
 
 /// How much each solved polarization branch must compute. Strictly increasing:
 /// each level is a superset of the one before, so the resolved level is the max
@@ -217,7 +272,12 @@ pub fn resolve_plan(requested: u64) -> Plan {
     } else {
         Level::Intensities
     };
-    Plan { need_s, need_p, need_cross, level }
+    Plan {
+        need_s,
+        need_p,
+        need_cross,
+        level,
+    }
 }
 
 /// Minimal, physically-complete solved state at one (wavelength, angle) point.
@@ -328,14 +388,25 @@ pub fn solve_point(
 
         if need_s && need_p {
             let (s_res, p_res) = solve_coherent_block_fields_dual(
-                current_idx, next_incoh, n_stack, inv_n_stack, thick_slice,
-                rough_vals_slice, rough_types_slice, lam, nsinfi,
+                current_idx,
+                next_incoh,
+                n_stack,
+                inv_n_stack,
+                thick_slice,
+                rough_vals_slice,
+                rough_types_slice,
+                lam,
+                nsinfi,
             );
             let (s_rf, s_tb, s_tf, s_rb, s_rfi, s_tbi, s_tfi, s_rbi) = s_res;
             let (p_rf, p_tb, p_tf, p_rb, p_rfi, p_tbi, p_tfi, p_rbi) = p_res;
 
-            ig_s = redheffer_product_real_inner(ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi);
-            ig_p = redheffer_product_real_inner(ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi);
+            ig_s = redheffer_product_real_inner(
+                ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi,
+            );
+            ig_p = redheffer_product_real_inner(
+                ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi,
+            );
 
             if !first {
                 rs0 = s_rf;
@@ -361,10 +432,20 @@ pub fn solve_point(
         } else if need_s {
             let (s_rf, s_tb, s_tf, s_rb, s_rfi, s_tbi, s_tfi, s_rbi) =
                 solve_coherent_block_fields_inner(
-                    current_idx, next_incoh, n_stack, inv_n_stack, thick_slice,
-                    rough_vals_slice, rough_types_slice, lam, nsinfi, POL_S,
+                    current_idx,
+                    next_incoh,
+                    n_stack,
+                    inv_n_stack,
+                    thick_slice,
+                    rough_vals_slice,
+                    rough_types_slice,
+                    lam,
+                    nsinfi,
+                    POL_S,
                 );
-            ig_s = redheffer_product_real_inner(ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi);
+            ig_s = redheffer_product_real_inner(
+                ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi,
+            );
             if !first {
                 rs0 = s_rf;
                 ts0 = s_tf;
@@ -375,10 +456,20 @@ pub fn solve_point(
         } else if need_p {
             let (p_rf, p_tb, p_tf, p_rb, p_rfi, p_tbi, p_tfi, p_rbi) =
                 solve_coherent_block_fields_inner(
-                    current_idx, next_incoh, n_stack, inv_n_stack, thick_slice,
-                    rough_vals_slice, rough_types_slice, lam, nsinfi, POL_P,
+                    current_idx,
+                    next_incoh,
+                    n_stack,
+                    inv_n_stack,
+                    thick_slice,
+                    rough_vals_slice,
+                    rough_types_slice,
+                    lam,
+                    nsinfi,
+                    POL_P,
                 );
-            ig_p = redheffer_product_real_inner(ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi);
+            ig_p = redheffer_product_real_inner(
+                ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi,
+            );
             if !first {
                 rp0 = p_rf;
                 tp0 = p_tf;
@@ -402,10 +493,14 @@ pub fn solve_point(
             let tau = (-2.0 * beta_imag).exp();
 
             if need_s {
-                ig_s = redheffer_product_real_inner(ig_s.0, ig_s.1, ig_s.2, ig_s.3, 0.0, tau, tau, 0.0);
+                ig_s = redheffer_product_real_inner(
+                    ig_s.0, ig_s.1, ig_s.2, ig_s.3, 0.0, tau, tau, 0.0,
+                );
             }
             if need_p {
-                ig_p = redheffer_product_real_inner(ig_p.0, ig_p.1, ig_p.2, ig_p.3, 0.0, tau, tau, 0.0);
+                ig_p = redheffer_product_real_inner(
+                    ig_p.0, ig_p.1, ig_p.2, ig_p.3, 0.0, tau, tau, 0.0,
+                );
             }
             if track_cross_channel {
                 let tf = Complex64::new(tau, 0.0);
@@ -494,25 +589,56 @@ pub fn solve_point_intensity(
 
         if need_s && need_p {
             let (s_res, p_res) = solve_coherent_block_fields_dual(
-                current_idx, next_incoh, n_stack, inv_n_stack, thick_slice,
-                rough_vals_slice, rough_types_slice, lam, nsinfi,
+                current_idx,
+                next_incoh,
+                n_stack,
+                inv_n_stack,
+                thick_slice,
+                rough_vals_slice,
+                rough_types_slice,
+                lam,
+                nsinfi,
             );
             let (_, _, _, _, s_rfi, s_tbi, s_tfi, s_rbi) = s_res;
             let (_, _, _, _, p_rfi, p_tbi, p_tfi, p_rbi) = p_res;
-            ig_s = redheffer_product_real_inner(ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi);
-            ig_p = redheffer_product_real_inner(ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi);
+            ig_s = redheffer_product_real_inner(
+                ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi,
+            );
+            ig_p = redheffer_product_real_inner(
+                ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi,
+            );
         } else if need_s {
             let (_, _, _, _, s_rfi, s_tbi, s_tfi, s_rbi) = solve_coherent_block_fields_inner(
-                current_idx, next_incoh, n_stack, inv_n_stack, thick_slice,
-                rough_vals_slice, rough_types_slice, lam, nsinfi, POL_S,
+                current_idx,
+                next_incoh,
+                n_stack,
+                inv_n_stack,
+                thick_slice,
+                rough_vals_slice,
+                rough_types_slice,
+                lam,
+                nsinfi,
+                POL_S,
             );
-            ig_s = redheffer_product_real_inner(ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi);
+            ig_s = redheffer_product_real_inner(
+                ig_s.0, ig_s.1, ig_s.2, ig_s.3, s_rfi, s_tbi, s_tfi, s_rbi,
+            );
         } else if need_p {
             let (_, _, _, _, p_rfi, p_tbi, p_tfi, p_rbi) = solve_coherent_block_fields_inner(
-                current_idx, next_incoh, n_stack, inv_n_stack, thick_slice,
-                rough_vals_slice, rough_types_slice, lam, nsinfi, POL_P,
+                current_idx,
+                next_incoh,
+                n_stack,
+                inv_n_stack,
+                thick_slice,
+                rough_vals_slice,
+                rough_types_slice,
+                lam,
+                nsinfi,
+                POL_P,
             );
-            ig_p = redheffer_product_real_inner(ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi);
+            ig_p = redheffer_product_real_inner(
+                ig_p.0, ig_p.1, ig_p.2, ig_p.3, p_rfi, p_tbi, p_tfi, p_rbi,
+            );
         }
 
         if next_incoh < idx_n && inc_flags_slice[next_incoh] == 1 {
@@ -528,10 +654,14 @@ pub fn solve_point_intensity(
             let beta_imag = if beta_imag < 0.0 { 0.0 } else { beta_imag };
             let tau = (-2.0 * beta_imag).exp();
             if need_s {
-                ig_s = redheffer_product_real_inner(ig_s.0, ig_s.1, ig_s.2, ig_s.3, 0.0, tau, tau, 0.0);
+                ig_s = redheffer_product_real_inner(
+                    ig_s.0, ig_s.1, ig_s.2, ig_s.3, 0.0, tau, tau, 0.0,
+                );
             }
             if need_p {
-                ig_p = redheffer_product_real_inner(ig_p.0, ig_p.1, ig_p.2, ig_p.3, 0.0, tau, tau, 0.0);
+                ig_p = redheffer_product_real_inner(
+                    ig_p.0, ig_p.1, ig_p.2, ig_p.3, 0.0, tau, tau, 0.0,
+                );
             }
         }
 
@@ -618,7 +748,10 @@ mod tests {
 
     impl Lcg {
         fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0
         }
         fn uniform(&mut self, lo: f64, hi: f64) -> f64 {
@@ -677,13 +810,33 @@ mod tests {
             for &mode in &[MODE_A, MODE_B, MODE_C] {
                 for &(need_s, need_p) in &[(true, false), (false, true), (true, true)] {
                     let full = solve_point(
-                        n_layers - 1, lam, sin_theta, &n_stack, &inv_n_stack, &thick,
-                        &inc_flags, &rough_types, &rough_vals, mode,
-                        need_s, need_p, false,
+                        n_layers - 1,
+                        lam,
+                        sin_theta,
+                        &n_stack,
+                        &inv_n_stack,
+                        &thick,
+                        &inc_flags,
+                        &rough_types,
+                        &rough_vals,
+                        mode,
+                        need_s,
+                        need_p,
+                        false,
                     );
                     let lean = solve_point_intensity(
-                        n_layers - 1, lam, sin_theta, &n_stack, &inv_n_stack, &thick,
-                        &inc_flags, &rough_types, &rough_vals, mode, need_s, need_p,
+                        n_layers - 1,
+                        lam,
+                        sin_theta,
+                        &n_stack,
+                        &inv_n_stack,
+                        &thick,
+                        &inc_flags,
+                        &rough_types,
+                        &rough_vals,
+                        mode,
+                        need_s,
+                        need_p,
                     );
 
                     for (name, a, b) in [
@@ -693,7 +846,8 @@ mod tests {
                         ("tp", full.tp, lean.tp),
                     ] {
                         assert_eq!(
-                            a.to_bits(), b.to_bits(),
+                            a.to_bits(),
+                            b.to_bits(),
                             "trial {trial} mode {mode} s={need_s} p={need_p}: \
                              {name} drifted, full={a} lean={b}"
                         );
@@ -717,14 +871,28 @@ mod tests {
             Complex64::new(2.35, 0.1),
             Complex64::new(1.52, 0.0),
         ];
-        let inv_n_stack: Vec<Complex64> =
-            n_stack.iter().map(|n| Complex64::new(1.0, 0.0) / n).collect();
+        let inv_n_stack: Vec<Complex64> = n_stack
+            .iter()
+            .map(|n| Complex64::new(1.0, 0.0) / n)
+            .collect();
         let lean = solve_point_intensity(
-            2, 550.0, 0.3, &n_stack, &inv_n_stack, &[0.0, 120.0, 0.0],
-            &[0, 0, 0], &[0, 0, 0], &[0.0, 0.0, 0.0], MODE_C, true, true,
+            2,
+            550.0,
+            0.3,
+            &n_stack,
+            &inv_n_stack,
+            &[0.0, 120.0, 0.0],
+            &[0, 0, 0],
+            &[0, 0, 0],
+            &[0.0, 0.0, 0.0],
+            MODE_C,
+            true,
+            true,
         );
-        for c in [lean.rs_c, lean.rp_c, lean.ts_c, lean.tp_c,
-                  lean.rbs_c, lean.rbp_c, lean.tbs_c, lean.tbp_c] {
+        for c in [
+            lean.rs_c, lean.rp_c, lean.ts_c, lean.tp_c, lean.rbs_c, lean.rbp_c, lean.tbs_c,
+            lean.tbp_c,
+        ] {
             assert!(c.re.is_nan() && c.im.is_nan(), "expected NaN, got {c}");
         }
         assert_eq!(lean.cross_r, Complex64::new(0.0, 0.0));

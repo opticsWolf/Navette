@@ -9,8 +9,8 @@
 
 pub mod architect;
 pub mod enums;
-pub mod group;
 pub mod expansion;
+pub mod group;
 pub mod layer;
 pub mod providers;
 pub mod specs;
@@ -32,13 +32,15 @@ pub use enums::{BlockKind, ErrorMask, ErrorType, LayerMask, LayerType, OptMask, 
 // the same Group objects), so film/material baking through one handle is
 // visible through all of them. Expansion snapshot-clones per run.
 pub type SharedGroup = std::rc::Rc<std::cell::RefCell<Group>>;
-pub use group::{ErrorParams, Group};
-pub use group::shared_group;
-pub use layer::Layer;
-pub use providers::{DictProvider, Entry, MaterialProvider, SpecProvider, assert_provider_grid, grids_equal};
 pub use expansion::{ExpandOptions, SolverArrays, Span, expand};
-pub use structure::Structure;
+pub use group::shared_group;
+pub use group::{ErrorParams, Group};
+pub use layer::Layer;
+pub use providers::{
+    DictProvider, Entry, MaterialProvider, SpecProvider, assert_provider_grid, grids_equal,
+};
 pub use specs::{MODELS, MaterialSpec};
-pub use weaver::{InterpSettings, WeaverProvider, WovenBackend};
+pub use structure::Structure;
 pub use validation::{Severity, ValidationIssue};
 pub use version::{SCHEMA_VERSION, check_schema_version};
+pub use weaver::{InterpSettings, WeaverProvider, WovenBackend};

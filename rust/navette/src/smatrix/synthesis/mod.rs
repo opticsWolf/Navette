@@ -21,22 +21,22 @@
 //!   optimization technique to the design of optical coatings,"
 //!   Appl. Opt. 35(28), 5493–5508 (1996).
 
-pub mod color_merit;
-pub mod structure;
-pub mod merit;
-pub mod thick_opt;
-pub mod jacobian;
-pub mod optimizer;
-pub mod trf;
-pub mod needle_pass;
-pub mod context;
 pub mod cleanup;
-pub mod inflate;
+pub mod color_merit;
 pub mod config;
-pub mod stagnation;
-pub mod evaluator;
+pub mod context;
 pub mod cycle;
 pub mod design_config;
 pub mod driver;
+pub mod evaluator;
+pub mod inflate;
+pub mod jacobian;
+pub mod merit;
+pub mod needle_pass;
+pub mod optimizer;
 pub mod pipeline;
+pub mod stagnation;
+pub mod structure;
 pub mod targets;
+pub mod thick_opt;
+pub mod trf;

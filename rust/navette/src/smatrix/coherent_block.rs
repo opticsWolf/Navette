@@ -12,7 +12,10 @@
 use num_complex::{Complex64, ComplexFloat};
 use std::f64::consts::PI;
 
-use crate::smatrix::optics_core::{cexp_fast, csqrt_fast, forward_branch, nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner};
+use crate::smatrix::optics_core::{
+    cexp_fast, csqrt_fast, forward_branch, nevot_croce_factors,
+    redheffer_product_complex_field_inner, w_function_inner,
+};
 
 const POL_S: i32 = 0;
 const LOG_MIN: f64 = 1e-100;
@@ -205,11 +208,27 @@ pub fn solve_coherent_block_fields_inner(
 ) -> BlockResult {
     if pol == POL_S {
         solve_pol_specialized::<true>(
-            start_idx, end_idx, n_slice, inv_n_slice, d_slice, rv_slice, rt_slice, lam, nsin_fi,
+            start_idx,
+            end_idx,
+            n_slice,
+            inv_n_slice,
+            d_slice,
+            rv_slice,
+            rt_slice,
+            lam,
+            nsin_fi,
         )
     } else {
         solve_pol_specialized::<false>(
-            start_idx, end_idx, n_slice, inv_n_slice, d_slice, rv_slice, rt_slice, lam, nsin_fi,
+            start_idx,
+            end_idx,
+            n_slice,
+            inv_n_slice,
+            d_slice,
+            rv_slice,
+            rt_slice,
+            lam,
+            nsin_fi,
         )
     }
 }
@@ -347,10 +366,12 @@ pub fn solve_coherent_block_fields_dual(
             let r21 = -((ys_curr - ys_next) * inv) * rg_r21;
             let t12 = ys_curr * 2.0 * inv * rg_t;
             let t21 = ys_next * 2.0 * inv * rg_t;
-            let (a, b, c, d) = redheffer_product_complex_field_inner(
-                s_rf, s_tb, s_tf, s_rb, r12, t21, t12, r21,
-            );
-            s_rf = a; s_tb = b; s_tf = c; s_rb = d;
+            let (a, b, c, d) =
+                redheffer_product_complex_field_inner(s_rf, s_tb, s_tf, s_rb, r12, t21, t12, r21);
+            s_rf = a;
+            s_tb = b;
+            s_tf = c;
+            s_rb = d;
             if let Some(phi) = phi {
                 s_rb = s_rb * phi * phi;
                 s_tb *= phi;
@@ -370,10 +391,12 @@ pub fn solve_coherent_block_fields_dual(
             let r21 = -((yp_curr - yp_next) * inv) * rg_r21;
             let t12 = yp_curr * 2.0 * inv * rg_t;
             let t21 = yp_next * 2.0 * inv * rg_t;
-            let (a, b, c, d) = redheffer_product_complex_field_inner(
-                p_rf, p_tb, p_tf, p_rb, r12, t21, t12, r21,
-            );
-            p_rf = a; p_tb = b; p_tf = c; p_rb = d;
+            let (a, b, c, d) =
+                redheffer_product_complex_field_inner(p_rf, p_tb, p_tf, p_rb, r12, t21, t12, r21);
+            p_rf = a;
+            p_tb = b;
+            p_tf = c;
+            p_rb = d;
             if let Some(phi) = phi {
                 p_rb = p_rb * phi * phi;
                 p_tb *= phi;
@@ -388,17 +411,35 @@ pub fn solve_coherent_block_fields_dual(
         idx += 1;
     }
 
-    let finalize = |rf: Complex64, tb: Complex64, tf: Complex64, rb: Complex64,
-                    y_first: Complex64, y_last: Complex64| -> BlockResult {
+    let finalize = |rf: Complex64,
+                    tb: Complex64,
+                    tf: Complex64,
+                    rb: Complex64,
+                    y_first: Complex64,
+                    y_last: Complex64|
+     -> BlockResult {
         let r_front = rf.norm_sqr();
         let r_back = rb.norm_sqr();
         let mut ry0 = y_first.re;
         let mut ry1 = y_last.re;
-        if ry0 < 1e-15 { ry0 = 0.0; }
-        if ry1 < 1e-15 { ry1 = 0.0; }
+        if ry0 < 1e-15 {
+            ry0 = 0.0;
+        }
+        if ry1 < 1e-15 {
+            ry1 = 0.0;
+        }
         let f_fwd = if ry0 > 1e-15 { ry1 / ry0 } else { 0.0 };
         let f_back = if ry1 > 1e-15 { ry0 / ry1 } else { 0.0 };
-        (rf, tb, tf, rb, r_front, tb.norm_sqr() * f_back, tf.norm_sqr() * f_fwd, r_back)
+        (
+            rf,
+            tb,
+            tf,
+            rb,
+            r_front,
+            tb.norm_sqr() * f_back,
+            tf.norm_sqr() * f_fwd,
+            r_back,
+        )
     };
 
     let s_res = finalize(s_rf, s_tb, s_tf, s_rb, ys_first, ys_curr);

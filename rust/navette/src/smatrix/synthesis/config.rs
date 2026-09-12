@@ -151,18 +151,30 @@ mod tests {
         let c = PipelineConfig::default().validated().unwrap();
         assert!((c.cleanup_min_nm.unwrap() - c.clamp_min_nm).abs() < 1e-12);
 
-        assert!(PipelineConfig { clamp_min_nm: -1.0, ..Default::default() }
+        assert!(
+            PipelineConfig {
+                clamp_min_nm: -1.0,
+                ..Default::default()
+            }
             .validated()
-            .is_err());
-        assert!(PipelineConfig {
-            clamp_min_nm: 5.0,
-            clamp_max_nm: 5.0,
-            ..Default::default()
-        }
-        .validated()
-        .is_err());
-        assert!(PipelineConfig { stagnation_window: 1, ..Default::default() }
+            .is_err()
+        );
+        assert!(
+            PipelineConfig {
+                clamp_min_nm: 5.0,
+                clamp_max_nm: 5.0,
+                ..Default::default()
+            }
             .validated()
-            .is_err());
+            .is_err()
+        );
+        assert!(
+            PipelineConfig {
+                stagnation_window: 1,
+                ..Default::default()
+            }
+            .validated()
+            .is_err()
+        );
     }
 }

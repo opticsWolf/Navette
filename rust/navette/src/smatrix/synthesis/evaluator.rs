@@ -24,13 +24,11 @@ use crate::smatrix::needle_operator::{
 };
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::jacobian::CurveDeposits;
-use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
-use crate::smatrix::synthesis::structure::{DesignStack, SolverArrays};
 use crate::smatrix::synthesis::jacobian::assemble_jacobian;
-use crate::smatrix::synthesis::optimizer::{run_optimizer, OptimizerResult};
-use crate::smatrix::synthesis::thick_opt::{
-    JacobianMode, JacobianSource, LmConfig, NoJacobian,
-};
+use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
+use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
+use crate::smatrix::synthesis::structure::{DesignStack, SolverArrays};
+use crate::smatrix::synthesis::thick_opt::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
 
 /// Solver + merit context for one synthesis problem.
 #[derive(Clone)]
@@ -120,10 +118,14 @@ impl SmatrixContext {
                 let lam = self.wavls[w];
                 let base = w * nl * 2;
                 let n_slice: Vec<Complex64> = (0..nl)
-                    .map(|l| Complex64::new(sa.n_stack_cache[base + l * 2], sa.n_stack_cache[base + l * 2 + 1]))
+                    .map(|l| {
+                        Complex64::new(
+                            sa.n_stack_cache[base + l * 2],
+                            sa.n_stack_cache[base + l * 2 + 1],
+                        )
+                    })
                     .collect();
-                let inv_n_slice: Vec<Complex64> =
-                    n_slice.iter().map(|&n| 1.0 / n).collect();
+                let inv_n_slice: Vec<Complex64> = n_slice.iter().map(|&n| 1.0 / n).collect();
                 let nsin_fi = n_slice[0] * Complex64::new(self.sin_theta[a], 0.0);
                 let (s_res, p_res) = solve_coherent_block_fields_dual(
                     start,
@@ -136,17 +138,21 @@ impl SmatrixContext {
                     lam,
                     nsin_fi,
                 );
-                let pt = Pt { rs: s_res.4, rp: p_res.4, ts: s_res.5, tp: p_res.5,
-                              tfs: s_res.2, tfp: p_res.2 };
+                let pt = Pt {
+                    rs: s_res.4,
+                    rp: p_res.4,
+                    ts: s_res.5,
+                    tp: p_res.5,
+                    tfs: s_res.2,
+                    tfp: p_res.2,
+                };
                 // Thickness deposits, when asked for. Nothing above this line
                 // is touched by the request: the values are the same solver
                 // call either way, and the fingerprint says so.
                 let dep = if n_par == 0 {
                     Vec::new()
                 } else {
-                    deposit_row(
-                        &n_slice, &sa, start, end, lam, nsin_fi, par_films, n_par,
-                    )
+                    deposit_row(&n_slice, &sa, start, end, lam, nsin_fi, par_films, n_par)
                 };
                 (pt, dep)
             })
@@ -183,10 +189,8 @@ impl SmatrixContext {
         // themselves come from the dual solver regardless).
         let mut cplx: [Option<Arc<[Complex64]>>; 6] = [None, None, None, None, None, None];
         if self.spec.uses_phase() {
-            cplx[CurveId::Ts.index()] =
-                Some(pts.iter().map(|p| p.tfs).collect::<Vec<_>>().into());
-            cplx[CurveId::Tp.index()] =
-                Some(pts.iter().map(|p| p.tfp).collect::<Vec<_>>().into());
+            cplx[CurveId::Ts.index()] = Some(pts.iter().map(|p| p.tfs).collect::<Vec<_>>().into());
+            cplx[CurveId::Tp.index()] = Some(pts.iter().map(|p| p.tfp).collect::<Vec<_>>().into());
         }
         // Stack metadata for the PD reference: ambient/substrate thickness
         // entries are zero, so the plain sum is the coating thickness D;
@@ -284,10 +288,7 @@ impl DesignContext for SmatrixContext {
         SmatrixContext::simulate(self, stack)
     }
 
-    fn optimize_thicknesses(
-        &mut self,
-        stack: &mut DesignStack,
-    ) -> Result<f64, String> {
+    fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
         self.optimize_thicknesses_report(stack).map(|(mf, _)| mf)
     }
 }
@@ -329,7 +330,8 @@ impl SmatrixContext {
                 st.set_thickness(i, x[j])?;
             }
             let sim = ctx_self.simulate(&st)?;
-            spec.residuals(&sim, out).map_err(|c| format!("missing curve {c:?}"))
+            spec.residuals(&sim, out)
+                .map_err(|c| format!("missing curve {c:?}"))
         };
 
         let x0: Vec<f64> = opt_indices
@@ -356,10 +358,10 @@ impl SmatrixContext {
                     n_wav: self.wavls.len(),
                 };
                 run_optimizer(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)?
-            },
+            }
             JacobianMode::Fd => {
                 run_optimizer(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)?
-            },
+            }
         };
 
         // Write back, then clamp sweep (removes sub-min, caps above-max).
@@ -411,12 +413,15 @@ impl JacobianSource for DepositJacobian {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smatrix::synthesis::structure::LayerSpec;
     use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
+    use crate::smatrix::synthesis::structure::LayerSpec;
 
     fn ar_spec(angle: f64, wl: f64) -> MeritSpec {
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle, curve: CurveId::Rs });
+        let k = spec.add_key(MeritKey {
+            angle,
+            curve: CurveId::Rs,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![wl].into(),
@@ -469,7 +474,10 @@ mod tests {
     /// must then fill complex-t rows + reference metadata (gated assembly).
     fn ar_ctx_pd() -> SmatrixContext {
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Ts });
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![1000.0].into(),
@@ -506,10 +514,18 @@ mod tests {
         let rs = sim.curve(CurveId::Rs).unwrap();
         let ts = sim.curve(CurveId::Ts).unwrap();
         for k in 0..rs.len() {
-            assert!((rs[k] + ts[k] - 1.0).abs() < 1e-10, "k={k} R={} T={}", rs[k], ts[k]);
+            assert!(
+                (rs[k] + ts[k] - 1.0).abs() < 1e-10,
+                "k={k} R={} T={}",
+                rs[k],
+                ts[k]
+            );
         }
         // All values physical.
-        for arr in [sim.curve(CurveId::Rs).unwrap(), sim.curve(CurveId::Rp).unwrap()] {
+        for arr in [
+            sim.curve(CurveId::Rs).unwrap(),
+            sim.curve(CurveId::Rp).unwrap(),
+        ] {
             for &v in arr.iter() {
                 assert!((0.0..=1.0).contains(&v));
             }
@@ -574,28 +590,35 @@ mod tests {
         let ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
         let substrate = LayerSpec::constant("sub", 1.0, 0.0, 0.0, nw);
         let slab = DesignStack::with_films(
-            ambient, substrate, vec![LayerSpec::constant("F", 1.0, 0.0, 500.0, nw)],
-        ).unwrap();
+            ambient,
+            substrate,
+            vec![LayerSpec::constant("F", 1.0, 0.0, 500.0, nw)],
+        )
+        .unwrap();
         // NOTE: empty spec → gated assembly skips complex rows, so this
         // calibration context carries a (value-irrelevant) phase demand.
         let mut pd_spec = MeritSpec::new();
-        let pk = pd_spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Ts });
-        pd_spec.add_target(MeritTarget {
-            key_idx: pk as u32,
-            wavelengths: vec![400.0].into(),
-            kind: ConstraintKind::Exact,
-            transform: SimTransform::Phase,
-            norm_factor: 1.0,
-            normalized_targets: vec![0.0].into(),
-            tolerances: vec![0.05].into(),
-            band: vec![].into(),
-            phase: true,
-            differential_passes: None,
-            integral: false,
-            weight: 1.0,
-            count_norm: None,
-        })
-        .unwrap();
+        let pk = pd_spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
+        pd_spec
+            .add_target(MeritTarget {
+                key_idx: pk as u32,
+                wavelengths: vec![400.0].into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: vec![0.0].into(),
+                tolerances: vec![0.05].into(),
+                band: vec![].into(),
+                phase: true,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
         let ctx = SmatrixContext {
             wavls: vec![400.0],
             sin_theta: vec![0.0],
@@ -607,7 +630,10 @@ mod tests {
         let sim = ctx.simulate(&slab).unwrap();
         let tf = sim.cplx[CurveId::Ts.index()].as_ref().unwrap()[0];
         // kD = 2π·500/400 = 2.5π → +π/2 vs −π/2, unambiguous.
-        assert!((tf.arg() - std::f64::consts::PI / 2.0).abs() < 1e-9, "tf={tf}");
+        assert!(
+            (tf.arg() - std::f64::consts::PI / 2.0).abs() < 1e-9,
+            "tf={tf}"
+        );
         // `reference_phase` is unwrapped (2.5π here) while `arg()` wraps:
         // compare in wrapped space, exactly as the merit kernel does.
         let r = crate::smatrix::optics_core::reference_phase(400.0, 1.0, 0.0, 500.0, 1.0);
@@ -672,12 +698,19 @@ mod tests {
         let stack = ar_stack(d);
         let sim = ctx.simulate(&stack).unwrap();
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Ts });
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
         let wl = vec![900.0, 1000.0, 1100.0];
-        let tgt: Vec<f64> = wl.iter().map(|&lam| {
-            // `.conj()`: solver convention (see oracle test above).
-            oracle_tf(1.0, n_l, 1.52, d, lam).conj().arg() - 2.0 * std::f64::consts::PI * d / lam
-        }).collect();
+        let tgt: Vec<f64> = wl
+            .iter()
+            .map(|&lam| {
+                // `.conj()`: solver convention (see oracle test above).
+                oracle_tf(1.0, n_l, 1.52, d, lam).conj().arg()
+                    - 2.0 * std::f64::consts::PI * d / lam
+            })
+            .collect();
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: wl.into(),
@@ -711,7 +744,10 @@ mod tests {
         let qw_phase = qw_sim.cplx[CurveId::Ts.index()].as_ref().unwrap()[1].arg();
         let ref_qw = 2.0 * std::f64::consts::PI * d_qw / 1000.0;
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve: CurveId::Ts });
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             wavelengths: vec![1000.0].into(),
@@ -735,340 +771,368 @@ mod tests {
         assert!(mf < 1e-6, "mf={mf}");
     }
 
-  // -- R4.5 increment ii: thickness deposits ---------------------------------
-  mod deposits {
-    use super::*;
-    use crate::smatrix::synthesis::jacobian::{
-      assemble_jacobian, deposit_channel, CurveDeposits, DEPOSIT_CHANNELS,
-    };
+    // -- R4.5 increment ii: thickness deposits ---------------------------------
+    mod deposits {
+        use super::*;
+        use crate::smatrix::synthesis::jacobian::{
+            CurveDeposits, DEPOSIT_CHANNELS, assemble_jacobian, deposit_channel,
+        };
 
-    const WLS: [f64; 5] = [480.0, 520.0, 560.0, 600.0, 640.0];
-    const SINS: [f64; 2] = [0.0, 0.45];
+        const WLS: [f64; 5] = [480.0, 520.0, 560.0, 600.0, 640.0];
+        const SINS: [f64; 2] = [0.0, 0.45];
 
-    /// air | H(n=2.30) | L(n=1.46) | H(n=2.30, k=0.004) | glass(1.52).
-    ///
-    /// Three optimizable films of different index, one of them weakly
-    /// absorbing (so A = 1 - R - T is not identically zero and the two
-    /// polarizations genuinely differ off normal).
-    fn stack3(d0: f64, d1: f64, d2: f64) -> DesignStack {
-      let nw = WLS.len();
-      let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
-      ambient.optimize = false;
-      ambient.needle = false;
-      let mut substrate = LayerSpec::constant("glass", 1.52, 0.0, 0.0, nw);
-      substrate.optimize = false;
-      substrate.needle = false;
-      DesignStack::with_films(
-        ambient,
-        substrate,
-        vec![
-          LayerSpec::constant("H", 2.30, 0.0, d0, nw),
-          LayerSpec::constant("L", 1.46, 0.0, d1, nw),
-          LayerSpec::constant("Habs", 2.30, 0.004, d2, nw),
-        ],
-      )
-      .unwrap()
-    }
+        /// air | H(n=2.30) | L(n=1.46) | H(n=2.30, k=0.004) | glass(1.52).
+        ///
+        /// Three optimizable films of different index, one of them weakly
+        /// absorbing (so A = 1 - R - T is not identically zero and the two
+        /// polarizations genuinely differ off normal).
+        fn stack3(d0: f64, d1: f64, d2: f64) -> DesignStack {
+            let nw = WLS.len();
+            let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+            ambient.optimize = false;
+            ambient.needle = false;
+            let mut substrate = LayerSpec::constant("glass", 1.52, 0.0, 0.0, nw);
+            substrate.optimize = false;
+            substrate.needle = false;
+            DesignStack::with_films(
+                ambient,
+                substrate,
+                vec![
+                    LayerSpec::constant("H", 2.30, 0.0, d0, nw),
+                    LayerSpec::constant("L", 1.46, 0.0, d1, nw),
+                    LayerSpec::constant("Habs", 2.30, 0.004, d2, nw),
+                ],
+            )
+            .unwrap()
+        }
 
-    fn ctx3(spec: MeritSpec) -> SmatrixContext {
-      SmatrixContext {
-        wavls: WLS.to_vec(),
-        sin_theta: SINS.to_vec(),
-        spec,
-        clamp_min_nm: 2.0,
-        clamp_max_nm: 1000.0,
-        lm: LmConfig::default(),
-      }
-    }
-
-    /// A pointwise Exact demand on `curve` over the whole grid at `angle`.
-    fn demand(spec: &mut MeritSpec, angle: f64, curve: CurveId, target: f64) {
-      demand_at(spec, angle, curve, vec![target; WLS.len()]);
-    }
-
-    /// As `demand`, with a per-wavelength target vector.
-    fn demand_at(spec: &mut MeritSpec, angle: f64, curve: CurveId, targets: Vec<f64>) {
-      let k = spec.add_key(MeritKey { angle, curve });
-      spec
-        .add_target(MeritTarget {
-          key_idx: k as u32,
-          wavelengths: WLS.to_vec().into(),
-          kind: ConstraintKind::Exact,
-          transform: SimTransform::Linear,
-          norm_factor: 1.0,
-          normalized_targets: targets.into(),
-          tolerances: vec![0.02; WLS.len()].into(),
-          band: vec![].into(),
-          phase: false,
-          differential_passes: None,
-          integral: false,
-          weight: 1.0,
-          count_norm: None,
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn thickness_deposits_are_a_finite_difference_of_the_simulated_curves() {
-      // The right half of J, against its own oracle: `simulate()` centrally
-      // differenced in THICKNESS space. No merit, no optimizer -- if this
-      // and the merit-side finite difference both hold, the product holds.
-      let ctx = ctx3(ar_spec(0.0, 560.0));
-      let d = [118.0, 203.0, 64.0];
-      let stack = stack3(d[0], d[1], d[2]);
-      let par = [0usize, 1, 2];
-      let (_, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
-      assert_eq!(dep.n_points(), SINS.len() * WLS.len());
-      assert_eq!(dep.n_par(), par.len());
-
-      let h = 1e-4;
-      let mut worst = 0.0f64;
-      let mut live = 0usize;
-      for (kp, &fi) in par.iter().enumerate() {
-        let mut sp = stack.clone();
-        sp.set_thickness(fi, d[fi] + h).unwrap();
-        let mut sm = stack.clone();
-        sm.set_thickness(fi, d[fi] - h).unwrap();
-        let a = ctx.simulate(&sp).unwrap();
-        let b = ctx.simulate(&sm).unwrap();
-        for (ch, &id) in DEPOSIT_CHANNELS.iter().enumerate() {
-          let ca = a.curve(id).unwrap();
-          let cb = b.curve(id).unwrap();
-          let fd: Vec<f64> =
-            ca.iter().zip(cb.iter()).map(|(p, m)| (p - m) / (2.0 * h)).collect();
-          let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
-          for (pt, &f) in fd.iter().enumerate() {
-            let an = dep.get(ch, pt, kp);
-            let dev = (an - f).abs() / scale;
-            worst = worst.max(dev);
-            assert!(dev < 1e-6, "film {fi}, {id:?}, point {pt}: {an} vs {f}");
-            if f.abs() > 1e-6 {
-              live += 1;
+        fn ctx3(spec: MeritSpec) -> SmatrixContext {
+            SmatrixContext {
+                wavls: WLS.to_vec(),
+                sin_theta: SINS.to_vec(),
+                spec,
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                lm: LmConfig::default(),
             }
-          }
         }
-      }
-      assert!(live > 40, "only {live} live entries -- the sweep barely moved");
-      println!("  deposits: {live} live entries, worst rel dev {worst:.3e}");
-    }
 
-    #[test]
-    fn the_assembled_jacobian_matches_a_finite_difference_of_the_residuals() {
-      // Both halves together, against the oracle the LM would otherwise use:
-      // central differences of the whole residual vector in thickness space.
-      // R, T and A demands at two angles, both polarizations.
-      let mut spec = MeritSpec::new();
-      demand(&mut spec, SINS[0], CurveId::Rs, 0.01);
-      demand(&mut spec, SINS[1], CurveId::Rp, 0.02);
-      demand(&mut spec, SINS[1], CurveId::Ts, 0.95);
-      demand(&mut spec, SINS[0], CurveId::As, 0.0);
-      let ctx = ctx3(spec);
-
-      let d = [118.0, 203.0, 64.0];
-      let stack = stack3(d[0], d[1], d[2]);
-      let par = [0usize, 1, 2];
-      let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
-      let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
-      assert!(sens.is_complete());
-      let mut jac = Vec::new();
-      assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
-
-      let m = sens.rows.len();
-      assert_eq!(m, 4 * WLS.len());
-      assert_eq!(jac.len(), m * par.len());
-
-      let h = 1e-4;
-      let mut worst = 0.0f64;
-      let mut live = 0usize;
-      for (kp, &fi) in par.iter().enumerate() {
-        let mut sp = stack.clone();
-        sp.set_thickness(fi, d[fi] + h).unwrap();
-        let mut sm = stack.clone();
-        sm.set_thickness(fi, d[fi] - h).unwrap();
-        let mut rp = Vec::new();
-        let mut rm = Vec::new();
-        ctx.spec.residuals(&ctx.simulate(&sp).unwrap(), &mut rp).unwrap();
-        ctx.spec.residuals(&ctx.simulate(&sm).unwrap(), &mut rm).unwrap();
-        let fd: Vec<f64> =
-          rp.iter().zip(&rm).map(|(p, q)| (p - q) / (2.0 * h)).collect();
-        let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
-        for i in 0..m {
-          let an = jac[i * par.len() + kp];
-          let dev = (an - fd[i]).abs() / scale;
-          worst = worst.max(dev);
-          assert!(dev < 1e-6, "row {i}, film {fi}: {an} vs {}", fd[i]);
-          if fd[i].abs() > 1e-6 {
-            live += 1;
-          }
+        /// A pointwise Exact demand on `curve` over the whole grid at `angle`.
+        fn demand(spec: &mut MeritSpec, angle: f64, curve: CurveId, target: f64) {
+            demand_at(spec, angle, curve, vec![target; WLS.len()]);
         }
-      }
-      assert!(live > 30, "only {live} live entries");
-      println!("  analytic J: {live} live entries, worst rel dev {worst:.3e}");
-    }
 
-    #[test]
-    fn absorption_rows_pick_up_both_companions_through_the_deposits() {
-      // A = 1 - R - T is the one demand whose row reads two channels. Its
-      // Jacobian row must equal -(dR/dd + dT/dd)/tol, a different number
-      // from either channel alone -- a single-channel bug would look
-      // plausible and be wrong.
-      let mut spec = MeritSpec::new();
-      demand(&mut spec, SINS[0], CurveId::As, 0.0);
-      let ctx = ctx3(spec);
-      let stack = stack3(118.0, 203.0, 64.0);
-      let par = [2usize];
-      let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
-      let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
-      let mut jac = Vec::new();
-      assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
-
-      let cr = deposit_channel(CurveId::Rs).unwrap();
-      let ct = deposit_channel(CurveId::Ts).unwrap();
-      for w in 0..WLS.len() {
-        let expect = -(dep.get(cr, w, 0) + dep.get(ct, w, 0)) / 0.02;
-        assert!((jac[w] - expect).abs() <= 1e-12 * expect.abs().max(1.0),
-                "row {w}: {} vs {expect}", jac[w]);
-      }
-    }
-
-    #[test]
-    fn a_phase_demand_refuses_the_analytic_path_instead_of_zeroing_it() {
-      // The fallback contract: an uncovered row must stop the assembly, not
-      // come back as a row of zeros that the LM would read as "flat".
-      let ctx = ar_ctx_pd();
-      let stack = stack3(118.0, 203.0, 64.0);
-      let par = [0usize];
-      let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
-      let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
-      assert!(!sens.is_complete());
-      let mut jac = Vec::new();
-      let err = assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap_err();
-      assert!(err.contains("no curve sensitivity"), "{err}");
-    }
-
-    #[test]
-    fn the_deposits_do_not_disturb_the_simulated_curves() {
-      // `simulate_with_deposits` shares one sweep with `simulate`; the values
-      // must come back bit-identical, or the fingerprint would depend on
-      // whether a Jacobian was asked for.
-      let ctx = ctx3(ar_spec(0.0, 560.0));
-      let stack = stack3(118.0, 203.0, 64.0);
-      let plain = ctx.simulate(&stack).unwrap();
-      let (with, _) = ctx.simulate_with_deposits(&stack, &[0, 1, 2]).unwrap();
-      for id in DEPOSIT_CHANNELS {
-        let a = plain.curve(id).unwrap();
-        let b = with.curve(id).unwrap();
-        assert_eq!(a.len(), b.len());
-        for (x, y) in a.iter().zip(b.iter()) {
-          assert_eq!(x.to_bits(), y.to_bits(), "{id:?}: {x} vs {y}");
+        /// As `demand`, with a per-wavelength target vector.
+        fn demand_at(spec: &mut MeritSpec, angle: f64, curve: CurveId, targets: Vec<f64>) {
+            let k = spec.add_key(MeritKey { angle, curve });
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                wavelengths: WLS.to_vec().into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Linear,
+                norm_factor: 1.0,
+                normalized_targets: targets.into(),
+                tolerances: vec![0.02; WLS.len()].into(),
+                band: vec![].into(),
+                phase: false,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
         }
-      }
+
+        #[test]
+        fn thickness_deposits_are_a_finite_difference_of_the_simulated_curves() {
+            // The right half of J, against its own oracle: `simulate()` centrally
+            // differenced in THICKNESS space. No merit, no optimizer -- if this
+            // and the merit-side finite difference both hold, the product holds.
+            let ctx = ctx3(ar_spec(0.0, 560.0));
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (_, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            assert_eq!(dep.n_points(), SINS.len() * WLS.len());
+            assert_eq!(dep.n_par(), par.len());
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let a = ctx.simulate(&sp).unwrap();
+                let b = ctx.simulate(&sm).unwrap();
+                for (ch, &id) in DEPOSIT_CHANNELS.iter().enumerate() {
+                    let ca = a.curve(id).unwrap();
+                    let cb = b.curve(id).unwrap();
+                    let fd: Vec<f64> = ca
+                        .iter()
+                        .zip(cb.iter())
+                        .map(|(p, m)| (p - m) / (2.0 * h))
+                        .collect();
+                    let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                    for (pt, &f) in fd.iter().enumerate() {
+                        let an = dep.get(ch, pt, kp);
+                        let dev = (an - f).abs() / scale;
+                        worst = worst.max(dev);
+                        assert!(dev < 1e-6, "film {fi}, {id:?}, point {pt}: {an} vs {f}");
+                        if f.abs() > 1e-6 {
+                            live += 1;
+                        }
+                    }
+                }
+            }
+            assert!(
+                live > 40,
+                "only {live} live entries -- the sweep barely moved"
+            );
+            println!("  deposits: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn the_assembled_jacobian_matches_a_finite_difference_of_the_residuals() {
+            // Both halves together, against the oracle the LM would otherwise use:
+            // central differences of the whole residual vector in thickness space.
+            // R, T and A demands at two angles, both polarizations.
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, SINS[0], CurveId::Rs, 0.01);
+            demand(&mut spec, SINS[1], CurveId::Rp, 0.02);
+            demand(&mut spec, SINS[1], CurveId::Ts, 0.95);
+            demand(&mut spec, SINS[0], CurveId::As, 0.0);
+            let ctx = ctx3(spec);
+
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(sens.is_complete());
+            let mut jac = Vec::new();
+            assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
+
+            let m = sens.rows.len();
+            assert_eq!(m, 4 * WLS.len());
+            assert_eq!(jac.len(), m * par.len());
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let mut rp = Vec::new();
+                let mut rm = Vec::new();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sp).unwrap(), &mut rp)
+                    .unwrap();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sm).unwrap(), &mut rm)
+                    .unwrap();
+                let fd: Vec<f64> = rp
+                    .iter()
+                    .zip(&rm)
+                    .map(|(p, q)| (p - q) / (2.0 * h))
+                    .collect();
+                let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                for i in 0..m {
+                    let an = jac[i * par.len() + kp];
+                    let dev = (an - fd[i]).abs() / scale;
+                    worst = worst.max(dev);
+                    assert!(dev < 1e-6, "row {i}, film {fi}: {an} vs {}", fd[i]);
+                    if fd[i].abs() > 1e-6 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 30, "only {live} live entries");
+            println!("  analytic J: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn absorption_rows_pick_up_both_companions_through_the_deposits() {
+            // A = 1 - R - T is the one demand whose row reads two channels. Its
+            // Jacobian row must equal -(dR/dd + dT/dd)/tol, a different number
+            // from either channel alone -- a single-channel bug would look
+            // plausible and be wrong.
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, SINS[0], CurveId::As, 0.0);
+            let ctx = ctx3(spec);
+            let stack = stack3(118.0, 203.0, 64.0);
+            let par = [2usize];
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            let mut jac = Vec::new();
+            assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
+
+            let cr = deposit_channel(CurveId::Rs).unwrap();
+            let ct = deposit_channel(CurveId::Ts).unwrap();
+            for w in 0..WLS.len() {
+                let expect = -(dep.get(cr, w, 0) + dep.get(ct, w, 0)) / 0.02;
+                assert!(
+                    (jac[w] - expect).abs() <= 1e-12 * expect.abs().max(1.0),
+                    "row {w}: {} vs {expect}",
+                    jac[w]
+                );
+            }
+        }
+
+        #[test]
+        fn a_phase_demand_refuses_the_analytic_path_instead_of_zeroing_it() {
+            // The fallback contract: an uncovered row must stop the assembly, not
+            // come back as a row of zeros that the LM would read as "flat".
+            let ctx = ar_ctx_pd();
+            let stack = stack3(118.0, 203.0, 64.0);
+            let par = [0usize];
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(!sens.is_complete());
+            let mut jac = Vec::new();
+            let err = assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap_err();
+            assert!(err.contains("no curve sensitivity"), "{err}");
+        }
+
+        #[test]
+        fn the_deposits_do_not_disturb_the_simulated_curves() {
+            // `simulate_with_deposits` shares one sweep with `simulate`; the values
+            // must come back bit-identical, or the fingerprint would depend on
+            // whether a Jacobian was asked for.
+            let ctx = ctx3(ar_spec(0.0, 560.0));
+            let stack = stack3(118.0, 203.0, 64.0);
+            let plain = ctx.simulate(&stack).unwrap();
+            let (with, _) = ctx.simulate_with_deposits(&stack, &[0, 1, 2]).unwrap();
+            for id in DEPOSIT_CHANNELS {
+                let a = plain.curve(id).unwrap();
+                let b = with.curve(id).unwrap();
+                assert_eq!(a.len(), b.len());
+                for (x, y) in a.iter().zip(b.iter()) {
+                    assert_eq!(x.to_bits(), y.to_bits(), "{id:?}: {x} vs {y}");
+                }
+            }
+        }
+
+        #[test]
+        fn deposits_refuse_a_film_index_that_is_not_there() {
+            let ctx = ctx3(ar_spec(0.0, 560.0));
+            let stack = stack3(118.0, 203.0, 64.0);
+            assert!(ctx.simulate_with_deposits(&stack, &[]).is_err());
+            assert!(ctx.simulate_with_deposits(&stack, &[0, 3]).is_err());
+        }
+
+        #[test]
+        fn the_deposit_source_declines_exactly_the_specs_it_cannot_cover() {
+            // The coverage gate, at the seam the optimizer actually uses. A spec
+            // whose channels are all deposited answers with a Jacobian; one with a
+            // phase target answers `None`, which is what makes the run fall back
+            // to differences instead of optimizing against zeros.
+            let stack = stack3(118.0, 203.0, 64.0);
+            let x = [118.0, 203.0, 64.0];
+
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, SINS[0], CurveId::Rs, 0.0);
+            demand(&mut spec, SINS[1], CurveId::As, 0.0);
+            let covered = DepositJacobian {
+                ctx: ctx3(spec),
+                base_stack: stack.clone(),
+                indices: vec![0, 1, 2],
+                n_wav: WLS.len(),
+            };
+            let mut jac = Vec::new();
+            let m = covered
+                .fill(&x, &mut jac)
+                .unwrap()
+                .expect("covered spec declined");
+            assert_eq!(m, 2 * WLS.len());
+            assert_eq!(jac.len(), m * 3);
+            assert!(
+                jac.iter().any(|v| v.abs() > 1e-9),
+                "a covered spec gave a flat J"
+            );
+
+            let phase = DepositJacobian {
+                ctx: ar_ctx_pd(),
+                base_stack: stack,
+                indices: vec![0],
+                n_wav: WLS.len(),
+            };
+            assert!(
+                phase.fill(&[118.0], &mut jac).unwrap().is_none(),
+                "a phase spec must decline, not answer"
+            );
+        }
+
+        #[test]
+        fn the_two_jacobian_modes_optimize_to_the_same_stack() {
+            // §8's question for this change: does the exact Jacobian move a pinned
+            // optimum? Same problem, same start, same bounds — only the Jacobian
+            // differs, and the two solvers must agree to far better than the
+            // difference noise they are being compared across.
+            // Targets taken from a reference stack, so the optimum is interior,
+            // unique and sitting at merit ~ 0: no bound activity, no layer the
+            // clamp sweep wants to remove, one basin. An "R = 0 everywhere"
+            // demand is none of those things — it is multimodal, and it drives a
+            // film to zero.
+            let reference = stack3(118.0, 203.0, 64.0);
+            let probe = ctx3(ar_spec(0.0, 560.0));
+            let sim0 = probe.simulate(&reference).unwrap();
+            let rs0 = sim0.curve(CurveId::Rs).unwrap().to_vec();
+            let rp0 = sim0.curve(CurveId::Rp).unwrap().to_vec();
+            let nw = WLS.len();
+            let mut spec = MeritSpec::new();
+            demand_at(&mut spec, SINS[0], CurveId::Rs, rs0[..nw].to_vec());
+            demand_at(&mut spec, SINS[1], CurveId::Rp, rp0[nw..].to_vec());
+
+            let mut analytic = ctx3(spec.clone());
+            analytic.lm.jacobian = JacobianMode::Analytic;
+            let mut differenced = ctx3(spec);
+            differenced.lm.jacobian = JacobianMode::Fd;
+            // The post-LM clamp sweep REMOVES sub-minimum films, which changes the
+            // parameter count and makes the two answers incomparable as vectors.
+            // Compare the optimizers, not the cleanup: floor the removal out.
+            analytic.clamp_min_nm = 1e-9;
+            differenced.clamp_min_nm = 1e-9;
+
+            // Start a few nm off that optimum, so both runs are unambiguously in
+            // its basin. Reflectance against thickness is oscillatory: started far
+            // away, two local solvers legitimately land in different minima, and
+            // comparing across basins measures the landscape rather than the
+            // Jacobian. (With an "R = 0" demand and a distant start they do
+            // diverge here — and the analytic run finds the better minimum.)
+            let mut sa = stack3(122.0, 198.0, 67.0);
+            let mut sb = sa.clone();
+            let ma = analytic.optimize_thicknesses(&mut sa).unwrap();
+            let mb = differenced.optimize_thicknesses(&mut sb).unwrap();
+
+            assert_eq!(sa.films().len(), sb.films().len(), "one run dropped a film");
+            assert!(
+                (ma - mb).abs() <= 1e-6 * mb.abs().max(1e-12),
+                "merit {ma} vs {mb}"
+            );
+            for (i, (fa, fb)) in sa.films().iter().zip(sb.films()).enumerate() {
+                assert!(
+                    (fa.d_nm - fb.d_nm).abs() < 1e-4,
+                    "film {i}: {} vs {} nm",
+                    fa.d_nm,
+                    fb.d_nm
+                );
+            }
+            println!("  modes agree: merit {ma:.6e} vs {mb:.6e}");
+        }
+
+        #[test]
+        fn the_deposit_rows_have_to_be_the_shape_the_channels_expect() {
+            let bad = vec![vec![0.0; 5], vec![0.0; 5]];
+            assert!(CurveDeposits::from_point_rows(bad, 2).is_err());
+            let good = vec![vec![1.0; 8], vec![2.0; 8]];
+            let d = CurveDeposits::from_point_rows(good, 2).unwrap();
+            assert_eq!(d.n_points(), 2);
+            assert_eq!(d.n_par(), 2);
+            assert_eq!(d.get(3, 1, 1), 2.0);
+        }
     }
-
-    #[test]
-    fn deposits_refuse_a_film_index_that_is_not_there() {
-      let ctx = ctx3(ar_spec(0.0, 560.0));
-      let stack = stack3(118.0, 203.0, 64.0);
-      assert!(ctx.simulate_with_deposits(&stack, &[]).is_err());
-      assert!(ctx.simulate_with_deposits(&stack, &[0, 3]).is_err());
-    }
-
-
-    #[test]
-    fn the_deposit_source_declines_exactly_the_specs_it_cannot_cover() {
-      // The coverage gate, at the seam the optimizer actually uses. A spec
-      // whose channels are all deposited answers with a Jacobian; one with a
-      // phase target answers `None`, which is what makes the run fall back
-      // to differences instead of optimizing against zeros.
-      let stack = stack3(118.0, 203.0, 64.0);
-      let x = [118.0, 203.0, 64.0];
-
-      let mut spec = MeritSpec::new();
-      demand(&mut spec, SINS[0], CurveId::Rs, 0.0);
-      demand(&mut spec, SINS[1], CurveId::As, 0.0);
-      let covered = DepositJacobian {
-        ctx: ctx3(spec),
-        base_stack: stack.clone(),
-        indices: vec![0, 1, 2],
-        n_wav: WLS.len(),
-      };
-      let mut jac = Vec::new();
-      let m = covered.fill(&x, &mut jac).unwrap().expect("covered spec declined");
-      assert_eq!(m, 2 * WLS.len());
-      assert_eq!(jac.len(), m * 3);
-      assert!(jac.iter().any(|v| v.abs() > 1e-9), "a covered spec gave a flat J");
-
-      let phase = DepositJacobian {
-        ctx: ar_ctx_pd(),
-        base_stack: stack,
-        indices: vec![0],
-        n_wav: WLS.len(),
-      };
-      assert!(phase.fill(&[118.0], &mut jac).unwrap().is_none(),
-              "a phase spec must decline, not answer");
-    }
-
-    #[test]
-    fn the_two_jacobian_modes_optimize_to_the_same_stack() {
-      // §8's question for this change: does the exact Jacobian move a pinned
-      // optimum? Same problem, same start, same bounds — only the Jacobian
-      // differs, and the two solvers must agree to far better than the
-      // difference noise they are being compared across.
-      // Targets taken from a reference stack, so the optimum is interior,
-      // unique and sitting at merit ~ 0: no bound activity, no layer the
-      // clamp sweep wants to remove, one basin. An "R = 0 everywhere"
-      // demand is none of those things — it is multimodal, and it drives a
-      // film to zero.
-      let reference = stack3(118.0, 203.0, 64.0);
-      let probe = ctx3(ar_spec(0.0, 560.0));
-      let sim0 = probe.simulate(&reference).unwrap();
-      let rs0 = sim0.curve(CurveId::Rs).unwrap().to_vec();
-      let rp0 = sim0.curve(CurveId::Rp).unwrap().to_vec();
-      let nw = WLS.len();
-      let mut spec = MeritSpec::new();
-      demand_at(&mut spec, SINS[0], CurveId::Rs, rs0[..nw].to_vec());
-      demand_at(&mut spec, SINS[1], CurveId::Rp, rp0[nw..].to_vec());
-
-      let mut analytic = ctx3(spec.clone());
-      analytic.lm.jacobian = JacobianMode::Analytic;
-      let mut differenced = ctx3(spec);
-      differenced.lm.jacobian = JacobianMode::Fd;
-      // The post-LM clamp sweep REMOVES sub-minimum films, which changes the
-      // parameter count and makes the two answers incomparable as vectors.
-      // Compare the optimizers, not the cleanup: floor the removal out.
-      analytic.clamp_min_nm = 1e-9;
-      differenced.clamp_min_nm = 1e-9;
-
-      // Start a few nm off that optimum, so both runs are unambiguously in
-      // its basin. Reflectance against thickness is oscillatory: started far
-      // away, two local solvers legitimately land in different minima, and
-      // comparing across basins measures the landscape rather than the
-      // Jacobian. (With an "R = 0" demand and a distant start they do
-      // diverge here — and the analytic run finds the better minimum.)
-      let mut sa = stack3(122.0, 198.0, 67.0);
-      let mut sb = sa.clone();
-      let ma = analytic.optimize_thicknesses(&mut sa).unwrap();
-      let mb = differenced.optimize_thicknesses(&mut sb).unwrap();
-
-      assert_eq!(sa.films().len(), sb.films().len(), "one run dropped a film");
-      assert!((ma - mb).abs() <= 1e-6 * mb.abs().max(1e-12),
-              "merit {ma} vs {mb}");
-      for (i, (fa, fb)) in sa.films().iter().zip(sb.films()).enumerate() {
-        assert!((fa.d_nm - fb.d_nm).abs() < 1e-4,
-                "film {i}: {} vs {} nm", fa.d_nm, fb.d_nm);
-      }
-      println!("  modes agree: merit {ma:.6e} vs {mb:.6e}");
-    }
-
-    #[test]
-    fn the_deposit_rows_have_to_be_the_shape_the_channels_expect() {
-      let bad = vec![vec![0.0; 5], vec![0.0; 5]];
-      assert!(CurveDeposits::from_point_rows(bad, 2).is_err());
-      let good = vec![vec![1.0; 8], vec![2.0; 8]];
-      let d = CurveDeposits::from_point_rows(good, 2).unwrap();
-      assert_eq!(d.n_points(), 2);
-      assert_eq!(d.n_par(), 2);
-      assert_eq!(d.get(3, 1, 1), 2.0);
-    }
-  }
 }

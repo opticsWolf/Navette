@@ -65,7 +65,14 @@ pub fn char_func(
     pol: i32,
 ) -> f64 {
     let r = reflection_coefficient_helper(
-        n_stack, inv_n, thicknesses, rough_types, rough_vals, lam, n_eff, pol,
+        n_stack,
+        inv_n,
+        thicknesses,
+        rough_types,
+        rough_vals,
+        lam,
+        n_eff,
+        pol,
     );
     let abs_r = r.norm();
     if !r.is_finite() || abs_r < 1e-15 {
@@ -115,14 +122,19 @@ pub fn char_func_xy(
     // range outside the box would corrupt a diagnostic the caller asked for.
     // The minimizer is the one that needs walls -- it picks its own points.
     let bound = n_eff_bound(n_stack);
-    if !xy[0].is_finite()
-        || !xy[1].is_finite()
-        || xy[0].abs() > bound
-        || xy[1].abs() > bound
-    {
+    if !xy[0].is_finite() || !xy[1].is_finite() || xy[0].abs() > bound || xy[1].abs() > bound {
         return 1e30;
     }
-    char_func(n_stack, inv_n, thicknesses, rough_types, rough_vals, lam, n_eff, pol)
+    char_func(
+        n_stack,
+        inv_n,
+        thicknesses,
+        rough_types,
+        rough_vals,
+        lam,
+        n_eff,
+        pol,
+    )
 }
 
 // -----------------------------------------------------------------------------

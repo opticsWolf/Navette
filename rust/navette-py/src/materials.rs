@@ -73,7 +73,8 @@ fn cauchy_urbach_nk<'py>(
     lambda_g: f64,
 ) -> Bound<'py, PyArray1<Complex64>> {
     let wl = owned1(wavelength_nm);
-    let out = py.detach(move || core::cauchy::cauchy_urbach_nk(wl.view(), a, b, c, alpha0, eu, lambda_g));
+    let out =
+        py.detach(move || core::cauchy::cauchy_urbach_nk(wl.view(), a, b, c, alpha0, eu, lambda_g));
     to_py(py, out)
 }
 
@@ -182,7 +183,9 @@ fn drude_lorentz_nk<'py>(
 ) -> Bound<'py, PyArray1<Complex64>> {
     let wl = owned1(wavelength_nm);
     let o = owned2(osc);
-    let out = py.detach(move || core::drude::drude_lorentz_nk(wl.view(), omega_p, gamma_d, eps_inf, o.view()));
+    let out = py.detach(move || {
+        core::drude::drude_lorentz_nk(wl.view(), omega_p, gamma_d, eps_inf, o.view())
+    });
     to_py(py, out)
 }
 
@@ -199,7 +202,9 @@ fn cody_lorentz_nk<'py>(
 ) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
     let wl = owned1(wavelength_nm);
     let o = owned2(osc);
-    let res = py.detach(move || core::cody_lorentz::cody_lorentz_nk(wl.view(), eg, et, eu, o.view(), eps_inf));
+    let res = py.detach(move || {
+        core::cody_lorentz::cody_lorentz_nk(wl.view(), eg, et, eu, o.view(), eps_inf)
+    });
     match res {
         Ok(out) => Ok(to_py(py, out)),
         Err(msg) => Err(PyValueError::new_err(msg)),
@@ -232,7 +237,9 @@ fn fb_metal_nk<'py>(
     let wl = owned1(wavelength_nm);
     let fe_o = owned1(fe);
     let t = owned2(ib);
-    let out = py.detach(move || core::forouhi_bloomer::fb_metal_nk(wl.view(), n_inf, fe_o.view(), t.view()));
+    let out = py.detach(move || {
+        core::forouhi_bloomer::fb_metal_nk(wl.view(), n_inf, fe_o.view(), t.view())
+    });
     to_py(py, out)
 }
 
@@ -326,7 +333,10 @@ fn ema_roughness<'py>(
 
 /// √ε for an array of permittivities (the EMA composition's final step).
 #[pyfunction]
-fn eps_to_nk<'py>(py: Python<'py>, eps: PyReadonlyArray1<'py, Complex64>) -> Bound<'py, PyArray1<Complex64>> {
+fn eps_to_nk<'py>(
+    py: Python<'py>,
+    eps: PyReadonlyArray1<'py, Complex64>,
+) -> Bound<'py, PyArray1<Complex64>> {
     let e = ownedc1(eps);
     let out = py.detach(move || core::ema::eps_to_nk(e.view()));
     to_py(py, out)
@@ -343,7 +353,8 @@ fn tauc_lorentz_nk<'py>(
 ) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
     let wl = owned1(wavelength_nm);
     let o = owned2(osc);
-    let res = py.detach(move || core::tauc_lorentz::tauc_lorentz_nk(wl.view(), eg, o.view(), eps_inf));
+    let res =
+        py.detach(move || core::tauc_lorentz::tauc_lorentz_nk(wl.view(), eg, o.view(), eps_inf));
     match res {
         Ok(out) => Ok(to_py(py, out)),
         Err(msg) => Err(PyValueError::new_err(msg)),

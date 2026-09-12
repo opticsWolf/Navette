@@ -12,11 +12,11 @@
 //   optimizer        — landscape/minimize helpers (char_func et al.)
 //   synthesis        — automated design synthesis (pure Rust core)
 
-pub mod optics_core;
-pub mod solver;
 pub mod coherent_block;
 pub mod core_engine;
-pub mod needle_operator;
 pub mod needle_engine;
+pub mod needle_operator;
+pub mod optics_core;
 pub mod optimizer;
+pub mod solver;
 pub mod synthesis;

@@ -21,13 +21,15 @@
 // make the block readable in source -- which is where it is read.
 #![allow(clippy::doc_overindented_list_items)]
 
-use crate::smatrix::synthesis::cleanup::{cleanup_design, CleanupResult};
+use crate::smatrix::synthesis::cleanup::{CleanupResult, cleanup_design};
 use crate::smatrix::synthesis::config::{PipelineConfig, TerminationReason};
 use crate::smatrix::synthesis::context::DesignContext;
-use crate::smatrix::synthesis::cycle::{run_needle_cycles, ContrastMap, NeedleCycleConfig, NeedleCycleResult};
+use crate::smatrix::synthesis::cycle::{
+    ContrastMap, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
+};
+use crate::smatrix::synthesis::inflate::{InflateResult, inflate_design};
 use crate::smatrix::synthesis::merit::MeritSpec;
-use crate::smatrix::synthesis::needle_pass::{build_needle_targets, NeedleTargets};
-use crate::smatrix::synthesis::inflate::{inflate_design, InflateResult};
+use crate::smatrix::synthesis::needle_pass::{NeedleTargets, build_needle_targets};
 use crate::smatrix::synthesis::stagnation::StagnationDetector;
 use crate::smatrix::synthesis::structure::DesignStack;
 
@@ -83,7 +85,14 @@ impl NeedlePipeline {
             cfg.stagnation_oscillation_ratio,
             cfg.stagnation_divergence_count,
         );
-        Ok(NeedlePipeline { stack, spectral, cfg, needle_cfg, contrast, detector })
+        Ok(NeedlePipeline {
+            stack,
+            spectral,
+            cfg,
+            needle_cfg,
+            contrast,
+            detector,
+        })
     }
 
     fn check_budgets<C: DesignContext + ?Sized>(
@@ -179,7 +188,8 @@ impl NeedlePipeline {
                     true,
                 )?;
                 // Post-cleanup clamp (Clamped override semantics).
-                self.stack.clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
+                self.stack
+                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
                 Some(r)
             } else {
                 None
@@ -199,7 +209,8 @@ impl NeedlePipeline {
                 )?;
                 // Clamp BEFORE re-optimize happened in Python before the call
                 // ordering above; enforce the AFTER clamp here too.
-                self.stack.clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
+                self.stack
+                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
                 Some(r)
             } else {
                 None
@@ -258,7 +269,8 @@ impl NeedlePipeline {
 
         // ── Final optimisation + clamp sweep ──
         ctx.optimize_thicknesses(&mut self.stack)?;
-        self.stack.clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
+        self.stack
+            .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
         let final_mf = ctx.evaluate_merit(&self.stack)?;
 
         Ok(PipelineResult {
@@ -295,11 +307,7 @@ pub struct SpectralInputs {
 impl SpectralInputs {
     /// Build from a merit spec: `angles_deg` matches the spec's key
     /// convention (degrees, as produced by the Python converter).
-    pub fn from_spec(
-        spec: &MeritSpec,
-        angles_deg: &[f64],
-        wavls: &[f64],
-    ) -> Result<Self, String> {
+    pub fn from_spec(spec: &MeritSpec, angles_deg: &[f64], wavls: &[f64]) -> Result<Self, String> {
         let fold = build_needle_targets(spec, angles_deg, wavls, None)?;
         Ok(SpectralInputs {
             wavls: wavls.to_vec(),
@@ -376,9 +384,12 @@ mod tests {
     fn pipeline(cfg_over: impl FnOnce(&mut PipelineConfig)) -> NeedlePipeline {
         let mut cfg = PipelineConfig::default();
         cfg_over(&mut cfg);
-        let stack =
-            DesignStack::with_films(air(), sub(), vec![LayerSpec::constant("H", 2.35, 0.0, 100.0, NW)])
-                .unwrap();
+        let stack = DesignStack::with_films(
+            air(),
+            sub(),
+            vec![LayerSpec::constant("H", 2.35, 0.0, 100.0, NW)],
+        )
+        .unwrap();
         NeedlePipeline::new(
             stack,
             dummy_spectral(),
@@ -469,10 +480,7 @@ mod tests {
             fn simulate(&self, _: &DesignStack) -> Result<SimCurves, String> {
                 Err("mock context has no simulator".into())
             }
-            fn optimize_thicknesses(
-                &mut self,
-                s: &mut DesignStack,
-            ) -> Result<f64, String> {
+            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
                 self.opt_calls += 1;
                 s.set_thickness(0, 5000.0)?;
                 self.evaluate_merit(s)

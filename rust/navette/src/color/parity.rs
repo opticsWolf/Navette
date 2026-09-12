@@ -19,7 +19,12 @@ fn assert_rows(got: &[[f64; 3]], want: &[[f64; 3]], tag: &str) {
     let mut max = 0.0f64;
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
         for c in 0..3 {
-            assert!(close(g[c], w[c]), "{tag}[{i}][{c}]: got {} want {}", g[c], w[c]);
+            assert!(
+                close(g[c], w[c]),
+                "{tag}[{i}][{c}]: got {} want {}",
+                g[c],
+                w[c]
+            );
             max = max.max((g[c] - w[c]).abs());
         }
     }
@@ -31,7 +36,12 @@ fn assert_rows2(got: &[[f64; 2]], want: &[[f64; 2]], tag: &str) {
     let mut max = 0.0f64;
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
         for c in 0..2 {
-            assert!(close(g[c], w[c]), "{tag}[{i}][{c}]: got {} want {}", g[c], w[c]);
+            assert!(
+                close(g[c], w[c]),
+                "{tag}[{i}][{c}]: got {} want {}",
+                g[c],
+                w[c]
+            );
             max = max.max((g[c] - w[c]).abs());
         }
     }
@@ -56,57 +66,112 @@ fn run3(f: impl Fn(&[[f64; 3]], &mut [[f64; 3]]), input: &[[f64; 3]]) -> Vec<[f6
 
 #[test]
 fn xyy_xyy() {
-    assert_rows(&run3(xyz_to_xyy, &golden::XYZ_IN), &golden::F01_XYZ_TO_XYY, "xyy_xyz_to_xyy");
+    assert_rows(
+        &run3(xyz_to_xyy, &golden::XYZ_IN),
+        &golden::F01_XYZ_TO_XYY,
+        "xyy_xyz_to_xyy",
+    );
     let xyy = run3(xyz_to_xyy, &golden::XYZ_IN);
-    assert_rows(&run3(xyy_to_xyz, &xyy), &golden::F01_XYY_TO_XYZ, "xyy_xyy_to_xyz");
+    assert_rows(
+        &run3(xyy_to_xyz, &xyy),
+        &golden::F01_XYY_TO_XYZ,
+        "xyy_xyy_to_xyz",
+    );
 }
 
 #[test]
 fn lch_lch() {
-    assert_rows(&run3(lab_to_lch, &golden::LAB1_IN), &golden::F02_LAB_TO_LCH, "lch_lab_to_lch");
+    assert_rows(
+        &run3(lab_to_lch, &golden::LAB1_IN),
+        &golden::F02_LAB_TO_LCH,
+        "lch_lab_to_lch",
+    );
     let lch = run3(lab_to_lch, &golden::LAB1_IN);
-    assert_rows(&run3(lch_to_lab, &lch), &golden::F02_LCH_TO_LAB, "lch_lch_to_lab");
+    assert_rows(
+        &run3(lch_to_lab, &lch),
+        &golden::F02_LCH_TO_LAB,
+        "lch_lch_to_lab",
+    );
 }
 
 #[test]
 fn luv_luv() {
     let f = |i: &[[f64; 3]], o: &mut [[f64; 3]]| xyz_to_luv(i, &REF_WHITE_D65, o);
     let g = |i: &[[f64; 3]], o: &mut [[f64; 3]]| luv_to_xyz(i, &REF_WHITE_D65, o);
-    assert_rows(&run3(f, &golden::XYZ_IN), &golden::F03_XYZ_TO_LUV, "luv_xyz_to_luv");
+    assert_rows(
+        &run3(f, &golden::XYZ_IN),
+        &golden::F03_XYZ_TO_LUV,
+        "luv_xyz_to_luv",
+    );
     let luv = run3(f, &golden::XYZ_IN);
     assert_rows(&run3(g, &luv), &golden::F03_LUV_TO_XYZ, "luv_luv_to_xyz");
 }
 
 #[test]
 fn oklab_xyz_oklab_xyz() {
-    assert_rows(&run3(xyz_to_oklab, &golden::XYZ_IN), &golden::F04_XYZ_TO_OKLAB, "oklab_xyz_xyz_to_oklab");
+    assert_rows(
+        &run3(xyz_to_oklab, &golden::XYZ_IN),
+        &golden::F04_XYZ_TO_OKLAB,
+        "oklab_xyz_xyz_to_oklab",
+    );
     let lab = run3(xyz_to_oklab, &golden::XYZ_IN);
-    assert_rows(&run3(oklab_to_xyz, &lab), &golden::F04_OKLAB_TO_XYZ, "oklab_xyz_oklab_to_xyz");
+    assert_rows(
+        &run3(oklab_to_xyz, &lab),
+        &golden::F04_OKLAB_TO_XYZ,
+        "oklab_xyz_oklab_to_xyz",
+    );
 }
 
 #[test]
 fn oklab_srgb_oklab_srgb() {
-    assert_rows(&run3(srgb_to_oklab, &golden::SRGB_IN), &golden::F05_SRGB_TO_OKLAB, "oklab_srgb_srgb_to_oklab");
+    assert_rows(
+        &run3(srgb_to_oklab, &golden::SRGB_IN),
+        &golden::F05_SRGB_TO_OKLAB,
+        "oklab_srgb_srgb_to_oklab",
+    );
     let lab = run3(srgb_to_oklab, &golden::SRGB_IN);
-    assert_rows(&run3(oklab_to_srgb, &lab), &golden::F05_OKLAB_TO_SRGB, "oklab_srgb_oklab_to_srgb");
+    assert_rows(
+        &run3(oklab_to_srgb, &lab),
+        &golden::F05_OKLAB_TO_SRGB,
+        "oklab_srgb_oklab_to_srgb",
+    );
 }
 
 #[test]
 fn uvw1964_uvw() {
     let (un, vn) = white_point_uv1960(&REF_WHITE_D65);
-    assert!(close(un, golden::F06_UN_D65) && close(vn, golden::F06_VN_D65), "white point");
+    assert!(
+        close(un, golden::F06_UN_D65) && close(vn, golden::F06_VN_D65),
+        "white point"
+    );
     let f = |i: &[[f64; 3]], o: &mut [[f64; 3]]| xyz_to_uvw(i, un, vn, o);
     let g = |i: &[[f64; 3]], o: &mut [[f64; 3]]| uvw_to_xyz(i, un, vn, o);
-    assert_rows(&run3(f, &golden::XYZ_IN), &golden::F06_XYZ_TO_UVW, "uvw1964_xyz_to_uvw");
+    assert_rows(
+        &run3(f, &golden::XYZ_IN),
+        &golden::F06_XYZ_TO_UVW,
+        "uvw1964_xyz_to_uvw",
+    );
     let uvw = run3(f, &golden::XYZ_IN);
-    assert_rows(&run3(g, &uvw), &golden::F06_UVW_TO_XYZ, "uvw1964_uvw_to_xyz");
+    assert_rows(
+        &run3(g, &uvw),
+        &golden::F06_UVW_TO_XYZ,
+        "uvw1964_uvw_to_xyz",
+    );
 }
 
 #[test]
 fn ucs1960_ucs() {
-    assert_rows(&run3(xyz_to_ucs, &golden::XYZ_IN), &golden::F07_XYZ_TO_UCS, "ucs1960_xyz_to_ucs");
+    assert_rows(
+        &run3(xyz_to_ucs, &golden::XYZ_IN),
+        &golden::F07_XYZ_TO_UCS,
+        "ucs1960_xyz_to_ucs",
+    );
     let ucs = run3(xyz_to_ucs, &golden::XYZ_IN);
-    assert_rows(&run3(ucs_to_xyz, &ucs), &golden::F07_UCS_TO_XYZ, "ucs1960_ucs_to_xyz");
+    assert_rows(
+        &run3(ucs_to_xyz, &ucs),
+        &golden::F07_UCS_TO_XYZ,
+        "ucs1960_ucs_to_xyz",
+    );
 
     let mut uv = vec![[0.0; 2]; golden::XYZ_IN.len()];
     xyz_to_ucs_uv(&golden::XYZ_IN, &mut uv);
@@ -122,41 +187,98 @@ fn ucs1960_ucs() {
 #[test]
 fn bradford_bradford() {
     let mut out = vec![[0.0; 3]; golden::XYZ_IN.len()];
-    adapt(&golden::XYZ_IN, &crate::color::common::REF_WHITE_D65, &crate::color::common::REF_WHITE_D50, true, &mut out);
-    assert_rows(&out, &golden::F08_ADAPT_D65_TO_D50, "bradford_adapt_d65_to_d50");
-    let m = calc_transform_matrix(&crate::color::common::REF_WHITE_D65, &crate::color::common::REF_WHITE_D50);
+    adapt(
+        &golden::XYZ_IN,
+        &crate::color::common::REF_WHITE_D65,
+        &crate::color::common::REF_WHITE_D50,
+        true,
+        &mut out,
+    );
+    assert_rows(
+        &out,
+        &golden::F08_ADAPT_D65_TO_D50,
+        "bradford_adapt_d65_to_d50",
+    );
+    let m = calc_transform_matrix(
+        &crate::color::common::REF_WHITE_D65,
+        &crate::color::common::REF_WHITE_D50,
+    );
     assert_rows(&m, &golden::F08_BRADFORD_MATRIX, "bradford_bradford_matrix");
 }
 
 #[test]
 fn delta_e_76_de76() {
-    assert_vec(&delta_e_76(&golden::LAB1_IN, &golden::LAB2_IN), &golden::F09_DE76, "delta_e_76_de76");
+    assert_vec(
+        &delta_e_76(&golden::LAB1_IN, &golden::LAB2_IN),
+        &golden::F09_DE76,
+        "delta_e_76_de76",
+    );
 }
 
 #[test]
 fn delta_e_94_de94() {
-    assert_vec(&delta_e_94(&golden::LAB1_IN, &golden::LAB2_IN, De94Params::GRAPHIC), &golden::F10_DE94_GRAPHIC, "delta_e_94_de94_graphic");
-    assert_vec(&delta_e_94(&golden::LAB1_IN, &golden::LAB2_IN, De94Params::TEXTILES), &golden::F10_DE94_TEXTILES, "delta_e_94_de94_textiles");
+    assert_vec(
+        &delta_e_94(&golden::LAB1_IN, &golden::LAB2_IN, De94Params::GRAPHIC),
+        &golden::F10_DE94_GRAPHIC,
+        "delta_e_94_de94_graphic",
+    );
+    assert_vec(
+        &delta_e_94(&golden::LAB1_IN, &golden::LAB2_IN, De94Params::TEXTILES),
+        &golden::F10_DE94_TEXTILES,
+        "delta_e_94_de94_textiles",
+    );
 }
 
 #[test]
 fn delta_e_cmc_cmc() {
-    assert_vec(&delta_e_cmc(&golden::LAB1_IN, &golden::LAB2_IN, 2.0, 1.0), &golden::F11_DE_CMC_2_1, "delta_e_cmc_cmc_2_1");
-    assert_vec(&delta_e_cmc(&golden::LAB1_IN, &golden::LAB2_IN, 1.0, 1.0), &golden::F11_DE_CMC_1_1, "delta_e_cmc_cmc_1_1");
+    assert_vec(
+        &delta_e_cmc(&golden::LAB1_IN, &golden::LAB2_IN, 2.0, 1.0),
+        &golden::F11_DE_CMC_2_1,
+        "delta_e_cmc_cmc_2_1",
+    );
+    assert_vec(
+        &delta_e_cmc(&golden::LAB1_IN, &golden::LAB2_IN, 1.0, 1.0),
+        &golden::F11_DE_CMC_1_1,
+        "delta_e_cmc_cmc_1_1",
+    );
 }
 
 #[test]
 fn din99_din99() {
-    assert_vec(&delta_e_din99(&golden::LAB1_IN, &golden::LAB2_IN, 1.0, 1.0), &golden::F12_DE_DIN99, "din99_din99");
-    assert_vec(&delta_e_din99(&golden::LAB1_IN, &golden::LAB2_IN, 2.0, 0.5), &golden::F12_DE_DIN99_TEX, "din99_din99_textiles");
+    assert_vec(
+        &delta_e_din99(&golden::LAB1_IN, &golden::LAB2_IN, 1.0, 1.0),
+        &golden::F12_DE_DIN99,
+        "din99_din99",
+    );
+    assert_vec(
+        &delta_e_din99(&golden::LAB1_IN, &golden::LAB2_IN, 2.0, 0.5),
+        &golden::F12_DE_DIN99_TEX,
+        "din99_din99_textiles",
+    );
 }
 
 #[test]
 fn spectral_srgb_spectral() {
-    let a = spectral_to_srgb(&golden::F13_SPD, &golden::F13_CMFS, &golden::F13_ILLUM, golden::F13_INTERVAL, true);
+    let a = spectral_to_srgb(
+        &golden::F13_SPD,
+        &golden::F13_CMFS,
+        &golden::F13_ILLUM,
+        golden::F13_INTERVAL,
+        true,
+    );
     assert_vec(&a, &golden::F13_SRGB_ADAPT, "spectral_srgb_spectral_adapt");
-    let n = spectral_to_srgb(&golden::F13_SPD, &golden::F13_CMFS, &golden::F13_ILLUM, golden::F13_INTERVAL, false);
-    assert_vec(&n, &golden::F13_SRGB_NOADAPT, "spectral_srgb_spectral_noadapt");
+    let n = spectral_to_srgb(
+        &golden::F13_SPD,
+        &golden::F13_CMFS,
+        &golden::F13_ILLUM,
+        golden::F13_INTERVAL,
+        false,
+    );
+    assert_vec(
+        &n,
+        &golden::F13_SRGB_NOADAPT,
+        "spectral_srgb_spectral_noadapt",
+    );
 }
 
 #[test]
@@ -168,10 +290,22 @@ fn photometry_photometry() {
         golden::F14_KM_S,
     );
     let iv = golden::F13_INTERVAL;
-    assert!(close(pe.calculate_flux(&golden::F13_SPD, Vision::Photopic, 1.0, iv), golden::F14_FLUX_PHOTOPIC));
-    assert!(close(pe.calculate_flux(&golden::F13_SPD, Vision::Scotopic, 1.0, iv), golden::F14_FLUX_SCOTOPIC));
-    assert!(close(pe.calculate_flux(&golden::F13_SPD, Vision::Mesopic, 0.5, iv), golden::F14_FLUX_MESOPIC_05));
-    assert!(close(pe.calculate_sp_ratio(&golden::F13_SPD, iv), golden::F14_SP_RATIO));
+    assert!(close(
+        pe.calculate_flux(&golden::F13_SPD, Vision::Photopic, 1.0, iv),
+        golden::F14_FLUX_PHOTOPIC
+    ));
+    assert!(close(
+        pe.calculate_flux(&golden::F13_SPD, Vision::Scotopic, 1.0, iv),
+        golden::F14_FLUX_SCOTOPIC
+    ));
+    assert!(close(
+        pe.calculate_flux(&golden::F13_SPD, Vision::Mesopic, 0.5, iv),
+        golden::F14_FLUX_MESOPIC_05
+    ));
+    assert!(close(
+        pe.calculate_sp_ratio(&golden::F13_SPD, iv),
+        golden::F14_SP_RATIO
+    ));
     println!("CORRECTNESS photometry_photometry PASS");
 }
 

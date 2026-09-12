@@ -5,7 +5,7 @@ use ndarray::{Array1, ArrayView1};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use crate::materials::units::{energy_ev, wl_m, HC_EV_NM};
+use crate::materials::units::{HC_EV_NM, energy_ev, wl_m};
 
 /// Above this length the element-wise kernels parallelise with rayon; below it
 /// the rayon overhead would dominate, so we run serially. Element-wise maps

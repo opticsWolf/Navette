@@ -7,8 +7,8 @@
 //! activation and linear/log/phase/complex normalisation modes.
 
 use crate::spectralweave::opticalweaver::{OpticalKey, OpticalWeaver, SpectralDataFrame};
-use parking_lot::RwLock;
 use ahash::AHashMap;
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// How a target activates the residual: exact, one-sided, or banded.
@@ -149,8 +149,12 @@ impl TargetWeaver {
         let mut t_sum = 0.0;
 
         for &v in raw_targets {
-            if v < t_min { t_min = v; }
-            if v > t_max { t_max = v; }
+            if v < t_min {
+                t_min = v;
+            }
+            if v > t_max {
+                t_max = v;
+            }
             t_sum += v;
         }
 
@@ -169,8 +173,7 @@ impl TargetWeaver {
             }
         };
 
-        let norm_factor =
-            Self::norm_factor_for(&resolved_mode, raw_targets, t_min, t_max, t_sum);
+        let norm_factor = Self::norm_factor_for(&resolved_mode, raw_targets, t_min, t_max, t_sum);
         (resolved_mode, norm_factor)
     }
 
@@ -194,8 +197,12 @@ impl TargetWeaver {
                 let mut log_sum = 0.0;
                 for &v in raw_targets {
                     let lv = v.max(1e-12).log10().abs();
-                    if lv < log_min { log_min = lv; }
-                    if lv > log_max { log_max = lv; }
+                    if lv < log_min {
+                        log_min = lv;
+                    }
+                    if lv > log_max {
+                        log_max = lv;
+                    }
                     log_sum += lv;
                 }
                 let log_avg = log_sum / n;
@@ -205,13 +212,17 @@ impl TargetWeaver {
                     log_avg
                 };
                 1.0 / log_scale.max(1e-300)
-            },
+            }
             ResolvedNormMode::Linear => {
                 let t_avg = (t_sum / raw_targets.len() as f64).abs();
                 let spread = t_max - t_min;
-                let scale = if t_avg <= 1e-9 * spread { spread / 2.0 } else { t_avg };
+                let scale = if t_avg <= 1e-9 * spread {
+                    spread / 2.0
+                } else {
+                    t_avg
+                };
                 if scale > 0.0 { 1.0 / scale } else { 1.0 }
-            },
+            }
         }
     }
 
@@ -219,26 +230,63 @@ impl TargetWeaver {
     /// `band` holds raw-unit half-widths for the `r`/`c` kinds (empty or
     /// all-zero when unused); it is scaled by the same `norm_factor` as the
     /// targets (per-point exact mapping in log mode, first-order otherwise).
-    pub fn register_metadata(&self, uid: usize, key: OpticalKey, raw_targets: &[f64], tolerances: &[f64], kind: TargetKind, mode_str: &str, band: &[f64], weight: f64, count_norm: Option<f64>, integral: bool) {
+    pub fn register_metadata(
+        &self,
+        uid: usize,
+        key: OpticalKey,
+        raw_targets: &[f64],
+        tolerances: &[f64],
+        kind: TargetKind,
+        mode_str: &str,
+        band: &[f64],
+        weight: f64,
+        count_norm: Option<f64>,
+        integral: bool,
+    ) {
         let (resolved_mode, norm_factor) = Self::resolve_norm(raw_targets, mode_str);
-        self.register_metadata_resolved(uid, key, raw_targets, tolerances, kind, resolved_mode, norm_factor, band, weight, count_norm, integral)
+        self.register_metadata_resolved(
+            uid,
+            key,
+            raw_targets,
+            tolerances,
+            kind,
+            resolved_mode,
+            norm_factor,
+            band,
+            weight,
+            count_norm,
+            integral,
+        )
     }
 
     /// `register_metadata` with a pre-resolved `(mode, factor)` — the
     /// angular path resolves once over the full curve and shares it.
-    pub fn register_metadata_resolved(&self, uid: usize, key: OpticalKey, raw_targets: &[f64], tolerances: &[f64], kind: TargetKind, resolved_mode: ResolvedNormMode, norm_factor: f64, band: &[f64], weight: f64, count_norm: Option<f64>, integral: bool) {
+    pub fn register_metadata_resolved(
+        &self,
+        uid: usize,
+        key: OpticalKey,
+        raw_targets: &[f64],
+        tolerances: &[f64],
+        kind: TargetKind,
+        resolved_mode: ResolvedNormMode,
+        norm_factor: f64,
+        band: &[f64],
+        weight: f64,
+        count_norm: Option<f64>,
+        integral: bool,
+    ) {
         // Normalization itself lives in `norm_factor_for` (shared); here we
         // only apply it. Phase/Complex resolve to nf == 1 by construction.
         let mut normalized_targets = Vec::with_capacity(raw_targets.len());
         match resolved_mode {
             ResolvedNormMode::Phase | ResolvedNormMode::Complex => {
                 normalized_targets.extend_from_slice(raw_targets);
-            },
+            }
             ResolvedNormMode::Log => {
                 for &v in raw_targets {
                     normalized_targets.push(v.max(1e-12).log10() * norm_factor);
                 }
-            },
+            }
             ResolvedNormMode::Linear => {
                 for &v in raw_targets {
                     normalized_targets.push(v * norm_factor);
@@ -254,18 +302,24 @@ impl TargetWeaver {
         // Scale the raw band half-widths into the normalized residual space.
         let band_scaled: Vec<f64> = match resolved_mode {
             ResolvedNormMode::Linear | ResolvedNormMode::Phase | ResolvedNormMode::Complex => {
-                raw_targets.iter().enumerate().map(|(i, _)| {
-                    band.get(i).copied().unwrap_or(0.0).max(0.0) * norm_factor
-                }).collect()
-            },
-            ResolvedNormMode::Log => {
-                raw_targets.iter().enumerate().map(|(i, &t)| {
+                raw_targets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| band.get(i).copied().unwrap_or(0.0).max(0.0) * norm_factor)
+                    .collect()
+            }
+            ResolvedNormMode::Log => raw_targets
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| {
                     let b = band.get(i).copied().unwrap_or(0.0).max(0.0);
-                    if b <= 0.0 { return 0.0; }
+                    if b <= 0.0 {
+                        return 0.0;
+                    }
                     let t_pos = t.max(1e-12);
                     ((t_pos + b).max(1e-12).log10() - t_pos.log10()).abs() * norm_factor
-                }).collect()
-            },
+                })
+                .collect(),
         };
 
         let entry = TargetEntry {
@@ -281,6 +335,10 @@ impl TargetWeaver {
         };
 
         let mut meta_guard = self.target_metadata.write();
-        meta_guard.entry(uid).or_default().entries.insert(key, entry);
+        meta_guard
+            .entry(uid)
+            .or_default()
+            .entries
+            .insert(key, entry);
     }
 }
