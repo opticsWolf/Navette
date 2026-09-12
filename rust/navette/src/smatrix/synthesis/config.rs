@@ -41,6 +41,63 @@ impl TerminationReason {
 // PipelineConfig
 // ---------------------------------------------------------------------------
 
+/// What the floor does to a sub-minimum layer (F0.3, U1).
+///
+/// "Remove a layer that got too thin" and "set that layer to the minimum
+/// thickness you can actually deposit" are two different operations with
+/// two different purposes. `Remove` is today's behaviour and what the
+/// fingerprints hold.
+///
+/// `clamp_min_nm` genuinely does two jobs and this enum selects which one
+/// it does: an *elimination threshold* under `Remove` (the optimizer
+/// driving a film to zero is the optimizer saying it wants that layer
+/// gone), and a *manufacturing floor* under the clamp-up policies. The
+/// config key keeps its name; this comment is where both jobs are stated.
+///
+/// Span deferral, until F1.6 lands: on a span, clamping up is not a row
+/// operation - it is "scale the whole span to `clamp_min_nm`", which is
+/// precisely F1.6's operation. Until then an under-thickness graded span
+/// is removed whole with the F0.2 report under EVERY policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThinLayerPolicy {
+    /// Sub-minimum layers are removed, during the run and at the end.
+    /// The search is exactly today's, elimination and all.
+    #[default]
+    Remove,
+    /// The search runs exactly as today; only the run's final clamp pass
+    /// sets a surviving sub-minimum layer to `clamp_min_nm` instead of
+    /// removing it. A film the optimizer genuinely wanted gone is already
+    /// gone by then; a film that survived and happens to sit at 0.8 nm
+    /// comes out depositable. This is the variant the documentation leads
+    /// with.
+    ClampUpFinal,
+    /// The floor sets films to `clamp_min_nm` during the run too, and the
+    /// LM lower bound moves with it (`lb = clamp_min_nm`) - without the
+    /// bound, LM drives a film to 0.5 nm, the clamp puts it back to 2.0,
+    /// and the pair oscillates until the stagnation detector terminates
+    /// the run with a true report of a false condition. Refused at
+    /// `NeedlePipeline::new` when `needles_per_cycle > 0`: with the floor
+    /// as a hard bound nothing can ever be eliminated, so a bad needle
+    /// seed parks at the floor permanently and layer count only ever
+    /// grows. The mode for re-optimizing a fixed architecture.
+    ClampUpAlways,
+}
+
+impl ThinLayerPolicy {
+    /// The Python-facing spelling (see `PyPipelineConfig`).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "remove" => Ok(Self::Remove),
+            "clamp_up_final" => Ok(Self::ClampUpFinal),
+            "clamp_up_always" => Ok(Self::ClampUpAlways),
+            other => Err(format!(
+                "thin_layer_policy must be 'remove', 'clamp_up_final' or \
+                 'clamp_up_always', got {other:?}"
+            )),
+        }
+    }
+}
+
 /// All loop-control parameters — mirrors Python `PipelineConfig`.
 #[derive(Clone, Debug)]
 pub struct PipelineConfig {
@@ -53,6 +110,10 @@ pub struct PipelineConfig {
     // -- clamping --
     pub clamp_min_nm: f64,
     pub clamp_max_nm: f64,
+    /// F0.3 (U1): what the floor does to a sub-minimum layer. `Remove`
+    /// reproduces today bit for bit; the clamp-up variants and their
+    /// couplings are documented on the enum.
+    pub thin_layer_policy: ThinLayerPolicy,
 
     // -- needle --
     pub needles_per_cycle: usize,
@@ -87,6 +148,7 @@ impl Default for PipelineConfig {
             merit_target: 0.0,
             clamp_min_nm: 2.0,
             clamp_max_nm: 1000.0,
+            thin_layer_policy: ThinLayerPolicy::Remove,
             needles_per_cycle: 3,
             enable_cleanup: true,
             cleanup_min_nm: None, // resolved to clamp_min_nm by validated()
@@ -126,6 +188,20 @@ impl PipelineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f03_default_is_remove_and_parse_round_trips() {
+        assert_eq!(ThinLayerPolicy::default(), ThinLayerPolicy::Remove);
+        for (s, want) in [
+            ("remove", ThinLayerPolicy::Remove),
+            ("clamp_up_final", ThinLayerPolicy::ClampUpFinal),
+            ("clamp_up_always", ThinLayerPolicy::ClampUpAlways),
+        ] {
+            assert_eq!(ThinLayerPolicy::parse(s).unwrap(), want);
+        }
+        assert!(ThinLayerPolicy::parse("Remove").is_err()); // case-sensitive
+        assert!(ThinLayerPolicy::parse("scale").is_err());
+    }
 
     #[test]
     fn defaults_match_python() {

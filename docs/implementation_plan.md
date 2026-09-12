@@ -135,7 +135,7 @@ and B6 undercounts — and §0.4 records which.
 |---|---|---|---|---|---|---|
 | ~~F0.1~~ **DONE (0.6.33)** | Span provenance on `DesignStack` — the bookkeeping, and no behaviour change | 0.6.33 | **P0** | M | **L** | §D4.1–2, corrected §2 |
 | ~~F0.2~~ **DONE (0.6.34)** | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
-| F0.3 | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
+| ~~F0.3~~ **DONE (0.6.35)** | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
 | F1.1 | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
 | F1.2 | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
 | F1.3 | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
@@ -956,6 +956,22 @@ when the tree is read again, not when the code is written.
 ---
 
 ### F0.3 — `ThinLayerPolicy`: clamp up instead of removing (0.6.35)
+
+**DONE (0.6.35, see the feature commit).** Corrections from implementation
+(R7 — adopted: **U1**):
+
+- The bound twin needed the merit to pull from the THIN side: from a 200 nm
+  start the bounded solve finds a thick-side crossing of the target
+  reflectance instead of the floor (R crosses the target again above the AR
+  dip). Starting at 10 nm puts the nearest solution on the floor side, and
+  the twin then reads exactly as the plan wrote it: one bounded solve to
+  the floor, five sweeps monotone, the film parked exactly on `clamp_min_nm`.
+- The builtin LM's bounded transform saturates an out-of-box `x0` onto the
+  bound edge, so no separate `x0` clamp was needed — an implementation
+  note, not a change.
+- The final-pass clamp-up is not a clamp report: clamp-ups are neither
+  removals nor caps, so `ClampReport` is untouched (a `clamp_up` count
+  would add a key to every clamp-up run's dict for nothing).
 
 **U1.** "Remove a layer that got too thin" and "set that layer to the minimum
 thickness you can actually deposit" are two different operations with two
@@ -2408,7 +2424,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 |---|---|---|---|---|
 | 0.6.33 | F0.1 | cebed9c | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | done |
 | 0.6.34 | F0.2 | e7a0e61 | A2, N3, **U5** (half), **B1**, B4, B7 | done |
-| 0.6.35 | F0.3 | — | **U1** | not started |
+| 0.6.35 | F0.3 | (this item's feature commit) | **U1** | done |
 | 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7, B10 | not started |
 | 0.6.37 | F1.2 | — | A9.2, N2 | not started |
 | 0.6.38 | F1.3 | — | **B6**, B10 | not started |

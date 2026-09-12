@@ -4,6 +4,53 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.35] — F0.3: `ThinLayerPolicy` — clamp up to the minimum instead of removing
+
+"Remove a layer that got too thin" and "set that layer to the minimum
+thickness you can actually deposit" are two different operations with two
+different purposes; only the first existed.
+
+### Added
+
+- **`PipelineConfig.thin_layer_policy`** (`'remove'` | `'clamp_up_final'` |
+  `'clamp_up_always'`; default `'remove'`, which reproduces 0.6.34 bit for
+  bit and is what the fingerprints hold):
+  - **`ClampUpFinal`** — the search runs exactly as today, elimination and
+    all; only the run's final clamp pass sets a surviving sub-minimum film
+    to `clamp_min_nm` instead of removing it. A film that survived the
+    whole run and happens to sit at 0.8 nm comes out depositable. This is
+    the variant the documentation leads with, and the one needle runs
+    want.
+  - **`ClampUpAlways`** — the floor sets films to `clamp_min_nm` during
+    the run too, AND the LM lower bound moves with it (`lb =
+    clamp_min_nm`). The coupling is the actual content of the feature:
+    clamping up without raising the bound builds an oscillator — LM drives
+    a film to 0.5 nm, the clamp puts it back to 2.0, the next solve drives
+    it to 0.5 again — and the stagnation detector terminates the run with
+    `STAGNATION_OSCILLATION`, a true report of a false condition. With the
+    bound, a design whose optimum wants a 0.5 nm film converges to the
+    floor in ONE optimization and the merit history is monotone (twin on
+    the real machinery: a bare-substrate reflectance target pulls below
+    the floor from a 10 nm start; five sweeps, monotone, film parked at
+    exactly the floor). Refused at `NeedlePipeline::new` when
+    `needles_per_cycle > 0` — with the floor as a hard bound nothing can
+    ever be eliminated, so a rejected needle seed parks at the floor
+    permanently and the layer count only ever grows; the refusal names
+    both settings and points at `ClampUpFinal`.
+
+### Notes
+
+- On a span, clamping up is not a row operation: until F1.6 lands, an
+  under-thickness graded span is removed whole with the F0.2 report under
+  **every** policy (the enum's doc comment states the deferral; the span
+  deferral twin inverts deliberately at F1.6).
+- The default is bit-exact: both fingerprints hold with the policy absent
+  and with it explicitly `Remove`; the default-equals-`Remove` identity is
+  asserted.
+- `clamp_min_nm` keeps its name (open decision 14): it does two jobs —
+  elimination threshold under `Remove`, manufacturing floor under the
+  clamp-up policies — and `ThinLayerPolicy`'s doc comment states both.
+
 ## [0.6.34] — F0.2: the floor, the cap and the layer budget become span quantities
 
 The one release in the series licensed to change what a run produces, with

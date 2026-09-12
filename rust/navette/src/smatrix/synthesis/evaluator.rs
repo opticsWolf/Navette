@@ -22,6 +22,7 @@ use crate::smatrix::coherent_block::solve_coherent_block_fields_dual;
 use crate::smatrix::needle_operator::{
     block_flux_factors, build_stack_fields_range, needle_slopes4_ddz,
 };
+use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::jacobian::assemble_jacobian;
@@ -39,6 +40,9 @@ pub struct SmatrixContext {
     pub spec: MeritSpec,
     pub clamp_min_nm: f64,
     pub clamp_max_nm: f64,
+    /// F0.3: the floor policy - `ClampUpAlways` also moves the LM lower
+    /// bound to `clamp_min_nm` (see the limit-cycle argument on the enum).
+    pub thin_layer_policy: ThinLayerPolicy,
     pub lm: LmConfig,
     /// F0.2: clamp reports from every `optimize_thicknesses` sweep since
     /// the last drain. The pipeline drains it into the phase result and
@@ -350,7 +354,20 @@ impl SmatrixContext {
             .iter()
             .map(|&i| stack.films()[i].d_nm.clamp(0.0, self.clamp_max_nm))
             .collect();
-        let lb = vec![0.0f64; x0.len()];
+        // F0.3 (U1): the lower bound moves with the policy. Under
+        // `ClampUpAlways` the floor is a hard bound - without it, LM drives
+        // a film to 0.5 nm, the clamp puts it back to 2.0, and the pair
+        // oscillates until the stagnation detector terminates the run with
+        // a true report of a false condition. With it, a design whose
+        // optimum wants a 0.5 nm film converges to the floor in ONE
+        // optimization. `Remove`/`ClampUpFinal` keep today's `0.0` - the
+        // search runs exactly as before, elimination and all.
+        let lb_floor = if self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
+            self.clamp_min_nm
+        } else {
+            0.0
+        };
+        let lb = vec![lb_floor; x0.len()];
         let ub = vec![self.clamp_max_nm; x0.len()];
 
         // The analytic Jacobian, when the spec is fully covered by it. The
@@ -386,7 +403,11 @@ impl SmatrixContext {
                 stack.set_thickness(i, res.x[j])?;
             }
         }
-        let rep = stack.clamp_all(self.clamp_min_nm, self.clamp_max_nm)?;
+        let rep = stack.clamp_all(
+            self.clamp_min_nm,
+            self.clamp_max_nm,
+            self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways,
+        )?;
         self.clamp_accumulator.merge(rep);
 
         self.evaluate_merit(stack).map(|mf| (mf, Some(res)))
@@ -485,6 +506,7 @@ mod tests {
             clamp_max_nm: clamp_max,
             lm: LmConfig::default(),
             clamp_accumulator: ClampReport::default(),
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         }
     }
 
@@ -520,6 +542,7 @@ mod tests {
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
             clamp_accumulator: ClampReport::default(),
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         }
     }
 
@@ -646,6 +669,7 @@ mod tests {
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
             clamp_accumulator: ClampReport::default(),
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
         let sim = ctx.simulate(&slab).unwrap();
         let tf = sim.cplx[CurveId::Ts.index()].as_ref().unwrap()[0];
@@ -835,6 +859,7 @@ mod tests {
                 clamp_max_nm: 1000.0,
                 lm: LmConfig::default(),
                 clamp_accumulator: ClampReport::default(),
+                thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
             }
         }
 
@@ -1035,6 +1060,100 @@ mod tests {
                     assert_eq!(x.to_bits(), y.to_bits(), "{id:?}: {x} vs {y}");
                 }
             }
+        }
+
+        /// F0.3 (U1): the limit cycle and its absence, on the real
+        /// machinery. The merit wants the bare substrate's reflectance -
+        /// reachable only as the film thins toward zero - so the optimizer
+        /// pulls below the floor and the two behaviours part ways:
+        /// `ClampUpAlways` moves `lb` to `clamp_min_nm`, so ONE bounded
+        /// solve converges to the floor and the merit history is monotone
+        /// (the stagnation detector never sees an oscillation); with
+        /// today's `Remove` the same stack eliminates the film (the
+        /// search keeps its rejection mechanism).
+        #[test]
+        fn clamp_up_always_moves_the_lm_bound_and_never_oscillates() {
+            let r_bare: f64 = {
+                let t: f64 = (1.0 - 1.52) / (1.0 + 1.52);
+                t * t
+            };
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: 0.0,
+                curve: CurveId::Rs,
+            });
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                wavelengths: vec![900.0].into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Linear,
+                norm_factor: 1.0,
+                normalized_targets: vec![r_bare].into(),
+                tolerances: vec![0.01].into(),
+                band: vec![].into(),
+                phase: false,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .map_err(|e| panic!("{e}"))
+            .unwrap();
+
+            // ClampUpAlways: lb = clamp_min_nm -> converges to the floor
+            // in one solve; five sweeps stay monotone.
+            let mut ctx = SmatrixContext {
+                wavls: vec![900.0],
+                sin_theta: vec![0.0],
+                spec: spec.clone(),
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
+                lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
+            };
+            // Start THIN: on the thin side of the AR dip the nearest
+            // exact-R_bare solution is the film's own disappearance, so
+            // the pull is toward the floor (from 200 nm the bounded solve
+            // finds the thick-side crossing instead).
+            let mut stack = ar_stack(10.0);
+            let mut merits: Vec<f64> = Vec::new();
+            for _ in 0..5 {
+                let mf = ctx.optimize_thicknesses(&mut stack).unwrap();
+                merits.push(mf);
+            }
+            for w in merits.windows(2) {
+                assert!(
+                    w[1] <= w[0] + 1e-12,
+                    "merit history must be monotone (limit cycle's absence): {merits:?}"
+                );
+            }
+            // One optimization reaches the floor; the clamp-up sweep lands
+            // the film EXACTLY on it and keeps it there.
+            assert!(
+                (stack.films()[0].d_nm - 2.0).abs() < 1e-9,
+                "film parked at {}, not the floor",
+                stack.films()[0].d_nm
+            );
+
+            // Remove (default): the same pull eliminates the film - the
+            // search keeps its rejection mechanism under the default.
+            let mut ctx = SmatrixContext {
+                wavls: vec![900.0],
+                sin_theta: vec![0.0],
+                spec,
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                thin_layer_policy: ThinLayerPolicy::Remove,
+                lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
+            };
+            let mut stack = ar_stack(10.0);
+            ctx.optimize_thicknesses(&mut stack).unwrap();
+            assert!(
+                stack.films().is_empty(),
+                "the default must keep elimination"
+            );
         }
 
         /// F0.2: the accumulator drains once and resets. With no

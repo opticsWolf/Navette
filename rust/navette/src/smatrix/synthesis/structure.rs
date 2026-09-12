@@ -744,7 +744,20 @@ impl DesignStack {
     /// Returns the [`ClampReport`] - the old `(n_removed, n_capped)` grew
     /// into it. Verbatim port lineage:
     /// `ClampedNeedleSynthesizer.clamp_all_layers`.
-    pub fn clamp_all(&mut self, min_nm: f64, max_nm: f64) -> Result<ClampReport, String> {
+    /// F0.3: `clamp_up` selects the floor's behaviour - `false` removes a
+    /// sub-minimum span (today, and every in-run pass under
+    /// `Remove`/`ClampUpFinal`), `true` sets a surviving ONE-ROW span to
+    /// `clamp_min_nm` instead (the final pass under `ClampUpFinal`, every
+    /// pass under `ClampUpAlways`). A multi-row span is removed whole
+    /// under every policy: clamping a span up is F1.6's scale operation
+    /// and does not exist yet. Clamp-ups are neither removals nor caps,
+    /// so they do not appear in the report.
+    pub fn clamp_all(
+        &mut self,
+        min_nm: f64,
+        max_nm: f64,
+        clamp_up: bool,
+    ) -> Result<ClampReport, String> {
         debug_assert!(min_nm >= 0.0 && max_nm > min_nm);
         // Refusals are checked BEFORE any mutation, so the stack is never
         // left half-clamped behind an error.
@@ -771,6 +784,24 @@ impl DesignStack {
         for sp in &old_spans {
             let d: f64 = old[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
             if d < min_nm {
+                // F0.3: clamp-up applies to one-row spans only; a
+                // multi-row span's profile is scaled whole by F1.6 or,
+                // until then, removed whole under every policy (the
+                // ThinLayerPolicy doc comment states the deferral).
+                if clamp_up && sp.end - sp.start == 1 {
+                    let mut thin = old[sp.start..sp.end].to_vec();
+                    thin[0].d_nm = min_nm;
+                    surviving.extend(thin);
+                    new_spans.push(Span {
+                        start: p,
+                        end: p + 1,
+                        logical: sp.logical,
+                        slice: sp.slice,
+                        bulk_start: p + usize::from(sp.slice),
+                    });
+                    p += 1;
+                    continue;
+                }
                 report
                     .spans_removed
                     .push(format!("{} ({:.1} nm)", old[sp.start].material, d));
@@ -1053,7 +1084,7 @@ mod tests {
         let mut s = stack;
         s.insert_needle_seed(0, 25.0, h(0.0)).unwrap();
         s.merge_adjacent();
-        s.clamp_all(0.5, 500.0).unwrap();
+        s.clamp_all(0.5, 500.0, false).unwrap();
         s.set_thickness(0, 12.0).unwrap();
         assert!(s.ambient().nk.iter().all(|z| z.im == 0.0));
 
@@ -1201,7 +1232,7 @@ mod tests {
     #[test]
     fn clamp_removes_thin_caps_thick() {
         let mut s = stack(vec![h(1.0), l(5000.0), h(50.0), l(2.0 - 1e-9)]);
-        let rep = s.clamp_all(2.0, 1000.0).unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
         assert_eq!((rep.rows_removed, rep.spans_capped), (2, 1));
         let f = s.films();
         assert_eq!(f.len(), 2);
@@ -1213,7 +1244,7 @@ mod tests {
     fn clamp_boundary_values_survive() {
         // Exactly-at-boundary layers survive untouched (strict < and >).
         let mut s = stack(vec![h(2.0), l(1000.0)]);
-        let rep = s.clamp_all(2.0, 1000.0).unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
         assert_eq!((rep.rows_removed, rep.spans_capped), (0, 0));
         assert_eq!(s.film_count_public(), 2);
     }
@@ -1635,7 +1666,7 @@ mod tests {
         // and the carrier keeps the nanometre the slice was carved from.
         // Assert on BOTH rows and the total: a film-count assertion alone
         // passes for the wrong reason if the slice merged into the bulk.
-        let rep = stack.clamp_all(2.0, 1000.0).unwrap();
+        let rep = stack.clamp_all(2.0, 1000.0, false).unwrap();
         assert_eq!((rep.rows_removed, rep.spans_capped), (0, 0));
         assert!(rep.is_empty());
         assert_eq!(stack.films().len(), 3);
@@ -1667,7 +1698,7 @@ mod tests {
             &HashSet::new(),
         )
         .unwrap();
-        let rep3 = c3.clamp_all(2.0, 1000.0).unwrap();
+        let rep3 = c3.clamp_all(2.0, 1000.0, false).unwrap();
         assert!(rep3.is_empty());
         assert!((c3.total_thickness_nm() - 150.0).abs() < 1e-12);
 
@@ -1683,7 +1714,7 @@ mod tests {
                 .unwrap();
         let n_rows = g.films().len();
         assert!(n_rows > 1);
-        let rep = g.clamp_all(100.0, 1000.0).unwrap();
+        let rep = g.clamp_all(100.0, 1000.0, false).unwrap();
         assert_eq!(rep.rows_removed, n_rows);
         assert_eq!(rep.spans_removed.len(), 1);
         assert!(
@@ -1718,7 +1749,7 @@ mod tests {
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
         assert_eq!(stack.films().len(), 4);
-        let rep = stack.clamp_all(2.0, 1000.0).unwrap();
+        let rep = stack.clamp_all(2.0, 1000.0, false).unwrap();
         assert!(rep.is_empty(), "{rep:?}");
         assert_eq!(stack.films().len(), 4, "the film must survive whole");
         assert!((stack.total_thickness_nm() - 5.0).abs() < 1e-12);
@@ -1742,7 +1773,7 @@ mod tests {
         let (mut stack, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
-        let rep = stack.clamp_all(6.0, 1000.0).unwrap();
+        let rep = stack.clamp_all(6.0, 1000.0, false).unwrap();
         assert_eq!(rep.rows_removed, 4);
         assert_eq!(rep.spans_removed.len(), 1);
         assert!(
@@ -1771,7 +1802,7 @@ mod tests {
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
         assert_eq!(stack.films().len(), 57, "the plan's measured row count");
-        let err = stack.clamp_all(2.0, 300.0).unwrap_err();
+        let err = stack.clamp_all(2.0, 300.0, false).unwrap_err();
         assert!(err.contains("'TiO2'"), "{err}");
         assert!(err.contains("1000.0"), "{err}");
         assert!(err.contains("300.0"), "{err}");
@@ -1783,7 +1814,7 @@ mod tests {
         let (mut stack2, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
-        let rep = stack2.clamp_all(2.0, 1500.0).unwrap();
+        let rep = stack2.clamp_all(2.0, 1500.0, false).unwrap();
         assert!(rep.is_empty());
     }
 
@@ -1793,7 +1824,7 @@ mod tests {
     #[test]
     fn f02_one_row_cap_unchanged() {
         let mut s = stack(vec![h(5000.0)]);
-        let rep = s.clamp_all(2.0, 1000.0).unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
         assert_eq!(rep.spans_capped, 1);
         assert!(rep.spans_removed.is_empty());
         assert!((s.films()[0].d_nm - 1000.0).abs() < 1e-12);

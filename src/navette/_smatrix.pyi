@@ -495,6 +495,7 @@ class PipelineConfig:
         stagnation_gradient_tol: float = ...,
         stagnation_oscillation_ratio: float = ...,
         stagnation_divergence_count: int = ...,
+        thin_layer_policy: str = ...,
     ) -> None: ...
 
 class NeedleCycleConfig:
@@ -519,6 +520,7 @@ class SmatrixContext:
         clamp_min: float = ...,
         clamp_max: float = ...,
         lm: LmConfig | None = ...,
+        thin_layer_policy: str = ...,
     ) -> None: ...
     def simulate(self, stack: DesignStack) -> SimCurves: ...
     def evaluate_merit(self, stack: DesignStack) -> float: ...

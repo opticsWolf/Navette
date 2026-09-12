@@ -441,6 +441,7 @@ mod tests {
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
             clamp_accumulator: crate::smatrix::synthesis::structure::ClampReport::default(),
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
         let spectral = SpectralInputs::from_spec(&spec, &[0.0], &[1000.0]).unwrap();
         let (mut stack, _) = glass_stack();

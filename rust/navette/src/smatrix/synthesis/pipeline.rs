@@ -22,7 +22,7 @@
 #![allow(clippy::doc_overindented_list_items)]
 
 use crate::smatrix::synthesis::cleanup::{CleanupResult, cleanup_design};
-use crate::smatrix::synthesis::config::{PipelineConfig, TerminationReason};
+use crate::smatrix::synthesis::config::{PipelineConfig, TerminationReason, ThinLayerPolicy};
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::cycle::{
     ContrastMap, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
@@ -108,6 +108,21 @@ impl NeedlePipeline {
                     cfg.clamp_max_nm
                 ));
             }
+        }
+        // F0.3: `ClampUpAlways` silently disables layer elimination, so
+        // needle runs only ever grow - a bad seed parks at the floor
+        // permanently instead of being rejected by the optimizer
+        // shrinking it through the floor. Refuse the combination, name
+        // both settings, and point at the variant that works.
+        if cfg.thin_layer_policy == ThinLayerPolicy::ClampUpAlways && cfg.needles_per_cycle > 0 {
+            return Err(format!(
+                "NeedlePipeline: thin_layer_policy 'clamp_up_always' conflicts with \
+                 needles_per_cycle = {} - with the floor as a hard LM bound nothing \
+                 can ever be eliminated, so a rejected seed parks at the floor and \
+                 the layer count only ever grows. Use 'clamp_up_final' (the \
+                 documented default for needle runs) or set needles_per_cycle = 0.",
+                cfg.needles_per_cycle
+            ));
         }
         let detector = StagnationDetector::new(
             cfg.stagnation_window,
@@ -227,10 +242,13 @@ impl NeedlePipeline {
                     true,
                 )?;
                 // Post-cleanup clamp (Clamped override semantics). F0.2:
-                // the report joins the phase's aggregate.
-                let rep = self
-                    .stack
-                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm)?;
+                // the report joins the phase's aggregate. F0.3: during
+                // the run the floor clamps up only under ClampUpAlways.
+                let rep = self.stack.clamp_all(
+                    self.cfg.clamp_min_nm,
+                    self.cfg.clamp_max_nm,
+                    self.cfg.thin_layer_policy == ThinLayerPolicy::ClampUpAlways,
+                )?;
                 if !rep.is_empty() {
                     clamp_report.merge(rep);
                 }
@@ -253,10 +271,13 @@ impl NeedlePipeline {
                 )?;
                 // Clamp BEFORE re-optimize happened in Python before the call
                 // ordering above; enforce the AFTER clamp here too. F0.2:
-                // the report joins the phase's aggregate.
-                let rep = self
-                    .stack
-                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm)?;
+                // the report joins the phase's aggregate. F0.3: during
+                // the run the floor clamps up only under ClampUpAlways.
+                let rep = self.stack.clamp_all(
+                    self.cfg.clamp_min_nm,
+                    self.cfg.clamp_max_nm,
+                    self.cfg.thin_layer_policy == ThinLayerPolicy::ClampUpAlways,
+                )?;
                 if !rep.is_empty() {
                     clamp_report.merge(rep);
                 }
@@ -324,9 +345,14 @@ impl NeedlePipeline {
 
         // ── Final optimisation + clamp sweep ──
         ctx.optimize_thicknesses(&mut self.stack)?;
-        let rep_final = self
-            .stack
-            .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm)?;
+        // F0.3: the final pass substitutes clamping for removal under
+        // both clamp-up policies; the reported merit is evaluated AFTER
+        // this sweep (the B7 ordering pin asserts it).
+        let rep_final = self.stack.clamp_all(
+            self.cfg.clamp_min_nm,
+            self.cfg.clamp_max_nm,
+            self.cfg.thin_layer_policy != ThinLayerPolicy::Remove,
+        )?;
         let final_mf = ctx.evaluate_merit(&self.stack)?;
 
         // F0.2: the final sweep's own report plus any clamps the final
@@ -741,5 +767,167 @@ mod tests {
         let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
         assert!(res.phases[0].clamp_report.is_none());
         assert!(res.final_clamp_report.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // F0.3 - ThinLayerPolicy
+    // ------------------------------------------------------------------
+
+    /// `ClampUpFinal` twin: the search runs exactly as today (elimination
+    /// and all); only the FINAL clamp pass sets a surviving sub-minimum
+    /// film to `clamp_min_nm` instead of removing it. The mock optimizer
+    /// drives the film to 0.8 nm in the final solve - under `Remove` the
+    /// returned stack has no film; under `ClampUpFinal` it has one at
+    /// exactly the floor, and the reported merit describes the stack the
+    /// user receives (B7: the pin on the ordering the tree already keeps).
+    #[test]
+    fn f03_clamp_up_final_lands_the_film_on_the_floor() {
+        struct ThinningCtx;
+        impl DesignContext for ThinningCtx {
+            fn evaluate_merit(&self, _s: &DesignStack) -> Result<f64, String> {
+                Ok(1.0)
+            }
+            fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
+                Err("mock context has no simulator".into())
+            }
+            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+                s.set_thickness(0, 0.8)?;
+                self.evaluate_merit(s)
+            }
+        }
+        for (policy, want_count, want_d) in [
+            ("remove", 0usize, None),
+            ("clamp_up_final", 1usize, Some(2.0)),
+        ] {
+            let cfg = PipelineConfig {
+                max_macro_cycles: 1,
+                enable_cleanup: false,
+                needles_per_cycle: 0,
+                stagnation_window: usize::MAX,
+                thin_layer_policy: ThinLayerPolicy::parse(policy).unwrap(),
+                ..Default::default()
+            };
+            let mut p = NeedlePipeline::new(
+                DesignStack::with_films(
+                    air(),
+                    sub(),
+                    vec![LayerSpec::constant("H", 2.35, 0.0, 100.0, NW)],
+                )
+                .unwrap(),
+                dummy_spectral(),
+                cfg,
+                NeedleCycleConfig::default(),
+                ContrastMap::new(),
+            )
+            .unwrap();
+            let mut ctx = ThinningCtx;
+            let res = p.run(&mut ctx, |_, _, _| Ok(())).unwrap();
+            assert_eq!(res.final_layer_count, want_count, "policy {policy}");
+            if let Some(d) = want_d {
+                assert!(
+                    (p.stack.films()[0].d_nm - d).abs() < 1e-12,
+                    "policy {policy}: film at {}, wanted {d}",
+                    p.stack.films()[0].d_nm
+                );
+            }
+            // B7 pin: the reported merit describes the RETURNED stack.
+            if want_count == 1 {
+                let fresh = match ctx.evaluate_merit(&p.stack) {
+                    Ok(v) => v,
+                    Err(_) => panic!("mock evaluation failed"),
+                };
+                assert_eq!(res.final_mf, fresh, "final_mf describes the returned stack");
+            }
+        }
+    }
+
+    /// Conflict-refusal twin: `ClampUpAlways` + needles = layer count only
+    /// ever grows. The refusal names both settings and points at
+    /// `ClampUpFinal`.
+    #[test]
+    fn f03_clamp_up_always_is_refused_alongside_needles() {
+        let cfg = PipelineConfig {
+            thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
+            needles_per_cycle: 3,
+            ..Default::default()
+        };
+        let err = match NeedlePipeline::new(
+            DesignStack::with_films(
+                air(),
+                sub(),
+                vec![LayerSpec::constant("H", 2.35, 0.0, 100.0, NW)],
+            )
+            .unwrap(),
+            dummy_spectral(),
+            cfg,
+            NeedleCycleConfig::default(),
+            ContrastMap::new(),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected the conflict refusal"),
+        };
+        assert!(err.contains("clamp_up_always"), "{err}");
+        assert!(err.contains("needles_per_cycle = 3"), "{err}");
+        assert!(err.contains("clamp_up_final"), "{err}");
+        // The same policy with needles off constructs.
+        let cfg = PipelineConfig {
+            thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
+            needles_per_cycle: 0,
+            ..Default::default()
+        };
+        assert!(
+            NeedlePipeline::new(
+                DesignStack::with_films(
+                    air(),
+                    sub(),
+                    vec![LayerSpec::constant("H", 2.35, 0.0, 100.0, NW)],
+                )
+                .unwrap(),
+                dummy_spectral(),
+                cfg,
+                NeedleCycleConfig::default(),
+                ContrastMap::new(),
+            )
+            .map(|_| ())
+            .is_ok()
+        );
+    }
+
+    /// Span deferral twin: an under-thickness graded span is removed whole
+    /// with the F0.2 report under EVERY policy at this release - clamping
+    /// a span up is F1.6's scale operation and does not exist yet. The
+    /// twin inverts deliberately at F1.6.
+    #[test]
+    fn f03_thin_graded_span_is_removed_whole_under_clamp_up_too() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = std::collections::HashMap::new();
+        nk.insert(
+            std::sync::Arc::from("TiO2"),
+            vec![num_complex::Complex64::new(2.35, 0.0); NW],
+        );
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.1,
+            ..crate::structure::Layer::film(5.0, "TiO2")
+        }];
+        let bg: std::collections::HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (stack, _) = DesignStack::from_design(
+            air(),
+            sub(),
+            &graded,
+            &nk,
+            &std::collections::HashMap::new(),
+            &wl,
+            &bg,
+        )
+        .unwrap();
+        assert_eq!(stack.spans().len(), 1);
+        // The final-pass clamp_up branch is the strongest form of the
+        // deferral: even told to clamp up, a multi-row span goes whole.
+        let mut stack = stack;
+        let rep = stack.clamp_all(6.0, 1000.0, true).unwrap();
+        assert_eq!(rep.spans_removed.len(), 1);
+        assert_eq!(rep.rows_removed, 4);
+        assert!(stack.films().is_empty());
     }
 }

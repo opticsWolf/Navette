@@ -594,7 +594,7 @@ impl PyDesignStack {
         }
         let rep = self
             .inner
-            .clamp_all(min_nm, max_nm)
+            .clamp_all(min_nm, max_nm, false)
             .map_err(PyValueError::new_err)?;
         Ok((rep.rows_removed, rep.spans_capped))
     }
@@ -800,7 +800,8 @@ impl PyPipelineConfig {
                         cleanup_max_removals=None, enable_inflate=false, inflate_addon_qwot=2.0,
                         inflate_reference_wl=550.0, inflate_max_layers=None,
                         stagnation_window=5, stagnation_gradient_tol=1e-4,
-                        stagnation_oscillation_ratio=0.75, stagnation_divergence_count=3))]
+                        stagnation_oscillation_ratio=0.75, stagnation_divergence_count=3,
+                        thin_layer_policy="remove"))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_film_layers: usize,
@@ -821,9 +822,13 @@ impl PyPipelineConfig {
         stagnation_gradient_tol: f64,
         stagnation_oscillation_ratio: f64,
         stagnation_divergence_count: usize,
-    ) -> Self {
-        PyPipelineConfig {
+        thin_layer_policy: &str,
+    ) -> PyResult<Self> {
+        let policy = navette::smatrix::synthesis::config::ThinLayerPolicy::parse(thin_layer_policy)
+            .map_err(PyValueError::new_err)?;
+        Ok(PyPipelineConfig {
             inner: PipelineConfig {
+                thin_layer_policy: policy,
                 max_film_layers,
                 max_total_thickness_nm,
                 max_macro_cycles,
@@ -843,16 +848,17 @@ impl PyPipelineConfig {
                 stagnation_oscillation_ratio,
                 stagnation_divergence_count,
             },
-        }
+        })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "PipelineConfig(cycles={}, needles_per_cycle={}, cleanup={}, inflate={})",
+            "PipelineConfig(cycles={}, needles_per_cycle={}, cleanup={}, inflate={}, policy={:?})",
             self.inner.max_macro_cycles,
             self.inner.needles_per_cycle,
             self.inner.enable_cleanup,
             self.inner.enable_inflate,
+            self.inner.thin_layer_policy,
         )
     }
 }
@@ -925,8 +931,11 @@ pub struct PySmatrixContext {
 #[pymethods]
 impl PySmatrixContext {
     #[new]
-    #[pyo3(signature = (spec, angles_deg, wavelengths, clamp_min=2.0, clamp_max=1000.0, lm=None))]
+    #[pyo3(signature = (spec, angles_deg, wavelengths, clamp_min=2.0, clamp_max=1000.0,
+                        lm=None, thin_layer_policy="remove"))]
     /// `angles_deg`: degrees (spec-key convention); converted to sines.
+    /// `thin_layer_policy`: 'remove' (default), 'clamp_up_final' or
+    /// 'clamp_up_always' (F0.3; the last one moves the LM lower bound).
     fn new(
         spec: &PyMeritSpec,
         angles_deg: PyReadonlyArray1<'_, f64>,
@@ -934,6 +943,7 @@ impl PySmatrixContext {
         clamp_min: f64,
         clamp_max: f64,
         lm: Option<Py<PyLmConfig>>,
+        thin_layer_policy: &str,
         py: Python<'_>,
     ) -> PyResult<Self> {
         let a = angles_deg.as_slice()?;
@@ -957,6 +967,10 @@ impl PySmatrixContext {
                     .map(|l| l.bind(py).borrow().inner.clone())
                     .unwrap_or_default(),
                 clamp_accumulator: ClampReport::default(),
+                thin_layer_policy: navette::smatrix::synthesis::config::ThinLayerPolicy::parse(
+                    thin_layer_policy,
+                )
+                .map_err(PyValueError::new_err)?,
             },
         })
     }
@@ -1232,6 +1246,7 @@ impl PyNeedlePipeline {
             clamp_max_nm: self.clamp_max,
             lm: self.lm.clone(),
             clamp_accumulator: ClampReport::default(),
+            thin_layer_policy: navette::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
         let res = py
             .detach({

@@ -212,6 +212,7 @@ pub fn run_design(
         spec: spec.clone(),
         clamp_min_nm: cfg.clamp_min_nm,
         clamp_max_nm: cfg.clamp_max_nm,
+        thin_layer_policy: cfg.thin_layer_policy,
         lm,
         clamp_accumulator: ClampReport::default(),
     };
