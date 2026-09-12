@@ -34,6 +34,20 @@ Revision 2's F0.1 also splits: the bookkeeping (F0.1) is separated from the
 behaviour changes it enables (F0.2), so exactly one release in the series is
 allowed to move a number. The ladder is now `0.6.33 → 0.6.47`.
 
+**Revision 4 (second audit folded in).**
+`docs/implementation_plan_amendment_2.md` audited revision 3 against the same
+frozen tree and its findings are folded in here with a **B\*** tag, each one
+re-checked against the tree before adoption. The substantive ones: `clamp_all`
+deletes sub-floor **interface-slice** rows today — A2's bug on the other derived
+row type, measured, and revision 3's own wording would have preserved it (B1 →
+F0.2); F1.7's `refresh_profiles` had **nothing to refresh from**, because no
+object on the stack carries the recipe (B2 → F1.7); the δ error draw on refresh
+was unspecified (B3 → F1.7); F0.2's licence contradicted its own item 6 (B4);
+and F1.6 said "graded" where its own table said "gradient" (B5). The ladder
+does not move. Three of the second audit's findings are corrected rather than
+adopted verbatim — B1 is worse than it says, B3's live hazard does not exist,
+and B6 undercounts — and §0.4 records which.
+
 ---
 
 ## 0. How to use this plan
@@ -120,13 +134,13 @@ allowed to move a number. The ladder is now `0.6.33 → 0.6.47`.
 | ID | Item | Version | Priority | Risk | Effort | Source |
 |---|---|---|---|---|---|---|
 | F0.1 | Span provenance on `DesignStack` — the bookkeeping, and no behaviour change | 0.6.33 | **P0** | M | **L** | §D4.1–2, corrected §2 |
-| F0.2 | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3 |
+| F0.2 | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
 | F0.3 | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
 | F1.1 | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
 | F1.2 | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
 | F1.3 | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | F1.6 | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
-| F1.7 | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | M | **U3, U4** |
+| F1.7 | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
 | F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
 | F1.5 | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
 | F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.43 | P2 | S | M | §4.1–4.2 |
@@ -149,6 +163,11 @@ bump of the phase, and it has to capture the complete Phase A field set in one
 release. Scalable spans add fields (§8.12). Bumping the schema before those
 fields exist would mean two bumps in one series, which §6 row 4 forbids.
 
+Rows that moved in revision 4: F1.7 effort M→L (B2 — the item now carries a
+recipe type and a shared-`emit_entry` extraction, which is structure, not
+plumbing), and F0.1 effort stays L but absorbs that extraction. No version
+moves; B1 and B4 change what F0.2 *contains*, not where it sits.
+
 Rows that moved in revision 3: F0.1 splits into F0.1 + F0.2 (risk L→M for the
 bookkeeping half — all of the L moved to F0.2); F0.3, F1.6 and F1.7 are new;
 F1.4 through F3.1 shift four rungs up the ladder.
@@ -164,7 +183,9 @@ Every finding, where it landed, and whether it survived re-checking.
 re-checking that amendment against the tree. `U*` = a directed requirement
 from the 2026-09-12 review — not a finding to be verified but a requirement
 to be met, so the Verdict column records what checking it against the tree
-*revealed*, not whether it is adopted.
+*revealed*, not whether it is adopted. `B*` = from
+`docs/implementation_plan_amendment_2.md`, the second audit, re-checked here
+the same way the first one was.
 
 | ID | Finding | Verdict | Lands in |
 |---|---|---|---|
@@ -200,6 +221,16 @@ to be met, so the Verdict column records what checking it against the tree
 | **U3** | Only the rate-type profiles need a recalculation after a scale | **verified in-tree** — `InhMode::Fixed`'s factors are a function of δ and `i/(sub-1)` only ([expansion.rs:265](rust/navette/src/structure/expansion.rs:265)); thickness enters solely through `step_t` | F1.6, F1.7 |
 | **U4** | The recalculation runs at **construction** only, never in an LM round | binding, and it is also a *correctness* requirement, not only a cost one (F1.7) | F1.7, §6 row 10 |
 | **U5** | A graded layer is one physical layer; per-layer rules must never see its solver rows | four rules see them today: floor, cap, layer budget, inflate | F0.1, F0.2 |
+| **B1** | `clamp_all` deletes sub-floor **interface-slice** rows, and F0.2's singleton-bulk sentence preserved it | **right, and worse than stated** — measured: the slice is *carved out of* the carrier ([expansion.rs:227](rust/navette/src/structure/expansion.rs:227)), so the deletion loses the interface **and** shortens the film (50 → 49 nm). Revision 3's "the slice is not user thickness" is wrong, and the floor must compare the slice-inclusive total | F0.2 (defect 5, licence 7) |
+| **B2** | `refresh_profiles` has nothing to refresh from: no object carries the recipe | **right, and the missing set is larger** — no provider, no wavelength values, no groups either; the answer is a shared `emit_entry`, not a mirror struct, and the recipe rides `spans` rather than `logical` | F1.7, with the extraction in F0.1 |
+| **B3** | The δ error draw on refresh is unspecified; the correctness twin only holds with draws off | **conclusion right, hazard absent** — `from_design` expands `deterministic()` ([structure.rs:261](rust/navette/src/smatrix/synthesis/structure.rs:261)) and is the only door to a `DesignStack`, so the twin is sound as written; refresh refuses an errors-on recipe rather than carrying a frozen draw | F1.7 |
+| **B4** | F0.2's "bit-identical, full stop" is violated by its own licence item 6 | verified exact | F0.2 (`Option<ClampReport>`) |
+| **B5** | F1.6 says "graded carrier" where its own table says `GradientMode::FixedSpan` | verified exact — and licence item 1's "homogenized to its base index" is the `inhomogen` half only; a gradient has no base index (R4) | F1.6, §8.12 |
+| **B6** | F1.3's `sub_layer_count` caller list misses `layer.rs:227` | **right, and it undercounts** — there is a sixth reader, and it is public API: the PyO3 `#[getter]` at `navette-py/src/structure.rs:360`, live as `Layer.sub_layer_count` | F1.3 |
+| **B7** | "`evaluator.rs:373` is the last statement" is wrong; the merit is evaluated after the clamp | verified exact (`:375`), and the same ordering holds at `pipeline.rs:271-274` | F0.2 (wording), F0.3 (gate framing) |
+| **B8** | "seven times per macro cycle" conflates call sites with invocations | verified — `cleanup.rs:87` is inside the removal loop and `cycle.rs:249` inside the insertion loop | F1.7 (wording) |
+| **B9** | The tree already computes `bulk_spans` and drops it at the same door as `spans` | verified exact ([expansion.rs:158](rust/navette/src/structure/expansion.rs:158), `:313`; discarded at `:328` and at all four call sites) | F0.1 |
+| **B10** | Two one-line citation drifts | verified: the `inhomogen` branch is `expansion.rs:258`, the `inh_delta` read is `layer.rs:128` | F1.1, F1.3 |
 
 ---
 
@@ -516,6 +547,34 @@ leaving it out would mean F0.1 protects a span from four operations and hands
 it to a fifth. `round_to_qwot` gets the same filter for symmetry and a note
 that it has no live caller.
 
+#### AMENDED (B9) — the bulk ranges are already computed, and dropped
+
+`expand` keeps `bulk_spans: Vec<(usize, usize)>`
+([expansion.rs:158](rust/navette/src/structure/expansion.rs:158)) — one entry
+per span, pushed at
+[:313](rust/navette/src/structure/expansion.rs:313), consumed at
+[:231](rust/navette/src/structure/expansion.rs:231) for the cross-layer
+interface carve — and then returns `(SolverArrays, Vec<Span>)` and drops it
+([:328](rust/navette/src/structure/expansion.rs:328)). Every caller loses it at
+the same door the spans were lost at before this item: `from_design`
+([structure.rs:256](rust/navette/src/smatrix/synthesis/structure.rs:256)) and
+the three architect sites
+([architect.rs:299](rust/navette/src/structure/architect.rs:299), `:339`,
+`:391`).
+
+So the quantity F0.1 derives arithmetically (`end − start − slice == 1`) and
+the one F0.2 needs concretely (`Σ d_r` over bulk rows) are **already computed
+and already thrown away**. §1.3's argument for carrying `spans` — the
+information exists, this is plumbing and not derivation — applies to
+`bulk_spans` word for word.
+
+**Decision: carry it.** `expand` returns the bulk range as a third element (or
+`Span` gains `bulk_start`; either keeps `Span` `Copy`), F0.2 and F1.6 read it
+instead of re-deriving it, and the arithmetic predicate stays as the
+`debug_assert` that cross-checks the two. Not a correction — the derivation is
+correct and free — but one source beats two agreeing ones, and F1.6's `φ_r`
+weights are not a place to have re-derived a row range by hand.
+
 #### Change
 
 - `DesignStack` gains `spans: Vec<Span>` alongside `films`, populated in
@@ -638,23 +697,93 @@ call sites discard it —
 deletion in case 1 produces no warning, no counter and no entry in the phase
 result. The user's design silently loses a layer and the report says nothing.
 
-And it is hot: `evaluator.rs:373` is the last statement of
-`optimize_thicknesses_report`, so the clamp runs after **every** thickness
-optimization — seven call sites, dozens of times per macro cycle — not at the
-three pipeline sites alone.
+And it is hot: the clamp at
+[evaluator.rs:373](rust/navette/src/smatrix/synthesis/evaluator.rs:373) is the
+last **mutation** of `optimize_thicknesses_report`, so it runs after **every**
+thickness optimization — seven call sites, dozens of times per macro cycle —
+not at the three pipeline sites alone.
+
+**AMENDED (B7) — "last statement" was wrong, and the truth is good news.**
+The reported merit is evaluated *after* the clamp
+([evaluator.rs:375](rust/navette/src/smatrix/synthesis/evaluator.rs:375),
+`self.evaluate_merit(stack).map(|mf| (mf, Some(res)))`), and the run's final
+report has the same shape
+([pipeline.rs:271-274](rust/navette/src/smatrix/synthesis/pipeline.rs:271):
+optimize → clamp → `evaluate_merit` → `final_mf`). So "the reported number
+describes the returned stack" is an invariant the tree **already keeps** at
+both reporting sites. F0.3's twin on it is a pin against inverting it, not the
+introduction of something new — reframed there.
+
+**5. AMENDED (B1) — and it deletes interface slices, which are not layers at
+all.** Measured on the same 0.6.32 release build:
+
+```
+design:  SiO2 100 nm | TiO2 50 nm, interface = true, interface_thickness = 1.0
+expands: [SiO2 100.0]  [TiO2 1.0 = slice]  [TiO2 49.0 = bulk]     total 150.0
+clamp_all(2.0, 1000.0) -> (n_removed, n_capped) = (1, 0)
+after:   [SiO2 100.0]  [TiO2 49.0]                                 total 149.0
+control: the same design at interface_thickness = 3.0 -> (0, 0), 150.0 held
+```
+
+Two things go wrong, not one. The interface physics is gone — the Looyenga
+mixed row that models the boundary between the two materials is simply not in
+the stack any more. And the carrier is now **49 nm where the design said 50**,
+because expansion *carves* the slice out of the carrier
+([expansion.rs:227](rust/navette/src/structure/expansion.rs:227),
+`layer_thickness -= t_interface`): deleting the slice destroys the nanometre
+instead of giving it back.
+
+It needs no new feature to reach. A sub-floor interface is a legal authored
+state and should be: `property_issues` refuses a *negative* interface
+thickness ([layer.rs:182](rust/navette/src/structure/layer.rs:182)) and notes
+an *overhanging* one ([layer.rs:189](rust/navette/src/structure/layer.rs:189)),
+and nothing anywhere asks whether it clears `clamp_min_nm` — nor should it, a
+1 nm interface is physically ordinary. It fires at all four clamp sites, on
+the default path, and it is Python-reachable directly through
+[`DesignStack.clamp_all`](src/navette/_smatrix.pyi:455).
+
+**Revision 3's own text would have preserved it.** The change section said
+"for a singleton-bulk span (every stack that exists today) row and span are
+the same object and nothing changes" — but an interface-carrying plain film is
+singleton-**bulk with two rows** (the plan's own N1), so "row and span are the
+same object" is false for precisely the stack that has the bug, and "nothing
+changes" is the deletion. The pieces of the fix were already here; they were
+not connected to the singleton-bulk case. Corrected in the change section
+below, and licence item 7 is this.
 
 #### Change
 
 - **The floor and the cap become span quantities.** `clamp_all` iterates
-  spans, not rows. For a singleton-bulk span (every stack that exists today)
-  row and span are the same object and nothing changes. For a multi-row span
-  the comparison is against the span's **bulk** thickness, `Σ d_r` over
-  `start..end` excluding the interface slice — the slice is not user
-  thickness and never was.
-  - `D_span < min_nm` → the **whole span** is removed, all rows in one
+  spans, not rows. For a **one-row** span — a plain film with no interface,
+  which is nearly every row of nearly every stack today — row and span are the
+  same object and nothing changes. For every other span the comparison is
+  against the span total, and **which** total is not obvious, so B1 fixes the
+  two definitions here once and both later items cite them:
+
+  | Quantity | Rows | Read by |
+  |---|---|---|
+  | **`D`** — the layer's physical thickness | all rows of the span, slice included | the floor, the cap, `max_total_thickness_nm` |
+  | **`D_bulk`** | `start..end` minus the slice row | F1.6's LM parameter and its `φ_r` weights |
+
+  **AMENDED (B1).** Revision 3 said "the slice is not user thickness and never
+  was". Measured, that is wrong: expansion carves the slice out of the carrier
+  ([expansion.rs:227](rust/navette/src/structure/expansion.rs:227)), so an
+  authored 50 nm film with a 1 nm interface emits `1.0 + 49.0` and the slice
+  *is* part of the fifty. Judging the floor and the cap on `D` therefore judges
+  the number the user wrote; judging them on `D_bulk` would shave the interface
+  off every comparison. The slice is excluded from **scaling**, not from
+  **measuring**.
+  - `D < min_nm` → the **whole span** is removed, all rows in one
     operation, and it is reported (below). Not row-by-row, which is what
     produces the "removed 7 rows" nonsense above.
-  - `D_span > max_nm` → **refused, not rescaled.** See the next bullet.
+  - `D > max_nm` → **refused, not rescaled.** See the next bullet.
+- **A slice row is never a floor or a cap candidate on its own** — in every
+  branch, one-row spans included (B1). It is a derived row: no `optimize`
+  flag, no `needle` flag ([structure.rs:276-277](rust/navette/src/smatrix/synthesis/structure.rs:276)),
+  no independent existence. It leaves the stack only when its carrier span
+  does. This one sentence is the whole fix for defect 5, it is a behaviour
+  change on stacks that use no new feature, and that is why it is licence
+  item 7 rather than a detail of the bulk rule.
 - **Too thick is a refusal, and it lands at `NeedlePipeline::new`**
   ([pipeline.rs:74](rust/navette/src/smatrix/synthesis/pipeline.rs:74)), which
   already holds both the stack and the config and already calls
@@ -681,6 +810,14 @@ three pipeline sites alone.
   ([evaluator.rs:373](rust/navette/src/smatrix/synthesis/evaluator.rs:373))
   accumulates into the phase rather than reporting per call — it fires dozens
   of times per cycle and a per-call message would be noise.
+
+  **AMENDED (B4) — the field is `Option<ClampReport>`, `None` when nothing was
+  removed and nothing was capped.** Threading it unconditionally adds a key to
+  *every* result dict, no-span runs included, which contradicts this item's own
+  "full stop" one paragraph later and hands every golden and parity consumer a
+  new key at 0.6.34 in exchange for nothing. `None` costs one line and makes
+  the licence literally true rather than approximately true. The
+  deletion-report twin is unchanged — it asserts `Some`.
 - **`inflate_design` and `round_to_qwot` exclude non-singleton-bulk spans**
   from their selection lists (N3). One filter on one `collect()` at
   [inflate.rs:135](rust/navette/src/smatrix/synthesis/inflate.rs:135). Without
@@ -690,9 +827,9 @@ three pipeline sites alone.
 
 #### The licence — the exhaustive list of what may change
 
-A run whose stack contains **no** multi-row span must be bit-identical, full
-stop. For a run that does contain one, exactly these may differ, and nothing
-else:
+A run whose every span is **one row** — no graded layer, no interface slice —
+must be bit-identical, full stop, the serialized result dict included (B4).
+For a run with any multi-row span, exactly these may differ, and nothing else:
 
 1. A graded span whose total is below the floor is removed **as a unit**
    instead of shedding rows (previously: partial or total silent deletion).
@@ -703,9 +840,16 @@ else:
 4. `layer_count` in every phase result drops to the physical-layer count.
 5. An `enable_inflate` run leaves graded spans alone (previously: distorted
    their per-sublayer ratios).
-6. The result dict gains a clamp report that was never there.
+6. The result dict gains a clamp report that was never there — **when there
+   is something to report** (B4); `None`, and therefore absent, otherwise.
+7. **(B1)** An interface slice thinner than `clamp_min_nm` survives.
+   Previously it was deleted at the first clamp, which lost the interface
+   physics *and* shortened the carrier by the width the slice had been carved
+   from. This is the one licence item that fires on stacks using **no** new
+   feature at all, which is exactly why it is enumerated here instead of
+   folded into the bulk rule as an implementation detail.
 
-Each of the six gets a twin. A seventh difference means the change is wrong.
+Each of the seven gets a twin. An eighth difference means the change is wrong.
 
 #### Gates
 
@@ -729,6 +873,14 @@ Each of the six gets a twin. A seventh difference means the change is wrong.
   pre-flight of cycle 1. After: the run proceeds, and `layer_count` reads 1.
 - **Inflate twin (N3):** a pinned span through an `enable_inflate` cycle →
   per-row thicknesses unchanged, ratios preserved.
+- **Slice-survival twin (B1), measured before and after:** `SiO2 100 nm |
+  TiO2 50 nm` with `interface = true, interface_thickness = 1.0`, under
+  `clamp_all(2.0, 1000.0)`. Before: `(1, 0)`, two rows out, 149.0 nm. After:
+  `(0, 0)`, three rows out, 150.0 nm, the slice row present at 1.0 and the
+  bulk row still at 49.0. Assert on **both rows and the total** — a film-count
+  assertion alone passes for the wrong reason if the slice is merged into the
+  bulk instead of kept. Control at `interface_thickness = 3.0` unchanged in
+  both directions.
 - **Thin-removal twin:** a graded film whose sublayers are below the floor
   **and whose rows are marked `optimize = true`** → all sublayers survive.
   The case the flag filter does not cover.
@@ -737,10 +889,11 @@ Each of the six gets a twin. A seventh difference means the change is wrong.
   single most error-prone edit in the item.
 
 **Risk.** L. It changes live behaviour on purpose, in the hottest loop in the
-pipeline, and the six-item licence is the only thing standing between "fixed"
-and "quietly different". Mitigated by the licence being enumerated *before*
-the code, by a twin per line of it, and by F0.1 having already proved the
-bookkeeping separately.
+pipeline, and the seven-item licence is the only thing standing between
+"fixed" and "quietly different". Mitigated by the licence being enumerated
+*before* the code, by a twin per line of it, and by F0.1 having already proved
+the bookkeeping separately. Item 7 (B1) is the reminder that the list grows
+when the tree is read again, not when the code is written.
 
 ---
 
@@ -841,8 +994,15 @@ in and removes the sentence.
   `thin_layer_policy` absent and with it explicitly `Remove`.
 - **`ClampUpFinal` twin:** a run that ends with a 0.8 nm film → the returned
   stack has it at exactly `clamp_min_nm`, the film count is unchanged, and
-  `final_mf` equals a fresh merit evaluation of the returned stack (this is
-  the assertion that catches reporting the pre-clamp number).
+  `final_mf` equals a fresh merit evaluation of the returned stack. **(B7)**
+  That last assertion **pins an ordering the tree already keeps** — merit is
+  evaluated after the clamp at both reporting sites,
+  [evaluator.rs:375](rust/navette/src/smatrix/synthesis/evaluator.rs:375) and
+  [pipeline.rs:274](rust/navette/src/smatrix/synthesis/pipeline.rs:274) — it
+  does not introduce one. Write it anyway, and write it *here*, because
+  `ClampUpFinal`'s end-of-run clamp-up is the one operation in this plan that
+  someone could plausibly place *after* the final merit evaluation, and the
+  reported number would then describe a stack the user never receives.
 - **`ClampUpAlways` bound twin:** `lb` is `clamp_min_nm`, and a design whose
   optimum wants a 0.5 nm film converges to 2.0 nm in **one** optimization
   rather than alternating. Assert the merit history is monotone over five
@@ -880,8 +1040,9 @@ commit.
   default `None`. New module `structure/gradient.rs` for the spec types —
   `layer.rs` is 606 lines and already carries the validation surface.
 - `structure/expansion.rs`: new branch beside the `inhomogen` branch at
-  [expansion.rs:257](rust/navette/src/structure/expansion.rs:257), mutually
-  exclusive with it by validation.
+  [expansion.rs:258](rust/navette/src/structure/expansion.rs:258), mutually
+  exclusive with it by validation. (B10: `:257` is the `sub_layer_count()`
+  call above it, which F1.3 cites correctly.)
 - `materials/ema.rs`: reused unchanged. No new mixing math.
 - `driver.rs`: the two A4 plumbing lines (background predicate disjunct,
   `assemble_stack` field copy).
@@ -1119,23 +1280,38 @@ clamping draws would bias Monte-Carlo statistics. Documented, and pinned by a
 statistical test that the mean survives the clamp boundary.
 
 `sub_layer_count()` consumes `delta_layer(thickness)`, a pure function of
-thickness, so there is no circularity; evaluated once. Note that
-`sub_layer_count` reads `self.inh_delta` directly today
-([layer.rs:127](rust/navette/src/structure/layer.rs:127)) and has three other
-callers — [expansion.rs:257](rust/navette/src/structure/expansion.rs:257),
-[structure.rs:272](rust/navette/src/structure/structure.rs:272) and
-[architect.rs:565](rust/navette/src/structure/architect.rs:565), the latter
-two for row-count prediction. All four must see the same `delta_layer`, or the
-predicted row count and the emitted row count diverge.
+thickness, so there is no circularity; evaluated once. It reads
+`self.inh_delta` directly today
+([layer.rs:128](rust/navette/src/structure/layer.rs:128) — B10: `:127` is the
+`inhomogen && thickness > 0.0` guard above it).
+
+**AMENDED (B6) — the caller list was three, and it is five.** Every one of
+them must see the same `delta_layer`, or the predicted row count and the
+emitted row count diverge:
+
+| Reader | What it does | Divergence looks like |
+|---|---|---|
+| [expansion.rs:257](rust/navette/src/structure/expansion.rs:257) | emits the rows | — (this one is the truth) |
+| [structure.rs:272](rust/navette/src/structure/structure.rs:272) | `total_sub_layers` prediction | a wrong number in a cold struct |
+| [architect.rs:565](rust/navette/src/structure/architect.rs:565) | the architect's prediction | same |
+| **[layer.rs:227](rust/navette/src/structure/layer.rs:227)** | interpolates the count into the `inh_delta == 0` advisory ("expands to {n} identical sub-layers") | a **message** that contradicts the solver |
+| **[navette-py/src/structure.rs:360](rust/navette-py/src/structure.rs:360)** | the PyO3 `#[getter]` — `Layer.sub_layer_count` is live public API (verified: a 100 nm δ = 0.1 layer returns 11) | a wrong number **in the user's hands** |
+
+The last two are why this is not bookkeeping. A stale prediction inside a
+struct is a bug someone finds later; a stale number in an advisory message or
+in a documented property is a bug that teaches the user something false. The
+twin for `layer.rs:227` is therefore a **message-equality** check, not a
+row-count check, and the PyO3 getter gets a twin that compares it against the
+emitted row count in both modes.
 
 **Gates.** `Fixed` mode **bitwise** against the legacy oracle over the
 existing randomized differential suite
 (`test_differential.py:95`, `:119`) — this is the whole risk of the item and
 the only acceptable evidence. `RateCapped` delta against hand-computed
 `min(rate*t/t_ref, cap)` over a thickness sweep, with the saturation knee
-exact. Double the thickness below the cap → double the delta. Row-count
-prediction (`structure.rs`, `architect.rs`) agrees with emission in both
-modes.
+exact. Double the thickness below the cap → double the delta. Row-count prediction agrees with emission in both
+modes at **all five** readers above (B6), the advisory message and the PyO3
+getter included.
 
 **Note.** `inhomogen` is **not deprecated**. Single-material drift is real
 physics (oxidation gradients, nitrides) and coexists with gradients by the
@@ -1143,8 +1319,11 @@ physics (oxidation gradients, nitrides) and coexists with gradients by the
 
 ### F1.6 — one thickness parameter per graded span (0.6.39)
 
-**U2.** A graded layer is one physical layer, so its total thickness is one
-number the optimizer should be allowed to move. Today it is either pinned
+**U2.** A profiled layer is one physical layer, so its total thickness is one
+number the optimizer should be allowed to move. **Vocabulary, fixed here for
+the whole item (B5): "profiled" means `inhomogen` *or* `gradient`, and every
+rule below applies to both engines.** The heading's "graded span" is the same
+thing said shorter. Today it is either pinned
 (`optimize = false, needle = false`, the background path) or homogenized away.
 This item adds the third option for the profiles that scale exactly, and F1.7
 adds it for the ones that do not.
@@ -1197,17 +1376,27 @@ multiplier that has always operated on the logical layer, before expansion.
   writes `set_thickness(r, φ_r · D)` for each row of the span. The interface
   slice is not in `rows` and is not scaled: it is an interface property, not
   part of the layer's thickness.
-- **Which spans are scalable.** A graded carrier with `optimize = true`. That
-  is the existing flag, given a meaning it did not have before — previously
-  `optimize = true` on a graded film meant "homogenize me" — it falls out of
-  the background set at
+- **Which spans are scalable — AMENDED (B5), and the noun matters.** Any
+  **profiled carrier — `inhomogen` *or* `gradient`** — with
+  `optimize = true`, whose mode is in the scale-free half of the table above.
+  Revision 3 said "a graded carrier" in the change text, the licence and
+  §8.12 while its own table routed `GradientMode::FixedSpan` to this item; in
+  this plan's vocabulary those are two engines, so an implementer reading
+  "graded" as `inhomogen`-only would ship the FixedSpan row as dead code and
+  leave licence item 2 not covering gradients. Both engines, one rule.
+
+  `optimize = true` is the existing flag given a meaning it did not have
+  before. Previously it meant "homogenize me": the film falls out of the
+  background set at
   [driver.rs:130](rust/navette/src/smatrix/synthesis/driver.rs:130) and is
-  flattened at
-  [structure.rs:236](rust/navette/src/smatrix/synthesis/structure.rs:236) with
-  the profile dropped and a warning.
+  flattened — an `inhomogen` carrier by the flag flip at
+  [structure.rs:236](rust/navette/src/smatrix/synthesis/structure.rs:236),
+  profile dropped, with a warning; a gradient carrier by F1.1's R4 path, which
+  has to *synthesise* the row from an EMA at `f_mid` because a gradient has no
+  base index to fall back on.
   **This changes the meaning of an existing flag combination**, so it is in
   F1.6's licence below and it is the one part of this item that is not
-  additive. The homogenize warning stops firing for graded films that reach
+  additive. The homogenize warning stops firing for profiled films that reach
   the new path; F1.1's `optimize = false, needle = false` pinned path is
   untouched.
 - **Bounds are span quantities**, matching what F0.2 already made the clamp
@@ -1249,10 +1438,12 @@ and it is asserted, not assumed.
 
 #### Licence — what a run may do differently
 
-Only for a stack that has at least one graded film with `optimize = true`:
+Only for a stack that has at least one **profiled** film — `inhomogen` or
+`gradient` (B5) — with `optimize = true`:
 
-1. That film's thickness now moves during optimization (previously: it was
-   homogenized to its base index with a warning).
+1. That film's thickness now moves during optimization. Previously it was
+   homogenized: an `inhomogen` film to its base index, a gradient film to an
+   EMA at `f_mid` (F1.1's R4 path), both with a warning.
 2. The homogenize warning no longer fires for it.
 3. Its total is now subject to `clamp_max_nm` as a bound (previously: F0.2
    refused it at construction).
@@ -1312,9 +1503,16 @@ Re-expanding inside the residual closure
 what "recalculate after a scale" naively means, and it would re-run the
 sublayer-count rule and the EMA kernel on **every residual evaluation and
 every Jacobian call** — order 10³ times per `optimize_thicknesses`, which
-itself runs seven times per macro cycle — to chase thickness excursions of a
-fraction of a nanometre. Re-expansion is a construction operation and it stays
-one.
+itself runs **dozens of times per macro cycle across seven call sites** — to
+chase thickness excursions of a fraction of a nanometre. Re-expansion is a
+construction operation and it stays one.
+
+*(B8: revision 3 said "seven times per macro cycle", which counted sites, not
+invocations. [cleanup.rs:87](rust/navette/src/smatrix/synthesis/cleanup.rs:87)
+fires once per cleanup removal and
+[cycle.rs:249](rust/navette/src/smatrix/synthesis/cycle.rs:249) once per needle
+insertion, so the real count is variable and larger. F0.2's "dozens of times"
+was the correct wording and it makes this argument stronger, not weaker.)*
 
 **And the cost is not the strongest argument against it. Correctness is.**
 `n_sub` comes from a `ceil()` ([layer.rs:126](rust/navette/src/structure/layer.rs:126)).
@@ -1365,6 +1563,101 @@ immediately after, and the F1.6 `fractions` are re-captured on the next
 
 Fixed-mode spans are visited and left alone: for them refresh is a bitwise
 no-op, because their profile was never a function of `D` in the first place.
+
+#### AMENDED (B2) — `refresh_profiles` has nothing to refresh *from*
+
+The contract above says: re-derive `n_sub`, re-evaluate `f(z)`, re-run the EMA
+kernel, rebuild the rows. None of those inputs are on the object being
+refreshed. Checked field by field:
+
+| Object | Carries | Line |
+|---|---|---|
+| `Span` | `start`, `end`, `logical`, `slice` — four scalars, `Copy` | [expansion.rs:31](rust/navette/src/structure/expansion.rs:31) |
+| `LayerSpec` | material name, resolved `nk`, `d_nm`, `coherent`, roughness, two flags | [structure.rs:39](rust/navette/src/smatrix/synthesis/structure.rs:39) |
+| `DesignStack` | `ambient`, `substrate`, `films`, `num_wavs` | [structure.rs:86](rust/navette/src/smatrix/synthesis/structure.rs:86) |
+
+So the stack holds **no provider, no wavelength values** (only the count), **no
+groups**, and no profile spec. `from_design` builds a `DictProvider`
+([structure.rs:253](rust/navette/src/smatrix/synthesis/structure.rs:253)) and
+drops it on return. Re-running the EMA kernel has no inputs.
+
+And the missing set is larger than "the profile spec". To rebuild a span the
+way `expand` built it, refresh needs the carrier `Layer` (thickness,
+`inhomogen`, `inh_delta`, `coherent`, roughness, `interface`, and the
+gradient spec F1.1 adds), the resolved `Group` (`thick_factor`,
+`thick_summand`, `inh_delta_summand`, `n_factor`/`k_factor`, the roughness and
+interface summands, the error mask) and the resolved endpoint spectra on the
+run's fixed grid. That is *everything one iteration of `expand`'s emission
+loop reads*.
+
+**Which points at the shape.** Do not hand-write a `SpanProfile` mirror of
+that list — a second copy of `expand`'s inputs is a second thing to keep in
+step, and the refresh-correctness twin ("refresh equals construction") would
+be testing whether two functions agree. Instead:
+
+- **Factor `expand`'s per-entry emission body** (the loop at
+  [expansion.rs:163](rust/navette/src/structure/expansion.rs:163)) into
+  `emit_entry(&Layer, &Group, &[Complex64], …) -> rows`, and have both `expand`
+  and `refresh_profiles` call it. Then "refresh and construction must not be
+  two different functions in disguise" is true *by construction*, and the twin
+  becomes a regression pin rather than the only thing holding the property up.
+  The extraction itself is a pure refactor and belongs in **F0.1**, where the
+  bit-exactness gate is unconditional and can prove it moved nothing.
+- **Store the recipe parallel to `spans`, not keyed by `logical`.**
+  `recipes: Vec<Option<SpanRecipe>>` aligned index-for-index with
+  `DesignStack::spans`, so it rides the same five mutators F0.1 already
+  bookkeeps and `assert_spans_partition` can check both lengths at once. A
+  `BTreeMap<usize, _>` keyed by `logical` is a second index that renumbers on
+  `remove_film` and `insert_needle_seed` — the exact failure mode F0.1 exists
+  to prevent. `Span` stays `Copy` either way.
+- `SpanRecipe` is `None` for every plain film, so a stack with no profiled
+  layer pays one `Vec` of `None` and nothing else.
+
+**Why per-span refresh is legal at all — and the guard that keeps it legal.**
+`expand` has a branch that reaches *backwards*: when the interface owner is not
+the current entry (`oi != k`,
+[expansion.rs:231-238](rust/navette/src/structure/expansion.rs:231)) it
+rescales the **previous** span's already-emitted rows. If that branch were
+reachable, refreshing span *k* could invalidate span *k−1* and "refresh one
+span" would not be a well-defined operation. It is not reachable here:
+`from_design` builds its sequence with `inv = false` throughout
+([structure.rs:255](rust/navette/src/smatrix/synthesis/structure.rs:255)), so
+`owner_of[k]` is `Some(k)` or `None`
+([expansion.rs:129](rust/navette/src/structure/expansion.rs:129)) and emission
+is purely local. Record it as a `debug_assert` in `refresh_profiles` and as a
+sentence in `SpanRecipe`'s doc comment, because it is a property of the caller,
+not of the algorithm.
+
+#### AMENDED (B3) — the δ error draw, and why the correctness twin is sound
+
+The legacy branch draws its δ error at expansion
+([expansion.rs:263](rust/navette/src/structure/expansion.rs:263)) under
+`opts.apply_errors`. Refresh recomputes `delta_layer` from the new `D` — that
+is the point of the item — but what happens to the *drawn* part was not stated.
+It matters: re-running the draw at every cycle top would turn a per-run
+Monte-Carlo ensemble into a per-cycle one, silently, which is the statistics
+change F1.3's "the draw itself is not clamped" discipline exists to prevent.
+
+**Checked, and the live hazard does not exist.** `DesignStack` is only ever
+built through `from_design`, and `from_design` expands with
+`ExpandOptions::deterministic()`
+([structure.rs:261](rust/navette/src/smatrix/synthesis/structure.rs:261)) —
+`apply_errors: false`, no draw, on every synthesis run. The two error-applying
+call sites, `Structure::error_inputs`
+([structure/structure.rs:240](rust/navette/src/structure/structure.rs:240)) and
+`Architect`'s tolerancing twin
+([architect.rs:344](rust/navette/src/structure/architect.rs:344)), return
+arrays and never produce a `DesignStack`. So the refresh-correctness twin
+below — refresh at 200 nm equals construction at 200 nm, bitwise — is sound as
+written, not accidentally sound.
+
+**Decision, so it stays that way.** `SpanRecipe` records the `ExpandOptions`
+it was built under, and `refresh_profiles` refuses a recipe with
+`apply_errors: true` rather than re-drawing. If a tolerancing path ever grows
+spans, it fails loudly at the door instead of quietly re-rolling the ensemble.
+One `if` and one message; the alternative — freezing the drawn δ in the recipe
+and re-applying it — is the right answer *then*, and is a five-line change to
+make at that point rather than dead code to carry now.
 
 #### What "stale within a cycle" actually costs — with a number
 
@@ -1417,7 +1710,17 @@ speedup twice over, not a compromise.
 - **Refresh-correctness twin:** a rate-mode span scaled by hand from 100 nm to
   200 nm, then refreshed, is **bitwise equal** to the same span expanded from
   scratch at 200 nm. Refresh and construction must not be two different
-  functions in disguise.
+  functions in disguise — and after B2's shared `emit_entry` they are not two
+  functions at all, which demotes this twin from load-bearing proof to
+  regression pin. Both sides run deterministic, which is not a concession to
+  make the twin pass: it is what `from_design` always does (B3).
+- **`emit_entry` extraction twin (B2) — gated at F0.1, not here.** The
+  extraction is a pure refactor, so it lands under F0.1's unconditional
+  bit-exactness gate and F1.7 inherits the evidence rather than re-arguing it.
+- **Errors-on refusal twin (B3):** a `SpanRecipe` carrying
+  `apply_errors: true` → `refresh_profiles` returns `Err` naming the span,
+  instead of re-drawing. Unreachable through `from_design` today; the twin
+  constructs one directly, so the door is proved shut before anything opens it.
 - **Fixed-mode no-op twin:** `refresh_profiles` on a stack of `Fixed` and
   `FixedSpan` spans is bitwise identity, over the randomized differential
   suite (`test_differential.py:95`, `:119`).
@@ -1429,10 +1732,13 @@ speedup twice over, not a compromise.
   returned stack. Same assertion shape as F0.3's, for the same reason.
 - Fingerprints unmoved: no existing stack has a rate-mode span.
 
-**Risk.** M. The physics is a re-run of F1.1–F1.3 code and the plumbing is
-three call sites. The risk is entirely that a fourth call site appears later —
-someone fixes a staleness symptom by refreshing where the symptom showed up —
-and the refresh-count twin is the guard against precisely that.
+**Risk.** M; **effort L after B2**. The physics is a re-run of F1.1–F1.3 code
+and the plumbing is three call sites, but the item also carries a recipe type
+and the `emit_entry` extraction that makes refresh and construction the same
+code. That is structure, not plumbing, and it is why the effort column moved.
+The *risk* stays concentrated in one place: a fourth call site appearing
+later, because someone fixed a staleness symptom by refreshing where the
+symptom showed up. The refresh-count twin is the guard against precisely that.
 
 ---
 
@@ -1847,11 +2153,12 @@ public signature change and a new refusal class.
 | 5 | ×K solve cost gets worse when surroundings are graded (many rows) | Documented; the S-matrix embedding follow-up (§6.6) becomes more valuable, still not v1 |
 | 6 | Needle refusal inside a span, and needle restriction to design segments, are the same predicate | One admissibility function, **three** callers: `build_scan_sites`, `insert_needle_seed` (R3), and F2.3's locus translation |
 | 7 | **(new, N2)** A saturated `RateCapped` tail is bit-identical rows, which `merge_adjacent` collapses | F0.1 handles intra- and cross-span merges; F1.2 owns the end-to-end twin |
-| 8 | **(new, N1)** An interface slice shares its carrier's span, so "non-singleton" is not "profiled" | The predicate is singleton-**bulk** everywhere: F0.1, F0.2, F1.6, F2.3 |
+| 8 | **(new, N1/B1)** An interface slice shares its carrier's span, so "non-singleton" is not "profiled" — **and the floor deletes such a slice today** | The predicate is singleton-**bulk** everywhere: F0.1, F0.2, F1.6, F2.3. F0.2 adds the rule that a slice is never a floor or cap candidate on its own, measures the deletion (defect 5) and licenses the fix (item 7) |
 | 9 | **(new, U1)** Clamping a layer up to the minimum without raising the LM lower bound is a limit cycle that the stagnation detector reports as oscillation | F0.3 moves `lb` with the policy, and refuses `ClampUpAlways` alongside needle insertion — the two cannot both be on |
 | 10 | **(new, U4)** Re-slicing a graded span is a construction operation; doing it in an inner loop is both 1000× the cost and a step discontinuity in the merit surface | F1.7 fixes three refresh points and pins the count with a counter twin; F1.6's frozen fractions and frozen nk are what make the LM solve well-posed |
 | 11 | **(new, U2/U1)** "Too thin" means two different things once a span can be scaled: remove the layer, or scale it to the floor | F0.2 removes whole and reports; F0.3 adds the clamp-up policy but defers its span branch; F1.6 wires the span branch in and inverts F0.3's deferral twin |
-| 12 | **(new, U2)** Marking a graded film `optimize = true` used to mean "homogenize me"; F1.6 gives it a second meaning | The flag-meaning change is in F1.6's licence, not implicit; F1.1's pinned path (`optimize = false, needle = false`) is untouched and still means "keep the profile, do not touch it" |
+| 12 | **(new, U2/B5)** Marking a **profiled** film `optimize = true` — `inhomogen` or `gradient` — used to mean "homogenize me"; F1.6 gives it a second meaning | The flag-meaning change is in F1.6's licence, not implicit, and it covers both engines; F1.1's pinned path (`optimize = false, needle = false`) is untouched and still means "keep the profile, do not touch it" |
+| 13 | **(new, B2)** Refresh needs the construction recipe, and the row model carries none — while F0.1's whole argument is that spans are plumbing, not new state | The recipe rides `spans` through F0.1's five mutators rather than forming a second index, and the `emit_entry` extraction that makes refresh *be* construction lands in F0.1, where the bit-exactness gate is unconditional and can prove it moved nothing. F1.7 inherits the proof |
 
 ---
 
@@ -1864,15 +2171,18 @@ public signature change and a new refusal class.
 | **`clamp_all` deletes a pinned thin graded span — today, not hypothetically** | A2 exemption in the removal branch; the 5 nm clamp twin asserts film count and total thickness |
 | **A saturated `RateCapped` tail merges and the span shrinks under the bookkeeping** | N2: intra-span merge handled at F0.1, twinned end-to-end at F1.2, spectra asserted bitwise equal across the merge |
 | `inflate_design` re-thicknesses a pinned profile per sublayer | N3: same exemption on its selection list; inflate twin (F0.2) |
-| **The floor deletes a graded layer and the ceiling ignores it — both live, both measured on 0.6.32** | F0.2 makes both span quantities, with a six-item licence and a twin per item; `clamp_all`'s discarded return value becomes a report |
-| **F0.2 is the one item allowed to change a number, so "it was already like that" stops being available as an excuse** | The licence is enumerated before the code; a seventh difference is a defect, not a discovery |
+| **The floor deletes a graded layer and the ceiling ignores it — both live, both measured on 0.6.32** | F0.2 makes both span quantities, with a seven-item licence and a twin per item; `clamp_all`'s discarded return value becomes a report |
+| **The floor also deletes an interface slice, losing the interface physics *and* a nanometre off the carrier — live, measured on 0.6.32** | B1: a slice is never a floor or cap candidate in any branch; the slice-survival twin asserts both rows and the total, because a film-count assertion passes for the wrong reason |
+| **`refresh_profiles` turns out to be written against state that does not exist, and the gap is found at implementation time** | B2: the "no provider, no grid values, no groups" audit is in F1.7, the recipe type is specified, and the `emit_entry` extraction it depends on is gated in F0.1 |
+| **An unconditional clamp report changes every result dict, and the licence quietly stops being true on the page it is written** | B4: `Option<ClampReport>`, `None` when nothing was removed and nothing was capped |
+| **F0.2 is the one item allowed to change a number, so "it was already like that" stops being available as an excuse** | The licence is enumerated before the code; an eighth difference is a defect, not a discovery |
 | **Clamp-up without a matching LM lower bound stalls the run and blames stagnation** | F0.3: `lb` moves with the policy; the monotone-merit twin is the positive statement that the limit cycle is absent |
 | **`ClampUpAlways` silently disables layer elimination, so needle runs only ever grow** | Refused at `NeedlePipeline::new` when `needles_per_cycle > 0`, naming both settings and pointing at `ClampUpFinal` |
 | **A refresh call appears in a fourth place because someone fixes a staleness symptom where it showed up** | F1.7's refresh-count twin asserts exactly five calls in a three-cycle run; a stray call moves it by orders of magnitude |
 | **A mid-solve `ceil()` boundary changes the row count and puts a step in the merit surface** | F1.7 freezes the row count for the whole LM solve; the residual-length twin crosses a boundary deliberately |
 | **F1.6's fraction weights are wrong and the Jacobian is plausibly wrong rather than obviously wrong** | Two oracles: central FD to 1e-6, and a *bitwise* comparison against the weighted sum of the row columns |
 | `Fixed` inhomogeneous mode stops being bitwise | The existing randomized differential suite (`test_differential.py:95`, `:119`) is the gate, not review |
-| Sublayer-count float boundaries diverge | Differential pin over randomized thicknesses (`sub_layer_count` precedent); all four callers see the same `delta_layer` |
+| Sublayer-count float boundaries diverge | Differential pin over randomized thicknesses (`sub_layer_count` precedent); all **five** readers see the same `delta_layer` (B6) — including the advisory message and the PyO3 getter, the two that are user-visible |
 | EMA per-draw cost surprises | Bench before/after; memo on `(nk_a, nk_b, f)` per draw held in reserve |
 | Schema gate change breaks state loading | v1 fixture committed first (R5); both out-of-range directions tested |
 | **The schema range breaks the sync helper and inverts two tests** | A3: `_accepted_range` replaces `_accepted_version`; `test_stale_schema_versions_refused` and the `config.rs` refusal test updated deliberately |
@@ -1931,7 +2241,8 @@ Resolve at the item that first needs them; each is a one-liner.
     behaviour is what makes the version bump necessary in the first place.
     *(F2.4)*
 12. **(U2) How a span declares itself scalable.** Recommend reusing
-    `optimize = true` on the graded carrier rather than adding a
+    `optimize = true` on the profiled carrier — `inhomogen` or `gradient`
+    (B5) — rather than adding a
     `scalable` flag: it is the flag that already means "the optimizer may
     move this layer's thickness", and a second flag would create four
     combinations where two are meaningful. Cost: the combination changes
@@ -1944,15 +2255,57 @@ Resolve at the item that first needs them; each is a one-liner.
     v1: three fixed refresh points, no knob. A `refresh_profiles_each_cycle`
     toggle would let a user turn off the reconciliation that bounds the
     staleness, and the only thing they would buy is one re-expansion per
-    macro cycle — which F1.7 already argues is negligible next to the
-    seven `optimize_thicknesses` calls in the same cycle. Revisit only if a
-    profiling run says otherwise. *(F1.7)*
+    macro cycle — which F1.7 already argues is negligible next to the dozens
+    of `optimize_thicknesses` invocations in the same cycle (B8). Revisit
+    only if a profiling run says otherwise. *(F1.7)*
 14. **(U1) Does `clamp_min_nm` get renamed?** Recommend no. It genuinely
     does two jobs — elimination threshold under `Remove`, manufacturing
     floor under the clamp-up policies — but renaming a public config key
     breaks every caller to buy clarity that a doc comment can supply. The
     doc comment must state both jobs and which policy selects which.
     *(F0.3)*
+15. **(B2) Does `expand`'s per-entry emission get factored out, or does
+    `refresh_profiles` carry its own copy of it?** Recommend factoring:
+    one `emit_entry`, called by both, extracted in F0.1. It is the only
+    shape in which "refresh equals construction" is a *property* rather
+    than a test result, and F1.7's refresh-correctness twin then pins a
+    regression instead of holding the invariant up by itself. Cost: it
+    touches `expand`, the most fingerprint-sensitive function in the tree —
+    which is the argument for putting it in the item whose gate is
+    unconditional rather than in the item that needs it.
+
+    **RESOLVED (audit, third pass): factored, and the extraction lands in
+    F0.1.** Three reasons, in the order that matters.
+
+    1. *Gate-match.* F0.1's gate is the only one where any difference is a
+       defect. F1.7's gate is differential — "exactly these may differ" — and
+       a refactor bug that stays inside licence bounds, visible only on
+       graded stacks, would ride through it. The extraction must land where
+       difference = defect.
+    2. *One restructure, one gate.* F0.1 already restructures this loop: it
+       carries the bulk ranges out (B9, decision above) and adds span
+       emission bookkeeping. Folding the extraction into the same bit-exact
+       proof costs a second fingerprint run over the same region exactly
+       nothing, keeps F1.7's diff behaviour-only, and means F1.1's and F1.6's
+       later branch additions edit `emit_entry` instead of a monolith.
+    3. *Failure mode.* The improvised alternative — the thing an implementer
+       writes in the first hour when the inputs are not on the object — is a
+       `logical`-keyed recipe map, which breaks under `remove_film` and
+       `insert_needle_seed`. Deciding it here means F1.7 starts against an
+       `emit_entry` that exists and is proven, with the recipe's home already
+       specified.
+
+    Conditions of the resolution: `emit_entry` takes exactly what the loop
+    body reads and returns nothing else — no push reordering, no change to
+    the order of the error draws, no new defaults; the `oi != k`
+    unreachability stays asserted, the plan's `refresh_profiles` assert
+    (F1.7) plus a caller-side `debug_assert` in `from_design` beside the
+    extraction, both debug-only and unable to move a fingerprint; and
+    `test_differential.py:95`'s bitwise Fixed-mode pin — in-tree at 0.6.32 —
+    runs before/after as a free extra twin on top of the three fingerprints
+    and the battery. No ladder change: the extraction is part of F0.1's
+    feature (span bookkeeping, plumbing not behaviour), `0.6.33` stands.
+    *(F0.1, needed by F1.7)*
 
 ---
 
@@ -1963,18 +2316,18 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 
 | Version | Item | Commit | Amendments adopted | Status |
 |---|---|---|---|---|
-| 0.6.33 | F0.1 | — | A9.3, R1, R2, R3, N1, N2, **U5** (half) | not started |
-| 0.6.34 | F0.2 | — | A2, N3, **U5** (half) | not started |
+| 0.6.33 | F0.1 | — | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | not started |
+| 0.6.34 | F0.2 | — | A2, N3, **U5** (half), **B1**, B4, B7 | not started |
 | 0.6.35 | F0.3 | — | **U1** | not started |
-| 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7 | not started |
+| 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7, B10 | not started |
 | 0.6.37 | F1.2 | — | A9.2, N2 | not started |
-| 0.6.38 | F1.3 | — | — | not started |
-| 0.6.39 | F1.6 | — | **U2** | not started |
-| 0.6.40 | F1.7 | — | **U3, U4** | not started |
+| 0.6.38 | F1.3 | — | **B6**, B10 | not started |
+| 0.6.39 | F1.6 | — | **U2**, **B5** | not started |
+| 0.6.40 | F1.7 | — | **U3, U4**, **B2, B3**, B8 | not started |
 | 0.6.41 | F1.4 | — | A3, R5, N4 | not started |
 | 0.6.42 | F1.5 | — | A5 (mirror), N9 | not started |
 | 0.6.43 | F2.1 | — | A7, R6 | not started |
 | 0.6.44 | F2.2 | — | A4, A8 | not started |
 | 0.6.45 | F2.3 | — | A8, N1 | not started |
 | 0.6.46 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
-| 0.6.47 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs) | not started |
+| 0.6.47 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |
