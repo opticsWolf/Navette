@@ -1,7 +1,75 @@
 # Changelog
 
 All notable changes to Navette are recorded here. Work items reference
-`docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
+`docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
+`docs/implementation_plan.md` (Fx.y).
+
+## [0.6.33] — F0.1: span provenance on `DesignStack` (the bookkeeping half)
+
+### Added
+
+- **`DesignStack` now carries its spans** (`DesignStack::spans`, exposed as
+  `spans()` alongside `films()`). A span is the contiguous run of solver
+  rows one design layer expands to; `expand` computed this all along and
+  every caller dropped it at the door. Nothing observable of any existing
+  run reads it yet — this release is pure bookkeeping, and the gate was
+  absolute: both fingerprints unmoved, full stop.
+
+- **`Span::is_singleton_bulk()`** — the one predicate later items consult
+  (N1): a span is singleton-bulk iff it holds exactly one non-slice row,
+  so a plain film (1 row) and an interface-carrying plain film (2 rows,
+  one of them the slice) both qualify while graded spans do not. Say
+  "singleton-bulk", never "singleton". `Span` also now carries
+  `bulk_start` (B9) — the bulk range `expand` computed and dropped — with
+  the arithmetic predicate kept as the assertion that the two agree.
+
+- **`DesignStack::span_of_row`**, **`needle_host_refusal`** (R3 — the
+  needle-host admissibility rule now also lives at the public
+  `insert_needle_seed` door, not only in the scan), and the named
+  **`assert_spans_partition`** (R2), called at both constructors and every
+  count-changing mutator.
+
+- **The needle-run fingerprint pin**
+  (`validation/regression/synthesis/test_needle_pin.py`): there was no
+  in-tree test pinning a bit-exact needle run — the anchor lived in a
+  scratchpad harness outside the repo (R1). The pin (fixed design, fixed
+  targets, fixed seeds, hashed spectra) was committed before the first
+  line of `DesignStack` changed, so "fingerprint unmoved" names a test
+  that exists in the tree.
+
+### Changed
+
+- **The five row-count mutators maintain the partition**:
+  `insert_needle_seed` (the host span splits locally; the seed becomes
+  its own singleton; the bottom keeps the host's logical identity),
+  `merge_adjacent` (films and spans rebuild in one pass — a merged row
+  joins the FIRST span touched, matching "first layer's properties win";
+  a span whose rows all merged away is dropped, N2), `remove_film`
+  (spans shrink or drop with their rows), `clamp_all` (rows are still
+  judged one by one — the span-quantity floor/cap is F0.2's licensed
+  change), and `remove_thin_layers` (which maintains the partition
+  transitively through `remove_film`).
+
+- **`build_scan_sites` / `run_needle_pass` take the span partition**;
+  scan sites are generated only inside singleton-bulk spans. An unbooked
+  row list (`&[]`) keeps the flag-only rule the tree always ran — no
+  existing stack has a needle-flagged multi-row span, so the scan is
+  unchanged (pinned by the N1 twin).
+
+- **`expand`'s emission loop body is extracted verbatim into
+  `emit_entry`** (open decision 15, resolved: the extraction lands in
+  F0.1 under the unconditional bit-exactness gate, and F1.7's
+  `refresh_profiles` will call the same code construction does).
+  `from_design` asserts the property the extraction's callers will rely
+  on: the design path builds `inv = false` throughout, so emission never
+  reaches backwards into previous spans.
+
+### Note
+
+`clamp_all`'s row-wise deletion — including the sub-floor interface-slice
+row (B1, measured: 150.0 → 149.0 nm) — is deliberately still present at
+this release; the fix is F0.2 licence item 7, and the clamp bookkeeping
+test records the state honestly.
 
 ## [0.6.32] — README badges, and the MSRV that backs one of them
 

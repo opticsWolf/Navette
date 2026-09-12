@@ -35,6 +35,30 @@ pub struct Span {
     /// Row `start` is an interface slice (derived row: never a free
     /// parameter, never a needle host). Set at emission time.
     pub slice: bool,
+    /// First bulk row (B9, F0.1). Rows `[bulk_start, end)` carry the
+    /// layer's own (group-scaled, possibly graded) index; row `start` —
+    /// when `slice` — is the interface slice, carved from the carrier's
+    /// authored thickness (expansion carves, it does not append). Carried
+    /// as a field so later items read one source instead of re-deriving
+    /// `start + slice as usize`; `is_singleton_bulk` asserts the equality
+    /// so the two cannot silently drift apart.
+    pub bulk_start: usize,
+}
+
+impl Span {
+    /// N1: a span is *singleton-bulk* iff it holds exactly one non-slice
+    /// row. A plain film (1 row) and an interface-carrying plain film
+    /// (2 rows, one of them the slice) both qualify; graded and gradient
+    /// spans do not. Say "singleton-bulk", never "singleton": the row
+    /// count is not the predicate.
+    pub fn is_singleton_bulk(&self) -> bool {
+        debug_assert_eq!(
+            self.bulk_start,
+            self.start + usize::from(self.slice),
+            "Span::bulk_start disagrees with the arithmetic predicate"
+        );
+        self.end - self.bulk_start == 1
+    }
 }
 
 /// Engine-ready arrays: row-major `indices` (`n_rows × n_wavelengths`).
@@ -149,183 +173,255 @@ pub fn expand(
         None if opts.apply_errors => AnyRng::Thread(rand::rng()),
         None => AnyRng::Seeded(Box::new(StdRng::seed_from_u64(0))), // unused; errors off
     };
-    let mut col_thick: Vec<f64> = Vec::new();
-    let mut col_nk: Vec<Complex64> = Vec::new();
-    let mut col_coh: Vec<bool> = Vec::new();
-    let mut col_r_val: Vec<f64> = Vec::new();
-    let mut col_r_type: Vec<i32> = Vec::new();
-    let mut spans: Vec<Span> = Vec::new();
-    let mut bulk_spans: Vec<(usize, usize)> = Vec::new();
-    let mut err_nk: Vec<Vec<Complex64>> = Vec::with_capacity(seq.len());
-    let mut err_t: Vec<f64> = Vec::with_capacity(seq.len());
+    let mut em = Emission::with_capacity(seq.len());
     let mut prev_eff_nk: Option<Vec<Complex64>> = None;
 
-    for (k, (layer, inv)) in seq.iter().enumerate() {
-        let group = group_of(layer.material.as_str());
-        let mut layer_nk = bulk_nk[k].clone();
-        let mut layer_thickness = bulk_t[k];
-        if opts.apply_errors {
-            if group.error_mask[crate::structure::enums::ErrorMask::Thickness as usize] != 0 {
-                layer_thickness = group.thickness_error(layer_thickness, rng.rng());
-            }
-            let me = crate::structure::enums::ErrorMask::NReal as usize;
-            let ke = crate::structure::enums::ErrorMask::NImag as usize;
-            if group.error_mask[me] != 0 || group.error_mask[ke] != 0 {
-                perturb_nk(&mut layer_nk, group, rng.rng());
-            }
-        }
-        layer_thickness = layer_thickness.max(0.0);
-        err_nk.push(layer_nk.clone());
-        err_t.push(layer_thickness);
-        let o = owner_of[k];
-
-        // Bulk roughness (owner-group draws; RNG order thick, nk, rough, ...).
-        let (current_roughness, rtype) = if *inv {
-            match o {
-                Some(oi) => {
-                    let (olayer, _) = &seq[oi];
-                    let ogroup = group_of(olayer.material.as_str());
-                    let mut r = (olayer.roughness + ogroup.roughness_summand).max(0.0);
-                    if opts.apply_errors
-                        && ogroup.error_mask[crate::structure::enums::ErrorMask::Roughness as usize]
-                            != 0
-                    {
-                        r = ogroup.sr_roughness_error(r, rng.rng());
-                    }
-                    (r, olayer.rough_type as i32)
-                }
-                None => (0.0, RoughnessType::None as i32),
-            }
-        } else {
-            let mut r = (layer.roughness + group.roughness_summand).max(0.0);
-            if opts.apply_errors
-                && group.error_mask[crate::structure::enums::ErrorMask::Roughness as usize] != 0
-            {
-                r = group.sr_roughness_error(r, rng.rng());
-            }
-            (r, layer.rough_type as i32)
-        };
-
-        let start = col_thick.len();
-        let mut emitted_slice = false;
-
-        // Plane slice (flag owner's group governs summand + draws).
-        if let Some(oi) = o {
-            let (olayer, _) = &seq[oi];
-            let ogroup = group_of(olayer.material.as_str());
-            if olayer.interface {
-                let mut t_interface = olayer.interface_thickness + ogroup.interface_summand;
-                if opts.apply_errors
-                    && ogroup.error_mask[crate::structure::enums::ErrorMask::Interface as usize]
-                        != 0
-                {
-                    t_interface = ogroup.interface_error(t_interface, rng.rng());
-                }
-                let carve_total = if oi == k { layer_thickness } else { err_t[oi] };
-                t_interface = t_interface.min(carve_total);
-                let mix = if oi == k {
-                    layer_thickness -= t_interface;
-                    let prev = prev_eff_nk.as_deref().unwrap_or(&err_nk[k]);
-                    looyenga_mix(&layer_nk, prev)
-                } else {
-                    let (start_o, end_o) = bulk_spans[oi];
-                    if carve_total > 0.0 && end_o > start_o {
-                        let scale = (carve_total - t_interface) / carve_total;
-                        for row in &mut col_thick[start_o..end_o] {
-                            *row *= scale;
-                        }
-                    }
-                    looyenga_mix(&err_nk[oi], &err_nk[k])
-                };
-                push_row(
-                    &mut col_thick,
-                    &mut col_nk,
-                    &mut col_coh,
-                    &mut col_r_val,
-                    &mut col_r_type,
-                    t_interface,
-                    mix,
-                    true,
-                    0.0,
-                    RoughnessType::None as i32,
-                );
-                emitted_slice = true;
-            }
-        }
-
-        let bulk_start = col_thick.len();
-        let sub = layer.sub_layer_count();
-        if layer.inhomogen && sub > 1 {
-            let mut current_delta = (layer.inh_delta + group.inh_delta_summand) * 0.5;
-            if opts.apply_errors
-                && group.error_mask[crate::structure::enums::ErrorMask::InhDelta as usize] != 0
-            {
-                current_delta = group.inh_delta_error(current_delta, rng.rng());
-            }
-            let mut factors: Vec<f64> = (0..sub)
-                .map(|i| {
-                    1.0 - current_delta + 2.0 * current_delta * f64::from(i) / f64::from(sub - 1)
-                })
-                .collect();
-            if *inv {
-                factors.reverse();
-            }
-            let step_t = layer_thickness / f64::from(sub);
-            for (ix, f) in factors.iter().enumerate() {
-                let row_nk: Vec<Complex64> = layer_nk.iter().map(|z| z * f).collect();
-                push_row(
-                    &mut col_thick,
-                    &mut col_nk,
-                    &mut col_coh,
-                    &mut col_r_val,
-                    &mut col_r_type,
-                    step_t,
-                    row_nk,
-                    layer.coherent,
-                    if ix == 0 { current_roughness } else { 0.0 },
-                    if ix == 0 {
-                        rtype
-                    } else {
-                        RoughnessType::None as i32
-                    },
-                );
-            }
-        } else {
-            push_row(
-                &mut col_thick,
-                &mut col_nk,
-                &mut col_coh,
-                &mut col_r_val,
-                &mut col_r_type,
-                layer_thickness,
-                layer_nk.clone(),
-                layer.coherent,
-                current_roughness,
-                rtype,
-            );
-        }
-        spans.push(Span {
-            start,
-            end: col_thick.len(),
-            logical: k,
-            slice: emitted_slice,
-        });
-        bulk_spans.push((bulk_start, col_thick.len()));
-
-        prev_eff_nk = Some(layer_nk);
+    for k in 0..seq.len() {
+        emit_entry(
+            &mut em,
+            seq,
+            k,
+            groups,
+            &bulk_nk[k],
+            bulk_t[k],
+            owner_of[k],
+            opts,
+            &mut rng,
+            &mut prev_eff_nk,
+        );
     }
 
-    let n_rows = col_thick.len();
+    let n_rows = em.col_thick.len();
     let sa = SolverArrays {
-        thicknesses: col_thick,
-        indices: col_nk,
+        thicknesses: em.col_thick,
+        indices: em.col_nk,
         n_wavelengths: wavelengths.len(),
-        incoherent: col_coh.iter().map(|c| !c).collect(),
-        rough_types: col_r_type,
-        rough_vals: col_r_val,
+        incoherent: em.col_coh.iter().map(|c| !c).collect(),
+        rough_types: em.col_r_type,
+        rough_vals: em.col_r_val,
     };
     debug_assert_eq!(sa.indices.len(), n_rows * wavelengths.len());
-    Ok((sa, spans))
+    Ok((sa, em.spans))
+}
+
+/// Mutable per-`expand` emission state: exactly the accumulators one
+/// iteration of the emission loop reads and writes (the F0.1 extraction
+/// contract, open decision 15). Owning the vectors keeps `expand`'s
+/// locals and `emit_entry`'s body byte-for-byte the old code.
+struct Emission {
+    col_thick: Vec<f64>,
+    col_nk: Vec<Complex64>,
+    col_coh: Vec<bool>,
+    col_r_val: Vec<f64>,
+    col_r_type: Vec<i32>,
+    spans: Vec<Span>,
+    bulk_spans: Vec<(usize, usize)>,
+    err_nk: Vec<Vec<Complex64>>,
+    err_t: Vec<f64>,
+}
+
+impl Emission {
+    fn with_capacity(seq_len: usize) -> Self {
+        Self {
+            col_thick: Vec::new(),
+            col_nk: Vec::new(),
+            col_coh: Vec::new(),
+            col_r_val: Vec::new(),
+            col_r_type: Vec::new(),
+            spans: Vec::new(),
+            bulk_spans: Vec::new(),
+            err_nk: Vec::with_capacity(seq_len),
+            err_t: Vec::with_capacity(seq_len),
+        }
+    }
+}
+
+/// Emit entry `k`'s rows into the running column set.
+///
+/// Extracted verbatim from `expand`'s emission loop at F0.1 so that F1.7's
+/// `refresh_profiles` and construction are the same code by construction
+/// (open decision 15: "refresh equals construction" as a property, not a
+/// test result). Pure code motion: the parameter list is exactly what the
+/// loop body reads, nothing else; no push reordered, no draw order
+/// changed.
+#[allow(clippy::too_many_arguments)]
+fn emit_entry(
+    em: &mut Emission,
+    seq: &[(Layer, bool)],
+    k: usize,
+    groups: &HashMap<String, Group>,
+    bulk_nk_k: &[Complex64],
+    bulk_t_k: f64,
+    owner_k: Option<usize>,
+    opts: ExpandOptions,
+    rng: &mut AnyRng,
+    prev_eff_nk: &mut Option<Vec<Complex64>>,
+) {
+    let default_group = Group::new("_default_");
+    let group_of = |material: &str| groups.get(material).unwrap_or(&default_group);
+    let (layer, inv) = (&seq[k].0, &seq[k].1);
+    let Emission {
+        col_thick,
+        col_nk,
+        col_coh,
+        col_r_val,
+        col_r_type,
+        spans,
+        bulk_spans,
+        err_nk,
+        err_t,
+    } = em;
+
+    let group = group_of(layer.material.as_str());
+    let mut layer_nk = bulk_nk_k.to_vec();
+    let mut layer_thickness = bulk_t_k;
+    if opts.apply_errors {
+        if group.error_mask[crate::structure::enums::ErrorMask::Thickness as usize] != 0 {
+            layer_thickness = group.thickness_error(layer_thickness, rng.rng());
+        }
+        let me = crate::structure::enums::ErrorMask::NReal as usize;
+        let ke = crate::structure::enums::ErrorMask::NImag as usize;
+        if group.error_mask[me] != 0 || group.error_mask[ke] != 0 {
+            perturb_nk(&mut layer_nk, group, rng.rng());
+        }
+    }
+    layer_thickness = layer_thickness.max(0.0);
+    err_nk.push(layer_nk.clone());
+    err_t.push(layer_thickness);
+    let o = owner_k;
+
+    // Bulk roughness (owner-group draws; RNG order thick, nk, rough, ...).
+    let (current_roughness, rtype) = if *inv {
+        match o {
+            Some(oi) => {
+                let (olayer, _) = &seq[oi];
+                let ogroup = group_of(olayer.material.as_str());
+                let mut r = (olayer.roughness + ogroup.roughness_summand).max(0.0);
+                if opts.apply_errors
+                    && ogroup.error_mask[crate::structure::enums::ErrorMask::Roughness as usize]
+                        != 0
+                {
+                    r = ogroup.sr_roughness_error(r, rng.rng());
+                }
+                (r, olayer.rough_type as i32)
+            }
+            None => (0.0, RoughnessType::None as i32),
+        }
+    } else {
+        let mut r = (layer.roughness + group.roughness_summand).max(0.0);
+        if opts.apply_errors
+            && group.error_mask[crate::structure::enums::ErrorMask::Roughness as usize] != 0
+        {
+            r = group.sr_roughness_error(r, rng.rng());
+        }
+        (r, layer.rough_type as i32)
+    };
+
+    let start = col_thick.len();
+    let mut emitted_slice = false;
+
+    // Plane slice (flag owner's group governs summand + draws).
+    if let Some(oi) = o {
+        let (olayer, _) = &seq[oi];
+        let ogroup = group_of(olayer.material.as_str());
+        if olayer.interface {
+            let mut t_interface = olayer.interface_thickness + ogroup.interface_summand;
+            if opts.apply_errors
+                && ogroup.error_mask[crate::structure::enums::ErrorMask::Interface as usize] != 0
+            {
+                t_interface = ogroup.interface_error(t_interface, rng.rng());
+            }
+            let carve_total = if oi == k { layer_thickness } else { err_t[oi] };
+            t_interface = t_interface.min(carve_total);
+            let mix = if oi == k {
+                layer_thickness -= t_interface;
+                let prev = prev_eff_nk.as_deref().unwrap_or(&err_nk[k]);
+                looyenga_mix(&layer_nk, prev)
+            } else {
+                let (start_o, end_o) = bulk_spans[oi];
+                if carve_total > 0.0 && end_o > start_o {
+                    let scale = (carve_total - t_interface) / carve_total;
+                    for row in &mut col_thick[start_o..end_o] {
+                        *row *= scale;
+                    }
+                }
+                looyenga_mix(&err_nk[oi], &err_nk[k])
+            };
+            push_row(
+                col_thick,
+                col_nk,
+                col_coh,
+                col_r_val,
+                col_r_type,
+                t_interface,
+                mix,
+                true,
+                0.0,
+                RoughnessType::None as i32,
+            );
+            emitted_slice = true;
+        }
+    }
+
+    let bulk_start = col_thick.len();
+    let sub = layer.sub_layer_count();
+    if layer.inhomogen && sub > 1 {
+        let mut current_delta = (layer.inh_delta + group.inh_delta_summand) * 0.5;
+        if opts.apply_errors
+            && group.error_mask[crate::structure::enums::ErrorMask::InhDelta as usize] != 0
+        {
+            current_delta = group.inh_delta_error(current_delta, rng.rng());
+        }
+        let mut factors: Vec<f64> = (0..sub)
+            .map(|i| 1.0 - current_delta + 2.0 * current_delta * f64::from(i) / f64::from(sub - 1))
+            .collect();
+        if *inv {
+            factors.reverse();
+        }
+        let step_t = layer_thickness / f64::from(sub);
+        for (ix, f) in factors.iter().enumerate() {
+            let row_nk: Vec<Complex64> = layer_nk.iter().map(|z| z * f).collect();
+            push_row(
+                col_thick,
+                col_nk,
+                col_coh,
+                col_r_val,
+                col_r_type,
+                step_t,
+                row_nk,
+                layer.coherent,
+                if ix == 0 { current_roughness } else { 0.0 },
+                if ix == 0 {
+                    rtype
+                } else {
+                    RoughnessType::None as i32
+                },
+            );
+        }
+    } else {
+        push_row(
+            col_thick,
+            col_nk,
+            col_coh,
+            col_r_val,
+            col_r_type,
+            layer_thickness,
+            layer_nk.clone(),
+            layer.coherent,
+            current_roughness,
+            rtype,
+        );
+    }
+    spans.push(Span {
+        start,
+        end: col_thick.len(),
+        logical: k,
+        slice: emitted_slice,
+        bulk_start,
+    });
+    bulk_spans.push((bulk_start, col_thick.len()));
+
+    *prev_eff_nk = Some(layer_nk);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -469,11 +565,80 @@ mod tests {
         assert_eq!(
             spans
                 .iter()
-                .map(|s| (s.start, s.end, s.logical))
+                .map(|s| (s.start, s.end, s.logical, s.bulk_start))
                 .collect::<Vec<_>>(),
-            vec![(0, 1, 0), (1, 2, 1), (2, 3, 2)]
+            vec![(0, 1, 0, 0), (1, 2, 1, 1), (2, 3, 2, 2)]
         );
         assert!(spans.iter().all(|s| !s.slice));
+        assert!(spans.iter().all(|s| s.is_singleton_bulk()));
+    }
+
+    /// F0.1: the predicate's four cases, no pipeline involved. The second
+    /// is the N1 case that would otherwise have been discovered by a
+    /// moved fingerprint: an interface-carrying plain film is a 2-row
+    /// span and STILL singleton-bulk.
+    #[test]
+    fn is_singleton_bulk_four_cases() {
+        let cases: Vec<(Vec<(Layer, bool)>, bool)> = vec![
+            // plain film
+            (vec![(Layer::film(50.0, "glass"), false)], true),
+            // plain film with interface (slice + bulk)
+            (
+                vec![(
+                    Layer {
+                        interface: true,
+                        interface_thickness: 5.0,
+                        ..Layer::film(50.0, "glass")
+                    },
+                    false,
+                )],
+                true,
+            ),
+            // graded film
+            (
+                vec![(
+                    Layer {
+                        inhomogen: true,
+                        inh_delta: 0.2,
+                        ..Layer::film(50.0, "glass")
+                    },
+                    false,
+                )],
+                false,
+            ),
+            // graded film with interface (slice + graded bulk)
+            (
+                vec![(
+                    Layer {
+                        inhomogen: true,
+                        inh_delta: 0.2,
+                        interface: true,
+                        interface_thickness: 5.0,
+                        ..Layer::film(50.0, "glass")
+                    },
+                    false,
+                )],
+                false,
+            ),
+        ];
+        for (seq, want) in cases {
+            let (_, spans) = expand(
+                &seq,
+                &mats(),
+                &WL,
+                &HashMap::new(),
+                ExpandOptions::deterministic(),
+            )
+            .unwrap();
+            assert_eq!(spans.len(), 1, "{seq:?}");
+            assert_eq!(
+                spans[0].is_singleton_bulk(),
+                want,
+                "span {:?} (case: {:?})",
+                spans[0],
+                want
+            );
+        }
     }
 
     /// Oracle twin: scaling + slice + grading + roughness (Python FULL).
@@ -507,6 +672,14 @@ mod tests {
         .unwrap();
         assert_eq!(sa.n_rows(), 13);
         assert!(spans[1].slice && spans[1].start == 1);
+        // B9: the bulk range is carried on the span, and the slice leads it.
+        assert_eq!(spans[1].bulk_start, 2);
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.is_singleton_bulk() == (s.end - s.start - usize::from(s.slice) == 1))
+        );
+        assert!(!spans[1].is_singleton_bulk());
         let mut want_t = vec![0.0, 8.0];
         want_t.extend(vec![48.0 / 11.0; 11]);
         close(&sa.thicknesses, &want_t);

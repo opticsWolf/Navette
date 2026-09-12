@@ -24,6 +24,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use crate::smatrix::optics_core::cplx;
+use crate::structure::Span;
 
 // ---------------------------------------------------------------------------
 // LayerSpec
@@ -82,11 +83,18 @@ impl LayerSpec {
 // ---------------------------------------------------------------------------
 
 /// Thin-film stack: fixed ambient + films + fixed substrate.
+///
+/// F0.1: `spans` rides alongside `films` — row `i` of `films` belongs to
+/// exactly one span of `spans` (asserted by `assert_spans_partition` at
+/// every constructor and count-changing mutator). Nothing observable of
+/// any existing run reads it yet; it is the bookkeeping F0.2/F1.6/F2.3
+/// consult.
 #[derive(Clone, Debug)]
 pub struct DesignStack {
     ambient: LayerSpec,
     substrate: LayerSpec,
     films: Vec<LayerSpec>,
+    spans: Vec<Span>,
     num_wavs: usize,
 }
 
@@ -94,10 +102,32 @@ impl DesignStack {
     /// Build a stack from boundary layers plus film layers.
     ///
     /// All layers must share the same nk length (the simulation grid size).
+    /// Rows not born from `expand` get one singleton span each (F0.1).
     pub fn with_films(
         ambient: LayerSpec,
         substrate: LayerSpec,
         films: Vec<LayerSpec>,
+    ) -> Result<Self, String> {
+        let spans: Vec<Span> = (0..films.len())
+            .map(|i| Span {
+                start: i,
+                end: i + 1,
+                logical: i,
+                slice: false,
+                bulk_start: i,
+            })
+            .collect();
+        Self::from_parts(ambient, substrate, films, spans)
+    }
+
+    /// The one internal constructor: validated row lists plus the span
+    /// partition that covers them. `from_design` passes the spans it kept
+    /// from `expand`; every other door synthesizes singletons above.
+    fn from_parts(
+        ambient: LayerSpec,
+        substrate: LayerSpec,
+        films: Vec<LayerSpec>,
+        spans: Vec<Span>,
     ) -> Result<Self, String> {
         let num_wavs = ambient.nk.len();
         if substrate.nk.len() != num_wavs {
@@ -118,12 +148,15 @@ impl DesignStack {
                 ));
             }
         }
-        Ok(DesignStack {
+        let s = DesignStack {
             ambient,
             substrate,
             films,
+            spans,
             num_wavs,
-        })
+        };
+        s.assert_spans_partition();
+        Ok(s)
     }
 
     // -- properties ---------------------------------------------------------
@@ -157,6 +190,74 @@ impl DesignStack {
     /// Total physical thickness of the film stack (nm).
     pub fn total_thickness_nm(&self) -> f64 {
         self.films.iter().map(|f| f.d_nm).sum()
+    }
+
+    /// The span partition (F0.1). One span per contiguous run of rows;
+    /// `assert_spans_partition` holds at every observable point.
+    pub fn spans(&self) -> &[Span] {
+        &self.spans
+    }
+
+    /// The span containing solver row `row`.
+    ///
+    /// Panics on an out-of-range row: callers are the crate's own mutators
+    /// and gates, all of which validate the row first — an out-of-range
+    /// row here is a bookkeeping bug, not a user error.
+    pub fn span_of_row(&self, row: usize) -> &Span {
+        &self.spans[span_index_of_row(&self.spans, row)]
+    }
+
+    /// R3 / §6 row 6: the one needle-host admissibility rule, shared by
+    /// `insert_needle_seed` (the public door) and the scan-site filter.
+    /// A host row inside a multi-row span is refused — a needle must
+    /// never split a graded profile or land on a derived row. The message
+    /// names the span's material and its row range. `None` = admissible.
+    pub(crate) fn needle_host_refusal(&self, film_idx: usize) -> Option<String> {
+        if film_idx >= self.films.len() {
+            return None; // range is the caller's error to raise
+        }
+        let sp = self.span_of_row(film_idx);
+        if sp.is_singleton_bulk() {
+            return None;
+        }
+        Some(format!(
+            "insert_needle_seed: film {} ('{}') lies in solver rows {}..{}, a \
+             multi-row span - not an admissible needle host",
+            film_idx, self.films[film_idx].material, sp.start, sp.end
+        ))
+    }
+
+    /// R2: the one named invariant check — `spans` is a contiguous,
+    /// ordered, non-overlapping partition of `0..films.len()`, and every
+    /// span's `bulk_start` agrees with the arithmetic predicate (B9: one
+    /// source, one assertion that it matches the derivation). Called at
+    /// the tail of both constructors and every count-changing mutator;
+    /// F1.7 extends it to the recipe vector's length.
+    pub(crate) fn assert_spans_partition(&self) {
+        let n = self.films.len();
+        let mut next = 0usize;
+        for sp in &self.spans {
+            assert_eq!(
+                sp.start, next,
+                "spans must be contiguous and ordered (gap at row {next})"
+            );
+            assert!(sp.end > sp.start, "span {sp:?} is empty");
+            assert!(sp.end <= n, "span {sp:?} exceeds film rows ({n})");
+            assert!(
+                sp.bulk_start >= sp.start && sp.bulk_start <= sp.end,
+                "span {sp:?} has bulk_start outside its rows"
+            );
+            debug_assert_eq!(
+                sp.bulk_start,
+                sp.start + usize::from(sp.slice),
+                "Span::bulk_start disagrees with the arithmetic predicate"
+            );
+            next = sp.end;
+        }
+        assert_eq!(
+            next, n,
+            "spans must cover every film row exactly once (stopped at {next} of {n})"
+        );
     }
 
     /// Build a stack by expanding design films through `navette-structure`.
@@ -253,6 +354,17 @@ impl DesignStack {
         let provider = crate::structure::DictProvider::with_grid(entries, wavelengths.to_vec())?;
         let seq: Vec<(crate::structure::Layer, bool)> =
             flat.iter().cloned().map(|l| (l, false)).collect();
+        // F0.1 / §8.15: `expand`'s backwards-rescale branch (entry `k`
+        // rescaling the previous span's already-emitted rows) is reachable
+        // only through `inv = true` entries. The design path builds `inv =
+        // false` throughout, so emission is purely local — the property
+        // F1.7's per-span refresh rests on. Assert it beside the expansion
+        // (debug-only; cannot move a fingerprint).
+        debug_assert!(
+            seq.iter().all(|(_, inv)| !*inv),
+            "from_design builds inv = false throughout; a true entry would \
+             make emission reach backwards into previous spans"
+        );
         let (sa, spans) = crate::structure::expand(
             &seq,
             &provider,
@@ -278,7 +390,7 @@ impl DesignStack {
                 });
             }
         }
-        Self::with_films(ambient, substrate, rows).map(|s| (s, warnings))
+        Self::from_parts(ambient, substrate, rows, spans).map(|s| (s, warnings))
     }
 
     // -- mutation primitives -------------------------------------------------
@@ -306,6 +418,12 @@ impl DesignStack {
                 self.films.len()
             )
         })?;
+        // R3: the admissibility rule lives here too, not only in the scan
+        // — this function is public and `build_scan_sites` is one caller
+        // of it, not the only one.
+        if let Some(msg) = self.needle_host_refusal(film_idx) {
+            return Err(msg);
+        }
         let d_total = original.d_nm;
         let d_bot = d_total - depth_into_layer_nm;
 
@@ -318,6 +436,111 @@ impl DesignStack {
         self.films[film_idx] = top;
         self.films.insert(film_idx + 1, seed);
         self.films.insert(film_idx + 2, bot);
+
+        // F0.1 span bookkeeping. The host row lies in a singleton-bulk
+        // span (enforced above), so the split is local: rows up to and
+        // including the re-thickened top stay in the host's span; the seed
+        // becomes its own singleton; the bottom portion keeps the host's
+        // logical identity in a new span; later spans shift by two. For
+        // the 2-row (interface) host the top and bottom portions are
+        // re-thickened slice rows, so the slice flag follows whichever
+        // half kept the span's leading edge.
+        let old_spans = std::mem::take(&mut self.spans);
+        let mut new_spans = Vec::with_capacity(old_spans.len() + 2);
+        for sp in &old_spans {
+            if sp.end <= film_idx {
+                new_spans.push(*sp);
+            } else if film_idx < sp.start {
+                new_spans.push(Span {
+                    start: sp.start + 2,
+                    end: sp.end + 2,
+                    logical: sp.logical,
+                    slice: sp.slice,
+                    bulk_start: sp.bulk_start + 2,
+                });
+            } else {
+                // The host span [s, e) with film_idx in it.
+                let (s, e) = (sp.start, sp.end);
+                if e - s == 1 {
+                    // One-row host: top keeps the span, seed and bot are new.
+                    new_spans.push(Span {
+                        start: s,
+                        end: film_idx + 1,
+                        logical: sp.logical,
+                        slice: false,
+                        bulk_start: s,
+                    });
+                    new_spans.push(Span {
+                        start: film_idx + 1,
+                        end: film_idx + 2,
+                        logical: film_idx + 1,
+                        slice: false,
+                        bulk_start: film_idx + 1,
+                    });
+                    new_spans.push(Span {
+                        start: film_idx + 2,
+                        end: film_idx + 3,
+                        logical: sp.logical,
+                        slice: false,
+                        bulk_start: film_idx + 2,
+                    });
+                } else if film_idx == s {
+                    // Split at the slice row of a 2-row span: the top is
+                    // the re-thickened slice (no bulk rows of its own);
+                    // the bottom portion and the untouched bulk row form
+                    // the slice-carrying remainder.
+                    new_spans.push(Span {
+                        start: s,
+                        end: s + 1,
+                        logical: sp.logical,
+                        slice: true,
+                        bulk_start: s + 1,
+                    });
+                    new_spans.push(Span {
+                        start: s + 1,
+                        end: s + 2,
+                        logical: film_idx + 1,
+                        slice: false,
+                        bulk_start: s + 1,
+                    });
+                    new_spans.push(Span {
+                        start: s + 2,
+                        end: e + 2,
+                        logical: sp.logical,
+                        slice: true,
+                        bulk_start: s + 3,
+                    });
+                } else {
+                    // Split at the bulk row (the only other row of a
+                    // singleton-bulk span): the slice keeps its row and
+                    // the top stays beside it; the bottom portion is a
+                    // plain row of the host's material.
+                    new_spans.push(Span {
+                        start: s,
+                        end: e,
+                        logical: sp.logical,
+                        slice: sp.slice,
+                        bulk_start: sp.bulk_start,
+                    });
+                    new_spans.push(Span {
+                        start: e,
+                        end: e + 1,
+                        logical: e,
+                        slice: false,
+                        bulk_start: e,
+                    });
+                    new_spans.push(Span {
+                        start: e + 1,
+                        end: e + 2,
+                        logical: sp.logical,
+                        slice: false,
+                        bulk_start: e + 1,
+                    });
+                }
+            }
+        }
+        self.spans = new_spans;
+        self.assert_spans_partition();
         Ok(())
     }
 
@@ -333,34 +556,93 @@ impl DesignStack {
         if self.films.is_empty() {
             return 0;
         }
+        // Maximal merge runs over the CURRENT rows (same material AND
+        // bit-identical nk), then rebuild films and spans in one pass so
+        // the two cannot disagree (F0.1; N2 — the span vector is what
+        // makes the nk-keyed merge safe to keep running over graded rows).
+        let old_spans = std::mem::take(&mut self.spans);
         let films = std::mem::take(&mut self.films);
-        let mut merged: Vec<LayerSpec> = Vec::with_capacity(films.len());
-        let mut merge_count = 0usize;
-
+        let mut runs: Vec<(usize, usize)> = Vec::with_capacity(films.len());
         let mut i = 0usize;
         while i < films.len() {
-            let current = &films[i];
-            let mut combined_d = current.d_nm;
             let mut j = i + 1;
             while j < films.len()
-                && films[j].material == current.material
-                && films[j].nk == current.nk
+                && films[j].material == films[i].material
+                && films[j].nk == films[i].nk
             {
-                combined_d += films[j].d_nm;
                 j += 1;
-                merge_count += 1;
             }
-            let mut result = current.cloned();
+            runs.push((i, j));
+            i = j;
+        }
+        let merge_count: usize = runs.iter().map(|(s, e)| e - s - 1).sum();
+        if merge_count == 0 {
+            // Nothing merges: put the originals back untouched (identical
+            // content to a full rebuild, without the churn).
+            self.films = films;
+            self.spans = old_spans;
+            return 0;
+        }
+
+        let mut merged: Vec<LayerSpec> = Vec::with_capacity(runs.len());
+        // Per output row: the span owning the run's leader row, and that
+        // leader's original row index.
+        let mut owners: Vec<(usize, usize)> = Vec::with_capacity(runs.len());
+        for (s, e) in runs {
+            let mut combined_d = films[s].d_nm;
+            for r in s + 1..e {
+                combined_d += films[r].d_nm;
+            }
+            let mut result = films[s].cloned();
             result.d_nm = combined_d;
             merged.push(result);
-            i = j;
+            owners.push((span_index_of_row(&old_spans, s), s));
+        }
+
+        // Rebuild the partition: consecutive output rows owned by the
+        // same old span form one span. A span all of whose rows merged
+        // into an earlier run disappears (the merged row joined the FIRST
+        // span touched — "first layer's properties win", matching the
+        // films rule). The slice flag survives only when the old span's
+        // slice row IS its surviving group's first row; if the slice row
+        // was absorbed into an earlier run, the flag would point at a
+        // row that no longer is one.
+        let mut new_spans: Vec<Span> = Vec::new();
+        let mut p = 0usize;
+        let mut g = 0usize;
+        while g < owners.len() {
+            let (sid, leader) = owners[g];
+            let mut h = g + 1;
+            while h < owners.len() && owners[h].0 == sid {
+                h += 1;
+            }
+            let old = &old_spans[sid];
+            let slice_kept = old.slice && leader == old.start;
+            new_spans.push(Span {
+                start: p,
+                end: p + (h - g),
+                logical: old.logical,
+                slice: slice_kept,
+                bulk_start: p + usize::from(slice_kept),
+            });
+            p += h - g;
+            g = h;
         }
 
         self.films = merged;
+        self.spans = new_spans;
+        self.assert_spans_partition();
         merge_count
     }
 
     /// Remove film at `film_idx`. Returns the removed layer.
+    ///
+    /// F0.1: the containing span shrinks with its rows; a span reduced to
+    /// nothing is dropped; later spans renumber down by one. Removing a
+    /// 2-row span's bulk leaves the slice row alone in its span — a
+    /// derived row whose carrier is gone; that state is recorded honestly
+    /// (slice flag kept, not singleton-bulk) and F0.2's clamp rules are
+    /// what give it a policy.
     pub fn remove_film(&mut self, film_idx: usize) -> Result<LayerSpec, String> {
         if film_idx >= self.films.len() {
             return Err(format!(
@@ -369,7 +651,36 @@ impl DesignStack {
                 self.films.len()
             ));
         }
-        Ok(self.films.remove(film_idx))
+        let old_spans = std::mem::take(&mut self.spans);
+        let mut new_spans = Vec::with_capacity(old_spans.len());
+        for sp in old_spans {
+            if sp.end <= film_idx {
+                new_spans.push(sp);
+            } else if film_idx < sp.start {
+                new_spans.push(Span {
+                    start: sp.start - 1,
+                    end: sp.end - 1,
+                    logical: sp.logical,
+                    slice: sp.slice,
+                    bulk_start: sp.bulk_start - 1,
+                });
+            } else if sp.end - sp.start > 1 {
+                // Containing span with rows surviving the removal.
+                let slice_survives = sp.slice && film_idx != sp.start;
+                new_spans.push(Span {
+                    start: sp.start,
+                    end: sp.end - 1,
+                    logical: sp.logical,
+                    slice: slice_survives,
+                    bulk_start: sp.start + usize::from(slice_survives),
+                });
+            }
+            // else: the removed row was the span's only row — dropped.
+        }
+        self.spans = new_spans;
+        let removed = self.films.remove(film_idx);
+        self.assert_spans_partition();
+        Ok(removed)
     }
 
     /// Enforce [min_nm, max_nm] on every film layer.
@@ -381,11 +692,18 @@ impl DesignStack {
     pub fn clamp_all(&mut self, min_nm: f64, max_nm: f64) -> (usize, usize) {
         debug_assert!(min_nm >= 0.0 && max_nm > min_nm);
         let old = std::mem::take(&mut self.films);
+        let old_spans = std::mem::take(&mut self.spans);
         let mut surviving = Vec::with_capacity(old.len());
+        // Per surviving row: the span that owned it, and its original row
+        // index. Consecutive survivors with the same owner rebuild one
+        // span; a span all of whose rows died is dropped. Rows are still
+        // judged one by one here — the span-quantity floor/cap and the
+        // never-a-slice-candidate rule are F0.2's licensed change.
+        let mut owners: Vec<(usize, usize)> = Vec::with_capacity(old.len());
         let mut n_removed = 0usize;
         let mut n_capped = 0usize;
 
-        for mut layer in old {
+        for (r, mut layer) in old.into_iter().enumerate() {
             if layer.d_nm < min_nm {
                 n_removed += 1;
                 continue;
@@ -395,8 +713,34 @@ impl DesignStack {
                 n_capped += 1;
             }
             surviving.push(layer);
+            owners.push((span_index_of_row(&old_spans, r), r));
         }
+
+        let mut new_spans: Vec<Span> = Vec::new();
+        let mut p = 0usize;
+        let mut g = 0usize;
+        while g < owners.len() {
+            let (sid, leader) = owners[g];
+            let mut h = g + 1;
+            while h < owners.len() && owners[h].0 == sid {
+                h += 1;
+            }
+            let old_sp = &old_spans[sid];
+            let slice_kept = old_sp.slice && leader == old_sp.start;
+            new_spans.push(Span {
+                start: p,
+                end: p + (h - g),
+                logical: old_sp.logical,
+                slice: slice_kept,
+                bulk_start: p + usize::from(slice_kept),
+            });
+            p += h - g;
+            g = h;
+        }
+
         self.films = surviving;
+        self.spans = new_spans;
+        self.assert_spans_partition();
         (n_removed, n_capped)
     }
 
@@ -449,6 +793,17 @@ impl DesignStack {
             n_layers: n_layers as i32,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Span helpers
+// ---------------------------------------------------------------------------
+
+/// Index of the span containing `row` in a sorted, contiguous partition.
+/// Row `row` must be covered by `spans` (callers validate); the binary
+/// search exploits the ordering `assert_spans_partition` guarantees.
+pub(crate) fn span_index_of_row(spans: &[Span], row: usize) -> usize {
+    spans.partition_point(|s| s.end <= row)
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +1197,402 @@ mod tests {
         assert_eq!(sa.incoherent_flags, vec![0, 1, 0]);
         assert_eq!(sa.rough_types[1], 2);
         assert!((sa.rough_vals[1] - 7.5).abs() < 1e-12);
+    }
+
+    // ------------------------------------------------------------------
+    // F0.1 — span bookkeeping on the mutators and both constructors
+    // ------------------------------------------------------------------
+
+    /// Span summary: (start, end, logical, slice, bulk_start).
+    fn span_rows(s: &DesignStack) -> Vec<(usize, usize, usize, bool, usize)> {
+        s.spans()
+            .iter()
+            .map(|sp| (sp.start, sp.end, sp.logical, sp.slice, sp.bulk_start))
+            .collect()
+    }
+
+    /// from_design keeps the spans expand emitted (they died at the door
+    /// before F0.1). The 2-row span here is N1's interface case.
+    #[test]
+    fn from_design_keeps_spans() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.0, 0.0); NW]);
+        let mut films = vec![crate::structure::Layer::film(20.0, "H")];
+        films.push(crate::structure::Layer {
+            interface: true,
+            interface_thickness: 1.0,
+            ..crate::structure::Layer::film(50.0, "H")
+        });
+        let (stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(stack.films().len(), 3);
+        assert_eq!(
+            span_rows(&stack),
+            vec![(0, 1, 0, false, 0), (1, 3, 1, true, 2)]
+        );
+        // The 2-row span is still singleton-bulk (N1).
+        assert!(stack.span_of_row(1).is_singleton_bulk());
+        assert!(stack.span_of_row(2).is_singleton_bulk());
+    }
+
+    /// N1 twin — the one that would fail if anyone rewrote the predicate
+    /// as `end - start > 1`. An interface-carrying plain film with
+    /// needle = true: needle sites are still generated inside its bulk,
+    /// and the site set is bit-identical to the flag-only scan (the
+    /// before/after claim of F0.1). The bulk row is also still a
+    /// thin-removal candidate (the same filter `remove_thin_layers`
+    /// applies; that function is untouched by this item).
+    #[test]
+    fn n1_interface_film_bulk_is_still_a_host() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.0, 0.0); NW]);
+        let films = vec![
+            crate::structure::Layer::film(100.0, "H"),
+            crate::structure::Layer {
+                interface: true,
+                interface_thickness: 1.0,
+                ..crate::structure::Layer::film(50.0, "H")
+            },
+        ];
+        let (stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        // Row layout: 0 = plain bulk, 1 = slice (needle=false), 2 = bulk.
+        let with_spans = crate::smatrix::synthesis::needle_pass::build_scan_sites(
+            stack.films(),
+            stack.spans(),
+            10.0,
+        );
+        let flag_only =
+            crate::smatrix::synthesis::needle_pass::build_scan_sites(stack.films(), &[], 10.0);
+        assert_eq!(
+            with_spans, flag_only,
+            "singleton-bulk scan must be unchanged"
+        );
+        // Sites inside the interface film's bulk (row 2, d = 49): interior
+        // multiples of 10 below 49 -> k in 1..4.
+        assert!(
+            with_spans
+                .iter()
+                .any(|s| s.film_idx == 2 && s.depth_into_layer_nm == 10.0)
+        );
+        assert!(
+            with_spans.iter().all(|s| s.film_idx != 1),
+            "no sites on the slice"
+        );
+        // Thin-removal candidate: same predicate remove_thin_layers uses.
+        assert!(stack.films()[2].optimize && stack.films()[2].d_nm < 2.0 * 25.0);
+    }
+
+    /// R3 twin: the refusal exists at the public door itself, names the
+    /// material and the row range, and is asserted directly (not only
+    /// through the scan). Singleton-bulk hosts still insert.
+    #[test]
+    fn needle_refusal_at_the_mutator_names_span_and_range() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.0, 0.0); NW]);
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.2,
+            ..crate::structure::Layer::film(50.0, "H")
+        }];
+        let bg: HashSet<String> = ["H".to_string()].into_iter().collect();
+        let (mut stack, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        // 11 pinned rows: never a host, and the error says which span.
+        assert_eq!(stack.films().len(), 11);
+        let err = stack.insert_needle_seed(3, 5.0, h(5.0)).unwrap_err();
+        assert!(err.contains("multi-row span"), "{err}");
+        assert!(err.contains("rows 0..11"), "{err}");
+        assert!(err.contains("'H'"), "{err}");
+        // Nothing changed.
+        assert_eq!(stack.films().len(), 11);
+        // A singleton-bulk host still inserts (span rule, not flag rule).
+        let plain = vec![crate::structure::Layer::film(50.0, "H")];
+        let (mut s2, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &plain,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        s2.insert_needle_seed(0, 25.0, h(5.0)).unwrap();
+        assert_eq!(s2.films().len(), 3);
+    }
+
+    /// N2 merge twins: intra-span (graded rows that became identical),
+    /// cross-span (two adjacent carriers), and the slice-absorption case.
+    #[test]
+    fn merge_bookkeeping_intra_and_cross_span() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.0, 0.0); NW]);
+        // Intra-span: delta = 0 makes every sublayer's factors exactly 1.0,
+        // so all rows carry bit-identical nk and merge to one row inside
+        // ONE span.
+        let zero = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.0,
+            ..crate::structure::Layer::film(50.0, "H")
+        }];
+        let bg: HashSet<String> = ["H".to_string()].into_iter().collect();
+        let (gstack, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &zero, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        let n_before = gstack.films().len();
+        assert!(n_before > 1, "the case needs multiple rows");
+        let mut g = gstack;
+        assert_eq!(g.merge_adjacent(), n_before - 1);
+        assert_eq!(span_rows(&g), vec![(0, 1, 0, false, 0)]);
+        assert!((g.total_thickness_nm() - 50.0).abs() < 1e-12);
+
+        // Cross-span: two adjacent carriers merge into the FIRST span;
+        // the second is dropped.
+        let two = vec![
+            crate::structure::Layer::film(20.0, "H"),
+            crate::structure::Layer::film(30.0, "H"),
+        ];
+        let (mut s2, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &two,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(span_rows(&s2).len(), 2);
+        assert_eq!(s2.merge_adjacent(), 1);
+        assert_eq!(span_rows(&s2), vec![(0, 1, 0, false, 0)]);
+        assert!((s2.total_thickness_nm() - 50.0).abs() < 1e-12);
+    }
+
+    /// The contrived-but-reachable absorption case: an interface slice
+    /// whose mixed nk is bit-identical to its neighbours' merges away,
+    /// and the span bookkeeping records honestly what happened to the
+    /// rows. n = 1.0 makes the looyenga eps round trip exact (cbrt of 1
+    /// is 1, cubed is 1, sqrt of 1 is 1), so the slice row's nk is
+    /// bit-identical to the plain rows and the nk-keyed merge fires.
+    #[test]
+    fn merge_absorbing_a_slice_drops_the_flag_it_no_longer_carries() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(1.0, 0.0); NW]);
+        let films = vec![
+            crate::structure::Layer::film(20.0, "H"),
+            crate::structure::Layer {
+                interface: true,
+                interface_thickness: 1.0,
+                ..crate::structure::Layer::film(50.0, "H")
+            },
+        ];
+        let (mut stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        // rows: 0 = H20, 1 = slice (nk = mix(H,H) = H), 2 = bulk.
+        // One maximal run [0, 3): all three merge into row 0's identity.
+        assert_eq!(stack.merge_adjacent(), 2);
+        assert_eq!(stack.films().len(), 1);
+        assert!((stack.films()[0].d_nm - 70.0).abs() < 1e-12);
+        // The first span survives with the merged row; the second is gone.
+        assert_eq!(span_rows(&stack), vec![(0, 1, 0, false, 0)]);
+    }
+
+    /// insert bookkeeping: the host span splits locally; the seed is its
+    /// own singleton; the bottom keeps the host's logical identity; the
+    /// slice flag follows whichever half kept the leading edge.
+    #[test]
+    fn insert_splits_the_span_like_the_rows() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.0, 0.0); NW]);
+        let films = vec![
+            crate::structure::Layer::film(20.0, "H"),
+            crate::structure::Layer {
+                interface: true,
+                interface_thickness: 1.0,
+                ..crate::structure::Layer::film(50.0, "H")
+            },
+        ];
+        let (base, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        // Split at the BULK row (2 = span end - 1): slice and top stay
+        // together, seed alone, bottom alone.
+        let mut s = base.clone();
+        s.insert_needle_seed(2, 10.0, l(5.0)).unwrap();
+        assert_eq!(s.films().len(), 5);
+        assert_eq!(
+            span_rows(&s),
+            vec![
+                (0, 1, 0, false, 0),
+                (1, 3, 1, true, 2),
+                (3, 4, 3, false, 3),
+                (4, 5, 1, false, 4),
+            ]
+        );
+        assert!((s.films()[2].d_nm - 10.0).abs() < 1e-12);
+        assert!((s.films()[4].d_nm - 39.0).abs() < 1e-12);
+
+        // Split at the SLICE row (1 = span start): the re-thickened slice
+        // stays the leading edge; the bottom portion joins the bulk in a
+        // slice-carrying span.
+        let mut s = base;
+        s.insert_needle_seed(1, 10.0, l(5.0)).unwrap();
+        assert_eq!(s.films().len(), 5);
+        assert_eq!(
+            span_rows(&s),
+            vec![
+                (0, 1, 0, false, 0),
+                (1, 2, 1, true, 2),
+                (2, 3, 2, false, 2),
+                (3, 5, 1, true, 4),
+            ]
+        );
+    }
+
+    /// remove bookkeeping: singletons drop whole; multi-row spans shrink;
+    /// the slice and bulk halves record what survived.
+    #[test]
+    fn remove_updates_the_span_partition() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.0, 0.0); NW]);
+        let films = vec![
+            crate::structure::Layer::film(20.0, "H"),
+            crate::structure::Layer {
+                interface: true,
+                interface_thickness: 1.0,
+                ..crate::structure::Layer::film(50.0, "H")
+            },
+        ];
+        let (base, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        // Remove the bulk: the slice row is alone in its span (derived
+        // row whose carrier is gone — recorded, not hidden).
+        let mut s = base.clone();
+        s.remove_film(2).unwrap();
+        assert_eq!(span_rows(&s), vec![(0, 1, 0, false, 0), (1, 2, 1, true, 2)]);
+        assert!(!s.span_of_row(1).is_singleton_bulk());
+
+        // Remove the slice: the bulk row is a plain singleton again.
+        let mut s = base.clone();
+        s.remove_film(1).unwrap();
+        assert_eq!(
+            span_rows(&s),
+            vec![(0, 1, 0, false, 0), (1, 2, 1, false, 1)]
+        );
+        assert!(s.span_of_row(1).is_singleton_bulk());
+
+        // Remove the only row of a singleton: its span is dropped.
+        let mut s = base;
+        s.remove_film(0).unwrap();
+        assert_eq!(span_rows(&s), vec![(0, 2, 1, true, 1)]);
+    }
+
+    /// clamp bookkeeping: rows are still judged one by one (the
+    /// span-quantity floor/cap is F0.2), and the partition records what
+    /// survived. The B1 defect is deliberately still visible here —
+    /// F0.2 licence item 7 is the fix.
+    #[test]
+    fn clamp_records_surviving_rows_per_span() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("SiO2"), vec![Complex64::new(1.46, 0.0); NW]);
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let films = vec![
+            crate::structure::Layer::film(100.0, "SiO2"),
+            crate::structure::Layer {
+                interface: true,
+                interface_thickness: 1.0,
+                ..crate::structure::Layer::film(50.0, "TiO2")
+            },
+        ];
+        let (mut stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        // rows: [100][1 slice][49 bulk]. The 1 nm slice is below the
+        // floor: row-wise removal takes it (and the nanometre it was
+        // carved from) — B1, fixed at F0.2, not here.
+        let (removed, capped) = stack.clamp_all(2.0, 1000.0);
+        assert_eq!((removed, capped), (1, 0));
+        assert_eq!(stack.films().len(), 2);
+        assert_eq!(
+            span_rows(&stack),
+            vec![(0, 1, 0, false, 0), (1, 2, 1, false, 1)]
+        );
+        assert!((stack.total_thickness_nm() - 149.0).abs() < 1e-12);
+
+        // A fully-deleted span disappears from the partition.
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.2,
+            ..crate::structure::Layer::film(50.0, "TiO2")
+        }];
+        let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (mut g, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        let n_rows = g.films().len();
+        assert!(n_rows > 1);
+        let (removed, _) = g.clamp_all(100.0, 1000.0);
+        assert_eq!(removed, n_rows);
+        assert!(g.films().is_empty());
+        assert!(g.spans().is_empty());
     }
 
     // small helper so tests read like the Python property name

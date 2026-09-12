@@ -124,7 +124,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         //    that are needle hosts. The flag check is load-bearing:
         //    interface slices and pinned graded rows share their carrier's
         //    material (hence a contrast entry) but must never host seeds.
-        let sites = build_scan_sites(stack.films(), cfg.scan_step_nm);
+        let sites = build_scan_sites(stack.films(), stack.spans(), cfg.scan_step_nm);
         let sites: Vec<_> = sites
             .into_iter()
             .filter(|s| {
@@ -173,7 +173,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 calc_s: true,
                 calc_p: true,
             };
-            let res = run_needle_pass(&input, stack.films(), cfg.scan_step_nm)?;
+            let res = run_needle_pass(&input, stack.films(), stack.spans(), cfg.scan_step_nm)?;
             if let Some((site, p)) = res.best() {
                 let better = match &best {
                     None => true,

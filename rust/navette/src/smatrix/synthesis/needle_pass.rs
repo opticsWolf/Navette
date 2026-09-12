@@ -40,6 +40,7 @@ use crate::smatrix::needle_operator::{
 };
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
 use crate::smatrix::synthesis::merit::{CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves};
+use crate::structure::Span;
 
 // ---------------------------------------------------------------------------
 // Scan candidates (Python-parity grid)
@@ -59,9 +60,14 @@ pub struct ScanSite {
 /// Build the candidate list exactly like `compute_p_function`: interior
 /// multiples of `scan_step_nm` inside each admissible film.
 ///
-/// `films` are the film layers; host admissibility = `layer.needle`.
+/// `films` are the film layers; host admissibility = `layer.needle` AND
+/// (F0.1, §6 row 6) the row's span being singleton-bulk. `spans` is the
+/// stack's span partition; an unbooked row list (tests, hand-built film
+/// vecs) passes `&[]`, where the needle flag alone decides — the same
+/// rule the tree ran before spans were carried.
 pub fn build_scan_sites(
     films: &[crate::smatrix::synthesis::structure::LayerSpec],
+    spans: &[Span],
     scan_step_nm: f64,
 ) -> Vec<ScanSite> {
     assert!(scan_step_nm > 0.0, "scan_step_nm must be positive");
@@ -70,7 +76,7 @@ pub fn build_scan_sites(
 
     for (film_idx, layer) in films.iter().enumerate() {
         let d = layer.d_nm;
-        if layer.needle && d > 0.0 {
+        if layer.needle && d > 0.0 && span_admissible(spans, film_idx) {
             let n_steps = (d / scan_step_nm) as i32;
             for k in 1..n_steps {
                 let pos_in_layer = k as f64 * scan_step_nm;
@@ -84,6 +90,22 @@ pub fn build_scan_sites(
         cumulative += d;
     }
     sites
+}
+
+/// F0.1: the scan-side half of the needle-host admissibility rule. A row
+/// inside a multi-row span is not a scan site — the same predicate
+/// `insert_needle_seed` enforces at the door. Unbooked row lists (empty
+/// `spans`) are all-admissible: there is no span information to consult.
+fn span_admissible(spans: &[Span], film_idx: usize) -> bool {
+    if spans.is_empty() || film_idx >= spans[spans.len() - 1].end {
+        return true;
+    }
+    let sp = &spans[crate::smatrix::synthesis::structure::span_index_of_row(spans, film_idx)];
+    debug_assert!(
+        sp.start <= film_idx && film_idx < sp.end,
+        "span partition does not cover film row {film_idx}"
+    );
+    sp.is_singleton_bulk()
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,9 +1099,10 @@ pub fn needle_pass_scan(
 pub fn run_needle_pass(
     input: &NeedlePassInput<'_>,
     films: &[crate::smatrix::synthesis::structure::LayerSpec],
+    spans: &[Span],
     scan_step_nm: f64,
 ) -> Result<NeedlePassResult, String> {
-    let sites = build_scan_sites(films, scan_step_nm);
+    let sites = build_scan_sites(films, spans, scan_step_nm);
     needle_pass_scan(input, &sites)
 }
 
@@ -1174,7 +1197,7 @@ mod tests {
             }, // skipped, advances 7
             LayerSpec::constant("L", 1.46, 0.0, 5.0, NW), // step 2 → 1 site (k=1: 2<5; k=2: 4 ≥ int(5/2)=2 stops)
         ];
-        let sites = build_scan_sites(&films, 2.0);
+        let sites = build_scan_sites(&films, &[], 2.0);
         let got: Vec<(usize, f64, f64)> = sites
             .iter()
             .map(|s| (s.film_idx, s.depth_into_layer_nm, s.z_nm))
@@ -1210,6 +1233,7 @@ mod tests {
         let res = run_needle_pass(
             &pass_input(&cache, &d, &rt, &rv, &fold, &needle_n),
             &films,
+            &[],
             2.5,
         )
         .unwrap();
@@ -1254,12 +1278,12 @@ mod tests {
 
         let fold = fold_r(&targets, &weights);
         let mut inp = pass_input(&cache, &d, &rt, &rv, &fold, &needle_n);
-        let s_only = run_needle_pass(&inp, &films, 3.0).unwrap();
+        let s_only = run_needle_pass(&inp, &films, &[], 3.0).unwrap();
         inp.calc_s = false;
         inp.calc_p = true;
-        let p_only = run_needle_pass(&inp, &films, 3.0).unwrap();
+        let p_only = run_needle_pass(&inp, &films, &[], 3.0).unwrap();
         inp.calc_s = true;
-        let both = run_needle_pass(&inp, &films, 3.0).unwrap();
+        let both = run_needle_pass(&inp, &films, &[], 3.0).unwrap();
 
         for i in 0..both.p_profile.len() {
             let sum = s_only.p_profile[i] + p_only.p_profile[i];
@@ -1284,6 +1308,7 @@ mod tests {
         let res = run_needle_pass(
             &pass_input(&cache, &d, &rt, &rv, &fold, &needle_n),
             &films,
+            &[],
             2.0,
         )
         .unwrap();
@@ -1995,11 +2020,11 @@ mod tests {
         inp.calc_s = false;
         inp.calc_p = false;
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
-        assert!(run_needle_pass(&inp, &films, 2.0).is_err());
+        assert!(run_needle_pass(&inp, &films, &[], 2.0).is_err());
 
         let bad_fold = fold_r(&[0.0], &weights);
         let inp2 = pass_input(&cache, &d, &rt, &rv, &bad_fold, &needle_n);
-        assert!(run_needle_pass(&inp2, &films, 2.0).is_err()); // bad targets len
+        assert!(run_needle_pass(&inp2, &films, &[], 2.0).is_err()); // bad targets len
     }
     // -- Option-B color fold (R4) -------------------------------------------
 
@@ -2278,7 +2303,7 @@ mod tests {
             inp.calc_s = s;
             inp.calc_p = p;
             // Sites identical across runs (same films/step).
-            let sites = build_scan_sites(&films, 3.0);
+            let sites = build_scan_sites(&films, &[], 3.0);
             needle_pass_scan(&inp, &sites).unwrap().p_profile
         };
         let p_u = run(&color_spec_r4(CurveId::Ru, tref), true, true);
@@ -2302,7 +2327,7 @@ mod tests {
         let (cache, d, rt, rv) = test_stack_arrays();
         let needle_n = nk_const(1.46);
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
-        let sites = build_scan_sites(&films, 3.0);
+        let sites = build_scan_sites(&films, &[], 3.0);
         assert!(!sites.is_empty());
         let run = |s: bool, p: bool| {
             let mut inp = pass_input(&cache, &d, &rt, &rv, &fold, &needle_n);
@@ -2349,7 +2374,7 @@ mod tests {
         let (cache, d, rt, rv) = test_stack_arrays();
         let needle_n = nk_const(1.46);
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
-        let sites = build_scan_sites(&films, 3.0);
+        let sites = build_scan_sites(&films, &[], 3.0);
         let via_fold =
             needle_pass_scan(&pass_input(&cache, &d, &rt, &rv, &fold, &needle_n), &sites)
                 .unwrap()
@@ -2397,7 +2422,7 @@ mod tests {
         let np_c = Complex64::new(1.46, 0.0);
         let fields = build_stack_fields_range(0, nl - 1, &ns, &d, &rv, &rt, lam, nsin, 0);
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
-        let z_grid: Vec<f64> = build_scan_sites(&films, 3.0)
+        let z_grid: Vec<f64> = build_scan_sites(&films, &[], 3.0)
             .iter()
             .map(|s| s.z_nm)
             .collect();
