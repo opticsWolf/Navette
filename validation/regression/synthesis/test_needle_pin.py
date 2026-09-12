@@ -95,8 +95,24 @@ def _digest(res):
         "phases": res["phases"],
         "stack": res["stack"].to_dict(),
     }
+    # F0.2 licence item 6 (B4): phase dicts may gain a clamp_report key
+    # when a clamp pass removed or capped something - licensed reporting
+    # of removals that happened silently at 0.6.32. The pin is a
+    # TRAJECTORY fingerprint: it strips that one key so a licensed report
+    # cannot move it, which is also what makes the pin prove the
+    # trajectory itself is bit-identical across F0.2. The report's own
+    # behaviour is pinned by its deletion-report twin, not by this file.
+    payload = _strip_keys(payload, {"clamp_report"})
     blob = repr(_canon(payload)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def _strip_keys(obj, drop):
+    if isinstance(obj, dict):
+        return {k: _strip_keys(v, drop) for k, v in obj.items() if k not in drop}
+    if isinstance(obj, list):
+        return [_strip_keys(v, drop) for v in obj]
+    return obj
 
 
 # Recorded on the 0.6.32 release build BEFORE F0.1 touched DesignStack.

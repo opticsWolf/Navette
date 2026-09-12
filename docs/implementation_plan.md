@@ -134,7 +134,7 @@ and B6 undercounts — and §0.4 records which.
 | ID | Item | Version | Priority | Risk | Effort | Source |
 |---|---|---|---|---|---|---|
 | ~~F0.1~~ **DONE (0.6.33)** | Span provenance on `DesignStack` — the bookkeeping, and no behaviour change | 0.6.33 | **P0** | M | **L** | §D4.1–2, corrected §2 |
-| F0.2 | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
+| ~~F0.2~~ **DONE (0.6.34)** | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
 | F0.3 | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
 | F1.1 | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
 | F1.2 | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
@@ -676,6 +676,36 @@ that absence is the entire point of splitting it.
 ---
 
 ### F0.2 — span-level pipeline accounting (0.6.34)
+
+**DONE (0.6.34, see the feature commit).** Corrections from implementation
+(R7 — adopted: A2, N3, **U5** (half), **B1**, B4, B7):
+
+- The needle pin moved at this item, and the diagnosis is the licence's own
+  item 6: three phase dicts gained `clamp_report` keys naming removals the
+  0.6.32 binary performed silently (`film1 (0.0 nm)`, `film0 (1.1 nm)`,
+  `film0 (0.3 nm)`). The pin's digest now strips that one key, and with it
+  stripped **the recorded 0.6.32 digest holds** — the strongest evidence in
+  the item: the trajectory is bit-identical and only licensed reporting
+  appeared. The pin file documents the strip; the report's own behaviour is
+  pinned by its twins, not by the fingerprint.
+- Licence item 2's mechanism reaches 2-row interface spans: the cap reads
+  `D` per the change table, so an interface film whose slice-inclusive
+  total exceeds the ceiling now refuses instead of silently capping its
+  bulk row. Declared here rather than discovered later: the licence's
+  "graded span" wording is the case it was written from, `D` is the
+  quantity it named.
+- `clamp_all` returns `Result<ClampReport, String>`, and the refusal is
+  checked BEFORE any mutation (a stack is never left half-clamped behind an
+  error). The Python `clamp_all` keeps its historical
+  `(n_removed, n_capped)` tuple via the report's `(rows_removed,
+  spans_capped)`.
+- `PipelineResult` gained `final_clamp_report` (the final sweep has no
+  phase to attach to), surfaced in the run result dict under the same B4
+  rule — absent when empty.
+- The deletion-report twin uses a **pinned** film: `cleanup_min_nm`
+  resolves to `clamp_min_nm`, so a free film is taken by cleanup's own
+  flag-guarded removal before the clamp ever sees it — a fact worth
+  knowing when reading any clamp report.
 
 **U5: a graded layer is one physical layer.** Four rules in the pipeline
 disagree with that today, because each of them counts, compares or selects
@@ -2377,7 +2407,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | Version | Item | Commit | Amendments adopted | Status |
 |---|---|---|---|---|
 | 0.6.33 | F0.1 | cebed9c | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | done |
-| 0.6.34 | F0.2 | — | A2, N3, **U5** (half), **B1**, B4, B7 | not started |
+| 0.6.34 | F0.2 | (this item's feature commit) | A2, N3, **U5** (half), **B1**, B4, B7 | done |
 | 0.6.35 | F0.3 | — | **U1** | not started |
 | 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7, B10 | not started |
 | 0.6.37 | F1.2 | — | A9.2, N2 | not started |

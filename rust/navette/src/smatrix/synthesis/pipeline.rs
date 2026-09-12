@@ -31,7 +31,7 @@ use crate::smatrix::synthesis::inflate::{InflateResult, inflate_design};
 use crate::smatrix::synthesis::merit::MeritSpec;
 use crate::smatrix::synthesis::needle_pass::{NeedleTargets, build_needle_targets};
 use crate::smatrix::synthesis::stagnation::StagnationDetector;
-use crate::smatrix::synthesis::structure::DesignStack;
+use crate::smatrix::synthesis::structure::{ClampReport, DesignStack};
 
 /// Record of one macro-cycle — mirrors Python `PipelinePhaseResult`.
 #[derive(Clone, Debug)]
@@ -46,6 +46,12 @@ pub struct PipelinePhaseResult {
     pub needle_results: Vec<NeedleCycleResult>,
     pub cleanup_result: Option<CleanupResult>,
     pub inflate_result: Option<InflateResult>,
+    /// F0.2: every clamp pass this phase ran - the pipeline's own
+    /// post-cleanup / post-inflate sweeps plus the clamps inside each
+    /// `optimize_thicknesses`, drained from the context at record time.
+    /// `None` when nothing was removed and nothing was capped (B4), so a
+    /// no-span run's phase dicts are byte-identical.
+    pub clamp_report: Option<ClampReport>,
 }
 
 /// Full output of a pipeline run — mirrors Python `PipelineResult`.
@@ -57,6 +63,9 @@ pub struct PipelineResult {
     pub final_layer_count: usize,
     pub final_total_thickness_nm: f64,
     pub stagnation_detail: Option<String>,
+    /// F0.2: the final clamp sweep (after the last optimization). `None`
+    /// when it removed and capped nothing (B4).
+    pub final_clamp_report: Option<ClampReport>,
 }
 
 /// Continuous iterative needle synthesis pipeline.
@@ -79,6 +88,27 @@ impl NeedlePipeline {
         contrast: ContrastMap,
     ) -> Result<Self, String> {
         let cfg = cfg.validated()?;
+        // F0.2 (licence item 2): a pinned profile above the manufacturing
+        // ceiling is an authoring error - the user asked for a film the
+        // machine cannot make, and silently squeezing it in answers a
+        // question nobody asked. Refuse at the door, name the span and
+        // both numbers. Scalable spans (F1.6) will instead get the
+        // ceiling as an LM bound; until then every multi-row span is
+        // pinned, so the refusal is unconditional.
+        for sp in stack.spans() {
+            if sp.end - sp.start <= 1 {
+                continue;
+            }
+            let d: f64 = stack.films()[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            if d > cfg.clamp_max_nm {
+                return Err(format!(
+                    "NeedlePipeline: span '{}' is {:.1} nm thick, above the                      clamp_max_nm ceiling of {:.1} nm - refusing rather than                      rescaling a pinned profile",
+                    stack.films()[sp.start].material,
+                    d,
+                    cfg.clamp_max_nm
+                ));
+            }
+        }
         let detector = StagnationDetector::new(
             cfg.stagnation_window,
             cfg.stagnation_gradient_tol,
@@ -99,7 +129,10 @@ impl NeedlePipeline {
         &self,
         ctx: &C,
     ) -> Result<Option<TerminationReason>, String> {
-        if self.stack.films().len() >= self.cfg.max_film_layers {
+        // F0.2 (U5): the budget is a manufacturability limit - it means
+        // physical layers, and one graded film is one physical layer, so
+        // it counts spans, not solver rows.
+        if self.stack.spans().len() >= self.cfg.max_film_layers {
             return Ok(Some(TerminationReason::LayerBudgetReached));
         }
         let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
@@ -142,6 +175,11 @@ impl NeedlePipeline {
                 break;
             }
 
+            // F0.2: this phase's clamp aggregate - the context's
+            // accumulator (clamps inside every optimize_thicknesses) plus
+            // the pipeline's own sweeps below, merged at record time.
+            let mut clamp_report = ctx.take_clamp_report().unwrap_or_default();
+
             // ── Phase 1: Needle pass ──
             let needle_results = run_needle_cycles(
                 ctx,
@@ -161,11 +199,12 @@ impl NeedlePipeline {
                     mf_after_cleanup: None,
                     mf_after_inflate: None,
                     mf_end: mf_needle,
-                    layer_count: self.stack.films().len(),
+                    layer_count: self.stack.spans().len(),
                     total_thickness_nm: total,
                     needle_results,
                     cleanup_result: None,
                     inflate_result: None,
+                    clamp_report: ctx.take_clamp_report(),
                 };
                 phases.push(phase);
                 let phase = phases.last().unwrap();
@@ -187,9 +226,14 @@ impl NeedlePipeline {
                     self.cfg.cleanup_max_removals,
                     true,
                 )?;
-                // Post-cleanup clamp (Clamped override semantics).
-                self.stack
-                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
+                // Post-cleanup clamp (Clamped override semantics). F0.2:
+                // the report joins the phase's aggregate.
+                let rep = self
+                    .stack
+                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm)?;
+                if !rep.is_empty() {
+                    clamp_report.merge(rep);
+                }
                 Some(r)
             } else {
                 None
@@ -208,9 +252,14 @@ impl NeedlePipeline {
                     true,
                 )?;
                 // Clamp BEFORE re-optimize happened in Python before the call
-                // ordering above; enforce the AFTER clamp here too.
-                self.stack
-                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
+                // ordering above; enforce the AFTER clamp here too. F0.2:
+                // the report joins the phase's aggregate.
+                let rep = self
+                    .stack
+                    .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm)?;
+                if !rep.is_empty() {
+                    clamp_report.merge(rep);
+                }
                 Some(r)
             } else {
                 None
@@ -223,17 +272,23 @@ impl NeedlePipeline {
             // ── Record phase ──
             let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
             let mf_end = mf_inflate.or(mf_cleanup).unwrap_or(mf_needle);
+            clamp_report.merge(ctx.take_clamp_report().unwrap_or_default());
             phases.push(PipelinePhaseResult {
                 macro_cycle: cycle_i,
                 mf_after_needle: mf_needle,
                 mf_after_cleanup: mf_cleanup_s,
                 mf_after_inflate: mf_inflate_s,
                 mf_end,
-                layer_count: self.stack.films().len(),
+                layer_count: self.stack.spans().len(),
                 total_thickness_nm: total,
                 needle_results,
                 cleanup_result,
                 inflate_result,
+                clamp_report: if clamp_report.is_empty() {
+                    None
+                } else {
+                    Some(clamp_report)
+                },
             });
 
             // ── Stagnation check ──
@@ -269,17 +324,30 @@ impl NeedlePipeline {
 
         // ── Final optimisation + clamp sweep ──
         ctx.optimize_thicknesses(&mut self.stack)?;
-        self.stack
-            .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm);
+        let rep_final = self
+            .stack
+            .clamp_all(self.cfg.clamp_min_nm, self.cfg.clamp_max_nm)?;
         let final_mf = ctx.evaluate_merit(&self.stack)?;
+
+        // F0.2: the final sweep's own report plus any clamps the final
+        // optimization ran, surfaced on the run result (B4: absent when
+        // empty).
+        let mut final_clamp_report = ctx.take_clamp_report().unwrap_or_default();
+        final_clamp_report.merge(rep_final);
+        let final_clamp_report = if final_clamp_report.is_empty() {
+            None
+        } else {
+            Some(final_clamp_report)
+        };
 
         Ok(PipelineResult {
             phases,
             termination,
             final_mf,
-            final_layer_count: self.stack.films().len(),
+            final_layer_count: self.stack.spans().len(),
             final_total_thickness_nm: self.stack.films().iter().map(|l| l.d_nm).sum(),
             stagnation_detail: stag_detail,
+            final_clamp_report,
         })
     }
 }
@@ -498,5 +566,180 @@ mod tests {
         // needle pass optimize (initial) + per-cycle + FINAL = counted
         assert!(ctx.opt_calls >= 2);
         assert!(res.final_total_thickness_nm <= 800.0);
+    }
+
+    // ------------------------------------------------------------------
+    // F0.2 - the layer budget counts spans; the ceiling refuses at the door
+    // ------------------------------------------------------------------
+
+    /// Licence item 3, measured: one 1000 nm graded film at delta = 0.5
+    /// expands to 57 rows. Before F0.2, `max_film_layers = 40` terminated
+    /// the run on the pre-flight of cycle 1 before any work; the budget is
+    /// a manufacturability limit - one graded film is ONE physical layer.
+    #[test]
+    fn f02_budget_counts_spans_not_rows() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = std::collections::HashMap::new();
+        nk.insert(
+            std::sync::Arc::from("TiO2"),
+            vec![num_complex::Complex64::new(2.35, 0.0); NW],
+        );
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.5,
+            ..crate::structure::Layer::film(1000.0, "TiO2")
+        }];
+        let bg: std::collections::HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (stack, _) = DesignStack::from_design(
+            air(),
+            sub(),
+            &graded,
+            &nk,
+            &std::collections::HashMap::new(),
+            &wl,
+            &bg,
+        )
+        .unwrap();
+        assert_eq!(stack.films().len(), 57, "the plan's measured row count");
+        assert_eq!(stack.spans().len(), 1);
+        let cfg = PipelineConfig {
+            max_macro_cycles: 1,
+            max_film_layers: 40,  // < 57 rows, > 1 span: the old trip
+            clamp_max_nm: 1500.0, // the span total must pass the ceiling
+            max_total_thickness_nm: 10_000.0,
+            stagnation_window: usize::MAX,
+            ..Default::default()
+        };
+        let mut p = NeedlePipeline::new(
+            stack,
+            dummy_spectral(),
+            cfg,
+            NeedleCycleConfig::default(),
+            ContrastMap::new(),
+        )
+        .unwrap();
+        let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
+        // The run PROCEEDS (the old binary terminated before cycle 1).
+        assert_eq!(res.termination, TerminationReason::MaxIterationsReached);
+        assert_eq!(res.phases.len(), 1);
+        // Licence item 4: layer_count reads the physical-layer count.
+        assert_eq!(res.phases[0].layer_count, 1);
+        assert_eq!(res.final_layer_count, 1);
+    }
+
+    /// Licence item 2 at the door: a pinned profile above the ceiling is
+    /// an authoring error - refused at `NeedlePipeline::new`, naming the
+    /// span material and both numbers. Same span, larger ceiling: builds.
+    #[test]
+    fn f02_new_refuses_pinned_span_above_the_ceiling() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = std::collections::HashMap::new();
+        nk.insert(
+            std::sync::Arc::from("TiO2"),
+            vec![num_complex::Complex64::new(2.35, 0.0); NW],
+        );
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.5,
+            ..crate::structure::Layer::film(1000.0, "TiO2")
+        }];
+        let bg: std::collections::HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (stack, _) = DesignStack::from_design(
+            air(),
+            sub(),
+            &graded,
+            &nk,
+            &std::collections::HashMap::new(),
+            &wl,
+            &bg,
+        )
+        .unwrap();
+        let cfg = PipelineConfig {
+            clamp_max_nm: 300.0,
+            ..Default::default()
+        };
+        let err = match NeedlePipeline::new(
+            stack,
+            dummy_spectral(),
+            cfg,
+            NeedleCycleConfig::default(),
+            ContrastMap::new(),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected the ceiling refusal"),
+        };
+        assert!(err.contains("'TiO2'"), "{err}");
+        assert!(err.contains("1000.0"), "{err}");
+        assert!(err.contains("300.0"), "{err}");
+        // Control: the same span under a 1500 nm ceiling constructs.
+        let (stack2, _) = DesignStack::from_design(
+            air(),
+            sub(),
+            &graded,
+            &nk,
+            &std::collections::HashMap::new(),
+            &wl,
+            &bg,
+        )
+        .unwrap();
+        let cfg2 = PipelineConfig {
+            clamp_max_nm: 1500.0,
+            max_total_thickness_nm: 10_000.0,
+            ..Default::default()
+        };
+        assert!(
+            NeedlePipeline::new(
+                stack2,
+                dummy_spectral(),
+                cfg2,
+                NeedleCycleConfig::default(),
+                ContrastMap::new(),
+            )
+            .is_ok()
+        );
+    }
+
+    /// Licence item 6 (B4): the phase's clamp report is present when the
+    /// floor removed something, absent otherwise - a no-span run's phase
+    /// dict is byte-identical. The film is PINNED (optimize = false):
+    /// cleanup's flag-guarded removal skips it, so the clamp is what
+    /// takes it, and the report is what says so.
+    #[test]
+    fn f02_clamp_report_present_only_when_something_happened() {
+        // Floor above the film: one-row span removed and NAMED.
+        let mut pinned = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
+        pinned.optimize = false;
+        pinned.needle = false;
+        let cfg = PipelineConfig {
+            max_macro_cycles: 1,
+            enable_inflate: false,
+            clamp_min_nm: 200.0,
+            stagnation_window: usize::MAX,
+            ..Default::default()
+        };
+        let mut p = NeedlePipeline::new(
+            DesignStack::with_films(air(), sub(), vec![pinned]).unwrap(),
+            dummy_spectral(),
+            cfg,
+            NeedleCycleConfig::default(),
+            ContrastMap::new(),
+        )
+        .unwrap();
+        let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
+        let rep = res.phases[0].clamp_report.as_ref().unwrap();
+        assert_eq!(rep.spans_removed, vec!["H (100.0 nm)".to_string()]);
+        assert_eq!(rep.rows_removed, 1);
+        // After the phase removed the only film, the final sweep does nothing.
+        assert!(res.final_clamp_report.is_none());
+
+        // Default floor: nothing removed, nothing capped - report absent.
+        let mut p = pipeline(|c| {
+            c.max_macro_cycles = 1;
+            c.enable_inflate = false;
+            c.stagnation_window = usize::MAX;
+        });
+        let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
+        assert!(res.phases[0].clamp_report.is_none());
+        assert!(res.final_clamp_report.is_none());
     }
 }

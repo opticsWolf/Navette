@@ -30,7 +30,7 @@ use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::optimizer::OptimizerBackend;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
-use navette::smatrix::synthesis::structure::{DesignStack, LayerSpec};
+use navette::smatrix::synthesis::structure::{ClampReport, DesignStack, LayerSpec};
 use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
@@ -400,6 +400,10 @@ fn result_to_dict(
         phases.push(phase_dict(py, p)?.unbind());
     }
     d.set_item("phases", phases)?;
+    // F0.2 (B4): the final sweep's report, only when it did something.
+    if let Some(rep) = &res.final_clamp_report {
+        d.set_item("clamp_report", clamp_report_dict(py, rep)?)?;
+    }
     d.set_item("stack", Py::new(py, stack)?)?;
     Ok(d.unbind())
 }
@@ -580,13 +584,19 @@ impl PyDesignStack {
             .map_err(PyValueError::new_err)
     }
 
-    /// Enforce `[min_nm, max_nm]` (sub-min removed, above-max capped);
-    /// returns `(n_removed, n_capped)`.
+    /// Enforce `[min_nm, max_nm]` (F0.2: span quantities - a sub-floor
+    /// span goes whole, a multi-row span above the ceiling refuses);
+    /// returns `(n_removed, n_capped)` = the report's `(rows_removed,
+    /// spans_capped)`, preserving the historical tuple contract.
     fn clamp_all(&mut self, min_nm: f64, max_nm: f64) -> PyResult<(usize, usize)> {
         if !(min_nm >= 0.0) || !(max_nm > min_nm) {
             return Err(PyValueError::new_err("need 0 <= min_nm < max_nm"));
         }
-        Ok(self.inner.clamp_all(min_nm, max_nm))
+        let rep = self
+            .inner
+            .clamp_all(min_nm, max_nm)
+            .map_err(PyValueError::new_err)?;
+        Ok((rep.rows_removed, rep.spans_capped))
     }
 
     fn __repr__(&self) -> String {
@@ -946,6 +956,7 @@ impl PySmatrixContext {
                 lm: lm
                     .map(|l| l.bind(py).borrow().inner.clone())
                     .unwrap_or_default(),
+                clamp_accumulator: ClampReport::default(),
             },
         })
     }
@@ -1038,6 +1049,15 @@ fn insertion_dict(
     Ok(d.unbind())
 }
 
+fn clamp_report_dict<'a>(py: Python<'a>, rep: &'a ClampReport) -> PyResult<Bound<'a, PyDict>> {
+    let d = PyDict::new(py);
+    let spans: Vec<&str> = rep.spans_removed.iter().map(|s| s.as_str()).collect();
+    d.set_item("spans_removed", spans)?;
+    d.set_item("spans_capped", rep.spans_capped)?;
+    d.set_item("rows_removed", rep.rows_removed)?;
+    Ok(d)
+}
+
 fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bound<'a, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("macro_cycle", phase.macro_cycle)?;
@@ -1097,6 +1117,11 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
             d.set_item("inflate", id)?;
         }
         None => d.set_item("inflate", py.None())?,
+    }
+    // F0.2 (B4): the clamp report is present only when something was
+    // removed or capped - a no-span run's phase dict is byte-identical.
+    if let Some(rep) = &phase.clamp_report {
+        d.set_item("clamp_report", clamp_report_dict(py, rep)?)?;
     }
     Ok(d)
 }
@@ -1206,6 +1231,7 @@ impl PyNeedlePipeline {
             clamp_min_nm: self.clamp_min,
             clamp_max_nm: self.clamp_max,
             lm: self.lm.clone(),
+            clamp_accumulator: ClampReport::default(),
         };
         let res = py
             .detach({

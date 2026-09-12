@@ -117,11 +117,20 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
         .collect::<Result<Vec<_>, String>>()?;
 
     // Determine which layers to inflate.
+    // F0.2 (N3 / licence item 5): a non-singleton-bulk span is not an
+    // inflate candidate. Row count is unchanged by inflation, so the span
+    // partition would survive - but the profile would not: every sublayer
+    // grows by its own addon qwot, a different amount per sublayer, and a
+    // pinned profile comes out with a distorted thickness distribution.
+    // The same filter guards round_to_qwot below (no live caller today).
+    let eligible: Vec<usize> = (0..n_films)
+        .filter(|&i| stack.span_of_row(i).is_singleton_bulk())
+        .collect();
     let inflate_indices: Vec<usize> = match max_layers {
-        Some(max_l) if max_l < n_films => {
-            // Score every layer by trial-inflation MF.
-            let mut scored: Vec<(usize, f64)> = Vec::with_capacity(n_films);
-            for i in 0..n_films {
+        Some(max_l) if max_l < eligible.len() => {
+            // Score every ELIGIBLE layer by trial-inflation MF.
+            let mut scored: Vec<(usize, f64)> = Vec::with_capacity(eligible.len());
+            for &i in &eligible {
                 let mut trial = stack.clone();
                 let d = trial.films()[i].d_nm;
                 trial.set_thickness(i, (d + deltas[i]).max(0.0))?;
@@ -132,7 +141,7 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
             scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             scored.into_iter().take(max_l).map(|(i, _)| i).collect()
         }
-        _ => (0..n_films).collect(),
+        _ => eligible,
     };
 
     // Apply inflation to selected layers (in place).
@@ -179,7 +188,12 @@ pub fn round_to_qwot<C: DesignContext + ?Sized>(
         return Err(format!("resolution must be positive, got {resolution}"));
     }
 
+    // F0.2 (N3): the same singleton-bulk exemption as inflate_design,
+    // for symmetry; round_to_qwot has no live pipeline caller today.
     for i in 0..stack.films().len() {
+        if !stack.span_of_row(i).is_singleton_bulk() {
+            continue;
+        }
         let layer: &LayerSpec = &stack.films()[i];
         let step = resolution * qwot_nm(&layer.nk, wavls, reference_wl)?;
         let ratio = layer.d_nm / step;
@@ -435,5 +449,49 @@ mod tests {
         };
         assert!(round_to_qwot(&mut ctx, &mut stack, &wavls(), 550.0, 0.0, false).is_err());
         assert!(round_to_qwot(&mut ctx, &mut stack, &wavls(), 550.0, -1.0, false).is_err());
+    }
+    /// F0.2 (N3 / licence item 5): an inflate pass leaves graded spans
+    /// alone - per-row thicknesses unchanged, ratios preserved - while a
+    /// plain neighbour still inflates.
+    #[test]
+    fn f02_inflate_leaves_graded_spans_alone() {
+        use crate::smatrix::synthesis::structure::DesignStack;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(
+            Arc::from("H"),
+            vec![num_complex::Complex64::new(2.35, 0.0); NW],
+        );
+        nk.insert(
+            Arc::from("L"),
+            vec![num_complex::Complex64::new(1.46, 0.0); NW],
+        );
+        let mut films = vec![crate::structure::Layer::film(50.0, "L")];
+        films.push(crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.2,
+            ..crate::structure::Layer::film(100.0, "H")
+        });
+        let bg: HashSet<String> = ["H".to_string()].into_iter().collect();
+        let (mut stack, _) =
+            DesignStack::from_design(air(), sub(), &films, &nk, &HashMap::new(), &wl, &bg).unwrap();
+        // rows: [L 50] + the graded span's sublayers (one span).
+        assert_eq!(stack.spans().len(), 2);
+        assert!(stack.films().len() > 3, "the case needs a multi-row span");
+        let before: Vec<f64> = stack.films().iter().map(|f| f.d_nm).collect();
+        let mut ctx = MockCtx {
+            targets: vec![],
+            n_opt_calls: 0,
+        };
+        let res = inflate_design(&mut ctx, &mut stack, &wl, 2.0, 550.0, None, false).unwrap();
+        let after: Vec<f64> = stack.films().iter().map(|f| f.d_nm).collect();
+        // The graded span is untouched, row for row.
+        for (r, (b, a)) in before.iter().zip(&after).enumerate().skip(1) {
+            assert_eq!(b, a, "graded row {r} moved");
+        }
+        assert!(after[0] > before[0], "the plain film must still inflate");
+        assert_eq!(res.layer_count, stack.films().len());
     }
 }

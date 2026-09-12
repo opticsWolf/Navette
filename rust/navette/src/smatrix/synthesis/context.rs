@@ -12,7 +12,7 @@
 //! byte-comparable to needle_synthesis.py).
 
 use crate::smatrix::synthesis::merit::SimCurves;
-use crate::smatrix::synthesis::structure::DesignStack;
+use crate::smatrix::synthesis::structure::{ClampReport, DesignStack};
 
 pub trait DesignContext {
     /// Merit function of the given stack (pure evaluation, no mutation).
@@ -32,4 +32,15 @@ pub trait DesignContext {
     /// all films flagged `optimize`, enforces bounds, removes films driven
     /// below the minimum. Returns the post-optimization merit.
     fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String>;
+
+    /// F0.2: clamp reports accumulated since the last drain, or `None`
+    /// when the sweeps removed and capped nothing. The pipeline drains
+    /// this into each phase result (the evaluator's clamp fires after
+    /// every thickness optimization - dozens of times per cycle - so
+    /// reports accumulate rather than announce per call). Contexts that
+    /// do not clamp return `None`.
+    fn take_clamp_report(&mut self) -> Option<ClampReport> {
+        let _ = self;
+        None
+    }
 }

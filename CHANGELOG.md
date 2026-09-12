@@ -4,6 +4,78 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.34] — F0.2: the floor, the cap and the layer budget become span quantities
+
+The one release in the series licensed to change what a run produces, with
+the licence enumerated before the code — seven items, a twin each, and an
+eighth difference is a defect. Measured on the shipped 0.6.32 build, not
+derived: the floor deleted a pinned 10 nm graded interlayer entirely, the
+ceiling never fired on a graded film, the layer budget counted solver rows,
+nobody was told about any of it, and the floor also deleted sub-floor
+interface slices — losing the interface physics and a nanometre off the
+film, both live bugs at 0.6.32.
+
+### Changed
+
+- **`clamp_all` judges spans, not rows** (`DesignStack::clamp_all` now
+  returns a `ClampReport`). The comparison reads `D`, the span's
+  slice-inclusive total: expansion carves the interface slice out of the
+  carrier, so the slice IS part of the authored thickness — excluded from
+  scaling, never from measuring (B1).
+  - `D < clamp_min_nm` → the whole span is removed in one operation and
+    the report names it (`"material (D nm)"`) — licence item 1.
+  - `D > clamp_max_nm` on a multi-row span → **refused, not rescaled** —
+    licence item 2. The pipeline pre-checks at `NeedlePipeline::new`, so
+    a run never hits the refusal mid-flight except across a merge that
+    grew a span.
+  - A slice row is never a floor or a cap candidate on its own, in every
+    branch — licence item 7 (B1, measured: 150.0 → 149.0 nm before, 150.0
+    held after, control at 3.0 nm unchanged in both directions).
+  - A one-row span is row and span in one: removal and capping behave
+    exactly as before — a no-span run is bit-identical, full stop.
+- **The layer budget counts spans** (licence item 3): `max_film_layers`
+  is a manufacturability limit — one graded film is ONE physical layer, so
+  a 57-row graded film no longer terminates the run on the pre-flight of
+  cycle 1. `layer_count` in every phase result and `final_layer_count`
+  read the physical-layer count (licence item 4).
+- **`clamp_all`'s discarded return value becomes a report** (licence
+  item 6, B4): `PipelinePhaseResult.clamp_report` and
+  `PipelineResult.final_clamp_report` are `Option<ClampReport>` — `None`,
+  and therefore absent from the result dicts, when nothing was removed
+  and nothing was capped, so a no-clamp run's serialized output is
+  byte-identical. The evaluator's clamp (after every thickness
+  optimization, dozens of times per cycle) accumulates into the context;
+  the pipeline drains it into the phase at record time.
+- **`inflate_design` and `round_to_qwot` exclude non-singleton-bulk
+  spans** from their selection lists (N3, licence item 5) — a pinned
+  profile no longer comes out of an inflate pass with a distorted
+  thickness distribution.
+- **`remove_thin_layers` takes the span exemption** alongside the existing
+  `optimize` filter: a row inside a multi-row span is not a removal
+  candidate even when the flag says free.
+- **`expand`'s cap refusal** moves nothing: `max_total_thickness_nm`
+  stays a row sum (a sum is a sum either way).
+
+### Fixed
+
+- **The floor deletes a graded layer (A2) and the ceiling ignores it** —
+  both span quantities now.
+- **The floor deletes an interface slice (B1)** — losing the Looyenga
+  mixed row AND shortening the carrier by the width the slice was carved
+  from. Live at 0.6.32 on any stack with `interface = true` and a sub-floor
+  slice; Python-reachable directly through `DesignStack.clamp_all`.
+
+### Note
+
+- The needle-run fingerprint pin's digest strips the `clamp_report` key
+  (the one licensed difference), and with it stripped the recorded 0.6.32
+  digest HOLDS — the pin proves F0.2's trajectory is bit-identical on its
+  problem and that only licensed reporting appeared (three removals that
+  0.6.32 performed silently are now named in the phase dicts).
+- The Python `DesignStack.clamp_all` keeps its historical
+  `(n_removed, n_capped)` tuple contract; a span-level refusal now raises
+  `ValueError`.
+
 ## [0.6.33] — F0.1: span provenance on `DesignStack` (the bookkeeping half)
 
 ### Added

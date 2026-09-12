@@ -19,7 +19,7 @@ use super::evaluator::SmatrixContext;
 use super::merit::MeritSpec;
 use super::pipeline::SpectralInputs;
 use super::pipeline::{NeedlePipeline, PipelineResult};
-use super::structure::{DesignStack, LayerSpec};
+use super::structure::{ClampReport, DesignStack, LayerSpec};
 use super::thick_opt::LmConfig;
 use crate::structure::{Group, Layer, LayerType};
 
@@ -213,6 +213,7 @@ pub fn run_design(
         clamp_min_nm: cfg.clamp_min_nm,
         clamp_max_nm: cfg.clamp_max_nm,
         lm,
+        clamp_accumulator: ClampReport::default(),
     };
     let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, cmap)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;

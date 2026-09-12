@@ -27,7 +27,7 @@ use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::jacobian::assemble_jacobian;
 use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
 use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
-use crate::smatrix::synthesis::structure::{DesignStack, SolverArrays};
+use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
 use crate::smatrix::synthesis::thick_opt::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
 
 /// Solver + merit context for one synthesis problem.
@@ -40,6 +40,11 @@ pub struct SmatrixContext {
     pub clamp_min_nm: f64,
     pub clamp_max_nm: f64,
     pub lm: LmConfig,
+    /// F0.2: clamp reports from every `optimize_thicknesses` sweep since
+    /// the last drain. The pipeline drains it into the phase result and
+    /// the accumulator resets; the residual closures' clones carry a
+    /// snapshot that is never read back.
+    pub clamp_accumulator: ClampReport,
 }
 
 impl SmatrixContext {
@@ -291,6 +296,13 @@ impl DesignContext for SmatrixContext {
     fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
         self.optimize_thicknesses_report(stack).map(|(mf, _)| mf)
     }
+
+    fn take_clamp_report(&mut self) -> Option<ClampReport> {
+        if self.clamp_accumulator.is_empty() {
+            return None;
+        }
+        Some(std::mem::take(&mut self.clamp_accumulator))
+    }
 }
 
 impl SmatrixContext {
@@ -365,12 +377,17 @@ impl SmatrixContext {
         };
 
         // Write back, then clamp sweep (removes sub-min, caps above-max).
+        // F0.2: the sweep's report accumulates into the context and the
+        // pipeline drains it into the phase result at record time - a
+        // per-call message here would be noise (this fires after every
+        // thickness optimization, dozens of times per cycle).
         for (j, &i) in opt_indices.iter().enumerate() {
             if i < stack.films().len() {
                 stack.set_thickness(i, res.x[j])?;
             }
         }
-        stack.clamp_all(self.clamp_min_nm, self.clamp_max_nm);
+        let rep = stack.clamp_all(self.clamp_min_nm, self.clamp_max_nm)?;
+        self.clamp_accumulator.merge(rep);
 
         self.evaluate_merit(stack).map(|mf| (mf, Some(res)))
     }
@@ -467,6 +484,7 @@ mod tests {
             clamp_min_nm: 2.0,
             clamp_max_nm: clamp_max,
             lm: LmConfig::default(),
+            clamp_accumulator: ClampReport::default(),
         }
     }
 
@@ -501,6 +519,7 @@ mod tests {
             clamp_min_nm: 2.0,
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
+            clamp_accumulator: ClampReport::default(),
         }
     }
 
@@ -626,6 +645,7 @@ mod tests {
             clamp_min_nm: 2.0,
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
+            clamp_accumulator: ClampReport::default(),
         };
         let sim = ctx.simulate(&slab).unwrap();
         let tf = sim.cplx[CurveId::Ts.index()].as_ref().unwrap()[0];
@@ -814,6 +834,7 @@ mod tests {
                 clamp_min_nm: 2.0,
                 clamp_max_nm: 1000.0,
                 lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
             }
         }
 
@@ -1014,6 +1035,29 @@ mod tests {
                     assert_eq!(x.to_bits(), y.to_bits(), "{id:?}: {x} vs {y}");
                 }
             }
+        }
+
+        /// F0.2: the accumulator drains once and resets. With no
+        /// optimize-flagged films there is no solve and no sweep, so no
+        /// report; a report that arrives is handed to the pipeline
+        /// exactly once.
+        #[test]
+        fn the_clamp_accumulator_drains_and_resets() {
+            let mut ctx = ar_ctx(1000.0);
+            let mut stack = ar_stack(200.0);
+            stack.set_row_optimize_for_test(0, false);
+            ctx.optimize_thicknesses(&mut stack).unwrap();
+            assert!(ctx.take_clamp_report().is_none());
+
+            ctx.clamp_accumulator
+                .merge(crate::smatrix::synthesis::structure::ClampReport {
+                    spans_removed: vec!["H (1.0 nm)".to_string()],
+                    spans_capped: 0,
+                    rows_removed: 1,
+                });
+            let rep = ctx.take_clamp_report().unwrap();
+            assert_eq!(rep.rows_removed, 1);
+            assert!(ctx.take_clamp_report().is_none(), "the drain resets");
         }
 
         #[test]

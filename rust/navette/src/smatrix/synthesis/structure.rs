@@ -79,6 +79,43 @@ impl LayerSpec {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ClampReport
+// ---------------------------------------------------------------------------
+
+/// What one clamp pass did (F0.2).
+///
+/// Result dicts surface it only when something happened (B4): an
+/// `Option<ClampReport>` that is `None` when nothing was removed and
+/// nothing was capped keeps a no-span run's serialized output
+/// byte-identical. `rows_removed` / `spans_capped` are the old
+/// `(n_removed, n_capped)` counts; `spans_removed` names each span the
+/// floor took, because a silent correct deletion and a silent wrong one
+/// look identical from the outside.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClampReport {
+    /// One description per span removed whole: "material (D nm)".
+    pub spans_removed: Vec<String>,
+    pub spans_capped: usize,
+    pub rows_removed: usize,
+}
+
+impl ClampReport {
+    pub fn is_empty(&self) -> bool {
+        self.spans_removed.is_empty() && self.spans_capped == 0 && self.rows_removed == 0
+    }
+
+    /// One phase can run several clamp passes (post-cleanup, post-inflate,
+    /// plus every `optimize_thicknesses` sweep in between) - the phase's
+    /// report is their aggregate (the evaluator site accumulates rather
+    /// than reporting per call).
+    pub fn merge(&mut self, other: ClampReport) {
+        self.spans_removed.extend(other.spans_removed);
+        self.spans_capped += other.spans_capped;
+        self.rows_removed += other.rows_removed;
+    }
+}
+
 // DesignStack
 // ---------------------------------------------------------------------------
 
@@ -685,63 +722,91 @@ impl DesignStack {
 
     /// Enforce [min_nm, max_nm] on every film layer.
     ///
-    /// Verbatim port of `ClampedNeedleSynthesizer.clamp_all_layers`:
-    /// layers below `min_nm` are *removed* (not clamped up — the optimizer
-    /// tried to eliminate them); layers above `max_nm` are hard-capped.
-    /// Returns `(n_removed, n_capped)`.
-    pub fn clamp_all(&mut self, min_nm: f64, max_nm: f64) -> (usize, usize) {
+    /// F0.2: the floor and the cap are span quantities. The comparison
+    /// reads `D`, the span's slice-inclusive total - expansion carves the
+    /// slice out of the carrier, so the slice IS part of the authored
+    /// thickness (B1): excluded from scaling, never from measuring. A
+    /// slice row is never a floor or a cap candidate on its own, in every
+    /// branch; it leaves the stack only when its carrier span does.
+    ///
+    /// - `D < min_nm` -> the whole span is removed, all rows in one
+    ///   operation, and the report names it (a silent correct deletion
+    ///   and a silent wrong one look identical otherwise).
+    /// - `D > max_nm` on a multi-row span -> refused, not rescaled: a
+    ///   pinned profile above the manufacturing ceiling is an authoring
+    ///   error, and row-by-row capping would warp it. The pipeline
+    ///   pre-checks at `NeedlePipeline::new`, so a run never hits this
+    ///   mid-flight except across a merge that grew a span.
+    /// - A one-row span is row and span in one (`D == d`): removal and
+    ///   capping behave exactly as before - a no-span run is
+    ///   bit-identical, full stop.
+    ///
+    /// Returns the [`ClampReport`] - the old `(n_removed, n_capped)` grew
+    /// into it. Verbatim port lineage:
+    /// `ClampedNeedleSynthesizer.clamp_all_layers`.
+    pub fn clamp_all(&mut self, min_nm: f64, max_nm: f64) -> Result<ClampReport, String> {
         debug_assert!(min_nm >= 0.0 && max_nm > min_nm);
-        let old = std::mem::take(&mut self.films);
-        let old_spans = std::mem::take(&mut self.spans);
-        let mut surviving = Vec::with_capacity(old.len());
-        // Per surviving row: the span that owned it, and its original row
-        // index. Consecutive survivors with the same owner rebuild one
-        // span; a span all of whose rows died is dropped. Rows are still
-        // judged one by one here — the span-quantity floor/cap and the
-        // never-a-slice-candidate rule are F0.2's licensed change.
-        let mut owners: Vec<(usize, usize)> = Vec::with_capacity(old.len());
-        let mut n_removed = 0usize;
-        let mut n_capped = 0usize;
-
-        for (r, mut layer) in old.into_iter().enumerate() {
-            if layer.d_nm < min_nm {
-                n_removed += 1;
+        // Refusals are checked BEFORE any mutation, so the stack is never
+        // left half-clamped behind an error.
+        for sp in &self.spans {
+            if sp.end - sp.start <= 1 {
                 continue;
             }
-            if layer.d_nm > max_nm {
-                layer.d_nm = max_nm;
-                n_capped += 1;
+            let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            if d > max_nm {
+                return Err(format!(
+                    "clamp_all: span '{}' is {:.1} nm thick, above the {:.1} nm ceiling -                      refusing rather than rescaling a profile",
+                    self.films[sp.start].material, d, max_nm
+                ));
             }
-            surviving.push(layer);
-            owners.push((span_index_of_row(&old_spans, r), r));
         }
 
-        let mut new_spans: Vec<Span> = Vec::new();
+        let old = std::mem::take(&mut self.films);
+        let old_spans = std::mem::take(&mut self.spans);
+        let mut surviving: Vec<LayerSpec> = Vec::with_capacity(old.len());
+        let mut new_spans: Vec<Span> = Vec::with_capacity(old_spans.len());
+        let mut report = ClampReport::default();
         let mut p = 0usize;
-        let mut g = 0usize;
-        while g < owners.len() {
-            let (sid, leader) = owners[g];
-            let mut h = g + 1;
-            while h < owners.len() && owners[h].0 == sid {
-                h += 1;
+
+        for sp in &old_spans {
+            let d: f64 = old[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            if d < min_nm {
+                report
+                    .spans_removed
+                    .push(format!("{} ({:.1} nm)", old[sp.start].material, d));
+                report.rows_removed += sp.end - sp.start;
+                continue;
             }
-            let old_sp = &old_spans[sid];
-            let slice_kept = old_sp.slice && leader == old_sp.start;
+            let mut rows = old[sp.start..sp.end].to_vec();
+            if sp.end - sp.start == 1 && rows[0].d_nm > max_nm {
+                // One-row span: D == d, so this is today's row cap.
+                rows[0].d_nm = max_nm;
+                report.spans_capped += 1;
+            }
+            let e = p + rows.len();
+            surviving.extend(rows);
             new_spans.push(Span {
                 start: p,
-                end: p + (h - g),
-                logical: old_sp.logical,
-                slice: slice_kept,
-                bulk_start: p + usize::from(slice_kept),
+                end: e,
+                logical: sp.logical,
+                slice: sp.slice,
+                bulk_start: p + usize::from(sp.slice),
             });
-            p += h - g;
-            g = h;
+            p = e;
         }
 
         self.films = surviving;
         self.spans = new_spans;
         self.assert_spans_partition();
-        (n_removed, n_capped)
+        Ok(report)
+    }
+
+    /// Test-only: force a row's optimize flag. The F0.2 span-exemption
+    /// twin needs an optimize=true graded span, which `from_design` never
+    /// produces before F1.6 (non-background graded films homogenize).
+    #[cfg(test)]
+    pub(crate) fn set_row_optimize_for_test(&mut self, row: usize, optimize: bool) {
+        self.films[row].optimize = optimize;
     }
 
     /// Set the thickness of film `film_idx` (used by the thickness optimizer).
@@ -988,7 +1053,7 @@ mod tests {
         let mut s = stack;
         s.insert_needle_seed(0, 25.0, h(0.0)).unwrap();
         s.merge_adjacent();
-        s.clamp_all(0.5, 500.0);
+        s.clamp_all(0.5, 500.0).unwrap();
         s.set_thickness(0, 12.0).unwrap();
         assert!(s.ambient().nk.iter().all(|z| z.im == 0.0));
 
@@ -1136,8 +1201,8 @@ mod tests {
     #[test]
     fn clamp_removes_thin_caps_thick() {
         let mut s = stack(vec![h(1.0), l(5000.0), h(50.0), l(2.0 - 1e-9)]);
-        let (removed, capped) = s.clamp_all(2.0, 1000.0);
-        assert_eq!((removed, capped), (2, 1));
+        let rep = s.clamp_all(2.0, 1000.0).unwrap();
+        assert_eq!((rep.rows_removed, rep.spans_capped), (2, 1));
         let f = s.films();
         assert_eq!(f.len(), 2);
         assert!((f[0].d_nm - 1000.0).abs() < 1e-12);
@@ -1148,8 +1213,8 @@ mod tests {
     fn clamp_boundary_values_survive() {
         // Exactly-at-boundary layers survive untouched (strict < and >).
         let mut s = stack(vec![h(2.0), l(1000.0)]);
-        let (removed, capped) = s.clamp_all(2.0, 1000.0);
-        assert_eq!((removed, capped), (0, 0));
+        let rep = s.clamp_all(2.0, 1000.0).unwrap();
+        assert_eq!((rep.rows_removed, rep.spans_capped), (0, 0));
         assert_eq!(s.film_count_public(), 2);
     }
 
@@ -1565,17 +1630,46 @@ mod tests {
             &HashSet::new(),
         )
         .unwrap();
-        // rows: [100][1 slice][49 bulk]. The 1 nm slice is below the
-        // floor: row-wise removal takes it (and the nanometre it was
-        // carved from) — B1, fixed at F0.2, not here.
-        let (removed, capped) = stack.clamp_all(2.0, 1000.0);
-        assert_eq!((removed, capped), (1, 0));
-        assert_eq!(stack.films().len(), 2);
+        // rows: [100][1 slice][49 bulk]. F0.2 licence item 7 (B1): the
+        // 1 nm slice is never a floor candidate on its own - it survives,
+        // and the carrier keeps the nanometre the slice was carved from.
+        // Assert on BOTH rows and the total: a film-count assertion alone
+        // passes for the wrong reason if the slice merged into the bulk.
+        let rep = stack.clamp_all(2.0, 1000.0).unwrap();
+        assert_eq!((rep.rows_removed, rep.spans_capped), (0, 0));
+        assert!(rep.is_empty());
+        assert_eq!(stack.films().len(), 3);
         assert_eq!(
             span_rows(&stack),
-            vec![(0, 1, 0, false, 0), (1, 2, 1, false, 1)]
+            vec![(0, 1, 0, false, 0), (1, 3, 1, true, 2)]
         );
-        assert!((stack.total_thickness_nm() - 149.0).abs() < 1e-12);
+        assert!((stack.films()[1].d_nm - 1.0).abs() < 1e-12);
+        assert!((stack.films()[2].d_nm - 49.0).abs() < 1e-12);
+        assert!((stack.total_thickness_nm() - 150.0).abs() < 1e-12);
+
+        // Control: interface_thickness = 3.0 holds identically in both
+        // directions.
+        let films3 = vec![
+            crate::structure::Layer::film(100.0, "SiO2"),
+            crate::structure::Layer {
+                interface: true,
+                interface_thickness: 3.0,
+                ..crate::structure::Layer::film(50.0, "TiO2")
+            },
+        ];
+        let (mut c3, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &films3,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let rep3 = c3.clamp_all(2.0, 1000.0).unwrap();
+        assert!(rep3.is_empty());
+        assert!((c3.total_thickness_nm() - 150.0).abs() < 1e-12);
 
         // A fully-deleted span disappears from the partition.
         let graded = vec![crate::structure::Layer {
@@ -1589,10 +1683,120 @@ mod tests {
                 .unwrap();
         let n_rows = g.films().len();
         assert!(n_rows > 1);
-        let (removed, _) = g.clamp_all(100.0, 1000.0);
-        assert_eq!(removed, n_rows);
+        let rep = g.clamp_all(100.0, 1000.0).unwrap();
+        assert_eq!(rep.rows_removed, n_rows);
+        assert_eq!(rep.spans_removed.len(), 1);
+        assert!(
+            rep.spans_removed[0].starts_with("TiO2"),
+            "{}",
+            rep.spans_removed[0]
+        );
         assert!(g.films().is_empty());
         assert!(g.spans().is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // F0.2 — the span-quantity floor and cap (licence twins)
+    // ------------------------------------------------------------------
+
+    /// Licence item 1, measured (A2): a background-pinned 5 nm graded
+    /// film (delta = 0.1 -> four 1.25 nm sublayers) under the default
+    /// floor. Before F0.2 the film vanished row by row; now it survives
+    /// whole. Assert film count AND total thickness, not row count.
+    #[test]
+    fn f02_floor_leaves_a_sub_floor_graded_span_whole() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.1,
+            ..crate::structure::Layer::film(5.0, "TiO2")
+        }];
+        let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (mut stack, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        assert_eq!(stack.films().len(), 4);
+        let rep = stack.clamp_all(2.0, 1000.0).unwrap();
+        assert!(rep.is_empty(), "{rep:?}");
+        assert_eq!(stack.films().len(), 4, "the film must survive whole");
+        assert!((stack.total_thickness_nm() - 5.0).abs() < 1e-12);
+    }
+
+    /// Licence item 1, reported: the floor above the span total removes
+    /// the span AS A UNIT and the report names it. The assertion is on
+    /// the report - a silent correct deletion and a silent wrong one
+    /// look identical from the outside.
+    #[test]
+    fn f02_floor_above_a_span_removes_it_whole_and_names_it() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.1,
+            ..crate::structure::Layer::film(5.0, "TiO2")
+        }];
+        let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (mut stack, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        let rep = stack.clamp_all(6.0, 1000.0).unwrap();
+        assert_eq!(rep.rows_removed, 4);
+        assert_eq!(rep.spans_removed.len(), 1);
+        assert!(
+            rep.spans_removed[0].starts_with("TiO2 (5.0 nm)"),
+            "{}",
+            rep.spans_removed[0]
+        );
+        assert!(stack.films().is_empty());
+    }
+
+    /// Licence item 2, measured: a pinned 1000 nm graded span
+    /// (delta = 0.5 -> 57 rows) under a 300 nm ceiling refuses -
+    /// message names the span material and both numbers.
+    #[test]
+    fn f02_cap_refuses_a_multirow_span_above_the_ceiling() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.5,
+            ..crate::structure::Layer::film(1000.0, "TiO2")
+        }];
+        let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (mut stack, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        assert_eq!(stack.films().len(), 57, "the plan's measured row count");
+        let err = stack.clamp_all(2.0, 300.0).unwrap_err();
+        assert!(err.contains("'TiO2'"), "{err}");
+        assert!(err.contains("1000.0"), "{err}");
+        assert!(err.contains("300.0"), "{err}");
+        assert!(err.contains("refusing"), "{err}");
+        // Nothing changed behind the error.
+        assert_eq!(stack.films().len(), 57);
+        assert!((stack.total_thickness_nm() - 1000.0).abs() < 1e-12);
+        // Control: under a 1500 nm ceiling the same span passes.
+        let (mut stack2, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        let rep = stack2.clamp_all(2.0, 1500.0).unwrap();
+        assert!(rep.is_empty());
+    }
+
+    /// A one-row span above the ceiling is still CAPPED, not refused:
+    /// D == d for a one-row span, and the no-span path is bit-identical,
+    /// full stop.
+    #[test]
+    fn f02_one_row_cap_unchanged() {
+        let mut s = stack(vec![h(5000.0)]);
+        let rep = s.clamp_all(2.0, 1000.0).unwrap();
+        assert_eq!(rep.spans_capped, 1);
+        assert!(rep.spans_removed.is_empty());
+        assert!((s.films()[0].d_nm - 1000.0).abs() < 1e-12);
     }
 
     // small helper so tests read like the Python property name

@@ -53,11 +53,18 @@ pub fn remove_thin_layers<C: DesignContext + ?Sized>(
         //    never candidates: removing fixed physics to chase merit is
         //    corruption, not cleanup. Degenerate zero-thickness needle
         //    portions stay eligible (they clone their host's flags).
+        //    F0.2 (U5): the optimize flag alone no longer decides - a row
+        //    inside a multi-row span is exempt even when its flag says
+        //    free (F1.6's scalable spans), because removing ONE sublayer
+        //    of a profile is corruption the same way. The span rule rides
+        //    alongside the flag filter; it does not replace it.
         let candidates: Vec<usize> = stack
             .films()
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.optimize && l.d_nm < threshold)
+            .filter(|(i, l)| {
+                l.optimize && l.d_nm < threshold && stack.span_of_row(*i).is_singleton_bulk()
+            })
             .map(|(i, _)| i)
             .collect();
         if candidates.is_empty() {
@@ -318,6 +325,47 @@ mod tests {
         let res = cleanup_design(&mut ctx, &mut stack, Some(3.0), None, true).unwrap();
         assert_eq!(ctx.n_opt_calls, 1); // final re-opt ran
         assert!((res.merit_after - 0.0).abs() < 1e-12); // perfect mock optimizer
+    }
+
+    /// F0.2: the span exemption rides ALONGSIDE the optimize filter, not
+    /// inside it - rows inside a multi-row span are exempt even when the
+    /// flag says free (the case the flag filter does not cover; F1.6's
+    /// scalable spans). The graded span is forced optimize=true through
+    /// the test-only mutator because from_design never produces that
+    /// state before F1.6.
+    #[test]
+    fn f02_span_exemption_beyond_the_flag() {
+        use crate::smatrix::synthesis::structure::DesignStack;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+        let wl: Vec<f64> = (0..4).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(
+            Arc::from("H"),
+            vec![num_complex::Complex64::new(2.35, 0.0); 4],
+        );
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.2,
+            ..crate::structure::Layer::film(50.0, "H")
+        }];
+        let bg: HashSet<String> = ["H".to_string()].into_iter().collect();
+        let (mut stack, _) =
+            DesignStack::from_design(air(), sub(), &graded, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        assert_eq!(stack.films().len(), 11);
+        // Force every row free: the flag filter alone would take them all.
+        for r in 0..11 {
+            stack.set_row_optimize_for_test(r, true);
+        }
+        let mut ctx = MockCtx {
+            targets: vec![1.0; 11],
+            n_opt_calls: 0,
+        };
+        let removed = remove_thin_layers(&mut ctx, &mut stack, Some(8.0), None).unwrap();
+        assert_eq!(removed, 0, "the span exemption must refuse the removals");
+        assert_eq!(ctx.n_opt_calls, 0);
+        assert_eq!(stack.films().len(), 11);
     }
 
     #[test]
