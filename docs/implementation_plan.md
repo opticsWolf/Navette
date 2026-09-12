@@ -1610,6 +1610,18 @@ be testing whether two functions agree. Instead:
   `BTreeMap<usize, _>` keyed by `logical` is a second index that renumbers on
   `remove_film` and `insert_needle_seed` — the exact failure mode F0.1 exists
   to prevent. `Span` stays `Copy` either way.
+- **It is populated at construction too, at every door — not only by the
+  mutators.** `from_design` fills it from the emission; the
+  non-`from_design` constructors push one `None` per film, exactly as F0.1
+  has them synthesise one singleton span per film (F0.1 Change, first
+  bullet). Say it explicitly here because the bullet above names the five
+  mutators and stops, and because that door is **live public API, not
+  test-only**: `PyDesignStack::__new__` reaches `with_films`
+  ([synthesis_pipeline.rs:439](rust/navette-py/src/synthesis_pipeline.rs:439)).
+  Skip it and the two vectors go out of length, so the both-lengths check
+  the previous bullet asks for fires on any stack built from Python's
+  `DesignStack(...)` — a constructor that touches no profiled layer and
+  uses none of this feature.
 - `SpanRecipe` is `None` for every plain film, so a stack with no profiled
   layer pays one `Vec` of `None` and nothing else.
 
@@ -2301,9 +2313,29 @@ Resolve at the item that first needs them; each is a one-liner.
     unreachability stays asserted, the plan's `refresh_profiles` assert
     (F1.7) plus a caller-side `debug_assert` in `from_design` beside the
     extraction, both debug-only and unable to move a fingerprint; and
-    `test_differential.py:95`'s bitwise Fixed-mode pin — in-tree at 0.6.32 —
-    runs before/after as a free extra twin on top of the three fingerprints
-    and the battery. No ladder change: the extraction is part of F0.1's
+    `validation/regression/structure/test_differential.py:95` — in-tree
+    at 0.6.32 — runs before/after as a free extra twin on top of the three
+    fingerprints and the battery.
+
+    That twin is the **strongest** of them for this particular change, and
+    it is worth being precise about why, because "a bitwise pin" undersells
+    it in one direction and oversells it in another. It compares 300 seeded
+    stacks against the independently written Python engine rather than
+    against a stored fingerprint, and `_rand_layer`
+    (`validation/regression/structure/test_differential.py:30`) flips
+    `inhomogen` and `interface` per layer on a coin toss with `inh_delta` up
+    to 0.4 and `interface_thickness` up to 8.0 — so the multi-row emission
+    path `emit_entry` extracts is compared across two engines over hundreds
+    of shapes nobody picked by hand. For pure code motion there is nothing
+    better in the tree. **But bound it:** it asserts on `solver_inputs()`
+    output only — thicknesses, indices, coherence flags, roughness — and the
+    Python reference has no spans at all. It therefore proves the
+    *extraction* moved nothing and says nothing whatever about F0.1's other
+    half, the span bookkeeping; that half rests on the two fingerprints and
+    on `assert_spans_partition`. One item, two halves, one strong gate each
+    — do not let the strong one be cited for the half it cannot see.
+
+    No ladder change: the extraction is part of F0.1's
     feature (span bookkeeping, plumbing not behaviour), `0.6.33` stands.
     *(F0.1, needed by F1.7)*
 
