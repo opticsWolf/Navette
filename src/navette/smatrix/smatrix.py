@@ -476,9 +476,15 @@ class ScatterMatrix:
     roughness_types : int array, shape (n_layers,), optional
         Per-interface roughness model (see :class:`RoughnessType`). Default none.
         **All roughness models are specular-only: they do not account for diffuse
-        scatter loss.** NEVOT_CROCE conserves specular energy (R+T=1, a graded-
-        interface assumption); the graded types damp both beams (R+T<1) as a form-
-        factor artifact. Neither is a derived Total Integrated Scatter. See
+        scatter loss.** NEVOT_CROCE conserves specular energy (R+T=1) only to
+        first order in sigma^2, a graded-interface assumption; past that its
+        transmission factor overshoots and R+T climbs above 1 (measured on an
+        air/2.35/1.46/1.52 stack at 500-700 nm: 1.047 at sigma=20 nm normal
+        incidence, 1.311 in p-pol out to 89 deg, 49.4 at sigma=100 nm). Keep
+        sigma below
+        ~0.016*lambda/dn for a 1% energy budget. The graded types damp both
+        beams (R+T<1) as a form-factor artifact. Neither is a derived Total
+        Integrated Scatter. See
         :class:`~navette.structure.types.RoughnessType` for the full caveat.
     roughness_values : float array, shape (n_layers,), optional
         Per-interface roughness sigma (same unit as ``wavelengths``). Default 0.

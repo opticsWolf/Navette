@@ -16,6 +16,22 @@ pub enum ErrorType {
 }
 
 /// Per-interface roughness form factor (solver contract, sigma in nm).
+///
+/// Mirrors `navette.structure.types.RoughnessType`, which carries the full
+/// caveat; the essentials, because this is the surface a Rust caller reads:
+///
+/// * **Every type here is specular-only.** None of them tracks diffuse
+///   scatter. A rough interface throws energy into the diffuse hemisphere
+///   (TIS ≈ (4π·σ·cosθ/λ)²) and that energy appears in no channel.
+/// * `Linear`/`Step`/`Exponential`/`Gaussian` damp both beams, so
+///   `R + T < 1` — but that deficit is a form-factor artifact, not a derived
+///   scatter loss.
+/// * `NevotCroce` is constructed to conserve specular energy *to first order
+///   in σ²*, and stops doing so outside that regime — the transmission
+///   factor grows without bound and `R + T` climbs past 1. It is an X-ray
+///   result (`Δn ~ 1e-5`) applied at optical contrast, which is exactly where
+///   it breaks. See [`crate::smatrix::optics_core::nevot_croce_factors`] for
+///   the σ budget and measured numbers before using it in the visible.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoughnessType {

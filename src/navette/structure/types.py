@@ -59,8 +59,27 @@ class RoughnessType(IntEnum):
         n 1 -> 2.35, sigma = 20 nm:  R+T = 1.0206,  A = 1-R-T = -2.1e-2
         n 1 -> 4.28, sigma = 20 nm:  T   = 1.0768,  A = 1-R-T = -2.3e-1
 
+      The controlling quantity is the index *contrast*, not sigma alone: the
+      exponent is ((kz1-kz2)*sigma)^2/2, i.e. (2*pi*dn*sigma/lambda)^2/2 at
+      normal incidence. That is why a model borrowed from X-ray reflectometry
+      (dn ~ 1e-5, where the factor is 1.000000...) misbehaves at optical
+      contrast. Usable budget -- sigma injecting at most a fraction eps of
+      spurious energy at one interface:
+
+        sigma_max = sqrt(ln(1+eps)) * lambda / (2*pi*dn)
+
+      For a 1% budget (eps = 0.01, so sigma_max ~= 0.0159*lambda/dn):
+
+        dn  = 1.35   lambda = 400 nm ->  4.7 nm  |  550 nm ->  6.5 nm
+        dn  = 0.6    lambda = 400 nm -> 10.6 nm  |  550 nm -> 14.6 nm
+        dn  = 0.3    lambda = 400 nm -> 21.2 nm  |  550 nm -> 29.1 nm
+
       Note the consequences: **T can exceed 1 and the residual absorptance
-      A = 1 - R - T can go negative.** Neither is clamped. Check
+      A = 1 - R - T can go negative.** Neither is clamped. Note the direction
+      too: real roughness scatters energy *out* of the specular beam, so the
+      physically correct result is R+T slightly *below* 1. R+T > 1 has no
+      physical mechanism behind it and is the unambiguous sign that the model
+      has been pushed past its range. Check
       :meth:`~navette.smatrix.ScatterMatrix.energy_conservation` if you are
       near the validity edge -- but note it reports |1-R-T|, so an energy
       *gain* is indistinguishable from absorption by magnitude alone.

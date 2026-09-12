@@ -249,11 +249,59 @@ pub fn cexp_fast(z: Complex64) -> Complex64 {
 /// transmitted gain cancel exactly, so `R + T = 1` for a lossless interface.
 ///
 /// SPECULAR ONLY. This conserves energy among the coherent beams (graded
-/// interface picture) and models no diffuse scatter. It is only
-/// *perturbatively* unitary — valid for `|kz·σ| ≪ 1`. Outside that regime the
-/// transmission factor overshoots without bound (e.g. n=1→4.28 at σ=20 nm,
-/// λ=550 nm gives T ≈ 1.08 and a negative residual absorptance). See
-/// `RoughnessType` docs and `docs/plans/scatter_loss_plan.md`.
+/// interface picture) and models no diffuse scatter.
+///
+/// # Validity — read this before using type 5 in the visible
+///
+/// The reflection factor is a decaying exponential and is always well
+/// behaved. **The transmission factor is a growing exponential**, and it is
+/// the one that fails: its exponent is `((kz1−kz2)·σ)²/2`, driven by the
+/// index *contrast*, not by `kz`. At normal incidence that is
+/// `(2π·Δn·σ/λ)²/2`.
+///
+/// This is why the model is safe in the domain it was derived for and unsafe
+/// here. Névot-Croce comes from X-ray reflectometry, where `Δn ~ 1e-5`; the
+/// transmission factor is then 1.000000… and can never misbehave. At optical
+/// contrast `Δn` is five orders of magnitude larger, so the term that is
+/// inert at its origin becomes the dominant error.
+///
+/// Budget form — σ that injects at most a fraction `ε` of spurious energy at
+/// one interface:
+///
+/// ```text
+/// σ_max = sqrt(ln(1+ε)) · λ / (2π·Δn)      ε = 0.01  ->  σ_max ≈ 0.0159·λ/Δn
+/// ```
+///
+/// For a 1 % budget: σ ≈ 6.5 nm at Δn = 1.35, λ = 550 nm; ≈ 4.7 nm at
+/// λ = 400 nm; ≈ 29 nm at Δn = 0.3. Measured on a single lossless 1 → 2.35
+/// interface at λ = 550 nm, the transmitted intensity is scaled by ×1.006 at
+/// σ = 5 nm, ×1.024 at 10 nm, ×1.100 at 20 nm.
+///
+/// Past that the output is flatly unphysical. Measured on the 4-layer stack
+/// air / 2.35 (120 nm) / 1.46 (200 nm) / 1.52, type 5 on all three
+/// interfaces, 500–700 nm, `max(R + T)`:
+///
+/// ```text
+/// σ [nm]     s, normal      s, 0–89°      p, 0–89°
+///      5       1.00022       1.00022       1.01678
+///     10       1.00336       1.00336       1.06907
+///     20       1.04709       1.04709       1.31084
+///    100      49.4404      637.983       2547.9
+/// ```
+///
+/// Energy is created; nothing clamps it and nothing warns. `A = 1 − R − T`
+/// goes negative. p-polarization degrades first and fastest, so a
+/// normal-incidence sanity check flatters the model.
+///
+/// Note the direction. Real roughness scatters light *out* of the specular
+/// beam, so the physically correct result is `R + T` slightly **below** 1,
+/// the deficit being diffuse scatter this model does not track. `R + T > 1`
+/// has no physical mechanism behind it and is the unambiguous signature of
+/// having left the valid regime.
+///
+/// Not gated in the solver, by decision (R3.5): the check needs the
+/// wavelength and angle grid, which the layer-construction gate does not
+/// have. See `RoughnessType` docs and `docs/plans/scatter_loss_plan.md`.
 #[inline(always)]
 pub fn nevot_croce_factors(kz1: Complex64, kz2: Complex64, sigma: f64) -> (Complex64, Complex64) {
     let f = (-2.0 * kz1 * kz2 * sigma * sigma).exp();

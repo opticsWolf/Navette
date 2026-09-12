@@ -246,9 +246,10 @@ def test_the_flat_array_surface_is_still_permissive():
 
     What that leaves unreported, measured and stated plainly: a negative sigma
     here still solves as its positive twin, and Nevot-Croce (type 5) at
-    sigma = 20 nm still produces ``R + T`` near 1.068 -- energy created, no
-    warning. The validity band needs the wavelength and angle grid, which a
-    layer does not have, so it cannot live at this gate.
+    sigma = 20 nm still produces ``R + T`` = 1.047 on this stack -- energy
+    created, no warning. (1.311 in p-pol out to 89 deg; 49.4 at sigma = 100
+    nm.) The validity band needs the wavelength and angle grid, which a layer
+    does not have, so it cannot live at this gate.
     """
     n = np.array([1.0, 2.35, 1.46, 1.52])
     d = [0.0, 120.0, 200.0, 0.0]

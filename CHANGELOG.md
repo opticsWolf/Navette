@@ -3,6 +3,79 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.29] — The Névot-Croce validity limit, written down where it is read
+
+Documentation only; no behaviour change. 0.6.28 established that type-5
+roughness produces energy outside its validity range and deliberately did not
+gate it. This writes the limit down on every surface a caller might read, with
+a usable threshold instead of a hand-wave.
+
+### Why it fails
+
+The reflection factor `exp(-2*kz1*kz2*sigma^2)` decays and is always well
+behaved. The transmission factor `exp(+((kz1-kz2)*sigma)^2/2)` **grows**, and
+it is the one that fails. Its exponent is driven by the index *contrast*, not
+by `kz`: at normal incidence it is `(2*pi*dn*sigma/lambda)^2/2`.
+
+That is the whole story of why a good model gives bad numbers here. Névot-Croce
+is an X-ray reflectometry result, where `dn ~ 1e-5` and the transmission factor
+is 1.000000... At optical contrast `dn` is five orders of magnitude larger, so
+the term that is inert at its origin becomes the dominant error.
+
+Usable budget — sigma injecting at most a fraction `eps` of spurious energy at
+one interface:
+
+    sigma_max = sqrt(ln(1+eps)) * lambda / (2*pi*dn)     eps=0.01 -> ~0.0159*lambda/dn
+
+which is **4.7 nm** at dn = 1.35, lambda = 400 nm, and 29 nm at dn = 0.3.
+Typical high-contrast visible coatings are already at the edge at single-digit
+sigma.
+
+Also worth stating: the physically correct direction is `R + T` slightly
+*below* 1, the deficit being diffuse scatter this model does not track.
+`R + T > 1` has no mechanism behind it and is the unambiguous signature of
+having left the valid regime.
+
+### Changed
+
+- **`optics_core::nevot_croce_factors`** — the validity condition read
+  `|kz*sigma| << 1`, which names the wrong quantity. Replaced with the contrast
+  form, the closed-form sigma budget, and a measured table.
+- **`structure::enums::RoughnessType` (Rust)** had a single line of docs while
+  its Python twin had forty. The essentials now live on both.
+- **`navette.structure.types.RoughnessType`** gains the threshold formula and a
+  dn/lambda table, so "it degrades outside that regime" becomes a number a
+  caller can apply.
+- **`ScatterMatrix`'s `roughness_types` parameter** said NEVOT_CROCE "conserves
+  specular energy (R+T=1)" with no qualifier. It does, to first order in
+  sigma^2 — which is the half that matters when it stops being true.
+
+### Fixed
+
+- **`w_function` was documented as "Névot-Croce style interface attenuation"**
+  in `_smatrix.pyi`. It is not: type 5 is not handled by `w_function` at all
+  (it falls through to the catch-all and returns 1.0). `w_function` is the
+  form factor for the analytic graded profiles, types 1-4. Corrected.
+
+### Corrected
+
+- **The figures `R + T = 1.068` and `1025` published in the 0.6.28 entry and in
+  R3.5 do not reproduce on the stack those texts name.** Re-measured on
+  air / 2.35 (120 nm) / 1.46 (200 nm) / 1.52, type 5 on all three interfaces,
+  500-700 nm, `max(R + T)`:
+
+  | sigma [nm] | s, normal | s, 0-89 deg | p, 0-89 deg |
+  | --- | --- | --- | --- |
+  | 5 | 1.00022 | 1.00022 | 1.01678 |
+  | 10 | 1.00336 | 1.00336 | 1.06907 |
+  | 20 | 1.04709 | 1.04709 | 1.31084 |
+  | 100 | 49.4404 | 637.983 | 2547.9 |
+
+  The conclusion of R3.5 is unchanged and if anything understated — p-pol
+  degrades first and fastest, so a normal-incidence sanity check flatters the
+  model. Both earlier texts are corrected in place with a note; the 0.6.28
+  commit itself is left as published.
+
 ## [0.6.28] — A layer's numbers are judged where they are written (R3.5)
 
 Roughness and graded-film parameters were accepted in silence and misbehaved
@@ -68,8 +141,10 @@ The flat-array surface — `ScatterMatrix(roughness_values=...)` and the native
 `Solver` — stays permissive, as R3.1 promised. The gate is at layer
 construction; raw arrays remain the escape hatch. What that leaves standing,
 stated plainly rather than buried: Névot-Croce (type 5) at sigma = 20 nm still
-produces **R + T = 1.068** on a 4-layer stack — energy created, no warning —
-and 1025 at sigma = 100 nm. A validity band needs the wavelength and angle
+produces **R + T > 1** on a 4-layer stack — energy created, no warning. (The
+figures 1.068 and 1025 first written here do not reproduce on the stack named;
+the 0.6.29 entry carries re-measured values and supersedes them.) A validity
+band needs the wavelength and angle
 grid, which a `Layer` does not have, so it cannot live at this gate.
 `test_the_flat_array_surface_is_still_permissive` pins this as a decision so it
 stays one.

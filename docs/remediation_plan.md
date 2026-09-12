@@ -1144,8 +1144,11 @@ error the layer gate cannot see — an unresolvable material, which is a
 property of the structure and its provider, not of the layer.
 
 **Deliberately deferred: the Névot-Croce validity band.** Type 5 at
-sigma = 20 nm produces **R + T = 1.068** on a 4-layer stack, and 1025 at
-sigma = 100 nm — energy created, no warning. This is *not* fixed by 0.6.28 and
+sigma = 20 nm produces **R + T = 1.047** on the 4-layer stack
+air / 2.35 (120 nm) / 1.46 (200 nm) / 1.52 at normal incidence, 1.311 in
+p-polarization out to 89 deg, and 49.4 at sigma = 100 nm — energy created, no
+warning. (Corrected 0.6.29: this first read "1.068 ... and 1025", which does
+not reproduce on the stack it names.) This is *not* fixed by 0.6.28 and
 is not being reported anywhere. A validity band is a function of
 sigma/wavelength and angle; a `Layer` carries neither grid, so the check cannot
 live at the layer-construction gate this item is scoped to. Reopening it means

@@ -73,8 +73,14 @@ def solver_energy_conservation(
 # ---------------------------------------------------------------------------
 
 def w_function(q: complex, rough_type: int) -> complex:
-    """Névot-Croce style interface attenuation for roughness model
-    `rough_type`."""
+    """Graded-interface form factor W(q) for roughness model `rough_type`.
+
+    Covers the analytic profiles only -- 1 LINEAR, 2 STEP, 3 EXPONENTIAL,
+    4 GAUSSIAN. Types 0 (NONE) and 5 (NEVOT_CROCE) return 1.0: this is *not*
+    where Nevot-Croce is applied. Type 5 uses a separate pair of amplitude
+    factors inside the interface builders, and carries a validity limit that
+    `navette.structure.types.RoughnessType` documents.
+    """
     ...
 
 def redheffer_product_complex_field(
