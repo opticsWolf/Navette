@@ -58,3 +58,58 @@ def test_absorbing_equals_absorptance():
         assert abs(cons - a_max) < 1e-12
         assert cons >= prev - 1e-12
         prev = cons
+
+
+# --------------------------------------------------------------------------
+# The native binding's own contract (0.6.25). R1.2 widened it from 1-D to 2-D
+# by changing the parameter type, which silently dropped the 1-D form -- and
+# PyO3 reports the mismatch as "'ndarray' object is not an instance of
+# 'ndarray'", which tells a caller nothing. It now takes both.
+# --------------------------------------------------------------------------
+
+
+def test_native_accepts_1d_and_returns_1d():
+    from navette._smatrix import solver_energy_conservation as f
+
+    rs = np.array([0.04, 0.10, 0.25])
+    ts = np.array([0.96, 0.90, 0.75])
+    out = f(rs, rs, ts, ts)
+    assert out.shape == (3,)
+    assert float(np.max(np.abs(out))) < 1e-15
+
+
+def test_native_returns_the_callers_own_shape():
+    from navette._smatrix import solver_energy_conservation as f
+
+    for shape in ((3, 7), (5, 2), (1, 4), (6,)):
+        a = np.full(shape, 0.25)
+        b = np.full(shape, 0.75)
+        assert f(a, a, b, b).shape == shape
+
+
+def test_native_rejects_mismatched_shapes_and_ranks():
+    import pytest
+    from navette._smatrix import solver_energy_conservation as f
+
+    a = np.zeros((2, 3))
+    with pytest.raises(ValueError, match="shapes must match"):
+        f(a, np.zeros((3, 2)), a, a)
+    cube = np.zeros((2, 3, 4))
+    with pytest.raises(ValueError, match="expected 1-D"):
+        f(cube, cube, cube, cube)
+
+
+def test_native_is_the_max_over_polarizations_not_a_row_per_pol():
+    """The one thing the `.pyi` used to get wrong, pinned.
+
+    The docstring claimed "`A = 1 - R - T` per polarization, as a `(2, n)`
+    array". It is a single residual per grid point, maxed over the two
+    polarizations, in the caller's own shape.
+    """
+    from navette._smatrix import solver_energy_conservation as f
+
+    rs, ts = np.array([0.10]), np.array([0.80])   # |1-Rs-Ts| = 0.10
+    rp, tp = np.array([0.05]), np.array([0.60])   # |1-Rp-Tp| = 0.35
+    out = f(rs, rp, ts, tp)
+    assert out.shape == (1,)
+    assert abs(float(out[0]) - 0.35) < 1e-15

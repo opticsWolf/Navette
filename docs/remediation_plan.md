@@ -50,23 +50,23 @@ coverage is thin.
 
 | ID | Item | Priority | Impact | Risk | Effort | Review § |
 |---|---|---|---|---|---|---|
-| R1.1 | Névot-Croce (rtype 5) transmission factor | **P0** | physics correctness | M (golden/parity churn) | S–M | §3.2 |
-| R1.2 | `energy_conservation()` TypeError | **P0** | advertised API broken | S | S | §15 |
-| R2.1 | `build_profile()` probe + bench guard | P0-enabler | benchmarking hygiene | S | S | §5.1.1 |
-| R2.2 | README `--release` + bench UTF-8 | P0-enabler | docs/benches | S | S | §5.1.1, §17 |
-| R2.3 | push/PR CI workflow | **P0-enabler** | gates everything after it | M (fix live warnings first) | M | §7 |
+| ~~R1.1~~ | Névot-Croce (rtype 5) transmission factor — **DONE (0.5.1 + 0.5.3)** | **P0** | physics correctness; four sites, not the two the plan listed | M (golden/parity churn) | S–M | §3.2 |
+| ~~R1.2~~ | `energy_conservation()` TypeError — **DONE (0.5.2)**, 1-D acceptance restored 0.6.25 | **P0** | advertised API broken | S | S | §15 |
+| ~~R2.1~~ | `build_profile()` probe + bench guard — **DONE (0.5.4)** | P0-enabler | benchmarking hygiene | S | S | §5.1.1 |
+| ~~R2.2~~ | README `--release` + bench UTF-8 — **DONE (0.5.4)** | P0-enabler | docs/benches | S | S | §5.1.1, §17 |
+| ~~R2.3~~ | push/PR CI workflow — **DONE (0.5.6; warning cleanup 0.5.5)** | **P0-enabler** | gates everything after it | M (fix live warnings first) | M | §7 |
 | ~~R2.3a~~ | ~~clippy clean → blocking gate~~ | — | **DONE (0.6.6)** | — | — | §7 |
 | R2.3b | rustfmt adoption → blocking gate — **DEFERRED**, decision pending | P3 | 981 files; style decision first — put to the maintainer at 0.6.12, answer: not now | S (blame churn) | S/L review | §7 |
-| R2.4 | parity tests collected; `sys.exit` → skip | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
+| ~~R2.4~~ | parity tests collected; `sys.exit` → skip — **DONE (0.5.8)** | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
 | ~~R2.4a~~ | port `test_core_engine_*` onto `core_engine` — **DONE (0.6.11)** | P1 | only whole-engine parity oracles — both restored, 13/13 channels, ~1e-14 | M | M | §15 |
-| R2.5 | request-bit + schema sync tests | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
-| R3.1 | `ScatterMatrix` input validation | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
-| R3.2 | needle z-range: debug-assert → error | P1 | release-build garbage | S | S | §21.1 |
-| R3.3 | eigenmode `char_func`/`refine_mode` bound | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
+| ~~R2.5~~ | request-bit + schema sync tests — **DONE (0.5.9)** | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
+| ~~R3.1~~ | `ScatterMatrix` input validation — **DONE (0.6.0)** | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
+| ~~R3.2~~ | needle z-range: debug-assert → error — **DONE (0.6.1)** | P1 | release-build garbage | S | S | §21.1 |
+| ~~R3.3~~ | eigenmode `char_func`/`refine_mode` bound — **DONE (0.6.2)** | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
 | ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21)** | P1 | refused at the `ScatterMatrix` surface; the branch rule consolidated behind one documented `forward_branch`. The third option (renormalize against the incident Poynting flux) turned out not to exist — the input is under-determined, not under-normalized | M (a refusal breaks any caller doing it deliberately) | S–M | §21.2, R6.2 corrections |
-| R4.1 | numpy floor → `>=2.0` | P1 | broken installs | S | S | §7 |
-| R4.2 | color gradients on Python needle path — DONE (0.6.4) | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
-| R4.3 | fix + test all `examples/` — DONE (0.6.5) | P1 | shipped example broken | S | S | §6.2 |
+| ~~R4.1~~ | numpy floor → `>=2.0` — **DONE (0.6.3)** | P1 | broken installs | S | S | §7 |
+| ~~R4.2~~ | color gradients on Python needle path — **DONE (0.6.4)** | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
+| ~~R4.3~~ | fix + test all `examples/` — **DONE (0.6.5)** | P1 | shipped example broken | S | S | §6.2 |
 | ~~R4.4~~ | Optimizer backends: hardened built-in LM + optional ecosystem solvers — **DONE** | P2 | R4.4b (0.6.7), R4.4c (0.6.10), R4.4c-argmin (0.6.16). Five backends; the two argmin ones are baselines that measured badly and are documented as such (see corrections) | M (pinned optima may shift) | M–L | §3.6, §18.2 |
 | ~~R4.5~~ | ~~Analytic Jacobian for the refold optimizer (deposit chain, FD fallback)~~ | P2 | **DONE (0.6.8 merit rows, 0.6.9 deposits + J)** | M (fold-kink semantics; ordered accumulation) | M | §3.6, §19.1, §20.2 |
 | ~~R4.6~~ | TRF backend (trust-region-reflective) — **DONE (0.6.12)** | P2 | correct boundary behavior; direct scipy parity; retires the clamp-prediction caveat — `optimizer="trf"`, 10/10 breaks caught | M–L (largest algorithmic lift; scipy as oracle) | L | §3.6 |
@@ -88,7 +88,7 @@ highest-value change in the repo and its validation does not depend on CI.
 
 ## 1. Phase 1 — Physics correctness (P0)
 
-### R1.1 Névot-Croce (roughness type 5) transmission factor
+### R1.1 Névot-Croce (roughness type 5) transmission factor — DONE (0.5.1 + 0.5.3)
 
 **Review:** §3.2 (measured R+T = 0.924678 at σ = 10 nm, n: 1.0 → 1.5001, λ = 550 nm).
 
@@ -192,7 +192,7 @@ green on the fixed build and red on the old one; full suites green; changelog.
 
 ---
 
-### R1.2 `ScatterMatrix.energy_conservation()` — guaranteed TypeError
+### R1.2 `ScatterMatrix.energy_conservation()` — guaranteed TypeError — DONE (0.5.2)
 
 **Review:** §15 (wrapper `src/navette/smatrix/smatrix.py:393-401`; binding
 `rust/navette-py/src/smatrix.rs:368-381` 1-D-only; `_energy_conservation` is
@@ -227,6 +227,32 @@ be called at all today.
     duplication — prefer duplicating 5 lines over new coupling).
 
 **Effort.** S.
+
+**CORRECTIONS / NOTES (0.5.2, amended 0.6.25).** The fix landed on the
+binding side as designed and the four validation rows were written. Two things
+the 0.5.2 entry did not say:
+
+* **It was a breaking change to an exposed native function, not only a fix.**
+  Widening the binding to 2-D was done by changing the parameter type from
+  `PyReadonlyArray1` to `PyReadonlyArray2`, which *dropped* the 1-D form
+  `navette._smatrix.solver_energy_conservation` had always accepted. Nothing in
+  the repo called it that way, so nothing broke here — but it is a public
+  symbol, and PyO3 reports the mismatch as `TypeError: argument 'rs': 'ndarray'
+  object is not an instance of 'ndarray'`, which tells the caller nothing.
+  0.6.25 takes the arrays `Dyn` and handles rank 1 and 2 alike, returning the
+  result in the caller's own shape; rank 3+ and shape disagreement now raise
+  `ValueError` naming what was expected and what arrived. Four rows added to
+  `test_energy_conservation.py` pin that contract.
+
+* **The `.pyi` stub described a different function.** R6.5's stub said
+  "`A = 1 - R - T` per polarization, as a `(2, n)` array". It is
+  `max(|1-Rs-Ts|, |1-Rp-Tp|)` — one residual per grid point, maxed *over* the
+  two polarizations, returned in the input's shape. Both halves were wrong, in
+  the direction that would make a reader index into a nonexistent polarization
+  axis. Corrected, and pinned by
+  `test_native_is_the_max_over_polarizations_not_a_row_per_pol`. (The
+  `ScatterMatrix.energy_conservation` docstring was correct throughout; this
+  was the stub only — the same failure mode as the 0.6.21 index-layout fix.)
 
 ---
 
@@ -1091,7 +1117,7 @@ clone — API drift; opaque `Length mismatch` from deep inside native).
 
 ---
 
-### R4.4 Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers
+### R4.4 Optimizer backends: hardened built-in LM + optional argmin-ecosystem solvers — DONE (0.6.7 + 0.6.10 + 0.6.16)
 
 **Review:** §3.6 (the LM solves the **normal equations (JᵀJ)** — squaring the condition number; thin-film stacks with correlated layers are exactly where JᵀJ goes singular; the λ-floor bails it out today), §18.2 ("plan docs claim scipy parity; this review never reproduced it").
 

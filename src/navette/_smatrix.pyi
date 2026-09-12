@@ -60,7 +60,12 @@ def solver_dispersion_request(
 def solver_energy_conservation(
     rs: FloatArray, rp: FloatArray, ts: FloatArray, tp: FloatArray
 ) -> FloatArray:
-    """`A = 1 - R - T` per polarization, as a `(2, n)` array."""
+    """`max(|1 - Rs - Ts|, |1 - Rp - Tp|)` per grid point.
+
+    One residual per point, maxed *over* the two polarizations -- not one
+    row per polarization. The four inputs must share a shape, 1-D `(n,)` or
+    2-D `(n_angles, n_wavs)`, and the result comes back in that same shape.
+    """
     ...
 
 # ---------------------------------------------------------------------------

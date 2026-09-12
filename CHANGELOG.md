@@ -3,6 +3,53 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.25] — The plan closes, and one stub stops lying
+
+Every code item in `docs/remediation_plan.md` is now done or explicitly closed;
+the only open row left is R2.3b (rustfmt), deferred by maintainer decision at
+0.6.12. Reconciling the master table against the sections it summarizes turned
+up two real defects in R1.2, which are fixed here.
+
+### Fixed
+
+- **`solver_energy_conservation` accepts 1-D again.** R1.2 (0.5.2) widened the
+  native binding to 2-D by changing its parameter type from
+  `PyReadonlyArray1` to `PyReadonlyArray2` — which silently *dropped* the 1-D
+  form it had always taken. Nothing in the repo called it that way so nothing
+  broke here, but it is an exposed symbol, and PyO3 reports the mismatch as
+  `TypeError: argument 'rs': 'ndarray' object is not an instance of 'ndarray'`,
+  which tells a caller nothing at all. The arrays are now taken `Dyn` and rank
+  1 and 2 are handled alike, with the result returned in the caller's own
+  shape. Rank 3+ and shape disagreement raise `ValueError` naming what was
+  expected and what arrived.
+- **The `_smatrix.pyi` stub for it described a different function.** It said
+  "``A = 1 - R - T`` per polarization, as a ``(2, n)`` array". It is
+  ``max(|1-Rs-Ts|, |1-Rp-Tp|)`` — one residual per grid point, maxed *over* the
+  two polarizations, in the input's shape. Both halves were wrong, in the
+  direction that would send a reader indexing into a polarization axis that
+  does not exist. (The `ScatterMatrix.energy_conservation` docstring was right
+  all along; this was the stub only — the same failure mode as 0.6.21's
+  index-layout fix.)
+
+### Added
+
+- Four rows in `validation/smoke/test_energy_conservation.py` pinning the
+  native contract: 1-D in → 1-D out; the caller's own shape returned for
+  `(3,7)`, `(5,2)`, `(1,4)` and `(6,)`; `ValueError` on mismatched shapes and
+  on rank 3; and
+  `test_native_is_the_max_over_polarizations_not_a_row_per_pol`, which is
+  exactly the claim the stub used to get wrong.
+
+### Changed
+
+- **`docs/remediation_plan.md`: the master table now matches the document.**
+  Thirteen rows (R1.1, R1.2, R2.1–R2.5, R3.1–R3.3, R4.1–R4.3) were still
+  unstruck although every one of their sections had been marked DONE for
+  several releases, so the summary a reader trusts said eleven P0/P1 items were
+  outstanding when none were. Struck, each carrying the version that closed it.
+  R1.1, R1.2 and R4.4's section headers gained the DONE markers they never got.
+  28 of 29 rows are now struck; the one that is not is R2.3b.
+
 ## [0.6.24] — Sixteen anonymous slices get their names back (R6.1)
 
 `needle_gradient` took thirty-four parameters, sixteen of them adjacent

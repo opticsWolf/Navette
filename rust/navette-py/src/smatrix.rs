@@ -6,7 +6,8 @@
 //! the GIL while rayon-parallel kernels run, and return NumPy.
 
 use num_complex::{Complex64, ComplexFloat};
-use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyArray, PyArray1, PyArray2, PyArrayDyn, PyArrayMethods, PyReadonlyArray1,
+            PyReadonlyArray2, PyReadonlyArrayDyn};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -391,16 +392,26 @@ fn solver_dispersion_request(
 #[pyfunction]
 fn solver_energy_conservation<'py>(
     py: Python<'py>,
-    rs: PyReadonlyArray2<f64>,
-    rp: PyReadonlyArray2<f64>,
-    ts: PyReadonlyArray2<f64>,
-    tp: PyReadonlyArray2<f64>,
-) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    // R1.2: accept 2-D [n_angles, n_wavs] (what ScatterMatrix.compute produces)
-    // rather than only 1-D, then reshape the elementwise result back to 2-D so
-    // the wrapper's `squeeze=False` path works. energy_conservation is a pure
-    // per-element reduction, so flattening C-contiguous input is exact.
+    rs: PyReadonlyArrayDyn<f64>,
+    rp: PyReadonlyArrayDyn<f64>,
+    ts: PyReadonlyArrayDyn<f64>,
+    tp: PyReadonlyArrayDyn<f64>,
+) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
+    // R1.2 made this 2-D so `ScatterMatrix.compute(squeeze=False)`'s
+    // [n_angles, n_wavs] arrays could reach it. Taking `PyReadonlyArray2` to do
+    // that quietly dropped the 1-D form the function shipped with, and PyO3
+    // reports the mismatch as "'ndarray' object is not an instance of
+    // 'ndarray'", which tells a caller nothing at all. So take it dyn and
+    // handle both: `energy_conservation` is a pure per-element reduction, so
+    // flattening C-contiguous input is exact at any rank, and the result is
+    // returned in the caller's own shape.
     let shape = rs.as_array().shape().to_vec();
+    if shape.is_empty() || shape.len() > 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "energy_conservation: expected 1-D (n,) or 2-D (n_angles, n_wavs) \
+             arrays, got rs with shape {shape:?}"
+        )));
+    }
     for (name, a) in [
         ("rp", rp.as_array().shape().to_vec()),
         ("ts", ts.as_array().shape().to_vec()),
@@ -421,7 +432,7 @@ fn solver_energy_conservation<'py>(
     )
     .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let arr = PyArray1::from_vec(py, e);
-    arr.reshape([shape[0], shape[1]])
+    Ok(arr.reshape(shape)?.to_dyn().to_owned())
 }
 
 // ---- core_engine wrapper (verbatim from core) ----
