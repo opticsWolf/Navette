@@ -271,8 +271,14 @@ impl Solver {
                 n_stack_flat.len()
             ));
         }
+        // `as_chunks::<2>()` over `chunks_exact(2)`: the chunk size is a
+        // constant, so this hands the closure a `&[f64; 2]` and drops the
+        // bounds checks on c[0]/c[1]. The length was just verified to be an
+        // exact multiple of 2, so the remainder is empty by construction.
         let n_cache: Vec<Complex64> = n_stack_flat
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| Complex64::new(c[0], c[1]))
             .collect();
         Self::validate(

@@ -118,11 +118,18 @@ cargo check --workspace
 cargo test --workspace     # everything (needs Python for binding crates)
 cargo test-pure            # pure-Rust gate (no Python needed)
 cargo fmt --all            # rustfmt defaults; CI fails on any diff
+python tools/check_toolchain.py   # is your clippy as new as CI's?
 pytest validation
 ```
 
+> **Lint on the toolchain CI uses.** `cargo clippy` only reports the lints its
+> own version knows. Between 0.6.13 and 0.6.30 the local toolchain was one
+> minor version behind CI's `stable`, the local run was clean, and CI was red
+> for 17 consecutive pushes on a lint the local clippy did not have.
+> `tools/check_toolchain.py` fails when that gap reopens.
+
 Run this once per clone so `git blame` skips the tree-wide reformat commit
-(0.6.30) and points at whoever actually wrote each line:
+(0.6.31) and points at whoever actually wrote each line:
 
 ```powershell
 git config blame.ignoreRevsFile .git-blame-ignore-revs
@@ -153,7 +160,7 @@ docs/plans/exposure_audit.md).
 `pytest validation` on Windows and Linux, the exposure and CIE-sync lints,
 and an assertion that the installed extension is a release build.
 `cargo clippy -D warnings` (since 0.6.6) and `cargo fmt --all --check`
-(since 0.6.30) are blocking; nothing in the workflow is advisory any more.
+(since 0.6.31) are blocking; nothing in the workflow is advisory any more.
 
 ### Layout notes
 
@@ -173,7 +180,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.30-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.31-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends

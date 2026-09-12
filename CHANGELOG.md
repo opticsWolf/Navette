@@ -3,6 +3,47 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.31] — CI had been red for 17 runs and the local battery could not see it
+
+### Fixed
+
+- **`cargo clippy -D warnings` fails on CI**, and has since 0.6.13
+  (`perf(smatrix): R5.3`) — **17 consecutive red runs**, every one of them the
+  same single finding:
+
+      error: using `chunks_exact` with a constant chunk size
+        --> rust/navette/src/smatrix/solver.rs:275
+
+  `Solver::from_flat`'s index cache now uses `as_chunks::<2>()`, which hands
+  the closure a `&[f64; 2]` and drops the bounds checks on `c[0]`/`c[1]`. The
+  length is verified to be an exact multiple of 2 immediately above, so the
+  remainder is empty by construction. Both bit-exactness fingerprints are
+  unchanged.
+
+### Why the local battery missed it
+
+`chunks_exact_to_as_chunks` did not exist in the toolchain this work was being
+verified against. Local was clippy **0.1.97 / rustc 1.97.1**; CI installs
+`dtolnay/rust-toolchain@stable`, which was **1.98.0**. The local run was
+genuinely clean — it simply could not see the lint, and nothing in the
+verification battery compared the two versions. The whole 0.6.13-0.6.30 range
+was verified against a stale linter.
+
+The `rust (test + warnings)` job aborts at the `clippy` step, so everything
+after it — the feature-gated builds and, since 0.6.30, the fmt gate — had
+**never actually run on CI**. Checked explicitly this release with the 1.98
+toolchain: clippy clean on the workspace and on all three feature
+combinations, and `cargo fmt --all --check` reports zero diffs, so the gate
+landed in 0.6.30 goes green rather than red on its first real execution.
+
+### Added
+
+- **`tools/check_toolchain.py`** — compares the active clippy/rustc against
+  the newest toolchain `rustup` has installed, and against the CI workflow's
+  declared channel. It prints what CI will use and fails when the local
+  linter is older, so "clippy is clean" cannot again mean "clean on a version
+  nobody runs". Documented in the README check list.
+
 ## [0.6.30] — rustfmt adopted, and the fmt gate goes blocking (R2.3b)
 
 The last open item in the remediation plan's master table. No behaviour change:
