@@ -133,7 +133,7 @@ and B6 undercounts — and §0.4 records which.
 
 | ID | Item | Version | Priority | Risk | Effort | Source |
 |---|---|---|---|---|---|---|
-| F0.1 | Span provenance on `DesignStack` — the bookkeeping, and no behaviour change | 0.6.33 | **P0** | M | **L** | §D4.1–2, corrected §2 |
+| ~~F0.1~~ **DONE (0.6.33)** | Span provenance on `DesignStack` — the bookkeeping, and no behaviour change | 0.6.33 | **P0** | M | **L** | §D4.1–2, corrected §2 |
 | F0.2 | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
 | F0.3 | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
 | F1.1 | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
@@ -387,6 +387,34 @@ wrong that the coincidence currently holds. F0.1 is re-scoped accordingly.
 ## 2. Phase 0 — foundations
 
 ### F0.1 — span provenance on `DesignStack`, the bookkeeping half (0.6.33)
+
+**DONE (0.6.33, cebed9c).** Corrections from implementation (R7):
+
+- Adopted as designed: the absolute fingerprint gate (both pins, full
+  stop), the named `assert_spans_partition` (R2), the needle refusal at
+  the public door (R3), the singleton-bulk predicate (N1),
+  `Span::bulk_start` carried per B9's field option with the arithmetic
+  predicate as its debug cross-check, and the `emit_entry` extraction
+  verbatim (open decision 15's resolution).
+- "Five mutators" is four maintenance points: `remove_thin_layers`
+  maintains the partition transitively through `remove_film` — it never
+  touches rows itself.
+- One merge rule revision 4 did not name: when a slice row is absorbed
+  into an earlier run, the surviving span's slice flag drops with the row
+  that carried it. The case is only constructible at n = 1.0 — measured:
+  the looyenga cbrt-to-cube round trip is not bit-identity in general, so
+  a mixed-nk slice row can never merge away through `from_design`.
+- Splitting a 2-row span at its slice row leaves a degenerate slice-only
+  span; recorded honestly, the same shape as `remove_film`'s zombie-slice
+  case. F0.2's rules give such states their policy.
+- `build_scan_sites` / `run_needle_pass` signatures gained the span slice
+  (`&[]` = unbooked row lists, flag-only admissibility); F2.3's third
+  caller inherits the predicate.
+- Gates as listed, plus: `pytest validation -q` 743 passed, review
+  harnesses exit 0, the four tools checks, and the three feature-gated
+  cargo test variants. The B1 defect is deliberately still present — the
+  clamp bookkeeping test records the measured 150.0 → 149.0 nm state;
+  licence item 7 fixes it at F0.2.
 
 **Revision 1 called this "not a bug today — a coupling." Revision 2 downgrades
 that: there is a bug today.** The coupling argument still stands and is still
@@ -2348,7 +2376,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 
 | Version | Item | Commit | Amendments adopted | Status |
 |---|---|---|---|---|
-| 0.6.33 | F0.1 | — | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | not started |
+| 0.6.33 | F0.1 | cebed9c | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | done |
 | 0.6.34 | F0.2 | — | A2, N3, **U5** (half), **B1**, B4, B7 | not started |
 | 0.6.35 | F0.3 | — | **U1** | not started |
 | 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7, B10 | not started |
