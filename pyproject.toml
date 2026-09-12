@@ -11,7 +11,7 @@ build-backend = "maturin"
 
 [project]
 name = "navette"
-version = "0.6.31"
+version = "0.6.32"
 description = "A high-performance optical engine utilizing a Scattering Matrix algorithm for stable simulation of light in stratified media."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,6 +21,11 @@ authors = [
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
+  # Mirror requires-python above. shields.io's pyversions badge reads
+  # these, not requires-python, so without them the README advertises a
+  # bare "3" for a package that needs 3.12.
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering :: Physics",

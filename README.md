@@ -1,5 +1,12 @@
 # Navette - Weaving thin-film systems that perform
 
+[![crates.io](https://img.shields.io/crates/v/navette?logo=rust&label=crates.io)](https://crates.io/crates/navette)
+[![PyPI](https://img.shields.io/pypi/v/navette?logo=pypi&logoColor=white&label=PyPI)](https://pypi.org/project/navette/)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust)](rust/navette/Cargo.toml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)](pyproject.toml)
+[![License: LGPL-3.0-or-later](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue)](COPYING.LESSER)
+[![CI](https://github.com/opticsWolf/Navette/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/opticsWolf/Navette/actions/workflows/ci.yml)
+
 **Navette** is a high-performance, physically rigorous 1D optical engine designed for the simulation of light propagation in stratified media. Built on a modern **Scattering Matrix (S-matrix)** architecture, it offers a numerically stable and vectorized alternative to traditional Transfer Matrix Methods (TMM).
 
 ### 1. Unconditional Numerical Stability
@@ -129,7 +136,7 @@ pytest validation
 > `tools/check_toolchain.py` fails when that gap reopens.
 
 Run this once per clone so `git blame` skips the tree-wide reformat commit
-(0.6.31) and points at whoever actually wrote each line:
+(0.6.32) and points at whoever actually wrote each line:
 
 ```powershell
 git config blame.ignoreRevsFile .git-blame-ignore-revs
@@ -160,7 +167,7 @@ docs/plans/exposure_audit.md).
 `pytest validation` on Windows and Linux, the exposure and CIE-sync lints,
 and an assertion that the installed extension is a release build.
 `cargo clippy -D warnings` (since 0.6.6) and `cargo fmt --all --check`
-(since 0.6.31) are blocking; nothing in the workflow is advisory any more.
+(since 0.6.32) are blocking; nothing in the workflow is advisory any more.
 
 ### Layout notes
 
@@ -180,7 +187,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.31-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.32-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends

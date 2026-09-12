@@ -6,8 +6,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.31"
+version = "0.6.32"
 edition = "2021"
+# Measured, not guessed: 1.85 rejects the `let` chains in the engine crate
+# ("`let` expressions in this position are unstable"); 1.88 builds the whole
+# workspace. Stated here so the README's Rust badge is backed by the manifest
+# instead of being a number someone has to remember to update.
+rust-version = "1.88"
 license = "LGPL-3.0-or-later"
 authors = ["opticsWolf"]
 repository = "https://github.com/opticsWolf/Navette"
@@ -21,7 +26,7 @@ num-complex = "0.4"
 rayon = "1"
 ndarray = "0.15"
 # Single Rust crate (pure engine + modules); bindings take it by path.
-navette = { version = "0.6.31", path = "rust/navette" }
+navette = { version = "0.6.32", path = "rust/navette" }
 
 [profile.release]
 opt-level = 3

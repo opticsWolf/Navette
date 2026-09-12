@@ -2,6 +2,7 @@
 name = "navette-py"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Python bindings aggregator: builds navette._navette (all engines, one wheel). Not published; see the navette crate and navette PyPI package."

@@ -3,6 +3,44 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.32] — README badges, and the MSRV that backs one of them
+
+### Added
+
+- **Six badges on the README**: crates.io version, PyPI version, Rust 1.88+,
+  Python 3.12+, LGPL-3.0-or-later, and CI status. Each was fetched and read
+  before being committed rather than pasted from a template — both registries
+  return 200 and point their `repository`/`Homepage` at this repo, and
+  `COPYING.LESSER` exists for the license link to land on.
+
+- **`rust-version = "1.88"`**, declared in `[workspace.package]` and inherited
+  by both crates. It was not declared anywhere, so the Rust badge would have
+  been a hardcoded number with nothing keeping it honest.
+
+  **Measured, not guessed.** 1.85.0 fails the engine crate with `` `let`
+  expressions in this position are unstable`` (let chains, stabilized in
+  1.88); 1.88.0 builds the whole workspace. With this declared, an old
+  toolchain now says
+
+      error: rustc 1.85.0 is not supported by the following package:
+        navette@0.6.32 requires rustc 1.88
+
+  instead of emitting a wall of syntax errors.
+
+- **`Programming Language :: Python :: 3.12` / `3.13` classifiers.** shields.io's
+  `pypi/pyversions` badge reads classifiers, *not* `requires-python`, and the
+  published metadata carried only a bare `Python :: 3` — so the dynamic badge
+  rendered "python | 3" for a package that needs 3.12. Caught by fetching the
+  badge and reading its rendered text. The README uses a static `3.12+` badge
+  until a release ships the corrected classifiers; it can be swapped back to
+  the dynamic one afterwards.
+
+### Note on what the version badges show
+
+Both registries publish **0.5.0** while this tree is at 0.6.32, so the
+crates.io and PyPI badges read 0.5.0. That is accurate, not stale markup —
+the badges will follow the next release without an edit.
+
 ## [0.6.31] — CI had been red for 17 runs and the local battery could not see it
 
 ### Fixed
