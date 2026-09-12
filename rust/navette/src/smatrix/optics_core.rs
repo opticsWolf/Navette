@@ -134,13 +134,17 @@ pub fn csqrt_fast(z: Complex64) -> Complex64 {
 /// under an absorbing ambient legitimately grows along z while decaying along
 /// x. Which root is forward then depends on the inhomogeneity of the incident
 /// wave, and a real angle of incidence does not specify it. The input is
-/// under-determined, not merely awkward to normalize — so the Python surface
-/// removes the ambiguity at the source instead of picking a root here: it
-/// zeroes `Im(n0)` and warns, and the stack is then solved with a transparent
-/// ambient of index `Re(n0)`, for which this simple rule is exactly right.
-/// (0.6.21 refused the stack outright; 0.6.26 corrects and warns. Either way
-/// nothing reaches this function with a complex ambient unless the caller went
-/// around the wrapper, which the native `Solver` still permits.)
+/// under-determined, not merely awkward to normalize — so the ambiguity is
+/// removed at the source instead of a root being picked here: [`sanitize_incident_index`]
+/// zeroes `Im(n0)` and reports it, and the stack is then solved with a
+/// transparent ambient of index `Re(n0)`, for which this simple rule is
+/// exactly right. (0.6.21 refused the stack outright; 0.6.26 corrected and
+/// warned at the `ScatterMatrix` door; 0.6.27 applies the same rule at
+/// `DesignStack::from_design`, which is where the synthesis surface builds
+/// its stacks — that door had been open the whole time.)
+///
+/// Nothing reaches this function with a complex ambient unless the caller went
+/// around those doors, which the native `Solver` still permits by design (R3.1).
 ///
 /// Measured on the permissive native path, which is what such a caller gets:
 /// for a complex ambient the test is not just wrong, it is *undecidable*. `nsin/n0`
@@ -156,6 +160,67 @@ pub fn forward_branch(cos_theta: Complex64, _n: Complex64) -> Complex64 {
     } else {
         cos_theta
     }
+}
+
+/// The shared explanation carried by every "ambient absorption dropped"
+/// warning. The Python `ScatterMatrix` door emits the same sentences from its
+/// own copy of the rule; `test_both_doors_explain_it_the_same_way` pins the
+/// two together so they cannot drift apart.
+pub const AMBIENT_DROP_EXPLANATION: &str =
+    "Its absorption has been dropped -- the stack is solved with a transparent \
+     ambient of index Re(n[0]). Reflectance is not defined against an absorbing \
+     ambient: R = |r|^2 stops being an energy ratio (R + T climbs past 1), and at \
+     oblique incidence the transverse wavevector goes complex, so a real angle of \
+     incidence no longer identifies one incident wave. The results are therefore \
+     the transparent-ambient values; attenuation along the path through the \
+     ambient is not included. Put the absorbing medium on the substrate side \
+     (fully supported) if you need it carried.";
+
+/// Strip absorption from an incident-medium index vector.
+///
+/// Returns `None` when `nk` is already transparent -- one scan, no allocation,
+/// which is the entire cost on the common path. Otherwise returns the
+/// corrected vector (`Im(n) == 0` throughout) plus a warning naming what was
+/// dropped, for the caller to surface however it surfaces warnings.
+///
+/// This is the disarming half of [`forward_branch`]. That branch rule is
+/// exactly right when the ambient is real, and a tripwire when it is not:
+/// swept over ambients 1.0 / 1.52 / 2.35 / 4.0, every angle from 0 to 89.9
+/// degrees in 0.1 steps, against transparent, weakly absorbing, strongly
+/// absorbing and metal-like layers -- 32400 cases, total internal reflection
+/// included -- a real ambient never flips it once. The same sweep with `k` on
+/// the ambient flips 10680 of 14256, deciding on an `Im(cos)` of order 1e-20.
+/// Calling this at assembly time is what makes the rule downstream correct,
+/// rather than correct-by-assumption.
+///
+/// Dropping `Im(n0)` is a correction, not an approximation: with it gone the
+/// transverse wavevector is real again, every layer takes the standard branch,
+/// `R = |r|^2` is a true energy ratio and `R + T + A == 1` holds. What is lost
+/// is attenuation along the path *through* the ambient, a geometry-dependent
+/// factor that a semi-infinite half-space does not define in the first place.
+/// See R3.4, and `navette.smatrix._sanitize_incident_medium` for the Python
+/// door, which applies the same rule to `ScatterMatrix`.
+///
+/// COLD PATH BY CONSTRUCTION. The one engine call site is
+/// `DesignStack::from_design`, which runs once per stack assembly. It must
+/// never be called from `solver_arrays` or anything below it -- those run per
+/// merit evaluation, thousands of times per design run.
+pub fn sanitize_incident_index(nk: &[Complex64]) -> Option<(Vec<Complex64>, String)> {
+    let first = nk.iter().position(|z| z.im != 0.0)?;
+    let n_bad = nk[first..].iter().filter(|z| z.im != 0.0).count();
+    let k_max = nk.iter().map(|z| z.im.abs()).fold(0.0_f64, f64::max);
+    let fixed: Vec<Complex64> = nk.iter().map(|z| Complex64::new(z.re, 0.0)).collect();
+    let msg = format!(
+        "the incident medium (layer 0) is absorbing at {} of {} wavelengths \
+         (first at index {}: {}; largest |Im(n)| = {:e}). {}",
+        n_bad,
+        nk.len(),
+        first,
+        nk[first],
+        k_max,
+        AMBIENT_DROP_EXPLANATION,
+    );
+    Some((fixed, msg))
 }
 
 /// Fast complex exponential. Same formula as `num_complex`
@@ -439,11 +504,88 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_incident_index_leaves_a_real_ambient_alone() {
+        // The common path: no allocation, no warning, nothing to say.
+        assert!(sanitize_incident_index(&[Complex64::new(1.0, 0.0); 4]).is_none());
+        assert!(sanitize_incident_index(&[]).is_none());
+        // -0.0 is not absorption. It compares equal to 0.0 and it does not
+        // trip `forward_branch` either (`-0.0 < 0.0` is false), so warning
+        // about it would be noise. Pinned because the obvious "tidy up the
+        // sign" edit would start warning on every such grid.
+        assert!(sanitize_incident_index(&[Complex64::new(1.0, -0.0)]).is_none());
+    }
+
+    #[test]
+    fn sanitize_incident_index_flattens_and_says_what_it_dropped() {
+        let nk = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.05),
+            Complex64::new(1.5, -0.2),
+        ];
+        let (fixed, msg) = sanitize_incident_index(&nk).expect("should have fired");
+        assert_eq!(
+            fixed,
+            vec![
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(1.5, 0.0),
+            ]
+        );
+        // Counts, not "the row is bad": a single stray wavelength in a
+        // 200-point grid reads very differently from all 200.
+        assert!(msg.contains("2 of 3 wavelengths"), "{msg}");
+        assert!(msg.contains("first at index 1"), "{msg}");
+        assert!(msg.contains("2e-1"), "{msg}"); // largest |Im(n)| = 0.2
+        assert!(msg.contains(AMBIENT_DROP_EXPLANATION), "{msg}");
+        assert!(msg.is_ascii(), "the message must survive a cp1252 console");
+        // Idempotent: the corrected ambient is the one the branch rule below
+        // is provably safe for, so a second pass has nothing to do.
+        assert!(sanitize_incident_index(&fixed).is_none());
+    }
+
+    #[test]
+    fn a_sanitized_ambient_never_reaches_the_flip() {
+        // The pairing this whole item rests on, measured rather than argued:
+        // with the ambient real, `forward_branch` is the identity across the
+        // full angle range -- total internal reflection included, which the
+        // test below does not cover (it only ever goes from n=1 into n=2.35,
+        // so r0 < 1 always and the evanescent regime is never entered).
+        let mut checked = 0usize;
+        for &n0 in &[1.52_f64, 1.0, 2.35, 4.0] {
+            for i in 0..=899 {
+                let deg = i as f64 * 0.1;
+                let nsin = Complex64::new(n0 * deg.to_radians().sin(), 0.0);
+                for &(nr, k) in &[
+                    (1.0_f64, 0.0_f64),
+                    (1.0, 1e-12),
+                    (1.0, 0.05),
+                    (1.38, 0.0),
+                    (1.38, 0.5),
+                    (2.35, 0.0),
+                    (2.35, 3.0),
+                    (0.15, 3.5),
+                ] {
+                    let n = Complex64::new(nr, k);
+                    let c = raw_cos(nsin, n);
+                    checked += 1;
+                    assert_eq!(forward_branch(c, n), c, "n0={n0} deg={deg} n={n} c={c}");
+                }
+            }
+        }
+        assert_eq!(checked, 28800);
+    }
+
+    #[test]
     fn absorbing_layers_under_a_real_ambient_never_reach_the_flip() {
         // The claim in the doc comment: with a real ambient, `1 - (nsin/n)^2`
         // has positive imaginary part for any absorbing layer, so the
-        // principal square root is already forward and the flip is dead code.
+        // principal square root is already forward and the flip never fires.
         // Checked across the angle range and three decades of k.
+        //
+        // Note what this does NOT establish: the ambient here is n = 1 and
+        // the layer n = 2.35, so `r0 < 1` and the evanescent regime is never
+        // entered. `a_sanitized_ambient_never_reaches_the_flip` above covers
+        // that, and it is the one that speaks for the supported path.
         for &deg in &[0.0_f64, 10.0, 30.0, 45.0, 60.0, 75.0, 89.0] {
             let nsin = Complex64::new(1.0 * deg.to_radians().sin(), 0.0);
             for &k in &[1e-6_f64, 1e-3, 0.05, 0.5, 3.0] {

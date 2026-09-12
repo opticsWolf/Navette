@@ -3,6 +3,78 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.27] — The layer-0 gate moves to where the stacks are actually built (R3.4)
+
+0.6.26 taught `ScatterMatrix` to drop absorption in the incident medium and say
+so. It turned out that covered one of five doors, and not the expensive one.
+The synthesis and design surface never builds a `ScatterMatrix`: it hands its
+own `ambient` straight to the native assembly. Measured before this release, a
+`stack_from_layers` call with `ambient=(1.0+0.05j, "air")` produced **zero
+warnings** and a stack still carrying `1+0.05j` on layer 0 — which the
+optimizer then fitted a design against.
+
+### Fixed
+
+- **`run_design` was discarding its assembly warnings.** `driver.rs` did
+  `let (stack, _warnings) = assemble_stack(...)`, and had done since it was
+  written. The graded-film homogenization warning never reached anyone on the
+  full-run path, making the most expensive path the quietest one. `run_design`
+  now returns `(report, stack, warnings)` and they re-emit as Python warnings.
+  This is a pre-existing bug in its own right, independent of the ambient work.
+
+### Added
+
+- **The rule now lives once, in the engine**, as
+  `optics_core::sanitize_incident_index` — `None` on the common path, one scan,
+  no allocation. It sits next to `forward_branch` because it is the half that
+  disarms it.
+- **Applied at `DesignStack::from_design`**, the single production constructor:
+  `stack_from_layers`, `run_needle`, `design_from_config` and the PyO3
+  `DesignStack.from_design` all funnel through it. The plain
+  `navette._smatrix.DesignStack(...)` constructor reaches `with_films` instead
+  and is gated at the PyO3 boundary with the same engine call.
+
+### Why there and not nearer the solver
+
+`from_design` runs once per stack assembly, and `DesignStack::ambient` is
+private with no mutator — needle insertion, merging, clamping and thickness
+steps cannot put the absorption back. One check covers an entire design run.
+The alternative placement, `solver_arrays()`, is called per merit evaluation
+(thousands of times per run) and would re-establish something that cannot have
+changed. There is no per-evaluation cost.
+
+### Unchanged
+
+- The native `Solver` and `core_engine` stay permissive. R3.1 promised that
+  escape hatch and its test still pins it.
+- Both engine fingerprints are unmoved (`30d96909…3c6c`, `27db9666…fd85`).
+
+### Corrected
+
+0.6.26's notes claimed the existing branch test proved the sign flip was "dead
+code on the supported path". It did not: that test never leaves `r0 < 1`, so it
+never enters total internal reflection, which the supported path reaches
+routinely. Measured instead, and kept as
+`a_sanitized_ambient_never_reaches_the_flip`: ambients 1.0 / 1.52 / 2.35 / 4.0,
+every angle from 0 to 89.9 degrees in 0.1 steps, against transparent through
+metal-like layers — **28800 cases, evanescent regime included, zero flips**.
+The same sweep with `k` on the ambient flips **10680 of 14256**, deciding on an
+`Im(cos)` of order 1e-20. The flip is not dead code; it is a tripwire, and the
+sanitizer is what disarms it.
+
+### Tests
+
+- `validation/smoke/test_ambient_gate.py` — 11 cases: all five doors, layer 0
+  only (an absorbing substrate and film must survive), a transparent ambient
+  stays silent, the correction survives every stack mutation, the corrected
+  stack is bit-for-bit its transparent twin, and the engine stays permissive.
+- `test_both_doors_explain_it_the_same_way` lifts the explanation out of the
+  Python warning and requires it verbatim in the Rust one, so the two
+  implementations cannot drift apart.
+- Four new Rust tests: three on the sanitizer (including `-0.0` left alone — it
+  is not absorption and does not trip the flip) and one on the gate inside
+  `from_design`.
+
 ## [0.6.26] — An absorbing ambient is corrected and announced, not refused (R3.4)
 
 0.6.21 refused to build a `ScatterMatrix` whose incident medium absorbs.
@@ -52,10 +124,8 @@ either.
 
 - The native `Solver` stays permissive; nothing in the Rust engine moved. The
   branch rule, its doc comment and
-  `absorbing_layers_under_a_real_ambient_never_reach_the_flip` all still hold —
-  and that last one is now load-bearing rather than descriptive, because the
-  wrapper guarantees a real ambient, which makes the flip dead code on the
-  supported path.
+  `absorbing_layers_under_a_real_ambient_never_reach_the_flip` all still hold.
+  (That last claim was overstated here; corrected in 0.6.27.)
 - The engine fingerprint is unmoved at `30d96909…3c6c`.
 
 ### Tests

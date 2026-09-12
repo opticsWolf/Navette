@@ -136,6 +136,12 @@ pub fn assemble_stack(
 
 /// End-to-end design run: assemble, fold demands, execute the macro-loop.
 /// `angles_deg` in degrees; `callback` fires per macro-cycle.
+///
+/// Returns `(report, stack, warnings)`. The warnings are the assembly's --
+/// a dropped ambient absorption (R3.4), a homogenized graded film -- and they
+/// must be surfaced upstream. They were dropped on the floor here until
+/// 0.6.27, which made this the one design path that corrected inputs in
+/// silence.
 #[allow(clippy::too_many_arguments)]
 pub fn run_design(
   ambient_name: &str,
@@ -152,8 +158,8 @@ pub fn run_design(
   needle_cfg: NeedleCycleConfig,
   lm: LmConfig,
   mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
-) -> Result<(PipelineResult, DesignStack), String> {
-  let (stack, _warnings) = assemble_stack(
+) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+  let (stack, warnings) = assemble_stack(
     ambient_name,
     ambient_nk,
     substrate_name,
@@ -199,7 +205,7 @@ pub fn run_design(
   };
   let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, cmap)?;
   let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
-  Ok((report, pipe.stack))
+  Ok((report, pipe.stack, warnings))
 }
 
 // ---------------------------------------------------------------------------

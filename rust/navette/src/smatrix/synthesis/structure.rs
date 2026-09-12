@@ -175,7 +175,7 @@ impl DesignStack {
     /// and beats flattening silently. Span-aware graded optimization is
     /// future work (D2).
     pub fn from_design(
-        ambient: LayerSpec,
+        mut ambient: LayerSpec,
         substrate: LayerSpec,
         films: &[crate::structure::Layer],
         nk: &std::collections::HashMap<std::sync::Arc<str>, Vec<num_complex::Complex64>>,
@@ -184,7 +184,12 @@ impl DesignStack {
         background: &std::collections::HashSet<String>,
     ) -> Result<(Self, Vec<String>), String> {
         use std::collections::HashMap;
-        // Graded films go one of two ways (never refused, never silent):
+        // Two things are corrected-and-announced here rather than
+        // refused, and this is the only place either can be: an absorbing
+        // incident medium (R3.4), and a graded film the pipeline cannot
+        // carry. Both follow the same rule -- never refused, never silent.
+        //
+        // Graded films go one of two ways:
         // - BACKGROUND (named in `background`): expanded WITH the profile
         //   and pinned (optimize/needle forced false on the whole carrier
         //   span). True physics, fixed: needle never hosts there, LM
@@ -193,6 +198,27 @@ impl DesignStack {
         // - otherwise HOMOGENIZED (base index, single row) with a warning
         //   per film: the pipeline's operators assume uniform slabs.
         let mut warnings = Vec::new();
+
+        // THE LAYER-0 GATE (R3.4, 0.6.27). Every production `DesignStack`
+        // is built here -- `assemble_stack`, `design_from_config` and the
+        // PyO3 `DesignStack.from_design` all funnel through this function,
+        // and every other `with_films` call in the crate is a test. So one
+        // check here covers the synthesis surface completely.
+        //
+        // Once is enough, and this is why it is here rather than nearer the
+        // solver: `ambient` is private with no mutator, so nothing
+        // downstream -- needle insertion, merge, clamp, thickness steps --
+        // can put the absorption back. Putting the check in
+        // `solver_arrays()` instead would run it per merit evaluation,
+        // thousands of times a run, to re-establish something that cannot
+        // have changed.
+        if let Some((fixed, msg)) =
+            crate::smatrix::optics_core::sanitize_incident_index(&ambient.nk)
+        {
+            ambient.nk = fixed.into();
+            warnings.push(msg);
+        }
+
         let flat: Vec<crate::structure::Layer> = films
             .iter()
             .map(|l| {
@@ -514,6 +540,71 @@ mod tests {
         let mut mstack = bstack;
         assert_eq!(mstack.merge_adjacent(), 0);
         assert!((mstack.total_thickness_nm() - 50.0).abs() < 1e-12);
+    }
+
+    /// R3.4 (0.6.27): the layer-0 gate lives here, because this is the only
+    /// place a production `DesignStack` is built.
+    #[test]
+    fn from_design_drops_ambient_absorption_once_and_says_so() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.3); NW]);
+        let films = vec![crate::structure::Layer::film(50.0, "H")];
+
+        let mut amb = air(0.0);
+        amb.nk = vec![Complex64::new(1.33, 0.02); NW].into();
+        let mut absorbing_sub = sub(0.0);
+        absorbing_sub.nk = vec![Complex64::new(1.52, 0.1); NW].into();
+
+        let (stack, warns) = DesignStack::from_design(
+            amb, absorbing_sub, &films, &nk, &HashMap::new(), &wl, &HashSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(warns[0].contains("incident medium (layer 0) is absorbing"), "{}", warns[0]);
+        assert!(warns[0].contains(&format!("{NW} of {NW} wavelengths")), "{}", warns[0]);
+
+        // Layer 0 is flattened; the real part is kept, not replaced.
+        assert!(stack.ambient().nk.iter().all(|z| z.im == 0.0));
+        assert!(stack.ambient().nk.iter().all(|z| (z.re - 1.33).abs() < 1e-15));
+
+        // Nothing else is touched. An absorbing substrate and absorbing films
+        // are ordinary physics -- the gate is about layer 0 only, and a gate
+        // that quietly flattened the rest would be far worse than no gate.
+        assert!(stack.substrate().nk.iter().all(|z| (z.im - 0.1).abs() < 1e-15));
+        assert!(stack.films()[0].nk.iter().all(|z| (z.im - 0.3).abs() < 1e-15));
+
+        // Once is enough: the ambient is private with no mutator, so the
+        // stack operations the pipeline runs thousands of times cannot put
+        // the absorption back. This is the whole argument for gating at
+        // assembly instead of per merit evaluation.
+        let mut s = stack;
+        s.insert_needle_seed(0, 25.0, h(0.0)).unwrap();
+        s.merge_adjacent();
+        s.clamp_all(0.5, 500.0);
+        s.set_thickness(0, 12.0).unwrap();
+        assert!(s.ambient().nk.iter().all(|z| z.im == 0.0));
+
+        // A single stray wavelength is counted, not rounded up to the row.
+        let mut spotty = air(0.0);
+        let mut grid = vec![Complex64::new(1.0, 0.0); NW];
+        grid[3] = Complex64::new(1.0, 1e-12);
+        spotty.nk = grid.into();
+        let (_, warns) = DesignStack::from_design(
+            spotty, sub(0.0), &films, &nk, &HashMap::new(), &wl, &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].contains(&format!("1 of {NW} wavelengths")), "{}", warns[0]);
+        assert!(warns[0].contains("first at index 3"), "{}", warns[0]);
+
+        // And a transparent ambient stays silent -- the common path.
+        let (_, warns) = DesignStack::from_design(
+            air(0.0), sub(0.0), &films, &nk, &HashMap::new(), &wl, &HashSet::new(),
+        )
+        .unwrap();
+        assert!(warns.is_empty(), "{warns:?}");
     }
 
     fn h(d: f64) -> LayerSpec {

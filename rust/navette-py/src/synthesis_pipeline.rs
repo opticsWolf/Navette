@@ -280,7 +280,9 @@ pub(crate) fn assemble_design(
 /// End-to-end design run over evaluated arrays (thin over
 /// `driver::run_design`): assemble once, fold demands, macro-loop.
 /// `callback(macro_cycle, phase_dict)` aborts on raise (`USER_ABORT`).
-/// Returns the full report dict including the final `stack`.
+/// Returns the full report dict including the final `stack`; assembly
+/// warnings (dropped ambient absorption, homogenized graded film) re-emit
+/// as Python warnings.
 #[pyfunction]
 #[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, seeds, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
 #[allow(clippy::too_many_arguments)]
@@ -340,7 +342,7 @@ pub(crate) fn run_design(
         .into_iter()
         .map(|(host, seed_name, nk)| ArraySeed { host, seed_name, nk })
         .collect();
-    let (res, stack) = py
+    let (res, stack, warnings) = py
         .detach({
             let spec_inner = spec.inner().clone();
             move || {
@@ -360,6 +362,7 @@ pub(crate) fn run_design(
             }
         })
         .map_err(PyValueError::new_err)?;
+    crate::structure::emit_warnings(py, "run_design", &warnings)?;
     result_to_dict(py, &res, PyDesignStack::from_inner(stack))
 }
 
@@ -394,16 +397,28 @@ impl PyDesignStack {
 impl PyDesignStack {
     #[new]
     /// `films` excludes ambient/substrate (films only — the mutable part).
+    ///
+    /// An absorbing ambient is dropped with a warning here, as everywhere
+    /// else on the Python surface (R3.4). This door reaches `with_films`
+    /// rather than `from_design`, so it needs the gate applied explicitly —
+    /// the rule itself is still the engine's single
+    /// `optics_core::sanitize_incident_index`.
     fn new(
         py: Python<'_>,
         ambient: Py<PyLayerSpec>,
         substrate: Py<PyLayerSpec>,
         films: Vec<Py<PyLayerSpec>>,
     ) -> PyResult<Self> {
-        let a = ambient.bind(py).borrow().inner.clone();
+        let mut a = ambient.bind(py).borrow().inner.clone();
         let s = substrate.bind(py).borrow().inner.clone();
         let f: Vec<LayerSpec> =
             films.iter().map(|l| l.bind(py).borrow().inner.clone()).collect();
+        if let Some((fixed, msg)) =
+            navette::smatrix::optics_core::sanitize_incident_index(&a.nk)
+        {
+            a.nk = fixed.into();
+            crate::structure::emit_warnings(py, "DesignStack", &[msg])?;
+        }
         DesignStack::with_films(a, s, f)
             .map(PyDesignStack::from_inner)
             .map_err(PyValueError::new_err)

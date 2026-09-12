@@ -63,7 +63,7 @@ coverage is thin.
 | ~~R3.1~~ | `ScatterMatrix` input validation — **DONE (0.6.0)** | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
 | ~~R3.2~~ | needle z-range: debug-assert → error — **DONE (0.6.1)** | P1 | release-build garbage | S | S | §21.1 |
 | ~~R3.3~~ | eigenmode `char_func`/`refine_mode` bound — **DONE (0.6.2)** | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
-| ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21, revised 0.6.26)** | P1 | `Im(n[0])` is dropped and the stack solved with a transparent ambient of `Re(n[0])`, with a `UserWarning` — maintainer decision, 0.6.26; 0.6.21 refused outright. The third option (renormalize against the incident Poynting flux) still does not exist — the input is under-determined, not under-normalized | M | S–M | §21.2, R6.2 corrections |
+| ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21, revised 0.6.26, extended 0.6.27)** | P1 | `Im(n[0])` is dropped and the stack solved with a transparent ambient of `Re(n[0])`, with a `UserWarning` — maintainer decision, 0.6.26; 0.6.21 refused outright. The third option (renormalize against the incident Poynting flux) still does not exist — the input is under-determined, not under-normalized | M | S–M | §21.2, R6.2 corrections |
 | ~~R4.1~~ | numpy floor → `>=2.0` — **DONE (0.6.3)** | P1 | broken installs | S | S | §7 |
 | ~~R4.2~~ | color gradients on Python needle path — **DONE (0.6.4)** | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | ~~R4.3~~ | fix + test all `examples/` — **DONE (0.6.5)** | P1 | shipped example broken | S | S | §6.2 |
@@ -839,7 +839,7 @@ high-index substrates understand the rejection region.
 
 ## 4. Phase 4 — API & packaging completion (P1/P2)
 
-### R3.4 Absorbing incident medium accepted in silence — DONE (0.6.21), revised (0.6.26)
+### R3.4 Absorbing incident medium accepted in silence — DONE (0.6.21), revised (0.6.26), extended (0.6.27)
 
 **Review:** §21.2 / R6.2 corrections. `ScatterMatrix` with
 `n[0] = 1.52 + 0.062i` constructed and solved without a word; `Rs` reached 86
@@ -984,11 +984,23 @@ entirely.
 
 * **The native `Solver` is unchanged and still permissive.** Nothing in the
   Rust engine moved; `forward_branch`'s rule, its doc comment and
-  `absorbing_layers_under_a_real_ambient_never_reach_the_flip` all still hold,
-  and the last of those is now load-bearing rather than descriptive: the
-  wrapper guarantees a real ambient, so the flip is provably dead code on the
-  supported path. The doc comment was rewritten to say the surface *removes the
-  ambiguity at the source* rather than refusing.
+  `absorbing_layers_under_a_real_ambient_never_reach_the_flip` all still hold.
+  The doc comment was rewritten to say the surface *removes the ambiguity at
+  the source* rather than refusing.
+
+  **CORRECTION (0.6.27).** This section originally claimed that the existing
+  test made the flip "provably dead code on the supported path". It did not.
+  That test sweeps ambient `n = 1` against a layer `n = 2.35 + ki`, so `r0 < 1`
+  throughout and it never enters total internal reflection — which the
+  supported path reaches routinely. The claim is now measured rather than
+  asserted, by `a_sanitized_ambient_never_reaches_the_flip`: ambients
+  1.0 / 1.52 / 2.35 / 4.0, every angle from 0 to 89.9 degrees in 0.1 steps,
+  against transparent, weakly absorbing, strongly absorbing and metal-like
+  layers — 28800 cases, evanescent regime included — and the flip does not
+  fire once. The complementary measurement, taken during the 0.6.27
+  investigation and not kept as a test: the same sweep with `k` on the ambient
+  flips 10680 of 14256, deciding on an `Im(cos)` of order 1e-20. So the flip
+  is not dead code; it is a tripwire, and the sanitizer is what disarms it.
 
 * **Harness bookkeeping.** `garbage_in.py` gained a fourth verdict, `warns`,
   distinct from `silent-clean` — the distinction is the whole point, since a
@@ -996,6 +1008,72 @@ entirely.
   The two ambient rows moved from `raises` to `warns`; no other row drifted.
   The bit-exactness harness neutralizes the new function the same way it
   neutralized the old one, so the baseline `30d96909…3c6c` is unmoved.
+
+**EXTENSION (0.6.27) — the same rule, at the door the 0.6.26 fix never saw.**
+
+0.6.26 put the correction in `ScatterMatrix.__init__`. That is one of five ways
+into a solve, and not the expensive one. `synthesis/pipeline.py` never builds a
+`ScatterMatrix` at all: `stack_from_layers` and `run_needle` take their own
+`ambient=` and hand it straight to the native `assemble_design` / `run_design`.
+Measured before the fix: an absorbing ambient went in, **zero warnings** came
+out, and the stack came back carrying `nk = 1+0.05j` on layer 0 — which the
+optimizer then fitted a coating against for thousands of merit evaluations.
+
+* **Where the rule lives now.** Once, in the engine, as
+  `optics_core::sanitize_incident_index(&[Complex64]) -> Option<(Vec<Complex64>, String)>`
+  — `None` on the common path, one scan and no allocation. It sits beside
+  `forward_branch` deliberately: it is the half that disarms the other.
+
+* **Where it is applied, and why there.** `DesignStack::from_design`. That is
+  the only production constructor of a `DesignStack` — `assemble_stack`,
+  `design_from_config` and the PyO3 `DesignStack.from_design` all funnel
+  through it, and every other `with_films` call in the crate is inside a
+  `#[cfg(test)]` block. It already returned `(stack, Vec<String>)` and already
+  set the precedent, since graded films are corrected-and-announced there under
+  the same "never refused, never silent" rule.
+
+* **Cold by construction, and that is the design constraint, not a
+  side-effect.** `from_design` runs once per assembly. `DesignStack::ambient`
+  is private with no mutator, so needle insertion, merge, clamp and thickness
+  steps cannot reintroduce the absorption — one check covers the whole run.
+  The tempting alternative, `solver_arrays()`, is called per merit evaluation
+  (`evaluator.rs` `simulate_inner`, `cycle.rs` needle sweep): thousands of
+  times per design, to re-establish something that cannot have changed. The
+  doc comment on the sanitizer says so, so the "improvement" cannot land
+  unnoticed.
+
+* **The fifth door.** `navette._smatrix.DesignStack(ambient, substrate, films)`
+  reaches `with_films`, not `from_design`, so it needed the rule applied at the
+  PyO3 boundary. Missing it would have repeated exactly the 0.6.26 mistake:
+  gating the door you happen to be looking at.
+
+* **A pre-existing silent-drop, fixed because the gate depends on it.**
+  `driver.rs` `run_design` did `let (stack, _warnings) = assemble_stack(...)`.
+  It had been discarding its assembly warnings since it was written — so the
+  graded-film homogenization warning never reached anyone on the full-run path
+  either, and the new layer-0 warning would have been swallowed too. That made
+  the most expensive path the quietest one. `run_design` now returns
+  `(report, stack, warnings)` and the PyO3 wrapper re-emits them.
+
+* **Two implementations, one rule, pinned together.** The Python door keeps its
+  own copy because the warning it raises can point `stacklevel` at the caller's
+  own constructor and one raised from Rust cannot.
+  `test_both_doors_explain_it_the_same_way` lifts the explanatory text out of
+  the Python warning and requires it verbatim in the Rust one — no third copy
+  to drift from, and editing either without the other fails.
+
+* **Still not gated, on purpose.** The native `Solver` and `core_engine`. R3.1
+  promised that escape hatch and `test_the_native_solver_is_still_permissive`
+  pins it. The gate is a property of the `ScatterMatrix` and design surfaces,
+  not of the engine.
+
+* **Tests.** `validation/smoke/test_ambient_gate.py`, 11 cases: each of the
+  five doors, layer 0 only (an absorbing substrate and an absorbing film must
+  survive untouched), a transparent ambient stays silent, the correction
+  survives every stack mutation, the corrected stack is bit-for-bit its
+  transparent twin, and the engine stays permissive. Three Rust tests on the
+  sanitizer itself (including `-0.0` being left alone — it is not absorption
+  and does not trip the flip) and one on the gate inside `from_design`.
 
 ### R4.1 numpy floor → `numpy>=2.0` — DONE (0.6.3)
 

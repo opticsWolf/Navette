@@ -307,6 +307,16 @@ def _sanitize_incident_medium(idx2d: np.ndarray) -> np.ndarray:
     0.6.21 refused this outright. 0.6.26 corrects and warns instead, by
     maintainer decision: a refusal is unhelpful for stacks where the ambient
     absorption is incidental, and the correction is well defined.
+
+    This is one of two implementations of one rule. The synthesis and design
+    surface never builds a ``ScatterMatrix`` -- it hands its own ambient to
+    the native assembly -- so the same correction lives in the engine, at
+    ``optics_core::sanitize_incident_index``, applied in
+    ``DesignStack::from_design`` (0.6.27). They stay separate because the
+    warning raised here can point ``stacklevel`` at the caller's own
+    constructor and one raised from Rust cannot; the explanatory text is
+    identical, and ``test_both_doors_explain_it_the_same_way`` fails if either
+    is edited without the other.
     """
     n0_imag = np.asarray(idx2d[0].imag)
     bad = n0_imag != 0.0
