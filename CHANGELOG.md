@@ -3,6 +3,77 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.28] — A layer's numbers are judged where they are written (R3.5)
+
+Roughness and graded-film parameters were accepted in silence and misbehaved
+somewhere else, later. Measured before this release, on the current code:
+
+| Written | What actually happened |
+| --- | --- |
+| `roughness = -20` | Solved byte-identically to `+20`. Every roughness form factor squares sigma, so a sign slip could never surface. |
+| `roughness = NaN` | Every output NaN, with nothing pointing at the cause. |
+| `inh_delta = -0.2` | Refinement factor goes negative, `as u32` saturates to 0, sub-layer count collapses to **1**. The grading was silently dropped and the film solved as homogeneous. |
+| `inh_delta = 2.5` | Rows of `n = -0.59, k = -0.0125` went into the solver on a 2.35 + 0.05i film. Negative k is optical **gain** — the layer amplifies. |
+| `rough_type = 6 / -1 / 99` | Already fail-closed via `try_from_i32` (no change). |
+
+`Structure::validate` and `ScatterMatrix` also disagreed: the former refused a
+negative roughness as an Error, the latter accepted it without a word. That is
+resolved by keeping the refusal and moving it earlier, not by softening it.
+
+### Added
+
+- **`Layer::property_issues(&self, label)`** — one place that says what a
+  layer's numbers may be, returning findings rather than a verdict so each
+  caller decides. Finiteness and non-negativity for thickness, roughness and
+  interface thickness; the half-open window `[0, 2)` for `inh_delta`; advisory
+  warnings for an overhanging interface and for a graded layer with zero
+  grading.
+- **Every door that builds a layer now uses it**: the PyO3 constructor, the
+  four numeric setters, `set_inhomogen` (which is what makes an inert
+  `inh_delta` load-bearing), `set_properties`, `from_state`,
+  `Structure::validate`, and the synthesis assembler — which builds its films
+  from flag dicts and never touches the Python `Layer`, so gating only the
+  constructor would have left the design path open. That was the exact mistake
+  0.6.26 made and 0.6.27 fixed; it is not repeated here.
+- `validation/smoke/test_layer_gate.py` (27 tests) and two engine tests,
+  including one pinning every message as ASCII — these cross into Python and
+  land on a cp1252 console, where an em dash raises `UnicodeEncodeError`.
+
+### Changed — behaviour, read this
+
+**Constructing an invalid `Layer` now raises `ValueError` instead of deferring
+to `validate()`.** `Layer(-5.0, "TiO2")`, `Layer(100.0, "TiO2",
+roughness=-20.0)` and friends previously returned an object and failed (or
+didn't) later. Three regression tests deliberately built such a layer to prove
+`validate()` caught it at solve time; each is re-pointed to assert the refusal
+where it now happens, and the solve gate keeps a test of its own using an error
+the layer gate cannot see — an unresolvable material, which is a property of
+the structure and its provider, not of the layer.
+
+`set_properties` applies to a copy and swaps it in only once the whole batch
+passes, so a rejected batch leaves the layer exactly as it was rather than
+half-written.
+
+### Refused, not corrected
+
+A negative sigma is not silently turned into `|sigma|`, and `inh_delta = 2.5`
+is not clamped to 1.99. In both cases a correction would be indistinguishable
+from the bug, and clamping only buys an index that grazes zero instead of
+crossing it. Both messages say what the value would have done, not just what
+range was expected.
+
+### Deliberately out of scope
+
+The flat-array surface — `ScatterMatrix(roughness_values=...)` and the native
+`Solver` — stays permissive, as R3.1 promised. The gate is at layer
+construction; raw arrays remain the escape hatch. What that leaves standing,
+stated plainly rather than buried: Névot-Croce (type 5) at sigma = 20 nm still
+produces **R + T = 1.068** on a 4-layer stack — energy created, no warning —
+and 1025 at sigma = 100 nm. A validity band needs the wavelength and angle
+grid, which a `Layer` does not have, so it cannot live at this gate.
+`test_the_flat_array_surface_is_still_permissive` pins this as a decision so it
+stays one.
+
 ## [0.6.27] — The layer-0 gate moves to where the stacks are actually built (R3.4)
 
 0.6.26 taught `ScatterMatrix` to drop absorption in the incident medium and say

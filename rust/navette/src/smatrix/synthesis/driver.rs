@@ -101,6 +101,10 @@ pub fn assemble_stack(
   }
   let mut design = Vec::with_capacity(films.len());
   let mut nk_map: HashMap<Arc<str>, Vec<Complex64>> = HashMap::new();
+  // The design surface builds its films from flag dicts and never goes
+  // through the Python `Layer`, so the layer-construction gate has to be
+  // applied here too or this door is simply open. Same rule, same messages.
+  let mut film_warnings: Vec<String> = Vec::new();
   for f in films {
     let mut layer = Layer::film(f.d_nm, &f.name);
     layer.layer_type = LayerType::Film;
@@ -114,6 +118,9 @@ pub fn assemble_stack(
     layer.interface_thickness = f.interface_thickness;
     layer.optimize = f.optimize;
     layer.needle = f.needle;
+    let issues = layer.property_issues(&format!("film {:?}", f.name));
+    crate::structure::validation::ValidationIssue::gate(&issues, "assemble_stack")?;
+    film_warnings.extend(issues.iter().map(|i| i.message.clone()));
     nk_map.insert(Arc::from(f.name.as_str()), f.nk.clone());
     design.push(layer);
   }
@@ -132,6 +139,10 @@ pub fn assemble_stack(
     wavelengths,
     &background,
   )
+  .map(|(stack, warnings)| {
+    film_warnings.extend(warnings);
+    (stack, film_warnings)
+  })
 }
 
 /// End-to-end design run: assemble, fold demands, execute the macro-loop.

@@ -403,10 +403,15 @@ def test_module_docstrings_present():
 
 # NIT-3: interface policy ---------------------------------------------------------
 def test_negative_interface_thickness_flagged():
-  st = Navette_Structure(
-    [Layer(100.0, "glass"), Layer(50.0, "TiO2", interface=True, interface_thickness=-2.0)],
-    {}, MATS)
-  assert any("Negative interface thickness" in i for i in st.validate())
+  """Refused at construction since 0.6.28, not collected at solve time.
+
+  The layer gate moved this (and negative thickness/roughness, and a
+  non-finite anything) to the line that writes the value. `Structure.validate`
+  still reports it -- it calls the same rule -- but a Python caller can no
+  longer build the layer to find out.
+  """
+  with pytest.raises(ValueError, match="Negative interface thickness"):
+    Layer(50.0, "TiO2", interface=True, interface_thickness=-2.0)
 
 
 # Severity channel: warnings never block -----------------------------------------
@@ -432,7 +437,17 @@ def test_orphan_group_is_warning_and_solves():
 
 
 def test_errors_still_block():
-  st = Navette_Structure([Layer(-5.0, "TiO2")], {}, MATS)
+  """The solve gate still blocks on errors the layer gate cannot see.
+
+  Since 0.6.28 a negative thickness cannot reach here -- `Layer(-5.0, ...)`
+  raises. An unresolvable material still can: it is a property of the
+  structure and its provider, not of the layer, so it is exactly the case
+  this gate exists for.
+  """
+  with pytest.raises(ValueError):
+    Layer(-5.0, "TiO2")
+  st = Navette_Structure([Layer(5.0, "NotInTheLibrary")], {}, MATS)
+  assert any("not found" in i for i in st.validate())
   with pytest.raises(ValueError):
     st.get_solver_inputs()
 

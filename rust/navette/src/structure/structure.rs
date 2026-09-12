@@ -63,31 +63,9 @@ impl Structure {
       return issues;
     }
     for (i, layer) in self.layers.iter().enumerate() {
-      if layer.thickness < 0.0 {
-        issues.push(ValidationIssue::error(format!(
-          "Layer {i} ({}): Negative thickness {} nm.",
-          layer.material, layer.thickness
-        )));
-      }
-      if layer.roughness < 0.0 {
-        issues.push(ValidationIssue::error(format!(
-          "Layer {i} ({}): Negative roughness {} nm.",
-          layer.material, layer.roughness
-        )));
-      }
-      // Overhang is LEGAL but suspicious: advisory, never blocking.
-      if layer.interface && layer.interface_thickness >= layer.thickness {
-        issues.push(ValidationIssue::warning(format!(
-          "Layer {i} ({}): Interface thickness ({}) >= layer thickness ({}); clamped at expansion.",
-          layer.material, layer.interface_thickness, layer.thickness
-        )));
-      }
-      if layer.interface_thickness < 0.0 {
-        issues.push(ValidationIssue::error(format!(
-          "Layer {i} ({}): Negative interface thickness {} nm.",
-          layer.material, layer.interface_thickness
-        )));
-      }
+      // The per-layer numeric rules live on `Layer` (one source of truth for
+      // every door that builds one); the wording here is unchanged.
+      issues.extend(layer.property_issues(&format!("Layer {i} ({})", layer.material)));
       if let Some(p) = provider
         && !p.contains(layer.material.as_str()) {
           issues.push(ValidationIssue::error(format!(

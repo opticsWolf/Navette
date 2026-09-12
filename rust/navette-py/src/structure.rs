@@ -38,6 +38,31 @@ fn ver<T>(r: Result<T, String>) -> PyResult<T> {
   r.map_err(PyValueError::new_err)
 }
 
+/// Gate one layer's numbers at the point they are written.
+///
+/// The rule is `Layer::property_issues` — one source of truth shared with
+/// `Structure::validate` and the synthesis assembler. Errors raise here rather
+/// than at solve time, because "negative roughness" is far easier to act on
+/// next to the line that wrote it than three calls later. Warnings (interface
+/// overhang, a graded layer with zero grading) go out as Python warnings and
+/// do not block.
+fn gate_layer(py: Python<'_>, layer: &Layer) -> PyResult<()> {
+  let issues = layer.property_issues("Layer");
+  let (errors, warns): (Vec<_>, Vec<_>) = issues.iter().partition(|i| i.is_error());
+  if !errors.is_empty() {
+    return Err(PyValueError::new_err(
+      errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" "),
+    ));
+  }
+  if !warns.is_empty() {
+    let m = py.import("warnings")?;
+    for w in warns {
+      m.call_method("warn", (w.message.clone(),), Some(&[("stacklevel", 3)].into_py_dict(py)?))?;
+    }
+  }
+  Ok(())
+}
+
 /// Re-emit Rust-side warnings through Python `warnings.warn`.
 pub(crate) fn emit_warnings(py: Python<'_>, what: &str, warnings: &[String]) -> PyResult<()> {
   if warnings.is_empty() {
@@ -136,6 +161,7 @@ impl PyLayer {
   #[pyo3(signature = (thickness=1.0, material_name="", coherent=true, roughness=0.0, rough_type=0, inhomogen=false, inh_delta=0.1, interface=false, interface_thickness=0.0, optimize=true, needle=true, layer_type=1))]
   #[allow(clippy::too_many_arguments)]
   fn new(
+    py: Python<'_>,
     thickness: f64,
     material_name: &str,
     coherent: bool,
@@ -149,22 +175,22 @@ impl PyLayer {
     needle: bool,
     layer_type: i32,
   ) -> PyResult<Self> {
-    Ok(Self {
-      inner: Layer {
-        material: material_name.to_string(),
-        thickness,
-        coherent,
-        inhomogen,
-        rough_type: ver(RoughnessType::try_from_i32(rough_type))?,
-        inh_delta,
-        roughness,
-        interface,
-        interface_thickness,
-        optimize,
-        needle,
-        layer_type: ver(LayerType::try_from_i32(layer_type))?,
-      },
-    })
+    let inner = Layer {
+      material: material_name.to_string(),
+      thickness,
+      coherent,
+      inhomogen,
+      rough_type: ver(RoughnessType::try_from_i32(rough_type))?,
+      inh_delta,
+      roughness,
+      interface,
+      interface_thickness,
+      optimize,
+      needle,
+      layer_type: ver(LayerType::try_from_i32(layer_type))?,
+    };
+    gate_layer(py, &inner)?;
+    Ok(Self { inner })
   }
 
   #[getter]
@@ -172,8 +198,11 @@ impl PyLayer {
     self.inner.thickness
   }
   #[setter]
-  fn set_thickness(&mut self, v: f64) {
+  fn set_thickness(&mut self, py: Python<'_>, v: f64) -> PyResult<()> {
+    let probe = Layer { thickness: v, ..self.inner.clone() };
+    gate_layer(py, &probe)?;
     self.inner.thickness = v;
+    Ok(())
   }
   #[getter]
   fn material(&self) -> &str {
@@ -196,8 +225,13 @@ impl PyLayer {
     self.inner.inhomogen
   }
   #[setter]
-  fn set_inhomogen(&mut self, v: bool) {
+  fn set_inhomogen(&mut self, py: Python<'_>, v: bool) -> PyResult<()> {
+    // Flipping this on is what makes `inh_delta` load-bearing, so it is a
+    // gate too: a delta that was inert a moment ago now shapes the profile.
+    let probe = Layer { inhomogen: v, ..self.inner.clone() };
+    gate_layer(py, &probe)?;
     self.inner.inhomogen = v;
+    Ok(())
   }
   #[getter]
   fn rough_type(&self) -> i32 {
@@ -213,16 +247,22 @@ impl PyLayer {
     self.inner.inh_delta
   }
   #[setter]
-  fn set_inh_delta(&mut self, v: f64) {
+  fn set_inh_delta(&mut self, py: Python<'_>, v: f64) -> PyResult<()> {
+    let probe = Layer { inh_delta: v, ..self.inner.clone() };
+    gate_layer(py, &probe)?;
     self.inner.inh_delta = v;
+    Ok(())
   }
   #[getter]
   fn roughness(&self) -> f64 {
     self.inner.roughness
   }
   #[setter]
-  fn set_roughness(&mut self, v: f64) {
+  fn set_roughness(&mut self, py: Python<'_>, v: f64) -> PyResult<()> {
+    let probe = Layer { roughness: v, ..self.inner.clone() };
+    gate_layer(py, &probe)?;
     self.inner.roughness = v;
+    Ok(())
   }
   #[getter]
   fn interface(&self) -> bool {
@@ -237,8 +277,11 @@ impl PyLayer {
     self.inner.interface_thickness
   }
   #[setter]
-  fn set_interface_thickness(&mut self, v: f64) {
+  fn set_interface_thickness(&mut self, py: Python<'_>, v: f64) -> PyResult<()> {
+    let probe = Layer { interface_thickness: v, ..self.inner.clone() };
+    gate_layer(py, &probe)?;
     self.inner.interface_thickness = v;
+    Ok(())
   }
   #[getter]
   fn optimize(&self) -> bool {
@@ -293,14 +336,22 @@ impl PyLayer {
   }
 
   #[staticmethod]
-  fn from_state(state: &Bound<'_, PyDict>) -> PyResult<Self> {
+  fn from_state(py: Python<'_>, state: &Bound<'_, PyDict>) -> PyResult<Self> {
     let v = py_to_json(state.as_any())?;
-    Ok(Self { inner: ver(serde_json::from_value::<Layer>(v).map_err(|e| e.to_string()))? })
+    let inner: Layer = ver(serde_json::from_value::<Layer>(v).map_err(|e| e.to_string()))?;
+    gate_layer(py, &inner)?;
+    Ok(Self { inner })
   }
 
   fn set_properties(&mut self, py: Python<'_>, props: &Bound<'_, PyDict>) -> PyResult<()> {
+    // Applied to a copy first: a rejected batch must leave the layer as it
+    // was, not half-written.
     let map = props_from_dict(props)?;
-    for w in self.inner.set_properties(&map) {
+    let mut probe = self.inner.clone();
+    let coercion_warnings = probe.set_properties(&map);
+    gate_layer(py, &probe)?;
+    self.inner = probe;
+    for w in coercion_warnings {
       emit_warnings(py, "Layer", &[w.message])?;
     }
     Ok(())

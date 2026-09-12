@@ -64,6 +64,7 @@ coverage is thin.
 | ~~R3.2~~ | needle z-range: debug-assert → error — **DONE (0.6.1)** | P1 | release-build garbage | S | S | §21.1 |
 | ~~R3.3~~ | eigenmode `char_func`/`refine_mode` bound — **DONE (0.6.2)** | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
 | ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21, revised 0.6.26, extended 0.6.27)** | P1 | `Im(n[0])` is dropped and the stack solved with a transparent ambient of `Re(n[0])`, with a `UserWarning` — maintainer decision, 0.6.26; 0.6.21 refused outright. The third option (renormalize against the incident Poynting flux) still does not exist — the input is under-determined, not under-normalized | M | S–M | §21.2, R6.2 corrections |
+| ~~R3.5~~ | Graded-film and roughness parameters accepted in silence — **DONE (0.6.28)** | P1 | `inh_delta = 2.5` put `n = -0.59, k = -0.0125` (optical gain) into the solver; `inh_delta < 0` silently collapsed the sub-layer count to 1 and solved the film as homogeneous; `roughness = -20` was byte-identical to `+20`; `roughness = NaN` NaN'd every output. Gated at layer construction, one rule, every door | M (behavior change: an invalid `Layer` now raises at construction) | M | §21.2, R3.1, R3.4 |
 | ~~R4.1~~ | numpy floor → `>=2.0` — **DONE (0.6.3)** | P1 | broken installs | S | S | §7 |
 | ~~R4.2~~ | color gradients on Python needle path — **DONE (0.6.4)** | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | ~~R4.3~~ | fix + test all `examples/` — **DONE (0.6.5)** | P1 | shipped example broken | S | S | §6.2 |
@@ -1074,6 +1075,97 @@ optimizer then fitted a coating against for thousands of merit evaluations.
   transparent twin, and the engine stays permissive. Three Rust tests on the
   sanitizer itself (including `-0.0` being left alone — it is not absorption
   and does not trip the flip) and one on the gate inside `from_design`.
+
+### R3.5 Graded-film and roughness parameters accepted in silence — DONE (0.6.28)
+
+**Review:** §21.2 (the silent-garbage class), continuing R3.1 and R3.4.
+
+**Measured before the fix**, on the code as it stood at 0.6.27:
+
+| Written | What actually happened |
+| --- | --- |
+| `roughness = -20` | Byte-identical output to `+20` on a 4-layer rtype-5 stack. Every roughness form factor squares sigma, so a sign slip can never surface. |
+| `roughness = NaN` | Every output NaN. Nothing named the layer. |
+| `rough_type = 6 / -1 / 99` | Already fail-closed at the enum boundary (`try_from_i32`). Solved smooth in the *flat-array* surface, which is out of scope — see below. |
+| `inh_delta = -0.2` | `factor = 1 + (d/0.1)*0.5` goes negative; `as u32` saturates to 0; `sub_layer_count()` returns **1**. The grading is dropped and the film solves as homogeneous, with no warning. Writing a negative delta to mean "ramp the other way" is the obvious way to hit this. |
+| `inh_delta = 2.5` | Rows of `n = -0.59, k = -0.0125` entered the solver on a 2.35 + 0.05i film. Negative k is optical **gain**. |
+
+**Also found:** `Structure::validate` and `ScatterMatrix` disagreed — the former
+refused a negative roughness as an Error, the latter accepted it in silence.
+Resolved by keeping the refusal and moving it *earlier*, not by softening it to
+correct-and-warn. A silent `|sigma|` correction would be indistinguishable from
+the bug it is hiding.
+
+**Scope, set by the maintainer:** *"the solver does not need to catch
+everything, as long as there are gates in the layer construction i am fine."*
+The gate is therefore at layer construction and nowhere else.
+
+**Fix.**
+
+* **One rule: `Layer::property_issues(&self, label) -> Vec<ValidationIssue>`.**
+  Findings, not a verdict — each caller decides. Finiteness and
+  non-negativity for thickness, roughness and interface thickness; the
+  half-open window `[0, 2)` for `inh_delta`; advisory warnings (never
+  blocking) for an overhanging interface and for a graded layer with zero
+  grading. `label` lets each door name itself, which is how
+  `Structure::validate` keeps its historical wording byte-for-byte
+  (`validate_collects_like_python` pins those strings).
+
+* **Every door that builds a layer calls it.** The PyO3 constructor; the four
+  numeric setters; `set_inhomogen`, because flipping it on is what makes a
+  previously inert `inh_delta` load-bearing; `set_properties`; `from_state`,
+  since deserialization is a door like any other; `Structure::validate`, which
+  now delegates instead of duplicating; and `assemble_stack` in the synthesis
+  driver — the design surface builds its films from flag dicts and never
+  touches the Python `Layer`, so gating only the constructor would have left
+  that door wide open. That is precisely the mistake 0.6.26 made and 0.6.27
+  had to fix; it is not repeated here.
+
+* **Atomicity.** `set_properties` applies to a probe copy and swaps it in only
+  once the whole batch passes. A rejected batch leaves the layer exactly as it
+  was, not half-written.
+
+* **The messages say what the value would have done.** A range check that only
+  prints the range teaches nothing, and both ends of `inh_delta` fail for
+  reasons a caller cannot guess from "[0, 2)": the negative message names the
+  silent collapse to a homogeneous film, the large one names optical gain.
+  Every message is ASCII — they cross into Python and land on a cp1252
+  console, where an em dash raises `UnicodeEncodeError`.
+  `every_issue_message_is_ascii` pins that in the engine rather than leaving it
+  to review (it caught a real em dash during this work).
+
+**Behavior change, stated plainly.** Constructing an invalid `Layer` now raises
+`ValueError` instead of deferring to `validate()`. Three regression tests
+deliberately built such a layer to prove the solve gate caught it
+(`test_negative_interface_thickness_flagged`, `test_errors_still_block`,
+`test_validate_catches_solver_blockers`); each is re-pointed to assert the
+refusal where it now happens, and the solve gate keeps a live test using an
+error the layer gate cannot see — an unresolvable material, which is a
+property of the structure and its provider, not of the layer.
+
+**Deliberately deferred: the Névot-Croce validity band.** Type 5 at
+sigma = 20 nm produces **R + T = 1.068** on a 4-layer stack, and 1025 at
+sigma = 100 nm — energy created, no warning. This is *not* fixed by 0.6.28 and
+is not being reported anywhere. A validity band is a function of
+sigma/wavelength and angle; a `Layer` carries neither grid, so the check cannot
+live at the layer-construction gate this item is scoped to. Reopening it means
+a check on the *solver* surface, which the maintainer has scoped out.
+
+**Still not gated, on purpose.** The flat-array surface —
+`ScatterMatrix(roughness_values=...)` and the native `Solver` — stays
+permissive, the escape hatch R3.1 promised.
+`test_the_flat_array_surface_is_still_permissive` pins it as a decision, and
+asserts both leftovers above (negative sigma equals positive sigma; R + T > 1)
+so that if either ever changes the test moves rather than being deleted.
+
+**Tests.** `validation/smoke/test_layer_gate.py`, 27 cases: the refusal matrix
+at the constructor, the messages explaining themselves, both advisory
+warnings, ordinary layers staying silent, the setters, `set_inhomogen`,
+`set_properties` atomicity, `from_state`, the design door naming the film it
+rejected, and the out-of-scope pin. Two engine tests:
+`property_issues_flags_each_bad_number_once` (including that 2.0 is out and
+1.999 is in — the window is half-open on purpose) and
+`every_issue_message_is_ascii`.
 
 ### R4.1 numpy floor → `numpy>=2.0` — DONE (0.6.3)
 

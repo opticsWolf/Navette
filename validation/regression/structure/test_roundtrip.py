@@ -157,8 +157,19 @@ def test_validate_without_materials_skips_coverage():
 
 
 def test_validate_catches_solver_blockers():
-  bad = Navette_Structure([Layer(-5.0, "TiO2")], {}, MATS)
-  assert any("Negative thickness" in i for i in bad.validate())
+  """0.6.28: a negative thickness is refused at construction instead.
+
+  The architect's solve gate is still the backstop and still raises; it is
+  demonstrated here with an unresolvable material, which the layer gate has
+  no way to judge.
+  """
+  import pytest
+
+  with pytest.raises(ValueError, match="Negative thickness"):
+    Layer(-5.0, "TiO2")
+
+  bad = Navette_Structure([Layer(5.0, "NotInTheLibrary")], {}, MATS)
+  assert any("not found" in i for i in bad.validate())
   arch = Navette_Architect(materials=MATS)
   arch.add_structure(bad)
   try:
