@@ -1,3 +1,12 @@
+> **SUPERSEDED (phasing only) — see `docs/implementation_plan.md`.**
+> The §7 phasing and its 0.4.32-0.4.35 version reservations are dead: those
+> numbers shipped as other work. The executable plan renumbers them to 0.6.39+
+> and sequences them after the gradient work, because a design film that
+> expands to a multi-row span cannot be routed by row index. Everything else
+> in this document — the segment model (§3.1), the five rejected alternatives
+> (§3.2), the detailed design (§4), the eight v1 limitations (§6) — remains
+> authoritative.
+
 # Multi-environment optimization — proposal & plan
 
 STATUS: proposal (requested 2026-09-07, **rewritten same day**: the first

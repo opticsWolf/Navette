@@ -1,3 +1,13 @@
+> **SUPERSEDED (phasing only) — see `docs/implementation_plan.md`.**
+> The §D7 progression and its 0.4.28-0.4.31 version reservations are dead:
+> those numbers shipped as other work. The executable plan renumbers them to
+> 0.6.33+ and corrects two statements here — the `SCHEMA_VERSION 1 -> 2`
+> migration in §D5 would refuse every existing state file as written, and the
+> two unprotected-span hazards in §D4.1-2 are already covered by the
+> `optimize` / `needle` filters. Everything else in this document — the
+> vocabulary (§D0), the data model (§D2), the expansion physics (§D3), the
+> locked decisions (§D9) — remains authoritative.
+
 # Gradient-index & inhomogeneous layers — implementation plan
 
 ## D0. Vocabulary (locked for this plan)
