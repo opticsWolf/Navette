@@ -2407,7 +2407,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | Version | Item | Commit | Amendments adopted | Status |
 |---|---|---|---|---|
 | 0.6.33 | F0.1 | cebed9c | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | done |
-| 0.6.34 | F0.2 | (this item's feature commit) | A2, N3, **U5** (half), **B1**, B4, B7 | done |
+| 0.6.34 | F0.2 | e7a0e61 | A2, N3, **U5** (half), **B1**, B4, B7 | done |
 | 0.6.35 | F0.3 | — | **U1** | not started |
 | 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7, B10 | not started |
 | 0.6.37 | F1.2 | — | A9.2, N2 | not started |
