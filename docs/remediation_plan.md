@@ -63,7 +63,7 @@ coverage is thin.
 | ~~R3.1~~ | `ScatterMatrix` input validation — **DONE (0.6.0)** | P1 | silent-garbage class closed | M (behavior change) | M | §21.2, §19.3 |
 | ~~R3.2~~ | needle z-range: debug-assert → error — **DONE (0.6.1)** | P1 | release-build garbage | S | S | §21.1 |
 | ~~R3.3~~ | eigenmode `char_func`/`refine_mode` bound — **DONE (0.6.2)** | P1 | silent n_eff = −1.7e8 | S–M | M | §16 |
-| ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21)** | P1 | refused at the `ScatterMatrix` surface; the branch rule consolidated behind one documented `forward_branch`. The third option (renormalize against the incident Poynting flux) turned out not to exist — the input is under-determined, not under-normalized | M (a refusal breaks any caller doing it deliberately) | S–M | §21.2, R6.2 corrections |
+| ~~R3.4~~ | Absorbing incident medium accepted in silence — **DONE (0.6.21, revised 0.6.26)** | P1 | `Im(n[0])` is dropped and the stack solved with a transparent ambient of `Re(n[0])`, with a `UserWarning` — maintainer decision, 0.6.26; 0.6.21 refused outright. The third option (renormalize against the incident Poynting flux) still does not exist — the input is under-determined, not under-normalized | M | S–M | §21.2, R6.2 corrections |
 | ~~R4.1~~ | numpy floor → `>=2.0` — **DONE (0.6.3)** | P1 | broken installs | S | S | §7 |
 | ~~R4.2~~ | color gradients on Python needle path — **DONE (0.6.4)** | P2 | documented flow incomplete | M (binding change) | M | §20.2 |
 | ~~R4.3~~ | fix + test all `examples/` — **DONE (0.6.5)** | P1 | shipped example broken | S | S | §6.2 |
@@ -839,7 +839,7 @@ high-index substrates understand the rejection region.
 
 ## 4. Phase 4 — API & packaging completion (P1/P2)
 
-### R3.4 Absorbing incident medium accepted in silence — DONE (0.6.21)
+### R3.4 Absorbing incident medium accepted in silence — DONE (0.6.21), revised (0.6.26)
 
 **Review:** §21.2 / R6.2 corrections. `ScatterMatrix` with
 `n[0] = 1.52 + 0.062i` constructed and solved without a word; `Rs` reached 86
@@ -936,6 +936,66 @@ the native-`Solver` escape hatch, and pinned by a test that exercises it.
   cache. The *other* buffers in that file (`n_stack_cache`) really are
   wav-major, which is how the header generalization went wrong. Both the header
   and the `Solver` docstring corrected here.
+
+**REVISION (0.6.26) — refusal replaced by correction-plus-warning, by
+maintainer decision.**
+
+The physics above is unchanged and is still the reason this item exists: there
+is no reflectance to return for an absorbing ambient, and the two attempted
+branch repairs are still wrong. What changed is the remedy. A hard refusal is
+the wrong trade for stacks where the ambient absorption is incidental — a
+material table that happens to carry a tiny `k` on air, a dispersion fit that
+leaves 1e-14 behind — and it forces those callers off the validated surface
+entirely.
+
+* **What it does now.** `_validate_incident_medium` became
+  `_sanitize_incident_medium`. When `Im(n[0]) != 0` it returns a **copy** with
+  `n[0] = Re(n[0])` and emits a `UserWarning` naming how many wavelengths were
+  affected, the first index and its value, the largest `|Im(n)|`, what was
+  dropped, why the absorbing-ambient problem has no reflectance, and what the
+  caller is getting instead. The copy is not optional: a 2-D `layer_indices`
+  that is already `complex128` reaches the constructor via `np.asarray` without
+  being copied, so an in-place zeroing would silently rewrite the caller's own
+  array. `test_only_the_incident_row_is_touched_in_a_2d_index_array` pins that.
+
+* **Why this is a correction and not an approximation.** With `Im(n0) = 0` the
+  transverse wavevector `kx = k0 Re(n0) sin(theta)` is real again, every layer
+  gets the standard branch, `R = |r|^2` is a true energy ratio and
+  `R + T + A = 1` holds. The engine then solves the transparent-ambient stack
+  *exactly* — verified bit-for-bit, not to a tolerance:
+  `test_absorbing_ambient_is_solved_as_its_transparent_twin` builds the same
+  stack twice, once with `n0 = 1.0 + 0.3j` and once with `n0 = 1.0`, and
+  requires `np.array_equal` on all four channels. On that lossless stack
+  `R + T - 1` is now below 1e-12; it was 1.0096 at `k = 0.1`, 1.44 at `k = 1`,
+  and 417 at 10 degrees.
+
+* **What is genuinely lost, stated in the warning.** Attenuation along the path
+  *through* the ambient before the light reaches the stack. That factor is
+  geometry-dependent (how far through the absorber?) and the semi-infinite
+  ambient does not define it — which is the same under-determination from the
+  other side. The quantity that survives is the one a reflectance measurement
+  at such an interface actually reports, since its reference is the field at
+  the surface. Carrying the ambient absorption is what the *substrate* side is
+  for, and that path is untouched.
+
+* **No tolerance band, still.** `k = 1e-14` is corrected and warned about like
+  any other value. A threshold would have to be justified against the branch
+  flip, and the flip has no threshold — 1e-14 was already enough.
+
+* **The native `Solver` is unchanged and still permissive.** Nothing in the
+  Rust engine moved; `forward_branch`'s rule, its doc comment and
+  `absorbing_layers_under_a_real_ambient_never_reach_the_flip` all still hold,
+  and the last of those is now load-bearing rather than descriptive: the
+  wrapper guarantees a real ambient, so the flip is provably dead code on the
+  supported path. The doc comment was rewritten to say the surface *removes the
+  ambiguity at the source* rather than refusing.
+
+* **Harness bookkeeping.** `garbage_in.py` gained a fourth verdict, `warns`,
+  distinct from `silent-clean` — the distinction is the whole point, since a
+  correction nobody is told about is the failure mode this item started from.
+  The two ambient rows moved from `raises` to `warns`; no other row drifted.
+  The bit-exactness harness neutralizes the new function the same way it
+  neutralized the old one, so the baseline `30d96909…3c6c` is unmoved.
 
 ### R4.1 numpy floor → `numpy>=2.0` — DONE (0.6.3)
 

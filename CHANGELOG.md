@@ -3,6 +3,76 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.26] — An absorbing ambient is corrected and announced, not refused (R3.4)
+
+0.6.21 refused to build a `ScatterMatrix` whose incident medium absorbs.
+0.6.26 drops the absorption, says so, and solves the stack. **This reverses a
+refusal: code that caught `ValueError` from that case will now get a
+`UserWarning` and a result.**
+
+The physics behind the refusal has not changed and is still why this item
+exists — there is no reflectance to return for an absorbing ambient. What
+changed is the remedy: refusing is the wrong trade for a stack whose ambient
+absorption is incidental, such as a material table carrying a tiny `k` on air.
+
+### Changed
+
+- **`Im(n[0])` is set to zero, with a `UserWarning`.** The stack is then solved
+  with a transparent ambient of index `Re(n[0])`. The warning names how many
+  wavelengths were affected, the first index and its value, the largest
+  `|Im(n)|`, what was dropped, why the absorbing-ambient problem has no
+  reflectance, and what you are getting instead.
+- The caller's array is never mutated. A 2-D `layer_indices` that is already
+  `complex128` reaches the constructor without being copied, so the correction
+  works on a copy — an in-place fix would have silently rewritten the caller's
+  own data.
+- Only layer 0 is touched. An absorbing substrate or interior layer is ordinary
+  physics and is left exactly as it was.
+
+### Why this is a correction, not an approximation
+
+With `Im(n0) = 0` the transverse wavevector is real again, every layer gets the
+standard branch, `R = |r|^2` is a true energy ratio and `R + T + A = 1` holds.
+The engine solves the transparent-ambient stack *exactly*: the new test builds
+the same stack twice, once with `n0 = 1.0 + 0.3j` and once with `n0 = 1.0`, and
+requires bit-for-bit equality on all four channels rather than a tolerance. On
+a lossless stack `R + T - 1` is now under 1e-12. Before this item it was 1.0096
+at `k = 0.1`, 1.44 at `k = 1`, and `Rs = 417` at 10 degrees.
+
+What is genuinely lost — and the warning says so — is the attenuation along the
+path *through* the ambient before the light reaches the stack. That factor is
+geometry-dependent and a semi-infinite ambient does not define it. Put the
+absorbing medium on the substrate side if you need it carried.
+
+There is still no tolerance band: `k = 1e-14` is corrected and warned about like
+any other value, because the branch flip it used to cause had no threshold
+either.
+
+### Unchanged
+
+- The native `Solver` stays permissive; nothing in the Rust engine moved. The
+  branch rule, its doc comment and
+  `absorbing_layers_under_a_real_ambient_never_reach_the_flip` all still hold —
+  and that last one is now load-bearing rather than descriptive, because the
+  wrapper guarantees a real ambient, which makes the flip dead code on the
+  supported path.
+- The engine fingerprint is unmoved at `30d96909…3c6c`.
+
+### Tests
+
+- The two incident-medium rows moved from the reject table to the accept table.
+- `test_absorbing_incident_medium_warns_and_explains_itself` — exactly one
+  warning, plain ASCII, naming the drop, the transparent ambient, the energy
+  argument, the substrate route and the offending value.
+- `test_absorbing_ambient_is_solved_as_its_transparent_twin` — bit-for-bit
+  against the equivalent transparent stack, plus the energy residual.
+- `test_only_the_incident_row_is_touched_in_a_2d_index_array` — a per-wavelength
+  grid is corrected on row 0 only, the caller's array is untouched, and the
+  interior/substrate absorption survives.
+- `garbage_in.py` gained a `warns` verdict distinct from `silent-clean`. The
+  distinction is the point: a correction nobody is told about is the failure
+  mode this whole item started from. No other row drifted.
+
 ## [0.6.25] — The plan closes, and one stub stops lying
 
 Every code item in `docs/remediation_plan.md` is now done or explicitly closed;

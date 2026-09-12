@@ -30,6 +30,7 @@ The ``Request`` bit positions MUST stay in sync with the ``REQ_*`` constants in
 
 from __future__ import annotations
 
+import warnings
 from enum import IntEnum, IntFlag
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -266,13 +267,18 @@ def _validate_indices(idx2d: np.ndarray) -> None:
         )
 
 
-def _validate_incident_medium(idx2d: np.ndarray) -> None:
-    """The incident medium (layer 0) must be transparent: ``Im(n) == 0``.
+def _sanitize_incident_medium(idx2d: np.ndarray) -> np.ndarray:
+    """Drop any absorption in the incident medium (layer 0) and warn.
 
-    An absorbing *substrate* is fine and common -- transmittance is already
-    normalized by the real part of the admittance, so T stays an energy ratio.
-    An absorbing *incident* medium is a different problem, and it is not a
-    normalization problem (R3.4):
+    Returns the array to solve with: ``idx2d`` itself when layer 0 is already
+    transparent, otherwise a copy with ``Im(n[0])`` set to zero. Never mutates
+    the caller's array -- a 2-D ``layer_indices`` reaches the constructor
+    without being copied.
+
+    Why layer 0 is special. An absorbing *substrate* is fine and common:
+    transmittance is normalized by the real part of the admittance, so T stays
+    an energy ratio. An absorbing *incident* medium is a different problem
+    (R3.4), and left alone it does not degrade gracefully:
 
     * ``R = |r|^2`` stops being an energy ratio, because the total Poynting
       flux on the incident side carries an interference term between the
@@ -283,36 +289,54 @@ def _validate_incident_medium(idx2d: np.ndarray) -> None:
       wavevector ``kx = k0 * n0 * sin(theta)`` goes complex, so the wave is
       inhomogeneous, and *which* inhomogeneous wave is not determined by a real
       angle of incidence -- the planes of constant phase and constant amplitude
-      come apart, and the angle names only the first. The usual branch rule for
-      ``cos theta`` ("the root that does not grow in +z") stops being correct
-      too: under an absorbing ambient a transparent layer legitimately grows
-      along z while decaying along x. The engine's branch test then lands on a
-      rounding residue of order 1e-31, and the reflectance of a 2-layer stack
-      at 10 degrees alternates between 0.0024 and 417 as k_ambient moves from
-      1e-16 to 1e-2, non-monotonically.
+      come apart, and the angle names only the first. The branch rule for
+      ``cos theta`` then lands on a rounding residue of order 1e-31, and the
+      reflectance of a 2-layer stack at 10 degrees alternates between 0.0024
+      and 417 as k_ambient moves from 1e-16 to 1e-2, non-monotonically.
 
-    So this is refused rather than approximated: the answer is not
-    under-normalized, it is under-determined. The native ``Solver`` stays
-    permissive for anyone who wants the amplitudes and will interpret them
-    themselves.
+    So ``k`` is dropped rather than carried. The stack is then solved exactly,
+    with a lossless ambient of index ``Re(n[0])``: ``kx`` is real again, every
+    layer gets the standard branch, ``R`` is a true energy ratio and
+    ``R + T + A == 1`` holds. That is the transparent-ambient problem, not the
+    absorbing-ambient one -- but it is the quantity a reflectance measurement
+    at such an interface reports anyway, since the reference is the field at
+    the surface, not at an unspecified depth in a semi-infinite absorber. What
+    is discarded is the attenuation along the path *through* the ambient,
+    which is a separate, geometry-dependent factor the caller owns.
+
+    0.6.21 refused this outright. 0.6.26 corrects and warns instead, by
+    maintainer decision: a refusal is unhelpful for stacks where the ambient
+    absorption is incidental, and the correction is well defined.
     """
-    n0 = idx2d[0]
-    where = _first_bad(n0.imag != 0.0)
-    if where is not None:
-        col = where if not isinstance(where, tuple) else where[0]
-        raise ValueError(
-            f"`layer_indices`: the incident medium (layer 0) is absorbing at "
-            f"wavelength index {col}: {complex(n0[col])} (Im(n) = "
-            f"{float(n0[col].imag):g}). Layer 0 must have Im(n) == 0. "
-            f"Reflectance is not defined there: R = |r|^2 stops being an "
-            f"energy ratio (R + T climbs past 1), and at oblique incidence the "
-            f"transverse wavevector goes complex, so the incident wave is "
-            f"inhomogeneous and a real angle of incidence does not say which "
-            f"inhomogeneous wave it is. Put the absorbing medium on the "
-            f"substrate side (fully supported), or drive the native "
-            f"`navette._smatrix.Solver` directly if you want the raw "
-            f"amplitudes."
-        )
+    n0_imag = np.asarray(idx2d[0].imag)
+    bad = n0_imag != 0.0
+    if not bad.any():
+        return idx2d
+
+    hits = np.flatnonzero(bad)
+    first = int(hits[0])
+    n_bad, n_total = hits.size, int(n0_imag.size)
+    k_max = float(np.max(np.abs(n0_imag[bad])))
+
+    out = idx2d.copy()
+    out[0] = out[0].real.astype(np.complex128)
+
+    warnings.warn(
+        f"ScatterMatrix: the incident medium (layer 0) is absorbing at "
+        f"{n_bad} of {n_total} wavelengths (first at index {first}: "
+        f"{complex(idx2d[0][first])}; largest |Im(n)| = {k_max:g}). Its "
+        f"absorption has been dropped -- the stack is solved with a "
+        f"transparent ambient of index Re(n[0]). Reflectance is not defined "
+        f"against an absorbing ambient: R = |r|^2 stops being an energy ratio "
+        f"(R + T climbs past 1), and at oblique incidence the transverse "
+        f"wavevector goes complex, so a real angle of incidence no longer "
+        f"identifies one incident wave. The results are therefore the "
+        f"transparent-ambient values; attenuation along the path through the "
+        f"ambient is not included. Put the absorbing medium on the substrate "
+        f"side (fully supported) if you need it carried.",
+        stacklevel=3,
+    )
+    return out
 
 
 def _validate_thicknesses(d: np.ndarray) -> None:
@@ -473,6 +497,15 @@ class ScatterMatrix:
 
         The native ``Solver`` underneath stays permissive for internal
         callers; there is no opt-out at this layer.
+
+    Warns
+    -----
+    UserWarning
+        When the incident medium (layer 0) is absorbing. ``Im(n[0])`` is set
+        to zero and the stack is solved with a transparent ambient of index
+        ``Re(n[0])``; see :func:`_sanitize_incident_medium` for why the
+        absorbing-ambient problem has no well-defined reflectance. The
+        substrate may absorb freely -- only layer 0 is touched.
     """
 
     def __init__(
@@ -505,7 +538,7 @@ class ScatterMatrix:
         thick = (None if thicknesses is None else
                  np.ascontiguousarray(thicknesses, dtype=np.float64).ravel())
         _validate_indices(idx2d)
-        _validate_incident_medium(idx2d)
+        idx2d = _sanitize_incident_medium(idx2d)
         _validate_wavelengths(wavls)
         _validate_angles(theta, bool(angles_in_radians))
         if thick is not None:

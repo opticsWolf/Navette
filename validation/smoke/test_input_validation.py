@@ -74,14 +74,6 @@ _REJECT = [
     ("angle_negative", dict(angles=[-30.0]), ["angles", "index 0", "-30.0"]),
     ("angle_radians_out_of_range", dict(angles=[2.0], angles_in_radians=True),
      ["angles", "index 0", "2.0", "rad"]),
-    # R3.4 -- an absorbing *incident* medium. Not a tolerance question: the
-    # branch of cos(theta) is under-determined there, so any value returned is
-    # a guess dressed as a measurement.
-    ("absorbing_incident_medium", dict(layer_indices=_with(_N, 0, 1.52 + 0.05j)),
-     ["layer_indices", "layer 0", "Im(n)", "0.05"]),
-    ("faintly_absorbing_incident_medium",
-     dict(layer_indices=_with(_N, 0, 1.0 + 1e-14j)),
-     ["layer_indices", "layer 0", "Im(n)", "1e-14"]),
 ]
 
 
@@ -114,10 +106,16 @@ _ACCEPT = [
     ("strongly_absorbing_index", dict(layer_indices=_with(_N, 1, 1.2 + 7.5j))),
     ("index_below_one", dict(layer_indices=_with(_N, 1, 0.2 + 3.0j))),
     ("two_dim_index_array", dict(layer_indices=np.repeat(_N[:, None], _WLS.size, axis=1))),
-    # R3.4 refuses the *incident* side only. Absorption anywhere else is
+    # R3.4 singles out the *incident* side. Absorption anywhere else is
     # ordinary physics and must stay untouched.
     ("absorbing_substrate", dict(layer_indices=_with(_N, 3, 1.52 + 0.05j))),
     ("strongly_absorbing_substrate", dict(layer_indices=_with(_N, 3, 0.9 + 6.5j))),
+    # 0.6.26: an absorbing ambient is corrected and warned about, not refused,
+    # so it belongs here. That it still *solves* is the point -- the numbers it
+    # produces are pinned below.
+    ("absorbing_incident_medium", dict(layer_indices=_with(_N, 0, 1.52 + 0.05j))),
+    ("faintly_absorbing_incident_medium",
+     dict(layer_indices=_with(_N, 0, 1.0 + 1e-14j))),
 ]
 
 
@@ -423,35 +421,61 @@ def test_dop_r_never_exceeds_one():
 
 
 # --------------------------------------------------------------------------
-# R3.4 -- the incident medium
+# R3.4 -- the incident medium (refused in 0.6.21; corrected + warned since 0.6.26)
 # --------------------------------------------------------------------------
 
-def test_absorbing_incident_medium_message_explains_itself():
-    """The refusal has to carry its own justification.
+def test_absorbing_incident_medium_warns_and_explains_itself():
+    """The correction has to announce itself and carry its justification.
 
-    "Layer 0 must have Im(n) == 0" invites the caller to conclude the library
-    is being fussy and to go looking for a flag to turn it off. There isn't
-    one, on purpose, so the message says what breaks: R = |r|^2 is not an
-    energy ratio against an absorbing ambient, and at oblique incidence the
-    transverse wavevector goes complex, which leaves the forward branch of
-    cos(theta) genuinely undetermined rather than merely unnormalized. It also
-    names the two ways out -- absorption on the substrate side, or the native
-    Solver.
+    A silent fix is the failure mode this whole item exists to end: before
+    0.6.21 the engine quietly returned R = 417 at 10 degrees. The warning has
+    to say three things -- that layer 0's absorption was dropped, why the
+    absorbing-ambient problem has no reflectance to return, and what the
+    caller is getting instead -- or it invites the reader to assume the number
+    means something it does not.
     """
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.warns(UserWarning) as record:
         _sm(layer_indices=_with(_N, 0, 1.52 + 0.05j))
-    msg = str(excinfo.value)
+    msgs = [str(w.message) for w in record]
+    hits = [m for m in msgs if "incident medium" in m]
+    assert len(hits) == 1, f"expected exactly one incident-medium warning, got {msgs!r}"
+    msg = hits[0]
     assert msg.isascii(), "the message must survive a cp1252 console"
-    for fragment in ("incident medium", "energy ratio", "inhomogeneous",
-                     "substrate", "Solver"):
+    for fragment in ("incident medium", "dropped", "transparent ambient",
+                     "energy ratio", "substrate", "0.05"):
         assert fragment in msg, f"{fragment!r} missing from {msg!r}"
 
 
-def test_only_the_incident_row_is_checked_in_a_2d_index_array():
-    """A per-wavelength index grid must be judged row 0, not in bulk.
+def test_absorbing_ambient_is_solved_as_its_transparent_twin():
+    """The correction is exact, not approximate: same stack, Im(n[0]) = 0.
 
-    The check reads ``idx2d[0]``; a dispersive absorbing *layer* three rows
-    down shares the array and must not be mistaken for the ambient.
+    Bit-for-bit rather than ``allclose`` -- "we dropped k" has one correct
+    implementation and any drift from it means something else was touched. The
+    energy check is the payoff: R + T was 1.0096 at k = 0.1 and 1.44 at k = 1
+    before this item, and 417 at 10 degrees.
+    """
+    req = Request.RS | Request.TS | Request.RP | Request.TP
+    with pytest.warns(UserWarning):
+        absorbing = ScatterMatrix(_with(_N, 0, 1.0 + 0.3j), _D,
+                                  wavelengths=_WLS, angles=_ANG).compute(req, squeeze=False)
+    transparent = ScatterMatrix(_with(_N, 0, 1.0 + 0.0j), _D,
+                                wavelengths=_WLS, angles=_ANG).compute(req, squeeze=False)
+    for key in transparent:
+        assert np.array_equal(absorbing[key], transparent[key]), f"{key} drifted"
+
+    # Lossless stack: the residual is now round-off, not 44 percent.
+    for r, t in (("Rs", "Ts"), ("Rp", "Tp")):
+        resid = np.abs(np.asarray(absorbing[r], float)
+                       + np.asarray(absorbing[t], float) - 1.0)
+        assert float(np.max(resid)) < 1e-12, f"{r}+{t} off by {float(np.max(resid))}"
+
+
+def test_only_the_incident_row_is_touched_in_a_2d_index_array():
+    """A per-wavelength index grid is judged and corrected on row 0 only.
+
+    A dispersive absorbing *layer* three rows down shares the array and must
+    survive untouched -- and so must the caller's array itself, which reaches
+    the constructor without being copied when it is already complex128.
     """
     grid = np.repeat(_N[:, None], _WLS.size, axis=1)
     grid[1, :] = 2.35 + 0.4j          # absorbing interior layer: fine
@@ -459,19 +483,26 @@ def test_only_the_incident_row_is_checked_in_a_2d_index_array():
     out = ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG).compute(Request.RS)
     assert np.all(np.isfinite(np.asarray(out["Rs"], float)))
 
-    # One absorbing wavelength in the ambient row is enough, and the message
-    # names which one.
+    # One absorbing wavelength in the ambient row is enough to warn, and the
+    # warning counts them rather than claiming the whole row.
     grid[0, 7] = 1.0 + 1e-9j
-    with pytest.raises(ValueError, match="wavelength index 7"):
-        ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG)
+    before = grid.copy()
+    with pytest.warns(UserWarning, match=r"absorbing at 1 of "):
+        sm = ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG)
+    assert np.array_equal(grid, before), "the caller's array was mutated"
+
+    # The interior and substrate rows still absorb; only layer 0 was flattened.
+    got = sm.compute(Request.RS | Request.A_S, squeeze=False)
+    assert float(np.max(np.asarray(got["A_s"], float))) > 1e-3
 
 
 def test_the_native_solver_is_still_permissive():
     """The escape hatch R3.1 promised has to actually be open.
 
-    The wrapper refuses; the engine does not. A caller who knows what an
-    absorbing ambient means for their amplitudes can still reach it, which is
-    what makes the refusal a validation layer rather than a lost capability.
+    The wrapper corrects; the engine does not. A caller who knows what an
+    absorbing ambient means for their amplitudes can still reach the raw ones,
+    which is what makes the correction a convenience rather than a lost
+    capability.
     """
     from navette._smatrix import Solver, solver_rt_request
 

@@ -15,10 +15,17 @@ R3.4 added one more: an absorbing *incident* medium used to solve happily
 and return a reflectance that was not a reflectance (R + T past 1 at normal
 incidence, and at 10 deg an `Rs` alternating between 0.0024 and 417 as the
 ambient `k` moved 1e-16 -> 1e-2, because the branch of `cos(theta)` was being
-decided by a 1e-31 rounding residue). Absorption on the *substrate* side is
-fine and stays silent-clean.
+decided by a 1e-31 rounding residue). 0.6.21 refused it; since 0.6.26 the
+ambient `k` is dropped and the stack is solved with a transparent ambient of
+index `Re(n[0])`, with a warning -- so those rows are `warns`, not `raises`,
+and the thing to watch is that they never become `silent-clean`. Absorption on
+the *substrate* side is fine and stays silent-clean.
 
-Verdicts: `raises` | `silent-clean` | `NaN-in-output`.
+Verdicts: `raises` | `warns` | `silent-clean` | `NaN-in-output`.
+
+`warns` and `silent-clean` differ only in whether anything was said. That is
+the distinction this harness exists to police: a correction nobody is told
+about is the failure mode, not the correction.
 """
 
 import warnings
@@ -47,6 +54,8 @@ def run(name, expect, fn, note=""):
                     break
             if verdict == "silent-clean":
                 detail = f"sample={np.asarray(first).ravel()[:2]}"
+                if w:
+                    verdict = "warns"
             detail += f" (warnings={len(w)})"
         except Exception as e:
             verdict = "raises"
@@ -91,14 +100,14 @@ run("negative thickness (already known, S19)", "raises",
 run("NaN thickness", "raises",
     lambda: ScatterMatrix(N, np.array([0.0, 120.0, np.nan, 80.0, 0.0]),
                           wavelengths=WLS, angles=[30.0]).compute(Request.RS))
-run("absorbing incident medium (R3.4)", "raises",
+run("absorbing incident medium (R3.4)", "warns",
     lambda: ScatterMatrix(np.array([1.0+0.05j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
                           D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
-    note="R = |r|^2 is not an energy ratio there, and the forward branch is under-determined")
-run("barely absorbing incident medium k=1e-14", "raises",
+    note="k dropped, transparent ambient solved instead; R = |r|^2 is not an energy ratio there")
+run("barely absorbing incident medium k=1e-14", "warns",
     lambda: ScatterMatrix(np.array([1.0+1e-14j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
                           D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
-    note="no tolerance: 1e-14 was already enough to flip the branch")
+    note="no tolerance band: 1e-14 was already enough to flip the branch, so it is corrected too")
 run("absorbing substrate", "silent-clean",
     lambda: ScatterMatrix(np.array([1.0+0j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0.05j]),
                           D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),

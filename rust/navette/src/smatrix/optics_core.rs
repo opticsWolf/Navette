@@ -135,11 +135,15 @@ pub fn csqrt_fast(z: Complex64) -> Complex64 {
 /// x. Which root is forward then depends on the inhomogeneity of the incident
 /// wave, and a real angle of incidence does not specify it. The input is
 /// under-determined, not merely awkward to normalize — so the Python surface
-/// refuses it rather than picking a root, and this stays the simple rule for
-/// the well-posed case.
+/// removes the ambiguity at the source instead of picking a root here: it
+/// zeroes `Im(n0)` and warns, and the stack is then solved with a transparent
+/// ambient of index `Re(n0)`, for which this simple rule is exactly right.
+/// (0.6.21 refused the stack outright; 0.6.26 corrects and warns. Either way
+/// nothing reaches this function with a complex ambient unless the caller went
+/// around the wrapper, which the native `Solver` still permits.)
 ///
-/// Measured before that refusal existed, on the permissive native path: for a
-/// complex ambient the test is not just wrong, it is *undecidable*. `nsin/n0`
+/// Measured on the permissive native path, which is what such a caller gets:
+/// for a complex ambient the test is not just wrong, it is *undecidable*. `nsin/n0`
 /// should be exactly real; what comes back carries a rounding residue of order
 /// 1e-31 whose sign depends on how `1/n0` rounded, and flipping on it inverts
 /// `Re cos` from +0.985 to -0.985. A 2-layer stack at 10 degrees gave `Rs`
