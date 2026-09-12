@@ -433,22 +433,7 @@ impl Solver {
     z_grid: &[f64],
     requested: u64,
     incoherent_flags: Option<&[i32]>,
-    targets_r: Option<&[f64]>,
-    weights_r: Option<&[f64]>,
-    targets_t: Option<&[f64]>,
-    weights_t: Option<&[f64]>,
-    targets_a: Option<&[f64]>,
-    weights_a: Option<&[f64]>,
-    targets_phi: Option<&[f64]>,
-    weights_phi: Option<&[f64]>,
-    targets_tb: Option<&[f64]>,
-    weights_tb: Option<&[f64]>,
-    targets_rb: Option<&[f64]>,
-    weights_rb: Option<&[f64]>,
-    targets_ab: Option<&[f64]>,
-    weights_ab: Option<&[f64]>,
-    grads_r: Option<&[f64]>,
-    grads_t: Option<&[f64]>,
+    demands: &NeedleDemands<'_>,
     start_idx: usize,
     end_idx: Option<usize>,
     channel: usize,
@@ -469,22 +454,7 @@ impl Solver {
       z_grid,
       requested,
       incoherent_flags.or(Some(&self.incoherent_flags)),
-      targets_r,
-      weights_r,
-      targets_t,
-      weights_t,
-      targets_a,
-      weights_a,
-      targets_phi,
-      weights_phi,
-      targets_tb,
-      weights_tb,
-      targets_rb,
-      weights_rb,
-      targets_ab,
-      weights_ab,
-      grads_r,
-      grads_t,
+      demands,
       start_idx,
       end_idx,
       channel,
@@ -1015,6 +985,101 @@ pub struct NeedleSolution {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The seven (target, weight) merit demands `needle_gradient` accepts, plus
+/// the two Option-B colour buckets (R6.1).
+///
+/// These were sixteen positional `Option<&[f64]>` parameters. Sixteen adjacent
+/// arguments of the same type is not a signature, it is a memory test: the
+/// compiler cannot tell `targets_rb, weights_rb` from `targets_tb, weights_tb`,
+/// and a transposed pair produces a gradient that is wrong but entirely
+/// plausible. Named fields make that class of mistake a compile error.
+///
+/// Every field defaults to `None`, which means "target 0, weight 1" for a
+/// demand pair and "deposit nothing" for a colour bucket, so a caller writes
+/// only what it has:
+///
+/// ```ignore
+/// NeedleDemands { targets_r: Some(&t), weights_r: Some(&w), ..Default::default() }
+/// ```
+///
+/// Each slice is either a scalar (broadcast to every point) or `num_angles *
+/// num_wavs` entries, angle-major.
+#[derive(Clone, Copy, Default)]
+pub struct NeedleDemands<'a> {
+    /// Reflectance demand.
+    pub targets_r: Option<&'a [f64]>,
+    /// Reflectance weight.
+    pub weights_r: Option<&'a [f64]>,
+    /// Transmittance demand.
+    pub targets_t: Option<&'a [f64]>,
+    /// Transmittance weight.
+    pub weights_t: Option<&'a [f64]>,
+    /// Absorptance demand.
+    pub targets_a: Option<&'a [f64]>,
+    /// Absorptance weight.
+    pub weights_a: Option<&'a [f64]>,
+    /// Phase demand (the channel selected by `channel`).
+    pub targets_phi: Option<&'a [f64]>,
+    /// Phase weight.
+    pub weights_phi: Option<&'a [f64]>,
+    /// Back-transmittance demand.
+    pub targets_tb: Option<&'a [f64]>,
+    /// Back-transmittance weight.
+    pub weights_tb: Option<&'a [f64]>,
+    /// Back-reflectance demand.
+    pub targets_rb: Option<&'a [f64]>,
+    /// Back-reflectance weight.
+    pub weights_rb: Option<&'a [f64]>,
+    /// Back-absorptance demand.
+    pub targets_ab: Option<&'a [f64]>,
+    /// Back-absorptance weight.
+    pub weights_ab: Option<&'a [f64]>,
+    /// Option-B colour bucket for the R channel: `dF/dcurve` per point, already
+    /// carrying its demand's weight and residual. Not a target/weight pair.
+    pub grads_r: Option<&'a [f64]>,
+    /// Option-B colour bucket for the T channel.
+    pub grads_t: Option<&'a [f64]>,
+}
+
+/// Index into the demand table. The discriminant order is the table order and
+/// nothing else may assume one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Demand {
+    R = 0,
+    T,
+    A,
+    Phi,
+    Tb,
+    Rb,
+    Ab,
+}
+
+const N_DEMANDS: usize = 7;
+
+/// One output channel of the needle gradient. `PointOut` is an array indexed by
+/// these, so adding an eighth demand type means adding a variant and a row to
+/// each table below — not editing six ladders and hoping (R6.1, §4.1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ch {
+    P = 0,
+    Pmb,
+    /// Q rows (dispersion order 0), flattened over `nz`.
+    Q,
+    Pt,
+    Pa,
+    Pphi,
+    PmbT,
+    PmbA,
+    Ptb,
+    Prb,
+    Pab,
+    PmbTb,
+    PmbRb,
+    PmbAb,
+}
+
+const N_CH: usize = 14;
+
 pub fn needle_gradient(
     wavls: &[f64],
     sin_theta: &[f64],
@@ -1027,22 +1092,7 @@ pub fn needle_gradient(
     z_grid: &[f64],
     requested: u64,
     incoherent_flags: Option<&[i32]>,
-    targets_r: Option<&[f64]>,
-    weights_r: Option<&[f64]>,
-    targets_t: Option<&[f64]>,
-    weights_t: Option<&[f64]>,
-    targets_a: Option<&[f64]>,
-    weights_a: Option<&[f64]>,
-    targets_phi: Option<&[f64]>,
-    weights_phi: Option<&[f64]>,
-    targets_tb: Option<&[f64]>,
-    weights_tb: Option<&[f64]>,
-    targets_rb: Option<&[f64]>,
-    weights_rb: Option<&[f64]>,
-    targets_ab: Option<&[f64]>,
-    weights_ab: Option<&[f64]>,
-    grads_r: Option<&[f64]>,
-    grads_t: Option<&[f64]>,
+    demands_in: &NeedleDemands<'_>,
     start_idx: usize,
     end_idx: Option<usize>,
     channel: usize,
@@ -1169,34 +1219,32 @@ pub fn needle_gradient(
             None => Ok(None),
         }
     };
-    let tgt = load_pair(&targets_r, "targets_r")?;
-    let wgt = load_pair(&weights_r, "weights_r")?;
-    let target_of = |k: usize| tgt.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_of = |k: usize| wgt.as_ref().map(|t| t[k]).unwrap_or(1.0);
-    let tgt_t = load_pair(&targets_t, "targets_t")?;
-    let wgt_t = load_pair(&weights_t, "weights_t")?;
-    let tgt_a = load_pair(&targets_a, "targets_a")?;
-    let wgt_a = load_pair(&weights_a, "weights_a")?;
-    let tgt_phi = load_pair(&targets_phi, "targets_phi")?;
-    let wgt_phi = load_pair(&weights_phi, "weights_phi")?;
-    let target_t_of = |k: usize| tgt_t.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_t_of = |k: usize| wgt_t.as_ref().map(|t| t[k]).unwrap_or(1.0);
-    let target_a_of = |k: usize| tgt_a.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_a_of = |k: usize| wgt_a.as_ref().map(|t| t[k]).unwrap_or(1.0);
-    let target_phi_of = |k: usize| tgt_phi.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_phi_of = |k: usize| wgt_phi.as_ref().map(|t| t[k]).unwrap_or(1.0);
-    let tgt_tb = load_pair(&targets_tb, "targets_tb")?;
-    let wgt_tb = load_pair(&weights_tb, "weights_tb")?;
-    let tgt_rb = load_pair(&targets_rb, "targets_rb")?;
-    let wgt_rb = load_pair(&weights_rb, "weights_rb")?;
-    let tgt_ab = load_pair(&targets_ab, "targets_ab")?;
-    let wgt_ab = load_pair(&weights_ab, "weights_ab")?;
-    let target_tb_of = |k: usize| tgt_tb.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_tb_of = |k: usize| wgt_tb.as_ref().map(|t| t[k]).unwrap_or(1.0);
-    let target_rb_of = |k: usize| tgt_rb.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_rb_of = |k: usize| wgt_rb.as_ref().map(|t| t[k]).unwrap_or(1.0);
-    let target_ab_of = |k: usize| tgt_ab.as_ref().map(|t| t[k]).unwrap_or(0.0);
-    let weight_ab_of = |k: usize| wgt_ab.as_ref().map(|t| t[k]).unwrap_or(1.0);
+    // R6.1: one table instead of seven copies of the same four lines. Rows are
+    // in `Demand` discriminant order and the names reproduce the old per-pair
+    // error messages exactly ("targets_phi must be a scalar or ...").
+    let demand_inputs: [(Option<&[f64]>, Option<&[f64]>, &str); N_DEMANDS] = [
+        (demands_in.targets_r, demands_in.weights_r, "r"),
+        (demands_in.targets_t, demands_in.weights_t, "t"),
+        (demands_in.targets_a, demands_in.weights_a, "a"),
+        (demands_in.targets_phi, demands_in.weights_phi, "phi"),
+        (demands_in.targets_tb, demands_in.weights_tb, "tb"),
+        (demands_in.targets_rb, demands_in.weights_rb, "rb"),
+        (demands_in.targets_ab, demands_in.weights_ab, "ab"),
+    ];
+    let mut demands: Vec<(Option<Vec<f64>>, Option<Vec<f64>>)> = Vec::with_capacity(N_DEMANDS);
+    for (t, w, name) in demand_inputs {
+        demands.push((
+            load_pair(&t, &format!("targets_{name}"))?,
+            load_pair(&w, &format!("weights_{name}"))?,
+        ));
+    }
+    // Absent target defaults to 0, absent weight to 1 — the pre-R6.1 defaults.
+    let target_of = |d: Demand, k: usize| {
+        demands[d as usize].0.as_ref().map(|t| t[k]).unwrap_or(0.0)
+    };
+    let weight_of = |d: Demand, k: usize| {
+        demands[d as usize].1.as_ref().map(|t| t[k]).unwrap_or(1.0)
+    };
 
     // ---- R4.2: Option-B color gradient buckets ----------------------------
     // `grads_r`/`grads_t` are NOT a (target, weight) pair: each entry is the
@@ -1207,8 +1255,8 @@ pub fn needle_gradient(
     // demand in Python gets the same number the native pipeline computes.
     //
     // Default 0.0, not 1.0: absent color demands must deposit nothing.
-    let grd_r = load_pair(&grads_r, "grads_r")?;
-    let grd_t = load_pair(&grads_t, "grads_t")?;
+    let grd_r = load_pair(&demands_in.grads_r, "grads_r")?;
+    let grd_t = load_pair(&demands_in.grads_t, "grads_t")?;
     let grad_r_of = |k: usize| grd_r.as_ref().map(|g| g[k]).unwrap_or(0.0);
     let grad_t_of = |k: usize| grd_t.as_ref().map(|g| g[k]).unwrap_or(0.0);
     // A color bucket can only be deposited onto a channel that is being
@@ -1285,35 +1333,38 @@ pub fn needle_gradient(
         Vec::new()
     };
 
+    /// Fourteen channels x two polarizations. Was fourteen identically typed
+    /// named fields, which meant every ladder below had to be written out once
+    /// per channel; indexing by [`Ch`] is what lets them be tables (R6.1).
     struct PointOut {
-        p: [Option<Vec<f64>>; 2],
-        pmb: [Option<Vec<f64>>; 2],
-        q: [Option<Vec<f64>>; 2], // Q rows (order 0), flattened nz
-        pt: [Option<Vec<f64>>; 2],
-        pa: [Option<Vec<f64>>; 2],
-        pphi: [Option<Vec<f64>>; 2],
-        pmb_t: [Option<Vec<f64>>; 2],
-        pmb_a: [Option<Vec<f64>>; 2],
-        ptb: [Option<Vec<f64>>; 2],
-        prb: [Option<Vec<f64>>; 2],
-        pab: [Option<Vec<f64>>; 2],
-        pmb_tb: [Option<Vec<f64>>; 2],
-        pmb_rb: [Option<Vec<f64>>; 2],
-        pmb_ab: [Option<Vec<f64>>; 2],
+        ch: [[Option<Vec<f64>>; 2]; N_CH],
     }
     impl PointOut {
         fn empty() -> Self {
-            PointOut {
-                p: [None, None], pmb: [None, None], q: [None, None],
-                pt: [None, None], pa: [None, None], pphi: [None, None],
-                pmb_t: [None, None], pmb_a: [None, None],
-                ptb: [None, None], prb: [None, None], pab: [None, None],
-                pmb_tb: [None, None], pmb_rb: [None, None], pmb_ab: [None, None],
-            }
+            PointOut { ch: std::array::from_fn(|_| [None, None]) }
+        }
+        #[inline]
+        fn set(&mut self, c: Ch, pi: usize, v: Vec<f64>) {
+            self.ch[c as usize][pi] = Some(v);
+        }
+        #[inline]
+        fn get(&self, c: Ch, pi: usize) -> Option<&Vec<f64>> {
+            self.ch[c as usize][pi].as_ref()
         }
     }
 
     let pol_on = [calc_s, calc_p];
+
+    // `(requested, output channel, cascade total, demand)` — the multiblock
+    // ladder, as data. Built once and shared by every point.
+    let mb_table: [(bool, Ch, PmbQuantity, Demand); 6] = [
+        (want_pmb, Ch::Pmb, PmbQuantity::R, Demand::R),
+        (want_pmb_t, Ch::PmbT, PmbQuantity::T, Demand::T),
+        (want_pmb_a, Ch::PmbA, PmbQuantity::A, Demand::A),
+        (want_pmb_tb, Ch::PmbTb, PmbQuantity::TB, Demand::Tb),
+        (want_pmb_rb, Ch::PmbRb, PmbQuantity::RB, Demand::Rb),
+        (want_pmb_ab, Ch::PmbAb, PmbQuantity::AB, Demand::Ab),
+    ];
 
     // ── Phase A: everything expressible per point, in parallel ──
     let outs: Vec<PointOut> =
@@ -1330,8 +1381,8 @@ pub fn needle_gradient(
                     .collect();
                 let nsin_fi = ns[0] * Complex64::new(sin_t, 0.0);
                 let np_c = needle_n_per_wav[w];
-                let tgt_k = target_of(k);
-                let wgt_k = weight_of(k);
+                let tgt_k = target_of(Demand::R, k);
+                let wgt_k = weight_of(Demand::R, k);
 
                 let mut o = PointOut::empty();
 
@@ -1363,12 +1414,12 @@ pub fn needle_gradient(
                                     v[zi] += c;
                                 }
                             }
-                            o.p[pi] = Some(v);
+                            o.set(Ch::P, pi, v);
                         }
                         if want_pt {
                             let mut v = p_coherent_t_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c,
-                                target_t_of(k), weight_t_of(k),
+                                target_of(Demand::T, k), weight_of(Demand::T, k),
                                 thicknesses, start_idx, idx_end, z_grid,
                             );
                             let g = grad_t_of(k);
@@ -1380,40 +1431,47 @@ pub fn needle_gradient(
                                     v[zi] += c;
                                 }
                             }
-                            o.pt[pi] = Some(v);
+                            o.set(Ch::Pt, pi, v);
                         }
+                        // The four uniform coherent channels. Deliberately a
+                        // direct-call ladder and not a function-pointer table:
+                        // this is the innermost loop, and R6.3 measured what
+                        // happens when a hot needle-path body stops being a
+                        // straight-line call (+6.5 % min, +13 % p10 for a
+                        // change that was bit-exact). The demand lookup is
+                        // table-driven; the dispatch is not.
                         if want_pa {
-                            o.pa[pi] = Some(p_coherent_a_from_fields(
+                            o.set(Ch::Pa, pi, p_coherent_a_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c,
-                                target_a_of(k), weight_a_of(k),
+                                target_of(Demand::A, k), weight_of(Demand::A, k),
                                 thicknesses, start_idx, idx_end, z_grid,
                             ));
                         }
                         if want_pphi {
-                            o.pphi[pi] = Some(p_coherent_phi_from_fields(
+                            o.set(Ch::Pphi, pi, p_coherent_phi_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c, channel,
-                                target_phi_of(k), weight_phi_of(k),
+                                target_of(Demand::Phi, k), weight_of(Demand::Phi, k),
                                 thicknesses, start_idx, idx_end, z_grid,
                             ));
                         }
                         if want_ptb {
-                            o.ptb[pi] = Some(p_coherent_tb_from_fields(
+                            o.set(Ch::Ptb, pi, p_coherent_tb_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c,
-                                target_tb_of(k), weight_tb_of(k),
+                                target_of(Demand::Tb, k), weight_of(Demand::Tb, k),
                                 thicknesses, start_idx, idx_end, z_grid,
                             ));
                         }
                         if want_prb {
-                            o.prb[pi] = Some(p_coherent_rb_from_fields(
+                            o.set(Ch::Prb, pi, p_coherent_rb_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c,
-                                target_rb_of(k), weight_rb_of(k),
+                                target_of(Demand::Rb, k), weight_of(Demand::Rb, k),
                                 thicknesses, start_idx, idx_end, z_grid,
                             ));
                         }
                         if want_pab {
-                            o.pab[pi] = Some(p_coherent_ab_from_fields(
+                            o.set(Ch::Pab, pi, p_coherent_ab_from_fields(
                                 &fields, nsin_fi, lam, pol, np_c,
-                                target_ab_of(k), weight_ab_of(k),
+                                target_of(Demand::Ab, k), weight_of(Demand::Ab, k),
                                 thicknesses, start_idx, idx_end, z_grid,
                             ));
                         }
@@ -1431,7 +1489,7 @@ pub fn needle_gradient(
                                     qv[zi] = (amp.conj() * da).im / r2;
                                 }
                             }
-                            o.q[pi] = Some(qv);
+                            o.set(Ch::Q, pi, qv);
                         }
                     }
                 }
@@ -1441,45 +1499,18 @@ pub fn needle_gradient(
                         if !on {
                             continue;
                         }
-                        if want_pmb {
-                            o.pmb[pi] = Some(p_multiblock_point(
+                        // Six calls that differed only in the cascade total,
+                        // the demand and the output slot. `p_multiblock_point`
+                        // walks the whole stack, so the row lookup is free
+                        // against it — unlike the coherent ladder above.
+                        for &(want, ch, quantity, demand) in &mb_table {
+                            if !want {
+                                continue;
+                            }
+                            o.set(ch, pi, p_multiblock_point(
                                 lam, sin_t, &ns, thicknesses, flags, rough_vals, rough_types,
-                                np_c, PmbQuantity::R, tgt_k, wgt_k, locs, pi as i32,
-                            ));
-                        }
-                        if want_pmb_t {
-                            o.pmb_t[pi] = Some(p_multiblock_point(
-                                lam, sin_t, &ns, thicknesses, flags, rough_vals, rough_types,
-                                np_c, PmbQuantity::T,
-                                target_t_of(k), weight_t_of(k), locs, pi as i32,
-                            ));
-                        }
-                        if want_pmb_a {
-                            o.pmb_a[pi] = Some(p_multiblock_point(
-                                lam, sin_t, &ns, thicknesses, flags, rough_vals, rough_types,
-                                np_c, PmbQuantity::A,
-                                target_a_of(k), weight_a_of(k), locs, pi as i32,
-                            ));
-                        }
-                        if want_pmb_tb {
-                            o.pmb_tb[pi] = Some(p_multiblock_point(
-                                lam, sin_t, &ns, thicknesses, flags, rough_vals, rough_types,
-                                np_c, PmbQuantity::TB,
-                                target_tb_of(k), weight_tb_of(k), locs, pi as i32,
-                            ));
-                        }
-                        if want_pmb_rb {
-                            o.pmb_rb[pi] = Some(p_multiblock_point(
-                                lam, sin_t, &ns, thicknesses, flags, rough_vals, rough_types,
-                                np_c, PmbQuantity::RB,
-                                target_rb_of(k), weight_rb_of(k), locs, pi as i32,
-                            ));
-                        }
-                        if want_pmb_ab {
-                            o.pmb_ab[pi] = Some(p_multiblock_point(
-                                lam, sin_t, &ns, thicknesses, flags, rough_vals, rough_types,
-                                np_c, PmbQuantity::AB,
-                                target_ab_of(k), weight_ab_of(k), locs, pi as i32,
+                                np_c, quantity,
+                                target_of(demand, k), weight_of(demand, k), locs, pi as i32,
                             ));
                         }
                     }
@@ -1504,11 +1535,11 @@ pub fn needle_gradient(
                     if !on || !want_disp {
                         return None;
                     }
-                    if outs.iter().any(|o| o.q[pi].is_none()) {
+                    if outs.iter().any(|o| o.get(Ch::Q, pi).is_none()) {
                         return None;
                     }
                     let q0: Vec<Vec<f64>> =
-                        outs.iter().map(|o| o.q[pi].clone().unwrap()).collect();
+                        outs.iter().map(|o| o.get(Ch::Q, pi).unwrap().clone()).collect();
                     let mut chain = vec![q0.clone()];
                     for _ in 0..mo {
                         let prev = chain.last().unwrap();
@@ -1524,17 +1555,42 @@ pub fn needle_gradient(
     // ── Assemble dict ──
     let mut maps: Vec<(String, Vec<f64>)> = Vec::new();
 
-    macro_rules! emit {
-        ($name:expr, $field:ident, $pi:expr) => {{
-            let name: String = $name;
+    let pol_suffix = |pi: usize| if pi == 0 { "s" } else { "p" };
+
+    // `(requested, channel, key stem)` — thirteen seven-line blocks that
+    // differed only in those three things. The row order is the order the
+    // hand-written ladder emitted in, and it is load-bearing: callers index the
+    // returned maps by insertion order as well as by key.
+    let emit_table: [(bool, Ch, &str); 13] = [
+        (want_p, Ch::P, "P"),
+        (want_pt, Ch::Pt, "P_T"),
+        (want_pa, Ch::Pa, "P_A"),
+        (want_pphi, Ch::Pphi, "P_PHI"),
+        (want_pmb, Ch::Pmb, "Pmb"),
+        (want_pmb_t, Ch::PmbT, "Pmb_T"),
+        (want_pmb_a, Ch::PmbA, "Pmb_A"),
+        (want_ptb, Ch::Ptb, "P_TB"),
+        (want_prb, Ch::Prb, "P_RB"),
+        (want_pab, Ch::Pab, "P_AB"),
+        (want_pmb_tb, Ch::PmbTb, "Pmb_TB"),
+        (want_pmb_rb, Ch::PmbRb, "Pmb_RB"),
+        (want_pmb_ab, Ch::PmbAb, "Pmb_AB"),
+    ];
+    for (want, ch, stem) in emit_table {
+        if !want {
+            continue;
+        }
+        for (pi, &on) in pol_on.iter().enumerate() {
+            if !on {
+                continue;
+            }
+            let name = format!("{stem}_{}", pol_suffix(pi));
             let mut flat: Vec<f64> = Vec::with_capacity(total_points * nz);
             for o in &outs {
-                match &o.$field[$pi] {
+                match o.get(ch, pi) {
                     Some(v) => flat.extend_from_slice(v),
                     None => {
-                        return Err(String::from(
-                            "internal error: missing output buffer",
-                        ))
+                        return Err(String::from("internal error: missing output buffer"))
                     }
                 }
             }
@@ -1544,101 +1600,9 @@ pub fn needle_gradient(
                 }
             }
             maps.push((name, flat));
-        }};
+        }
     }
 
-    let pol_suffix = |pi: usize| if pi == 0 { "s" } else { "p" };
-    if want_p {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_{}", pol_suffix(pi)), p, pi);
-            }
-        }
-    }
-    if want_pt {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_T_{}", pol_suffix(pi)), pt, pi);
-            }
-        }
-    }
-    if want_pa {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_A_{}", pol_suffix(pi)), pa, pi);
-            }
-        }
-    }
-    if want_pphi {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_PHI_{}", pol_suffix(pi)), pphi, pi);
-            }
-        }
-    }
-    if want_pmb {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("Pmb_{}", pol_suffix(pi)), pmb, pi);
-            }
-        }
-    }
-    if want_pmb_t {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("Pmb_T_{}", pol_suffix(pi)), pmb_t, pi);
-            }
-        }
-    }
-    if want_pmb_a {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("Pmb_A_{}", pol_suffix(pi)), pmb_a, pi);
-            }
-        }
-    }
-    if want_ptb {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_TB_{}", pol_suffix(pi)), ptb, pi);
-            }
-        }
-    }
-    if want_prb {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_RB_{}", pol_suffix(pi)), prb, pi);
-            }
-        }
-    }
-    if want_pab {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("P_AB_{}", pol_suffix(pi)), pab, pi);
-            }
-        }
-    }
-    if want_pmb_tb {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("Pmb_TB_{}", pol_suffix(pi)), pmb_tb, pi);
-            }
-        }
-    }
-    if want_pmb_rb {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("Pmb_RB_{}", pol_suffix(pi)), pmb_rb, pi);
-            }
-        }
-    }
-    if want_pmb_ab {
-        for (pi, &on) in pol_on.iter().enumerate() {
-            if on {
-                emit!(format!("Pmb_AB_{}", pol_suffix(pi)), pmb_ab, pi);
-            }
-        }
-    }
     const DISP_KEYS: [&str; 5] = ["dphi", "dgd", "dgdd", "dtod", "dfod"];
     if let Some(mo) = max_order {
         for pi in 0..2 {
@@ -2391,8 +2355,8 @@ mod tests {
         &[Complex64::new(2.1, 0.0), Complex64::new(2.1, 0.0)],
         &[10.0, 50.0, 90.0],
         NREQ_P,
-        None, None, None, None, None, None, None, None, None, None, None, None,
-        None, None, None, None, None,
+        None,
+        &super::NeedleDemands::default(),
         0, Some(2), 0, true, true, None, 0.0,
       )
       .unwrap();

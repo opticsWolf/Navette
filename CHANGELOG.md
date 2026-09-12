@@ -3,6 +3,65 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.24] — Sixteen anonymous slices get their names back (R6.1)
+
+`needle_gradient` took thirty-four parameters, sixteen of them adjacent
+`Option<&[f64]>` slices. That is not a signature, it is a memory test: nothing
+stopped `targets_rb, weights_rb` from being passed where `targets_tb,
+weights_tb` belong, and the result would have been a gradient that is wrong and
+entirely plausible. §4.1 called it the codebase's #1 smell.
+
+Nothing about the output changes. This is a pure refactor and it is held to
+that: bit-identical on 234 all-channel calls.
+
+### Changed
+
+- **`NeedleDemands<'a>`** — the sixteen slices are now one `Default`-able
+  struct with named fields, so a caller writes only what it has and a
+  transposed pair is a compile error instead of a plausible number. The seven
+  `(target, weight)` pairs become a table with two accessors keyed by a
+  `Demand` enum: 16 `load_pair` calls and 14 hand-written accessor closures
+  down to 4 and 2.
+- **`PointOut`** is fourteen named fields no longer — one
+  `[[Option<Vec<f64>>; 2]; N_CH]` indexed by a `Ch` enum. That is what lets the
+  ladders become tables: the six-way multiblock ladder is now one loop over
+  `mb_table`, and the thirteen seven-line `emit!` blocks are one loop over
+  `emit_table`. The `emit!` macro — which existed only because it needed a
+  field *identifier* — is gone. Emission order is preserved; callers index the
+  returned maps by insertion order as well as by key.
+- Free function 34 params → 19, `Solver::needle_gradient` 28 → 13, body
+  644 → 543 lines, `if want_*` blocks 31 → 12. Adding an eighth demand type
+  used to mean editing six ladders; it now means a variant and a table row.
+
+### Unchanged (deliberately)
+
+- **The Python signature.** All twenty-seven keyword arguments stay exactly as
+  they were; the PyO3 wrappers assemble a `NeedleDemands` immediately before
+  the call. A refactor whose whole gate is "no numeric drift" is the wrong
+  place to also break a public API.
+- **The coherent per-point ladder stays a direct-call ladder**, not a
+  function-pointer table. It is the innermost loop and R6.3 measured what
+  happens there (+6.5 % min, +13 % p10 for a bit-exact change). The demand
+  lookup is table-driven; the dispatch is not, and the code says why.
+
+### Gate
+
+- **Bit-identity, measured rather than assumed.** `bitbase.py` covers the
+  needle path but only sets `targets_r`/`weights_r`/`grads_r`, so a
+  `Demand::Tb` ↔ `Demand::Rb` transposition would have slipped past it. A new
+  harness drives all fourteen target/weight slices and both colour buckets
+  with *different* random vectors, requests every channel plus the dispersion
+  ladder, randomizes incoherent flags so the `Pmb` cascade runs, and sweeps
+  s / p / sp × two dispersion channels — 234 calls, key order hashed with the
+  values. Builds from before and after the refactor both return
+  `27db9666…fd85`; `bitbase.py` is unchanged at `30d96909…3c6c`.
+- `fd_step1.py`, `fd_rchannel.py`, `color_merit_check.py`,
+  `color_grad_python.py` and the other six review harnesses all exit 0.
+- **Perf inside noise, measured on the needle path** (`bench_backside_speed`
+  does not run it). Six alternating A/B rounds, 250 reps, three request
+  shapes: worst figure +0.88 %, and post-refactor wins the median on two of
+  the three shapes. The abort threshold was 2 %.
+
 ## [0.6.23] — The solver duplication stays, and is now a test (R6.3)
 
 R6.3 proposed folding `solve_point` and `solve_point_intensity` into one

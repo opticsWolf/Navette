@@ -13,6 +13,7 @@ use pyo3::types::PyDict;
 use navette::smatrix::coherent_block::*;
 use navette::smatrix::needle_engine::{NREQ_DFOD, NREQ_DGDD, NREQ_DGD, NREQ_DPHI, NREQ_DTOD, NREQ_P, NREQ_P_A, NREQ_P_AB, NREQ_P_MB, NREQ_P_MB_A, NREQ_P_MB_AB, NREQ_P_MB_RB, NREQ_P_MB_T, NREQ_P_MB_TB, NREQ_P_PHI, NREQ_P_RB, NREQ_P_T, NREQ_P_TB};
 use navette::smatrix::optics_core::*;
+use navette::smatrix::solver::NeedleDemands;
 
 // ---- roughness / redheffer (trivial, over optics_core) ----
 #[pyfunction]
@@ -309,14 +310,32 @@ impl PySolver {
         );
         // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
         let (gr, gt) = (t(&grads_r), t(&grads_t));
+        // R6.1: the sixteen positional slices the core used to take are now one
+        // named struct. The *Python* signature is unchanged -- this is where the
+        // flat keyword arguments get their names back.
+        let demands = NeedleDemands {
+            targets_r: tr.as_deref(),
+            weights_r: wr.as_deref(),
+            targets_t: tt.as_deref(),
+            weights_t: wt.as_deref(),
+            targets_a: ta.as_deref(),
+            weights_a: wa.as_deref(),
+            targets_phi: tp.as_deref(),
+            weights_phi: wp.as_deref(),
+            targets_tb: ttb.as_deref(),
+            weights_tb: wtb.as_deref(),
+            targets_rb: trb.as_deref(),
+            weights_rb: wrb.as_deref(),
+            targets_ab: tab.as_deref(),
+            weights_ab: wab.as_deref(),
+            // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
+            grads_r: gr.as_deref(),
+            grads_t: gt.as_deref(),
+        };
         let sol = py
             .detach(|| {
                 self.inner.needle_gradient(
-                    &npn, &zg, requested, inc.as_deref(),
-                    tr.as_deref(), wr.as_deref(), tt.as_deref(), wt.as_deref(),
-                    ta.as_deref(), wa.as_deref(), tp.as_deref(), wp.as_deref(),
-                    ttb.as_deref(), wtb.as_deref(), trb.as_deref(), wrb.as_deref(),
-                    tab.as_deref(), wab.as_deref(), gr.as_deref(), gt.as_deref(),
+                    &npn, &zg, requested, inc.as_deref(), &demands,
                     start_idx, end_idx, channel, calc_s, calc_p, hm.as_deref(),
                     gain_shift_phi,
                 )
@@ -536,15 +555,33 @@ pub fn needle_engine<'py>(
     );
     // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
     let (gr, gt) = (t(&grads_r), t(&grads_t));
+    // R6.1: the sixteen positional slices the core used to take are now one
+    // named struct. The *Python* signature is unchanged -- this is where the
+    // flat keyword arguments get their names back.
+    let demands = NeedleDemands {
+        targets_r: tr.as_deref(),
+        weights_r: wr.as_deref(),
+        targets_t: tt.as_deref(),
+        weights_t: wt.as_deref(),
+        targets_a: ta.as_deref(),
+        weights_a: wa.as_deref(),
+        targets_phi: tp.as_deref(),
+        weights_phi: wp.as_deref(),
+        targets_tb: ttb.as_deref(),
+        weights_tb: wtb.as_deref(),
+        targets_rb: trb.as_deref(),
+        weights_rb: wrb.as_deref(),
+        targets_ab: tab.as_deref(),
+        weights_ab: wab.as_deref(),
+        // Option-B color buckets (R4.2): dF/dcurve per point, not a pair.
+        grads_r: gr.as_deref(),
+        grads_t: gt.as_deref(),
+    };
     let sol = py
         .detach(|| {
             core_needle(
                 &wv, &st, n_layers as usize, &cache, &th, &rt, &rv, &npn, &zg,
-                requested, inc.as_deref(),
-                tr.as_deref(), wr.as_deref(), tt.as_deref(), wt.as_deref(),
-                ta.as_deref(), wa.as_deref(), tp.as_deref(), wp.as_deref(),
-                ttb.as_deref(), wtb.as_deref(), trb.as_deref(), wrb.as_deref(),
-                tab.as_deref(), wab.as_deref(), gr.as_deref(), gt.as_deref(),
+                requested, inc.as_deref(), &demands,
                 start_idx, end_idx, channel, calc_s, calc_p, hm.as_deref(), 0.0,
             )
         })

@@ -73,7 +73,7 @@ coverage is thin.
 | ~~R5.1~~ | `unweave_collection` batch optimization — **DONE (0.6.13)** | P2 | 1.15×–2.29× where the cost is per-fragment; the rest is DRAM bandwidth, and the reference wins by aliasing the caller's buffer (see corrections) | M | L | §5.3 |
 | ~~R5.2~~ | parallelize serial derive loop — **DONE (0.6.15)** | P3 | 1.42× at 20k and 1.73× at 60k on a twelve-channel request; ~1.03× on a four-channel one, which is the whole story (see corrections) | M (bit-identity) | M–L | §5.4 |
 | ~~R5.3~~ | `core_engine` — **DONE (0.6.14)**, and it was not the emit path | P2 | 1.4×–3.0× across the grid; the cost was `Solver::new` (see corrections). Now ~0.8–1.2× numba at 20k–60k points, still ~0.3–0.5× at 500 | M (must stay bit-identical) | M–L | §5, R2.4a |
-| R6.1 | `needle_gradient` refactor | P3 | cyclomatic 96, 7× copy-paste | M (must stay bit-exact) | XL | §4.1 |
+| ~~R6.1~~ | `needle_gradient` refactor — **DONE (0.6.24)** | P3 | 34 params → 19, 16 `load_pair` copies → 4, 31 `if want_` blocks → 12; bit-identical on 234 all-channel calls | M (must stay bit-exact) | XL | §4.1 |
 | ~~R6.2~~ | small physics nits batch — **DONE (0.6.17)** | P3 | DOP_R clamped (fingerprint moved), τ̂ docstring fixed, Sellmeier domain guard added; the `+0.0` turned out to be load-bearing and stays (see corrections) | S | S | §3.3, §19.3 |
 | ~~R6.3~~ | solver triplication (optional) — **CLOSED (0.6.23): consolidation measured and rejected; contract documented and now test-enforced** | P3 | maintenance | M (perf-sensitive) | L | §4.2 |
 | ~~R6.4~~ | ~~docs/hygiene batch~~ — **DONE** (items 1,2,3,6 in 0.6.18; 4,5,7 in 0.6.19) | P3 | audit-trail rot; `attic/` gone, SPDX on 213 files, four stale docs closed, `extrap='error'` now errors | S | M | §6.3, §24.2, §18.4 |
@@ -1919,7 +1919,7 @@ item was built on were also measurement artefacts.
 
 ## 6. Phase 6 — Maintainability, docs, hygiene (P3)
 
-### R6.1 `needle_gradient` refactor (channel-demand struct)
+### R6.1 `needle_gradient` refactor (channel-demand struct) — DONE (0.6.24)
 
 **Review:** §4.1 (31 params, 7× copy-pasted target/weight plumbing,
 cyclomatic 96 — the #1 smell; adding an 8th demand type touches ~6 places).
@@ -1942,6 +1942,112 @@ bit-identity test, `bench_backside_speed`. New: none (this refactor is what
 the existing harnesses were built to protect).
 
 **Effort.** XL.
+
+**CORRECTIONS / NOTES (0.6.24).** The fix design landed essentially as
+written, with one deliberate deviation at the Python boundary and one place
+where the plan's "collapse to loops" would have cost more than it saved.
+
+* **What the numbers actually were.** The review says "31 params"; counted
+  from the signature the free function took **34** (the `Solver` method 28,
+  `&self` included). After: **19** and **13**. The seven `load_pair` pairs
+  plus the two colour buckets were **16** calls with fourteen hand-written
+  accessor closures; now **4** calls behind a `[(Option<&[f64]>,
+  Option<&[f64]>, &str); 7]` table and two accessors taking a `Demand`. The
+  body went 644 → 543 lines and the `if want_*` blocks 31 → 12, which is the
+  part that matters: adding an eighth demand type used to mean editing six
+  ladders, and now means adding a `Demand` variant, a `Ch` variant and a row
+  to each table.
+
+* **`NeedleDemands`, not `ChannelDemand`.** The plan's `[ChannelDemand; 7]`
+  array is the right shape for the *seven pairs* but has nowhere to put
+  `grads_r`/`grads_t`, which R4.2 added and which are **not** a
+  (target, weight) pair — each is a `dF/dcurve` chain-rule factor that already
+  carries its demand's weight and residual. Rather than smuggle them in as a
+  fake pair (the exact confusion R4.2 existed to end), the sixteen slices
+  became one `#[derive(Default)] struct NeedleDemands<'a>` with named fields,
+  and the seven-row table is built *from* it inside the function. `Default`
+  means a caller writes only what it has:
+  `NeedleDemands { targets_r: Some(&t), ..Default::default() }`.
+
+  The motive is not line count. Sixteen adjacent `Option<&[f64]>` arguments
+  are not a signature, they are a memory test: nothing stops `targets_rb,
+  weights_rb` from being passed where `targets_tb, weights_tb` belong, and the
+  result is a gradient that is wrong and entirely plausible. Named fields make
+  that a compile error. The in-crate standalone test used to pass nineteen
+  bare `None`s in a row; it now passes `&NeedleDemands::default()`.
+
+* **The Python signature is unchanged, on purpose.** The plan says "at the
+  PyO3 boundary, introduce a `NeedleRequest` builder". That name is already
+  taken — `NeedleRequest` is the public `IntFlag` of channel selectors — and,
+  more to the point, R6.1's own gate is *bit-exactness*: a refactor whose
+  stated risk is silent numeric drift is the wrong place to also break a
+  public keyword signature. So both PyO3 wrappers keep all twenty-seven
+  keyword arguments and assemble a `NeedleDemands` immediately before the
+  call. That assembly is where the flat keyword arguments get their names
+  back, and it is three lines of comment plus a struct literal. A Python-side
+  builder can follow as its own item if it is wanted; it is not a refactor,
+  it is an API change.
+
+* **One ladder stayed a ladder, and R6.3 is why.** The multiblock ladder (six
+  calls differing only in cascade total, demand and output slot) became
+  `mb_table: [(bool, Ch, PmbQuantity, Demand); 6]` + one loop —
+  `p_multiblock_point` walks the whole stack, so a row lookup against it is
+  free. The **coherent** ladder did not. It is the innermost loop, and R6.3
+  had just measured what happens when a hot needle-path body stops being a
+  straight-line call: +6.5 % on the min and +13 % on the p10 for a change that
+  was bit-exact. The demand *lookup* there is table-driven
+  (`target_of(Demand::Tb, k)`); the *dispatch* is not, and the code says so.
+
+* **`PointOut` is where the collapse paid.** Fourteen identically typed named
+  fields became `ch: [[Option<Vec<f64>>; 2]; N_CH]` indexed by a `Ch` enum,
+  with `set`/`get`. That single change is what let the thirteen seven-line
+  `emit!` blocks — a macro whose only reason to exist was that it took a field
+  *identifier* — become `emit_table: [(bool, Ch, &str); 13]` and one loop. The
+  macro is gone. Row order is the old emission order and is load-bearing:
+  callers index the returned maps by insertion order as well as by key.
+
+**Gate (0.6.24).** Bit-exactness was the stated abort criterion, so it was
+measured directly rather than inferred from the suites.
+
+* **A new fingerprint, because the old one did not cover this.**
+  `bitbase.py` does exercise the needle path, but only with `targets_r`,
+  `weights_r` and `grads_r` set — a transposition between `Demand::Tb` and
+  `Demand::Rb` would have been invisible to it. A second harness drives all
+  fourteen target/weight slices and both colour buckets with *different*
+  random vectors, requests every channel including the six multiblock ones and
+  the dispersion chain, randomizes incoherent flags so the `Pmb` cascade
+  actually runs, and sweeps s / p / sp × two dispersion channels: 234 calls,
+  key order hashed alongside the values. Pre-refactor and post-refactor builds
+  were compiled from the same tree (`git stash`, build, run, pop, build, run)
+  and both return
+  `27db96663d3494d6df4a8351da1b89749926ab9e0e218129a6c5f20ba843fd85`.
+  `bitbase.py` is likewise unchanged at `30d96909…3c6c`.
+
+* **The four fd/colour harnesses and the parity tests.** `fd_step1.py`
+  (all three parts, dispersion ladder converging at rate ≈ 4.1),
+  `fd_rchannel.py` (rate 4.0–4.1 over eight halvings), `color_merit_check.py`,
+  `color_grad_python.py` — all exit 0, as do the other six `validation/review`
+  harnesses. 698 pytest passed / 1 skipped; 460 + 22 cargo, 465 / 469 / 474
+  under the optimizer feature combinations; 15 doc tests; clippy
+  `-D warnings` clean.
+
+* **Perf: inside noise, and measured on the right loop.** The plan names
+  `bench_backside_speed`, which does not execute the needle path at all — the
+  risk here is the per-point demand lookup becoming a `Vec` index and
+  `PointOut` becoming an array. A needle-specific A/B (six alternating rounds,
+  250 reps, three request shapes) gives, on medians of the six rounds:
+
+  | request | min | p10 | median |
+  |---|---|---|---|
+  | coherent only | +0.32 % | +0.47 % | **−0.73 %** |
+  | multiblock only | +0.87 % | +0.07 % | **−0.12 %** |
+  | everything + dispersion | +0.33 % | +0.83 % | +0.88 % |
+
+  Every figure is well inside the 2 % abort threshold, and the sign is not
+  consistent across statistics — post wins the median on two of three shapes
+  and loses the min on all three, which is what noise looks like rather than a
+  regression. `bench_backside_speed` itself is unmoved (C_full min 0.1225 ms,
+  median 0.1530 ms), and `bench_refold` passes its own gates.
 
 ### R6.2 Small physics nits batch (one commit) — DONE (0.6.17)
 
