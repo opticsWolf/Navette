@@ -56,7 +56,7 @@ coverage is thin.
 | ~~R2.2~~ | README `--release` + bench UTF-8 — **DONE (0.5.4)** | P0-enabler | docs/benches | S | S | §5.1.1, §17 |
 | ~~R2.3~~ | push/PR CI workflow — **DONE (0.5.6; warning cleanup 0.5.5)** | **P0-enabler** | gates everything after it | M (fix live warnings first) | M | §7 |
 | ~~R2.3a~~ | ~~clippy clean → blocking gate~~ | — | **DONE (0.6.6)** | — | — | §7 |
-| R2.3b | rustfmt adoption → blocking gate — **DEFERRED**, decision pending | P3 | 981 files; style decision first — put to the maintainer at 0.6.12, answer: not now | S (blame churn) | S/L review | §7 |
+| ~~R2.3b~~ | rustfmt adoption → blocking gate — **DONE (0.6.30)** | P3 | rustfmt defaults adopted; 85 files reformatted in one commit, listed in `.git-blame-ignore-revs`; `cargo fmt --all --check` now blocking. The "981 files" figure was a hunk count — the real spread was 78 of 98 files | S (blame churn, mitigated) | S/L review | §7 |
 | ~~R2.4~~ | parity tests collected; `sys.exit` → skip — **DONE (0.5.8)** | P1 | test suite honesty | M (env dependency) | M | §15, §6.3 |
 | ~~R2.4a~~ | port `test_core_engine_*` onto `core_engine` — **DONE (0.6.11)** | P1 | only whole-engine parity oracles — both restored, 13/13 channels, ~1e-14 | M | M | §15 |
 | ~~R2.5~~ | request-bit + schema sync tests — **DONE (0.5.9)** | P1 | prevents silent corruption | S | S | §4.3, §9.3 |
@@ -420,18 +420,52 @@ numeric change is a regression by definition.
   have left intermediate commits that do not build or do not pass the
   fingerprint. It ships as one reviewed change with the gate flip.
 
-### R2.3b rustfmt adoption → make the fmt gate blocking — DEFERRED (decision pending, asked 0.6.12)
+### R2.3b rustfmt adoption → make the fmt gate blocking — DONE (0.6.30)
 
-**Discovered by R2.3 (0.5.6).** `cargo fmt --all --check` reports diffs in
-**981** files — i.e. the tree has never been rustfmt-formatted and the
-codebase's own style differs from rustfmt defaults in places (notably the
-2-space-indented modules under `synthesis/`).
+**Discovered by R2.3 (0.5.6).** The tree had never been rustfmt-formatted, and
+carried its own style in places (notably the 2-space-indented modules under
+`synthesis/` and `structure/`).
 
-**Decision needed before doing anything:** adopt rustfmt defaults (one
-tree-wide reformat commit, which rewrites `git blame` for the whole crate —
-mitigate with `.git-blame-ignore-revs`), or add a `rustfmt.toml` that encodes
-the existing house style and reformat to *that*. Do not start until this is
-chosen; the two produce very different diffs.
+**CORRECTION (0.6.30): the "981 files" in this item was wrong** — it was a
+count of diff *hunks*, not files. Measured before the reformat: **1110 hunks
+across 78 of the 98 `.rs` files** in the tree.
+
+**The decision this item was blocked on**, put to the maintainer again at
+0.6.30 with the measurement that settles it: the codebase does not have *one*
+house style to encode. Classified by each file's own indent unit, **69 files
+were already at rustfmt's 4-space default and 22 were at 2-space**
+(`structure/`, parts of `synthesis/`, `config.rs`, `sellmeier.rs`,
+`color/tables.rs`). Adopting the defaults is therefore the *smaller* change as
+well as the conventional one; a `rustfmt.toml` with `tab_spaces = 2` would
+have re-indented the 69-file majority to match the 22-file minority.
+
+**Chosen: rustfmt defaults, no `rustfmt.toml`.**
+
+**Fix, in two commits so the mechanical one can be skipped wholesale.**
+
+1. `cargo fmt --all` and nothing else — 85 files. Listed in the new
+   `.git-blame-ignore-revs`, which GitHub honours automatically and which a
+   clone activates with
+   `git config blame.ignoreRevsFile .git-blame-ignore-revs`. Verified with
+   blame that the lines around recent work attribute to their authoring
+   commit, not to the reformat.
+2. This commit: the gate flipped blocking (`continue-on-error` removed), the
+   workflow header rewritten, README updated. **No `continue-on-error`
+   remains anywhere in `ci.yml`** — the workflow has no advisory steps left.
+
+**What the reformat actually did.** Most hunks in the already-4-space majority
+are wrapping past 100 columns and `use` ordering. No `#[rustfmt::skip]` was
+needed anywhere: the numeric tables in `color/golden.rs` are one row per line
+and inside 100 columns, so they came through intact. Four places where a
+closing brace shared a line with the following doc comment (`}    /// ...`)
+got split — a readability fix found for free.
+
+**Proof it was inert.** Both bit-exactness fingerprints byte-identical; 741
+pytest, 466 + 22 + 15 cargo, clippy `-D warnings` clean, the three lints and
+all ten review harnesses unchanged. Additionally checked that no doc-comment
+*prose* moved: every comment line present before the reformat is present
+after, modulo leading indentation (the 4 additions are the brace splits
+above).
 
 **Effort.** S to do, L to review — hence its own item.
 

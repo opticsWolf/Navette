@@ -1,0 +1,10 @@
+# Revisions to skip when running `git blame`.
+#
+# Use it once per clone:
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub applies it automatically. Only ever add commits that change
+# formatting and nothing else.
+
+# style: cargo fmt --all, rustfmt defaults (R2.3b) — 85 files, no behaviour
+# change, both bit-exactness fingerprints unchanged.
+e789a1f687063e3e9be5163f68f2bd1bcfb136bb

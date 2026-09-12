@@ -17,12 +17,10 @@
 #   * the optional optimizer backends (R4.4c) built and tested, since the
 #     default build compiles none of their code
 #
-# What is ADVISORY (continue-on-error) and why:
-#   * cargo fmt     — 981 files differ from rustfmt defaults
-# Tracked as R2.3b. Turning it blocking means landing a tree-wide reformat
-# first, which rewrites `git blame` for the whole crate; doing that inside
-# this commit would bury the gate itself. A gate that cannot go green teaches
-# people to ignore CI, so it reports without failing until that work lands.
+# `cargo fmt --all --check` became BLOCKING at 0.6.30 (R2.3b). The tree-wide
+# reformat it needed is its own commit, listed in `.git-blame-ignore-revs`;
+# run `git config blame.ignoreRevsFile .git-blame-ignore-revs` once per clone
+# so blame skips it. Nothing is advisory in this workflow any more.
 #
 # The `dependency-floors` job was advisory until R4.1 (0.6.3) fixed the floors
 # it was failing on. It is blocking now.
@@ -79,8 +77,7 @@ jobs:
       - name: clippy --features opt-minpack-lm
         run: cargo clippy -p navette --all-targets --features opt-minpack-lm -- -D warnings
 
-      - name: rustfmt (advisory)
-        continue-on-error: true
+      - name: rustfmt
         run: cargo fmt --all --check
 
   python:

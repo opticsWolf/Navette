@@ -3,6 +3,62 @@
 All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y) and `docs/code_review.md` (§).
 
+## [0.6.30] — rustfmt adopted, and the fmt gate goes blocking (R2.3b)
+
+The last open item in the remediation plan's master table. No behaviour change:
+both bit-exactness fingerprints are byte-identical across the reformat.
+
+### The decision this was blocked on
+
+R2.3b had been deferred since 0.6.12 pending a style choice: adopt rustfmt
+defaults, or write a `rustfmt.toml` encoding the house style. Measuring it
+settled the question — **there is no single house style to encode.** Classified
+by each file's own indent unit:
+
+| indent | files |
+| --- | --- |
+| 4 spaces (rustfmt default) | 69 |
+| 2 spaces | 22 |
+
+The 2-space cluster is `structure/`, parts of `synthesis/`, `config.rs`,
+`sellmeier.rs` and `color/tables.rs`. Adopting the defaults is therefore the
+*smaller* change as well as the conventional one; `tab_spaces = 2` would have
+re-indented the 69-file majority to match the 22-file minority. **Chosen:
+rustfmt defaults, no `rustfmt.toml`.**
+
+### Corrected
+
+- **"981 files differ from rustfmt defaults"**, stated in R2.3b and in the
+  `ci.yml` header, was a count of diff *hunks*, not files. Measured before the
+  reformat: **1110 hunks across 78 of the 98 `.rs` files**.
+
+### Changed
+
+- **One reformat commit, `cargo fmt --all` and nothing else** — 85 files. It
+  is listed in the new **`.git-blame-ignore-revs`**, which GitHub honours
+  automatically; activate it in a clone with
+
+      git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+  Verified by blame that lines around recent work attribute to their authoring
+  commit, not to the reformat.
+- **`cargo fmt --all --check` is now blocking in CI.** With it,
+  `continue-on-error` disappears from `ci.yml` entirely — the workflow has no
+  advisory steps left.
+
+### What the reformat actually touched
+
+Most hunks in the already-4-space majority are wrapping past 100 columns and
+`use` ordering. No `#[rustfmt::skip]` was needed anywhere: the numeric tables
+in `color/golden.rs` are one row per line and inside 100 columns, so they came
+through intact. Four places where a closing brace shared a line with the
+following doc comment (`}    /// ...`) got split — a readability fix found for
+free.
+
+Checked explicitly that no doc-comment *prose* moved: every comment line
+present before the reformat is present after, modulo leading indentation, the
+four brace splits being the only additions.
+
 ## [0.6.29] — The Névot-Croce validity limit, written down where it is read
 
 Documentation only; no behaviour change. 0.6.28 established that type-5

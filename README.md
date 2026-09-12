@@ -117,7 +117,15 @@ maturin develop --release
 cargo check --workspace
 cargo test --workspace     # everything (needs Python for binding crates)
 cargo test-pure            # pure-Rust gate (no Python needed)
+cargo fmt --all            # rustfmt defaults; CI fails on any diff
 pytest validation
+```
+
+Run this once per clone so `git blame` skips the tree-wide reformat commit
+(0.6.30) and points at whoever actually wrote each line:
+
+```powershell
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
 > **Always pass `--release`.** Plain `maturin develop` builds with the `dev`
@@ -144,9 +152,8 @@ docs/plans/exposure_audit.md).
 `cargo test --workspace`, a zero-compiler-warnings check (`-D warnings`),
 `pytest validation` on Windows and Linux, the exposure and CIE-sync lints,
 and an assertion that the installed extension is a release build.
-`cargo clippy` and `cargo fmt --check` run advisory for now — the reasons,
-and what it takes to make them blocking, are recorded at the top of the
-workflow.
+`cargo clippy -D warnings` (since 0.6.6) and `cargo fmt --all --check`
+(since 0.6.30) are blocking; nothing in the workflow is advisory any more.
 
 ### Layout notes
 
@@ -166,7 +173,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.29-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.6.30-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends
