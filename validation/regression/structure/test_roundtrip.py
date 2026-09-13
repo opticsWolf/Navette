@@ -48,6 +48,65 @@ def test_layer_roundtrip_minimal():
   assert (back.material, back.thickness) == ("glass", 10.0)
 
 
+def test_v1_state_fixture_loads_and_expands_bit_identically():
+  """F1.4/R5: the committed v1 fixture is the acceptance oracle.
+
+  The fixture was dumped from a live build at 0.6.40 (schema_version 1)
+  and committed BEFORE the range gate existed, so the "v1 stays
+  readable" half of the contract is pinned by a file that predates it -
+  not by a test written alongside the change. It must load and expand
+  bit-identically to the live equivalent: every field that drives the
+  expansion rides the state, so dict equality plus bitwise solver
+  inputs is the full proof. Note the loaded state re-tags itself at the
+  current SCHEMA_VERSION on write (the tag is checked, not stored), so
+  this test is stable across the bump.
+  """
+  import json
+  from pathlib import Path
+
+  fixture = (Path(__file__).resolve().parents[2] / "fixtures" / "state"
+             / "v1_architect.json")
+  state = json.loads(fixture.read_text(encoding="utf-8"))
+  assert state["schema_version"] == 1
+
+  loaded = Navette_Architect.from_state(state, materials=MATS)
+
+  layers = [
+    Layer(thickness=100.0, material_name="TiO2", inhomogen=True,
+          inh_delta=0.2, optimize=True, needle=False),
+    Layer(thickness=50.0, material_name="glass"),
+    Layer(thickness=30.0, material_name="TiO2", inhomogen=True,
+          inh_mode={"RateCapped": {"rate": 0.05, "ref_thickness": 100.0,
+                                    "cap": 0.3}}),
+  ]
+  live = Navette_Architect(materials=MATS)
+  live.add_structure(Navette_Structure(
+    layers, {"TiO2": Group("TiO2", n_factor=1.1)}, MATS))
+
+  assert loaded.get_state() == live.get_state()
+  a, b = loaded.get_solver_inputs(), live.get_solver_inputs()
+  assert np.array_equal(np.asarray(a.thicknesses), np.asarray(b.thicknesses))
+  assert np.array_equal(np.asarray(a.indices), np.asarray(b.indices))
+  # And the graded expansion is real (not a degenerate 3-row stack).
+  assert len(np.asarray(a.thicknesses)) > len(layers)
+
+
+def test_newer_build_state_refused():
+  """F1.4/R5: a state naming a NEWER build is refused.
+
+  Written against the un-bumped point gate (which refuses version 3 as
+  stale); the F1.4 range gate keeps the refusal and sharpens the reason
+  to 'newer build' - the assertion here is refusal-first by design, so
+  the oracle exists before the change that must satisfy it.
+  """
+  arch = Navette_Architect(materials=MATS)
+  arch.add_structure(Navette_Structure([Layer(10.0, "glass")], {}, MATS))
+  future = arch.get_state()
+  future["schema_version"] = 999
+  with pytest.raises(ValueError):
+    Navette_Architect.from_state(future, materials=MATS)
+
+
 def test_stale_schema_versions_refused():
   from navette.structure.types import SCHEMA_VERSION
   layer_state = _full_layer().get_state()

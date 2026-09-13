@@ -1,0 +1,167 @@
+{
+ "blocks": [
+  {
+   "inverted": false,
+   "kind": 0,
+   "label": "",
+   "repeat_count": 1,
+   "structure_ref": 0
+  }
+ ],
+ "schema_version": 1,
+ "structures": [
+  {
+   "groups": {
+    "TiO2": {
+     "error_mask": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "group_name": "TiO2",
+     "inh_delta_error_params": {
+      "abs_mean_delta_g": 0.0,
+      "abs_mean_delta_h": 0.0,
+      "abs_std_dev": 0.01,
+      "abs_variance": 0.01,
+      "rel_mean_delta_g": 0.0,
+      "rel_mean_delta_h": 0.0,
+      "rel_std_dev": 1.0,
+      "rel_variance": 1.0
+     },
+     "inh_delta_error_type": 0,
+     "inh_delta_summand": 0.0,
+     "interface_error_params": {
+      "abs_mean_delta_g": 0.0,
+      "abs_mean_delta_h": 0.0,
+      "abs_std_dev": 0.01,
+      "abs_variance": 0.01,
+      "rel_mean_delta_g": 0.0,
+      "rel_mean_delta_h": 0.0,
+      "rel_std_dev": 1.0,
+      "rel_variance": 1.0
+     },
+     "interface_error_type": 0,
+     "interface_summand": 0.0,
+     "k_error_params": {
+      "abs_mean_delta_g": 0.0,
+      "abs_mean_delta_h": 0.0,
+      "abs_std_dev": 0.01,
+      "abs_variance": 0.01,
+      "rel_mean_delta_g": 0.0,
+      "rel_mean_delta_h": 0.0,
+      "rel_std_dev": 1.0,
+      "rel_variance": 1.0
+     },
+     "k_error_type": 0,
+     "k_factor": 1.0,
+     "n_error_params": {
+      "abs_mean_delta_g": 0.0,
+      "abs_mean_delta_h": 0.0,
+      "abs_std_dev": 0.01,
+      "abs_variance": 0.01,
+      "rel_mean_delta_g": 0.0,
+      "rel_mean_delta_h": 0.0,
+      "rel_std_dev": 1.0,
+      "rel_variance": 1.0
+     },
+     "n_error_type": 0,
+     "n_factor": 1.1,
+     "optimization_mask": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+     ],
+     "roughness_error_params": {
+      "abs_mean_delta_g": 0.0,
+      "abs_mean_delta_h": 0.0,
+      "abs_std_dev": 0.001,
+      "abs_variance": 0.001,
+      "rel_mean_delta_g": 0.0,
+      "rel_mean_delta_h": 0.0,
+      "rel_std_dev": 1.0,
+      "rel_variance": 1.0
+     },
+     "roughness_error_type": 0,
+     "roughness_summand": 0.0,
+     "schema_version": 1,
+     "thick_factor": 1.0,
+     "thick_summand": 0.0,
+     "thickness_error_params": {
+      "abs_mean_delta_g": 0.0,
+      "abs_mean_delta_h": 0.0,
+      "abs_std_dev": 0.01,
+      "abs_variance": 0.01,
+      "rel_mean_delta_g": 0.0,
+      "rel_mean_delta_h": 0.0,
+      "rel_std_dev": 1.0,
+      "rel_variance": 1.0
+     },
+     "thickness_error_type": 0
+    }
+   },
+   "layers": [
+    {
+     "coherent": true,
+     "inh_delta": 0.2,
+     "inhomogen": true,
+     "interface": false,
+     "interface_thickness": 0.0,
+     "layer_type": 1,
+     "material_name": "TiO2",
+     "needle": false,
+     "optimize": true,
+     "rough_type": 0,
+     "roughness": 0.0,
+     "schema_version": 1,
+     "thickness": 100.0
+    },
+    {
+     "coherent": true,
+     "inh_delta": 0.1,
+     "inhomogen": false,
+     "interface": false,
+     "interface_thickness": 0.0,
+     "layer_type": 1,
+     "material_name": "glass",
+     "needle": true,
+     "optimize": true,
+     "rough_type": 0,
+     "roughness": 0.0,
+     "schema_version": 1,
+     "thickness": 50.0
+    },
+    {
+     "coherent": true,
+     "inh_delta": 0.1,
+     "inh_mode": {
+      "RateCapped": {
+       "cap": 0.3,
+       "rate": 0.05,
+       "ref_thickness": 100.0
+      }
+     },
+     "inhomogen": true,
+     "interface": false,
+     "interface_thickness": 0.0,
+     "layer_type": 1,
+     "material_name": "TiO2",
+     "needle": true,
+     "optimize": true,
+     "rough_type": 0,
+     "roughness": 0.0,
+     "schema_version": 1,
+     "thickness": 30.0
+    }
+   ],
+   "schema_version": 1
+  }
+ ]
+}
