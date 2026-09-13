@@ -617,7 +617,7 @@ V2). **Version: 0.6.44** at all seven sites. The
 message-text change is user-visible behaviour, which is why the sweep
 gets a release rather than riding C2.
 
-**DONE:** — done (2026-09-13, feature commit pending). Five literals
+**DONE:** — done (2026-09-13, feature commit `a91fc3d`). Five literals
 fixed (V1's `materials/mod.rs:107` included); the two existing refusal
 twins upgraded to exact full-message asserts and a Python-side twin pins
 the `MixRule` wording. V2's staging measured and honoured: the scanner

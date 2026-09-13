@@ -2743,7 +2743,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.42 | F1.5 | 3b08482 | A5 (mirror), N9 | done |
 | — | C1 | e751852 | status review finding 1 (V5, V6) | done |
 | 0.6.43 | C2 | db3d5e1 | status review finding 2 (V3, V4, V9) | done |
-| 0.6.44 | C3 | (pending) | status review findings 3–7 (V1, V2, V7, V8) | done |
+| 0.6.44 | C3 | a91fc3d | status review findings 3–7 (V1, V2, V7, V8) | done |
 | 0.6.45 | F2.1 | — | A7, R6 | not started |
 | 0.6.46 | F2.2 | — | A4, A8 | not started |
 | 0.6.47 | F2.3 | — | A8, N1 | not started |
