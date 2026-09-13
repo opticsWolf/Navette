@@ -416,7 +416,7 @@ release build. **Version: 0.6.43** at all seven sites. **Pushed
 immediately after its docs commit** — the first ladder release CI
 evaluates individually.
 
-**DONE:** — done (2026-09-13, feature commit pending). The predicate
+**DONE:** — done (2026-09-13, feature commit `db3d5e1`). The predicate
 swap + slice-aware arithmetic at `structure.rs`; the `clamp_all` doc
 paragraph rewritten (its "does not exist yet" clause was stale too —
 F1.6 landed the scale); `ThinLayerPolicy`'s deferral comment replaced by
