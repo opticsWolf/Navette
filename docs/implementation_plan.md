@@ -96,6 +96,17 @@ and B6 undercounts — and §0.4 records which.
    feature.** That is the whole safety argument: both features are opt-in by
    a field that defaults to absent.
 
+   **Cross-platform sentence (C1, amendment 3).** A recorded float digest
+   is recorded **per platform** (`test_needle_pin.py`'s `RECORDED_DIGESTS`,
+   provenance in its header). "Fingerprint unmoved" means every platform's
+   recorded digest reproduces on that platform; a digest recorded on one
+   platform does not constrain another. A digest that moves with an
+   unchanged tree is an environment move (e.g. a runner-image rotation
+   shifting libm): re-record it with a provenance note in the commit
+   message — a gate move, not a code move, and it never travels silently.
+   Adding a platform to the CI matrix requires recording its digest at the
+   current tree first.
+
    **R1 — only one of the two has an in-tree anchor.** The random-stack
    fingerprint is
    `validation/regression/structure/test_differential.py:95`
