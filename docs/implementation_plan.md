@@ -154,11 +154,14 @@ and B6 undercounts — and §0.4 records which.
 | ~~F1.7~~ **DONE (0.6.40)** | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
 | F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
 | ~~F1.5~~ **DONE (0.6.42)** | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
-| F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.43 | P2 | S | M | §4.1–4.2 |
-| F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.44 | P1 | M (driver loop) | L | §4.3, §4.6 |
-| F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.45 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
-| F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.6.46 | P1 | **M** (second schema gate) | **L** | §4.5 |
-| F3.1 | Docs, worked examples, exposure re-audit, release | 0.6.47 | P3 | S | M | §7-S5, §D7 |
+| ~~C1~~ **DONE (gate repair)** | Needle pin re-specified per-platform + ground rule 5's cross-platform sentence | none | **P0** | S (the probe settles it) | S | status review finding 1 |
+| ~~C2~~ **DONE (0.6.43)** | Interface-span clamp-up: singleton-bulk spans clamp instead of deleting | 0.6.43 | **P0** | S (arithmetic, not a scale) | S | status review finding 2 |
+| C3 | The sweep: message literals + scanner, stale comment, doc note, bookkeeping, `uv.lock` | 0.6.44 | P1 | S | M | status review findings 3–7 |
+| F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.45 | P2 | S | M | §4.1–4.2 |
+| F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.46 | P1 | M (driver loop) | L | §4.3, §4.6 |
+| F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.47 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
+| F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.6.48 | P1 | **M** (second schema gate) | **L** | §4.5 |
+| F3.1 | Docs, worked examples, exposure re-audit, release | 0.6.49 | P3 | S | M | §7-S5, §D7 |
 
 Fifteen items, `0.6.33 → 0.6.47`. Tag `v0.7.0` at F3.1 if the minor marker is
 wanted; the version number itself stays on the `0.0.1` ladder throughout.
@@ -1097,6 +1100,19 @@ in and removes the sentence.
 - **Span deferral twin:** a thin graded span under `ClampUpFinal` at 0.6.35 →
   removed whole, reported. The same twin is *inverted* at F1.6 and that
   inversion is listed in F1.6's licence.
+
+**CORRECTIONS (C2, amendment 3 - 0.6.43).** The deferral sentence that
+justified removing non-singleton spans ("clamping a span up is F1.6's
+scale operation and does not exist yet") was written before F1.6 existed
+and retired in two steps: F1.6's scalable branch scales a scalable span
+to the floor, and C2 keys the clamp-up branch on `is_singleton_bulk()`
+instead of a row count, so a plain interface-carrying film (two rows,
+one layer) clamps up with its slice bitwise intact instead of being
+deleted - the review's measured case (finding 2), and the opposite of
+U1. What still is removed whole under every policy: every other
+multi-row span (no principled clamp-up exists for them). The LM bound
+is stated as conservative for interface films: it binds the BULK row,
+so the film settles one slice thickness above the floor (V3).
 
 **Risk.** M. The enum is trivial and the coupling is not: an implementation
 that adds the policy and forgets the lower bound produces a run that
@@ -2690,8 +2706,10 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.40 | F1.7 | 57b4602 | **U3, U4**, **B2, B3**, B8 | done |
 | 0.6.41 | F1.4 | f956574 | A3, R5, N4 | done |
 | 0.6.42 | F1.5 | 3b08482 | A5 (mirror), N9 | done |
-| 0.6.43 | F2.1 | — | A7, R6 | not started |
-| 0.6.44 | F2.2 | — | A4, A8 | not started |
-| 0.6.45 | F2.3 | — | A8, N1 | not started |
-| 0.6.46 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
+| — | C1 | e751852 | status review finding 1 (V5, V6) | done |
+| 0.6.43 | C2 | (pending) | status review finding 2 (V3, V4, V9) | done |
+| 0.6.45 | F2.1 | — | A7, R6 | not started |
+| 0.6.46 | F2.2 | — | A4, A8 | not started |
+| 0.6.47 | F2.3 | — | A8, N1 | not started |
+| 0.6.48 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
 | 0.6.47 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |

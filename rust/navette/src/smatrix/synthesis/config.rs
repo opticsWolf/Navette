@@ -54,10 +54,19 @@ impl TerminationReason {
 /// gone), and a *manufacturing floor* under the clamp-up policies. The
 /// config key keeps its name; this comment is where both jobs are stated.
 ///
-/// Span deferral, until F1.6 lands: on a span, clamping up is not a row
-/// operation - it is "scale the whole span to `clamp_min_nm`", which is
-/// precisely F1.6's operation. Until then an under-thickness graded span
-/// is removed whole with the F0.2 report under EVERY policy.
+/// Span handling (F0.3's deferral, landed in three steps): a scalable
+/// multi-row span is SCALED to `clamp_min_nm`, fractions preserved
+/// (F1.6's scale operation, the deferral's stated future). A plain
+/// singleton-bulk span clamps up with its interface slice untouched
+/// (C2: the slice belongs to the authored thickness, so the bulk row
+/// takes `clamp_min_nm - t_slice`). Every other multi-row span is
+/// removed whole with the F0.2 report under EVERY policy - a profile
+/// the user did not offer for scaling has no principled clamp-up.
+/// Under `ClampUpAlways` the LM bound binds the BULK row (the
+/// parameter), so an interface-carrying film settles one slice
+/// thickness above the floor: `bulk >= clamp_min_nm`, total
+/// `>= clamp_min_nm + t_slice` - conservative by construction, not a
+/// bug (C2/V3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThinLayerPolicy {
     /// Sub-minimum layers are removed, during the run and at the end.

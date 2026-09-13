@@ -416,7 +416,24 @@ release build. **Version: 0.6.43** at all seven sites. **Pushed
 immediately after its docs commit** — the first ladder release CI
 evaluates individually.
 
-**DONE:** — (recorded here when the item lands, with the commit hashes).
+**DONE:** — done (2026-09-13, feature commit pending). The predicate
+swap + slice-aware arithmetic at `structure.rs`; the `clamp_all` doc
+paragraph rewritten (its "does not exist yet" clause was stale too —
+F1.6 landed the scale); `ThinLayerPolicy`'s deferral comment replaced by
+the three-step landing story + V3's conservative-bound sentence. Twins:
+`c2_interface_film_clamps_up_instead_of_being_deleted` (the review's
+probe scenario, ClampUpFinal/Always/Remove variants — the Remove control
+reports 2 rows removed) and `c2_interface_film_above_the_floor_is_
+untouched`; the interface bound twin
+`clamp_up_always_interface_film_binds_the_bulk_row_not_the_total`
+(asserts `bulk == clamp_min_nm`, total `+ 0.5` slice untouched, merit
+history monotone over five sweeps, never deleted; the Remove control
+keeps the lead). The bound twin needed the lead's nk EXACTLY the
+ambient's: optically invisible apart from a global phase, the
+slice+bulk same-nk pair reduces to one L layer, and the plain twin's
+descent argument carries over — with the demand's zero now at
+bulk = −0.5, so the constrained optimum IS the bound. 546 lib tests,
+workspace green.
 
 ---
 
@@ -426,7 +443,7 @@ One release (0.6.44), one theme: everything the review found that does
 not change behaviour except message text. One feature commit (code) and
 one docs commit (plan/CHANGELOG), as usual.
 
-### 4.1 The four message literals (review finding 3 + its two pre-existing cousins)
+### 4.1 The five message literals (review finding 3 + V1's third series site + two pre-existing cousins)
 
 Lost `\`-continuations left whitespace runs in wrapped literals:
 
@@ -593,8 +610,10 @@ provenance C1 has just made load-bearing. If that argument is rejected,
 the answer is `.gitignore`, not the status quo. Record whichever in the
 commit message; do not leave the file in the third state.
 
-**Gates:** the full battery (message twins now exact; scanner tool green
-with an empty allowlist). **Version: 0.6.44** at all seven sites. The
+**Gates:** the full battery (message twins now exact; the scanner
+blocking on space runs with an empty allowlist for that class, staged
+with its written-out entries for the cp1252-encodable non-ASCII set per
+V2). **Version: 0.6.44** at all seven sites. The
 message-text change is user-visible behaviour, which is why the sweep
 gets a release rather than riding C2.
 

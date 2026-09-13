@@ -990,12 +990,17 @@ impl DesignStack {
     /// `ClampedNeedleSynthesizer.clamp_all_layers`.
     /// F0.3: `clamp_up` selects the floor's behaviour - `false` removes a
     /// sub-minimum span (today, and every in-run pass under
-    /// `Remove`/`ClampUpFinal`), `true` sets a surviving ONE-ROW span to
-    /// `clamp_min_nm` instead (the final pass under `ClampUpFinal`, every
-    /// pass under `ClampUpAlways`). A multi-row span is removed whole
-    /// under every policy: clamping a span up is F1.6's scale operation
-    /// and does not exist yet. Clamp-ups are neither removals nor caps,
-    /// so they do not appear in the report.
+    /// `Remove`/`ClampUpFinal`), `true` clamps a surviving SINGLETON-BULK
+    /// span up to `clamp_min_nm` instead (the final pass under
+    /// `ClampUpFinal`, every pass under `ClampUpAlways`). Singleton-bulk is
+    /// N1's "one physical layer", not a row count (C2): a plain
+    /// interface-carrying film is two rows and still one layer - the slice
+    /// stays (B1: it belongs to the authored thickness) and the bulk row
+    /// takes the remainder, so the film is clamped instead of deleted. A
+    /// multi-row span is removed whole under every policy; the exceptions
+    /// are F1.6's branches above this one (a scalable span scales to the
+    /// floor, fractions preserved). Clamp-ups are neither removals nor
+    /// caps, so they do not appear in the report.
     pub fn clamp_all(
         &mut self,
         min_nm: f64,
@@ -1080,8 +1085,13 @@ impl DesignStack {
                 // clamp-up posture is SCALED to the floor, fractions
                 // preserved (the profile survives; this is the deferral
                 // landing). Under `Remove`, and for every non-scalable
-                // span, the F0.3 rule stands: one-row spans clamp up,
-                // multi-row spans are removed whole.
+                // span, the F0.3 rule stands: a singleton-bulk span clamps
+                // up, multi-row spans are removed whole. The clamp-up
+                // predicate is N1's "one physical layer", not a row
+                // count (C2): a plain interface-carrying film is two rows
+                // and still one layer - the slice stays (B1: it belongs
+                // to the authored thickness) and the bulk row takes the
+                // rest, so the film is clamped instead of deleted.
                 if scalable && sp.end - sp.start > 1 && clamp_up_rows {
                     let f = min_nm / d;
                     let mut rows = old[sp.start..sp.end].to_vec();
@@ -1104,19 +1114,27 @@ impl DesignStack {
                     p = e;
                     continue;
                 }
-                if clamp_up_rows && sp.end - sp.start == 1 {
+                if clamp_up_rows && sp.is_singleton_bulk() {
                     let mut thin = old[sp.start..sp.end].to_vec();
-                    thin[0].d_nm = min_nm;
+                    let slice_rows = usize::from(sp.slice);
+                    let slice_total: f64 = thin[..slice_rows].iter().map(|l| l.d_nm).sum();
+                    // The clamp sets the SLICE-INCLUSIVE total to the
+                    // floor (F0.2's rule reads the span's total); the
+                    // bulk row takes the remainder. A one-row span is
+                    // the slice_rows == 0 case of this, bitwise the old
+                    // `thin[0].d_nm = min_nm`.
+                    thin[slice_rows].d_nm = min_nm - slice_total;
+                    let e = p + thin.len();
                     surviving.extend(thin);
                     new_spans.push(Span {
                         start: p,
-                        end: p + 1,
+                        end: e,
                         logical: sp.logical,
                         slice: sp.slice,
-                        bulk_start: p + usize::from(sp.slice),
+                        bulk_start: p + slice_rows,
                     });
                     new_recipes.push(old_recipes[sid].clone());
-                    p += 1;
+                    p = e;
                     continue;
                 }
                 report
@@ -2591,6 +2609,139 @@ mod tests {
             .unwrap();
         assert_eq!(rep.spans_removed.len(), 1);
         assert!(stack2.films().is_empty());
+    }
+
+    /// C2 (review finding 2, measured): an interface-carrying PLAIN film
+    /// is ONE physical layer (N1) and clamps up instead of being deleted.
+    /// The slice stays bitwise (B1: it belongs to the authored
+    /// thickness) and the bulk row takes `min - slice`, so the span's
+    /// slice-inclusive total lands on the floor. The review's case:
+    /// 0.8 nm TiO2 with a 0.2 nm interface under a 2.0 nm floor was
+    /// removed whole; now it is clamped and kept.
+    #[test]
+    fn c2_interface_film_clamps_up_instead_of_being_deleted() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.0); NW]);
+        nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
+        // The interface slice is carved by the flag owner, which resolves
+        // to Some(k) only from the second entry on - a lead film is
+        // required (F1.6's interface twin documents the same).
+        let mut lead = crate::structure::Layer::film(20.0, "L");
+        lead.optimize = false;
+        lead.needle = false;
+        let mut carrier = crate::structure::Layer::film(0.8, "H");
+        carrier.interface = true;
+        carrier.interface_thickness = 0.2;
+        let (mut stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[lead.clone(), carrier.clone()],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(warns.is_empty(), "a plain film is not profiled: no warning");
+        let sp = stack.spans()[1];
+        assert!(sp.slice, "the carrier carried its interface");
+        assert!(sp.is_singleton_bulk(), "one physical layer, two rows");
+        let slice_d = stack.films()[sp.start].d_nm;
+        assert_eq!(slice_d, 0.2);
+        let bulk_before = stack.films()[sp.bulk_start].d_nm;
+        assert_eq!(
+            bulk_before,
+            0.8 - slice_d,
+            "the authored 0.8 includes the slice"
+        );
+
+        // ClampUpFinal: clamped, kept, not reported (F0.3's rule).
+        let rep = stack
+            .clamp_all_policy(2.0, 300.0, ThinLayerPolicy::ClampUpFinal, true)
+            .unwrap();
+        assert!(rep.is_empty(), "clamp-ups are not clamp-report entries");
+        assert_eq!(stack.films().len(), 3, "no row removed");
+        assert_eq!(stack.films()[sp.start].d_nm, slice_d, "slice bitwise");
+        let bulk = stack.films()[sp.bulk_start].d_nm;
+        assert_eq!(bulk, 2.0 - slice_d, "the bulk takes the remainder");
+        assert!(
+            (bulk + slice_d - 2.0).abs() < 1e-9,
+            "the span total IS the floor (2.0 - 0.2 need not round-trip bitwise)"
+        );
+        stack.assert_spans_partition();
+
+        // ClampUpAlways: the same clamp through the every-pass posture.
+        let (mut stack2, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[lead.clone(), carrier.clone()],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let rep = stack2
+            .clamp_all_policy(2.0, 300.0, ThinLayerPolicy::ClampUpAlways, true)
+            .unwrap();
+        assert!(rep.is_empty());
+        assert_eq!(stack2.films().len(), 3);
+        assert_eq!(stack2.films()[sp.start].d_nm, slice_d);
+        assert_eq!(stack2.films()[sp.bulk_start].d_nm, 2.0 - slice_d);
+
+        // Control: under Remove the same span is removed whole, reported
+        // (F0.2's rule, unchanged) - rows 2 (slice + bulk).
+        let (mut stack3, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[lead, carrier],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let rep = stack3
+            .clamp_all_policy(2.0, 300.0, ThinLayerPolicy::Remove, true)
+            .unwrap();
+        assert_eq!(rep.spans_removed.len(), 1);
+        assert_eq!(rep.rows_removed, 2, "the whole carrier goes, slice too");
+        assert_eq!(stack3.films().len(), 1, "only the lead survives");
+    }
+
+    /// C2 control: a plain interface-carrying film ABOVE the floor is
+    /// untouched - the clamp-up branch is not reachable for a healthy
+    /// span, and the slice rows never move through clamp either way.
+    #[test]
+    fn c2_interface_film_above_the_floor_is_untouched() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.0); NW]);
+        nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
+        let mut lead = crate::structure::Layer::film(20.0, "L");
+        lead.optimize = false;
+        lead.needle = false;
+        let mut carrier = crate::structure::Layer::film(50.0, "H");
+        carrier.interface = true;
+        carrier.interface_thickness = 0.2;
+        let (mut stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[lead, carrier],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let rep = stack
+            .clamp_all_policy(2.0, 300.0, ThinLayerPolicy::ClampUpFinal, true)
+            .unwrap();
+        assert!(rep.is_empty());
+        assert_eq!(stack.films().len(), 3);
+        assert_eq!(stack.films()[1].d_nm, 0.2);
+        assert_eq!(stack.films()[2].d_nm, 50.0 - 0.2);
     }
 
     /// A SCALABLE span above the ceiling is CAPPED as a bound (fractions

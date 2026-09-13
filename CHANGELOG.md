@@ -4,6 +4,62 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.43] - C2: an interface-carrying film clamps up instead of being deleted
+
+The review's measured case (finding 2): under a clamp-up policy, a plain
+film that carries an interface slice was deleted whole where the same
+film without an interface was clamped up and kept - because the clamp-up
+branch keyed on a ROW COUNT (`end - start == 1`) instead of the repo's
+own predicate for "one physical layer" (`is_singleton_bulk`, N1), and an
+interface film is two rows and still one layer. Deleting is the opposite
+of what the policy's whole purpose (U1) asks for.
+
+### Changed
+
+- **The clamp-up branch keys on `is_singleton_bulk()`** - one bulk row,
+  interface slice optional - so a plain interface-carrying film under
+  `ClampUpFinal`/`ClampUpAlways` is CLAMPED: the slice stays bitwise
+  (B1: it belongs to the authored thickness) and the bulk row takes
+  `clamp_min_nm - t_slice`, landing the slice-inclusive total exactly on
+  the floor. The one-row plain film is the `slice == 0` case of the same
+  arithmetic - bitwise the old behaviour, which is why every existing
+  twin holds unchanged.
+- **The graded/span deferral is fully retired.** F0.3's sentence ("a
+  multi-row span is removed whole ... clamping a span up is F1.6's scale
+  operation and does not exist yet") predates F1.6; the scalable branch
+  (F1.6) already scales scalable spans to the floor, and C2 completes
+  the singleton-bulk case. What still is removed whole, deliberately:
+  every other multi-row span - a plain multi-row span has no principled
+  way to choose which row grows, and a non-scalable profiled span has
+  neither (the rate modes read absolute depth; scaling rows the user
+  did not offer for scaling is not a clamp). Removal stays reported.
+- **`ClampUpAlways`'s LM bound is stated as conservative, not exact**
+  (doc comment): the floor binds the BULK row (the LM parameter); an
+  interface-carrying film therefore settles one slice thickness above
+  the floor (`bulk >= clamp_min_nm`, total `>= clamp_min_nm + t_slice`).
+  Conservative by construction - a floor is a minimum, not a target -
+  and pinned by the interface bound twin.
+- **Scoped out:** the CEILING side keeps refusing a plain
+  interface-carrying span above `clamp_max_nm` (the refusal is loud,
+  names both sides, and is safe); shrinking a plain film to the ceiling
+  would also be well-defined, but changing F0.2's refusal semantics is
+  not what the review found. Recorded as a known asymmetry.
+
+### Twins
+
+- The review's probe scenario, promoted: 0.8 nm TiO2 with a 0.2 nm
+  interface under a 2.0 nm floor - `ClampUpFinal` and `ClampUpAlways`
+  variants keep it (slice bitwise 0.2, bulk `2.0 - 0.2`, total within
+  the established post-scale tolerance, empty report); `Remove` still
+  eliminates it whole (2 rows, reported).
+- Above the floor: untouched (no clamp branch reachable, slice rows
+  never move through clamp).
+- The LM bound's interface variant: a thin interface-carrying film under
+  `ClampUpAlways` binds the BULK row at `clamp_min_nm` (total
+  `clamp_min_nm + slice`), merit history monotone over five sweeps,
+  never deleted; under `Remove` the carrier goes whole and the lead
+  survives.
+
 ## [0.6.42] - F1.5: config rows and the Python gradient surface
 
 The last transport gap: gradients were constructible only through the

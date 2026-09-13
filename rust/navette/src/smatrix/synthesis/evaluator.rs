@@ -1244,6 +1244,178 @@ mod tests {
             );
         }
 
+        /// C2 (V3-corrected wording): the interface variant of the bound
+        /// twin. The LM floor binds the BULK row (the parameter); the
+        /// interface slice is fixed and not a parameter. So a thin
+        /// interface-carrying film parks at `clamp_min_nm` BULK - total
+        /// `clamp_min_nm + t_slice` - not at the floor: the two floors are
+        /// defined on different quantities and the bound is conservative
+        /// (C2/V3, stated in `ThinLayerPolicy`'s doc comment). The film is
+        /// never deleted and the merit history stays monotone, which is
+        /// what the bound exists for.
+        #[test]
+        fn clamp_up_always_interface_film_binds_the_bulk_row_not_the_total() {
+            use std::collections::{HashMap, HashSet};
+            let r_bare: f64 = {
+                let t: f64 = (1.0 - 1.52) / (1.0 + 1.52);
+                t * t
+            };
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: 0.0,
+                curve: CurveId::Rs,
+            });
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                wavelengths: vec![900.0].into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Linear,
+                norm_factor: 1.0,
+                normalized_targets: vec![r_bare].into(),
+                tolerances: vec![0.01].into(),
+                band: vec![].into(),
+                phase: false,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .map_err(|e| panic!("{e}"))
+            .unwrap();
+
+            let mut ctx = SmatrixContext {
+                wavls: vec![900.0],
+                sin_theta: vec![0.0],
+                spec: spec.clone(),
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
+                lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
+            };
+
+            // air | G 20 (pinned lead) | slice 0.5 | bulk L | sub - the
+            // interface slice needs a lead entry (the flag owner resolves
+            // only from the second entry on), and the lead must be pinned
+            // (not a second parameter). The lead's nk is EXACTLY the
+            // ambient's (1.0 + 0j): optically invisible apart from a
+            // global phase, and the slice shares the carrier's nk, so the
+            // two same-nk rows reduce (transfer matrices multiply) to ONE
+            // L layer of 0.5 + bulk - the plain AR structure of the twin
+            // above, with the demand's zero now at bulk = -0.5. The pull
+            // toward disappearance therefore binds at the floor, and the
+            // bound is on the BULK parameter only (V3).
+            let nw = 3usize;
+            let n_l = 1.52_f64.sqrt();
+            let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+            ambient.optimize = false;
+            ambient.needle = false;
+            let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, nw);
+            substrate.optimize = false;
+            substrate.needle = false;
+            let mut nk = HashMap::new();
+            nk.insert(
+                std::sync::Arc::<str>::from("G"),
+                vec![Complex64::new(1.0, 0.0); nw],
+            );
+            nk.insert(
+                std::sync::Arc::<str>::from("L"),
+                vec![Complex64::new(n_l, 0.0); nw],
+            );
+            let mut lead = crate::structure::Layer::film(20.0, "G");
+            lead.optimize = false;
+            lead.needle = false;
+            let mut carrier = crate::structure::Layer::film(10.0, "L");
+            carrier.interface = true;
+            carrier.interface_thickness = 0.5;
+            let wl: Vec<f64> = vec![900.0, 1000.0, 1100.0];
+            let (mut stack, warns) = DesignStack::from_design(
+                ambient,
+                substrate,
+                &[lead, carrier],
+                &nk,
+                &HashMap::new(),
+                &wl,
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert!(warns.is_empty());
+            let sp = stack.spans()[1];
+            assert!(sp.slice && sp.is_singleton_bulk());
+            let slice_d = stack.films()[sp.start].d_nm;
+            assert_eq!(slice_d, 0.5);
+
+            let mut merits: Vec<f64> = Vec::new();
+            for _ in 0..5 {
+                let mf = ctx.optimize_thicknesses(&mut stack).unwrap();
+                merits.push(mf);
+            }
+            for w in merits.windows(2) {
+                assert!(
+                    w[1] <= w[0] + 1e-12,
+                    "merit history must be monotone (limit cycle's absence): {merits:?}"
+                );
+            }
+            // The BULK parks at the bound (the lb is on the parameter);
+            // the total is the floor PLUS the untouched slice. Exactly the
+            // V3 asymmetry the clamp-up branch's widening is careful not
+            // to promise away.
+            let bulk = stack.films()[sp.bulk_start].d_nm;
+            assert!(
+                (bulk - 2.0).abs() < 1e-9,
+                "bulk parked at {bulk}, not the bound"
+            );
+            assert_eq!(stack.films()[sp.start].d_nm, slice_d, "slice untouched");
+            assert_eq!(
+                stack.films().len(),
+                3,
+                "never deleted (lead + slice + bulk)"
+            );
+
+            // Control: under Remove the carrier is eliminated whole
+            // (slice included - F0.2's span rule); the lead survives.
+            let mut ctx2 = SmatrixContext {
+                wavls: vec![900.0],
+                sin_theta: vec![0.0],
+                spec,
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                thin_layer_policy: ThinLayerPolicy::Remove,
+                lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
+            };
+            let nw = 3usize;
+            let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+            ambient.optimize = false;
+            ambient.needle = false;
+            let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, nw);
+            substrate.optimize = false;
+            substrate.needle = false;
+            let mut lead = crate::structure::Layer::film(20.0, "G");
+            lead.optimize = false;
+            lead.needle = false;
+            let mut carrier = crate::structure::Layer::film(10.0, "L");
+            carrier.interface = true;
+            carrier.interface_thickness = 0.5;
+            let (mut stack, _) = DesignStack::from_design(
+                ambient,
+                substrate,
+                &[lead, carrier],
+                &nk,
+                &HashMap::new(),
+                &wl,
+                &HashSet::new(),
+            )
+            .unwrap();
+            ctx2.optimize_thicknesses(&mut stack).unwrap();
+            assert_eq!(
+                stack.films().len(),
+                1,
+                "the lead survives; the interface carrier is gone whole"
+            );
+            assert_eq!(stack.films()[0].material.as_ref(), "G");
+        }
+
         /// F0.2: the accumulator drains once and resets. With no
         /// optimize-flagged films there is no solve and no sweep, so no
         /// report; a report that arrives is handed to the pipeline
