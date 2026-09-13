@@ -24,6 +24,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use crate::smatrix::optics_core::cplx;
+use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::structure::Span;
 
 // ---------------------------------------------------------------------------
@@ -244,11 +245,27 @@ impl DesignStack {
         &self.spans[span_index_of_row(&self.spans, row)]
     }
 
+    /// F1.6: the one scalable-span predicate, shared by the parameter
+    /// builder (evaluator), the clamp and the needle-pipeline
+    /// construction refusal: the span has at least two BULK rows and
+    /// every one of them is optimize-flagged (the interface slice is
+    /// derived and carries optimize=false already). This is the shape
+    /// `from_design` gives a profiled (`inhomogen` or `gradient`)
+    /// carrier with `optimize = true` whose mode scales exactly.
+    pub(crate) fn span_is_scalable(&self, sp: &Span) -> bool {
+        span_is_scalable_rows(sp, &self.films)
+    }
+
     /// R3 / §6 row 6: the one needle-host admissibility rule, shared by
     /// `insert_needle_seed` (the public door) and the scan-site filter.
     /// A host row inside a multi-row span is refused — a needle must
     /// never split a graded profile or land on a derived row. The message
     /// names the span's material and its row range. `None` = admissible.
+    /// F1.6: a SCALABLE span (an optimized profiled carrier) is also
+    /// refused — scaling the profile preserves it, splitting a foreign
+    /// row into the middle of it does not. The rule is unchanged in
+    /// form: multi-row spans were never hosts; scalability only ever
+    /// ADDS reasons a span must stay whole.
     pub(crate) fn needle_host_refusal(&self, film_idx: usize) -> Option<String> {
         if film_idx >= self.films.len() {
             return None; // range is the caller's error to raise
@@ -381,6 +398,21 @@ impl DesignStack {
                     if background.contains(h.material.as_str()) {
                         h.optimize = false;
                         h.needle = false;
+                    } else if h.optimize && profile_scales_exactly(&h) {
+                        // F1.6 (U2/B5): a profiled carrier with
+                        // `optimize = true` whose mode scales exactly
+                        // keeps its profile AND its optimize flag: the
+                        // span becomes ONE LM parameter (the carrier's
+                        // total thickness), so the film is neither
+                        // homogenized nor pinned. This is the one
+                        // non-additive part of F1.6: `optimize = true`
+                        // used to mean "homogenize me" for profiled
+                        // films. The needle flag stays as authored - a
+                        // multi-row span is never a needle host
+                        // (needle_host_refusal), so it cannot be
+                        // meaningfully true here, but forcing it would
+                        // be a second silent correction and this branch
+                        // refuses to correct anything.
                     } else if h.inhomogen {
                         warnings.push(format!(
                             "DesignStack::from_design: film '{}' is graded (inhomogen) - the pipeline treats it as \
@@ -835,11 +867,53 @@ impl DesignStack {
         max_nm: f64,
         clamp_up: bool,
     ) -> Result<ClampReport, String> {
+        // Legacy/Python surface: the bool form. `true` means the
+        // strongest clamp-up posture (rows clamped up as soon as they
+        // are seen, spans scaled up); `false` is plain `Remove`.
+        // ClampUpFinal reaches the sweep through `clamp_all_policy`.
+        let policy = if clamp_up {
+            ThinLayerPolicy::ClampUpAlways
+        } else {
+            ThinLayerPolicy::Remove
+        };
+        self.clamp_all_policy(min_nm, max_nm, policy, clamp_up)
+    }
+
+    /// The policy-aware clamp (F0.2/F0.3/F1.6). `final_pass` reproduces
+    /// F0.3's pass structure exactly: DURING the run only ClampUpAlways
+    /// clamps anything up; the FINAL pass substitutes clamping for
+    /// removal under both clamp-up policies. The span rules ride the
+    /// same structure:
+    ///
+    /// - the ceiling REFUSAL narrows to PINNED multi-row spans (F0.2); a
+    ///   SCALABLE span (every bulk row optimize-flagged — the shape
+    ///   `from_design` gives a profiled carrier with `optimize = true`,
+    ///   F1.6) is CAPPED to the ceiling as a bound, fractions preserved;
+    /// - an under-thickness SCALABLE span under an active clamp-up is
+    ///   SCALED to the floor, fractions preserved (F0.3's deferral
+    ///   lands here: no longer "removed whole under every policy");
+    ///   otherwise it is removed whole as before;
+    /// - every other rule is unchanged, and a stack with no scalable
+    ///   span behaves exactly as before.
+    pub fn clamp_all_policy(
+        &mut self,
+        min_nm: f64,
+        max_nm: f64,
+        policy: ThinLayerPolicy,
+        final_pass: bool,
+    ) -> Result<ClampReport, String> {
         debug_assert!(min_nm >= 0.0 && max_nm > min_nm);
+        let clamp_up_rows = if final_pass {
+            policy != ThinLayerPolicy::Remove
+        } else {
+            policy == ThinLayerPolicy::ClampUpAlways
+        };
         // Refusals are checked BEFORE any mutation, so the stack is never
-        // left half-clamped behind an error.
+        // left half-clamped behind an error. Scalable spans are exempt:
+        // their total is an LM bound (ub), not an authoring error, and
+        // the sweep below caps them.
         for sp in &self.spans {
-            if sp.end - sp.start <= 1 {
+            if sp.end - sp.start <= 1 || self.span_is_scalable(sp) {
                 continue;
             }
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
@@ -860,12 +934,36 @@ impl DesignStack {
 
         for sp in &old_spans {
             let d: f64 = old[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            // The span's scalability is read from the OLD rows (the
+            // predicate only consults optimize flags, which the rebuild
+            // preserves per output row).
+            let scalable = span_is_scalable_rows(sp, &old);
             if d < min_nm {
-                // F0.3: clamp-up applies to one-row spans only; a
-                // multi-row span's profile is scaled whole by F1.6 or,
-                // until then, removed whole under every policy (the
-                // ThinLayerPolicy doc comment states the deferral).
-                if clamp_up && sp.end - sp.start == 1 {
+                // F0.3 + F1.6: a scalable multi-row span under an active
+                // clamp-up posture is SCALED to the floor, fractions
+                // preserved (the profile survives; this is the deferral
+                // landing). Under `Remove`, and for every non-scalable
+                // span, the F0.3 rule stands: one-row spans clamp up,
+                // multi-row spans are removed whole.
+                if scalable && sp.end - sp.start > 1 && clamp_up_rows {
+                    let f = min_nm / d;
+                    let mut rows = old[sp.start..sp.end].to_vec();
+                    for r in rows.iter_mut() {
+                        r.d_nm *= f;
+                    }
+                    let e = p + rows.len();
+                    surviving.extend(rows);
+                    new_spans.push(Span {
+                        start: p,
+                        end: e,
+                        logical: sp.logical,
+                        slice: sp.slice,
+                        bulk_start: p + usize::from(sp.slice),
+                    });
+                    p = e;
+                    continue;
+                }
+                if clamp_up_rows && sp.end - sp.start == 1 {
                     let mut thin = old[sp.start..sp.end].to_vec();
                     thin[0].d_nm = min_nm;
                     surviving.extend(thin);
@@ -886,9 +984,18 @@ impl DesignStack {
                 continue;
             }
             let mut rows = old[sp.start..sp.end].to_vec();
-            if sp.end - sp.start == 1 && rows[0].d_nm > max_nm {
+            if rows.len() == 1 && rows[0].d_nm > max_nm {
                 // One-row span: D == d, so this is today's row cap.
                 rows[0].d_nm = max_nm;
+                report.spans_capped += 1;
+            } else if rows.len() > 1 && scalable && d > max_nm {
+                // F1.6: a scalable span above the ceiling is capped as a
+                // bound (fractions preserved), not refused - the refusal
+                // above fired only for pinned spans.
+                let f = max_nm / d;
+                for r in rows.iter_mut() {
+                    r.d_nm *= f;
+                }
                 report.spans_capped += 1;
             }
             let e = p + rows.len();
@@ -979,6 +1086,30 @@ pub(crate) fn span_index_of_row(spans: &[Span], row: usize) -> usize {
     spans.partition_point(|s| s.end <= row)
 }
 
+/// F1.6: the scalability predicate over an explicit row list — the form
+/// the clamp needs (it judges the OLD rows while rebuilding the stack).
+pub(crate) fn span_is_scalable_rows(sp: &Span, films: &[LayerSpec]) -> bool {
+    let bulk = sp.end - sp.bulk_start;
+    bulk >= 2 && (sp.bulk_start..sp.end).all(|r| films[r].optimize)
+}
+
+/// F1.6: the scale-free half of the mode table. A profile scales exactly
+/// iff the index at a sublayer is a function of that sublayer's
+/// FRACTIONAL position, not its absolute depth: `InhMode::Fixed` (the
+/// ramp is `i/(sub-1)` only) and `GradientMode::FixedSpan` (normalized
+/// depth between two endpoints). The RateCapped modes read absolute `z`
+/// and stay homogenized until F1.7.
+pub(crate) fn profile_scales_exactly(l: &crate::structure::Layer) -> bool {
+    use crate::structure::gradient::{GradientMode, InhMode};
+    if let Some(grad) = &l.gradient {
+        matches!(grad.mode, GradientMode::FixedSpan { .. })
+    } else if l.inhomogen {
+        l.inh_mode == InhMode::Fixed
+    } else {
+        false
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SolverArrays
 // ---------------------------------------------------------------------------
@@ -1004,6 +1135,7 @@ pub struct SolverArrays {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::smatrix::synthesis::evaluator::{apply_params, build_params};
     use std::collections::{HashMap, HashSet};
 
     const NW: usize = 8; // simulation wavelengths
@@ -1040,6 +1172,13 @@ mod tests {
         nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
         let mut film = crate::structure::Layer::film(100.0, "H");
         film.gradient = Some(GradientSpec::fixed_span("H", "L", 0.0, 1.0));
+        // F1.6: optimize=true on a FixedSpan gradient now KEEPS the
+        // profile (the scalable-span branch), so the homogenize path is
+        // exercised with the stable posture that always homogenized:
+        // optimize=false + needle=true (not background - background
+        // requires needle=false too).
+        film.optimize = false;
+        film.needle = true;
 
         // Non-background: one row, bitwise the EMA at f_mid, warning
         // names the mixture and f_mid.
@@ -1148,6 +1287,10 @@ mod tests {
         let mut graded = vec![crate::structure::Layer::film(50.0, "H")];
         graded[0].inhomogen = true;
         graded[0].inh_delta = 0.2;
+        // F1.6: the stable homogenize posture (optimize=false +
+        // needle=true - not background, which requires needle=false).
+        graded[0].optimize = false;
+        graded[0].needle = true;
         let (gstack, warns) = DesignStack::from_design(
             air(0.0),
             sub(0.0),
@@ -1947,9 +2090,11 @@ mod tests {
         assert!(stack.films().is_empty());
     }
 
-    /// Licence item 2, measured: a pinned 1000 nm graded span
+    /// Licence item 2, measured: a PINNED 1000 nm graded span
     /// (delta = 0.5 -> 57 rows) under a 300 nm ceiling refuses -
-    /// message names the span material and both numbers.
+    /// message names the span material and both numbers. F1.6 narrows
+    /// this to pinned spans; a scalable span is capped instead
+    /// (f16_scalable_span_above_ceiling_is_capped_not_refused).
     #[test]
     fn f02_cap_refuses_a_multirow_span_above_the_ceiling() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
@@ -1979,6 +2124,193 @@ mod tests {
                 .unwrap();
         let rep = stack2.clamp_all(2.0, 1500.0, false).unwrap();
         assert!(rep.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // F1.6 - the clamp's span branches
+    // ------------------------------------------------------------------
+
+    /// Licence item 4, landed: an under-thickness SCALABLE span (the
+    /// optimized profiled carrier F1.6's from_design branch produces)
+    /// under ClampUpFinal is SCALED to the floor, fractions preserved -
+    /// inverting F0.3's deferral deliberately. The scale-up is a
+    /// clamp-up, so it is not a ClampReport entry (F0.3's rule).
+    #[test]
+    fn f16_under_thickness_scalable_span_is_scaled_to_the_floor() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.1,
+            ..crate::structure::Layer::film(5.0, "TiO2")
+        }];
+        // NOT background: the carrier keeps optimize=true (F1.6) and the
+        // span is scalable (all bulk rows free).
+        let (mut stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &graded,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(warns.is_empty());
+        let rows: Vec<usize> = (0..stack.films().len()).collect();
+        let d0: f64 = rows.iter().map(|&r| stack.films()[r].d_nm).sum();
+        let fractions: Vec<f64> = rows.iter().map(|&r| stack.films()[r].d_nm / d0).collect();
+        assert!(stack.span_is_scalable(stack.spans().first().unwrap()));
+
+        // ClampUpFinal, final pass: scaled to the floor, not removed.
+        let rep = stack
+            .clamp_all_policy(6.0, 1000.0, ThinLayerPolicy::ClampUpFinal, true)
+            .unwrap();
+        assert!(rep.is_empty(), "scale-ups are not clamp-report entries");
+        assert_eq!(stack.films().len(), rows.len(), "no row removed");
+        let d1: f64 = rows.iter().map(|&r| stack.films()[r].d_nm).sum();
+        assert!(
+            (d1 - 6.0).abs() < 1e-9,
+            "the span total IS the floor ({d1})"
+        );
+        for (&r, &f) in rows.iter().zip(&fractions) {
+            let f_now = stack.films()[r].d_nm / d1;
+            assert!((f_now - f).abs() <= 1e-12 * f.abs().max(1e-12));
+        }
+
+        // Under Remove the same span is removed whole (F0.3 unchanged).
+        let (mut stack2, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &graded,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let rep = stack2
+            .clamp_all_policy(6.0, 1000.0, ThinLayerPolicy::Remove, true)
+            .unwrap();
+        assert_eq!(rep.spans_removed.len(), 1);
+        assert!(stack2.films().is_empty());
+    }
+
+    /// A SCALABLE span above the ceiling is CAPPED as a bound (fractions
+    /// preserved), not refused - the F0.2 refusal narrowed to pinned
+    /// spans, whose twin above is unchanged.
+    #[test]
+    fn f16_scalable_span_above_ceiling_is_capped_not_refused() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.5,
+            ..crate::structure::Layer::film(1000.0, "TiO2")
+        }];
+        let (mut stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &graded,
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(stack.films().len(), 57);
+        let rep = stack
+            .clamp_all_policy(2.0, 300.0, ThinLayerPolicy::Remove, false)
+            .unwrap();
+        assert_eq!(rep.spans_capped, 1);
+        let d: f64 = (0..stack.films().len())
+            .map(|r| stack.films()[r].d_nm)
+            .sum();
+        assert!(
+            (d - 300.0).abs() < 1e-9,
+            "the span total IS the ceiling ({d})"
+        );
+        // Uniform scaling: every row kept its share of the span.
+        let f0 = stack.films()[0].d_nm;
+        for f in stack.films() {
+            assert!((f.d_nm / f0 - 1.0).abs() < 1e-9);
+        }
+    }
+
+    /// The interface twin: a scalable span's slice row is an interface
+    /// property, not part of the layer's thickness - it is NOT scaled,
+    /// and the span partition still holds after the writeback.
+    #[test]
+    fn f16_interface_slice_is_not_scaled() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.0); NW]);
+        nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
+        // A lead entry: the interface slice is carved by the FLAG OWNER,
+        // which resolves to Some(k) only from the second entry on.
+        // Pinned (optimize=false) so it is not a second LM parameter.
+        let mut lead = crate::structure::Layer::film(20.0, "L");
+        lead.optimize = false;
+        lead.needle = false;
+        let mut carrier = crate::structure::Layer::film(100.0, "H");
+        carrier.inhomogen = true;
+        carrier.inh_delta = 0.2;
+        carrier.interface = true;
+        carrier.interface_thickness = 5.0;
+        let (mut stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[lead, carrier],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(warns.is_empty());
+        let sp = stack.spans()[1];
+        assert!(sp.slice, "the carrier carried its interface");
+        assert!(stack.span_is_scalable(&sp));
+        // The slice row IS the span's first row (bulk_start = start + 1).
+        let slice_row = sp.start;
+        let slice_d = stack.films()[slice_row].d_nm;
+        assert_eq!(slice_d, 5.0);
+
+        // The 40% move through the writeback: only bulk rows scale.
+        let params = build_params(&stack);
+        assert_eq!(params.len(), 1);
+        apply_params(&mut stack, &params, &[1.4 * 95.0]).unwrap();
+        assert_eq!(stack.films()[slice_row].d_nm, slice_d, "slice unchanged");
+        let bulk_d: f64 = (sp.bulk_start..sp.end).map(|r| stack.films()[r].d_nm).sum();
+        assert!((bulk_d - 1.4 * 95.0).abs() < 1e-9, "the bulk total moved");
+        stack.assert_spans_partition();
+    }
+
+    /// A scalable span is still not a needle host (the rule is unchanged
+    /// in form; scalability only ever adds reasons a span stays whole).
+    #[test]
+    fn f16_scalable_span_is_still_not_a_needle_host() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.0); NW]);
+        let mut carrier = crate::structure::Layer::film(100.0, "H");
+        carrier.inhomogen = true;
+        carrier.inh_delta = 0.2;
+        let (stack, _) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[carrier],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let refusal = stack.needle_host_refusal(0);
+        assert!(refusal.is_some(), "{refusal:?}");
+        assert!(refusal.unwrap().contains("multi-row span"));
     }
 
     /// A one-row span above the ceiling is still CAPPED, not refused:

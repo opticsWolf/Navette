@@ -139,7 +139,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F1.1~~ **DONE (0.6.36)** | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
 | ~~F1.2~~ **DONE (0.6.37)** | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
 | ~~F1.3~~ **DONE (0.6.38)** | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
-| F1.6 | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
+| ~~F1.6~~ **DONE (0.6.39)** | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
 | F1.7 | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
 | F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
 | F1.5 | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
@@ -1465,6 +1465,49 @@ physics (oxidation gradients, nitrides) and coexists with gradients by the
 
 ### F1.6 — one thickness parameter per graded span (0.6.39)
 
+**DONE (0.6.39, see the feature commit).** Corrections from implementation:
+
+- **The scale-invariance twin's literal numbers are unreachable, and
+  the plan's premise about pinning needs a correction.** The plan said
+  "an `InhMode::Fixed` film at 100 nm and at 200 nm with the row count
+  pinned to the same value" — but the legacy engine has NO count
+  override (F1.1 deliberately gave the `sublayers` override to the
+  gradient spec only), and no thickness doubling preserves the count:
+  t^0.4 grows by 2^0.4 = 1.32 per doubling, so t and 2t always ceil
+  differently (100 nm gives 7 rows, 200 nm gives 9). The twin set
+  landed as: (a) the GRADIENT engine (which the plan's own table also
+  routes here) carries the bitwise-doubling twin — 128/256 nm with the
+  override pinned at 4, binary-exact so even the remainder row doubles
+  bitwise; (b) the legacy engine gets the same-count pair 100/120 nm
+  (both ceil(t^0.4) = 7): nk rows bitwise equal (the ramp is
+  i/(sub−1)-only — the plan's core evidence, confirmed), every row
+  thickness bitwise t/sub.
+- **The profile-preservation twin's literal wording is not
+  well-posed.** "Every d_r / D is unchanged to the last bit" fails
+  because D after the solve is re-summed from the rows, picking up the
+  summation's rounding: (phi_r * D)/sum(phi_r * D) != phi_r at the
+  last bit in general. The landed oracle is the writeback contract
+  itself: every row is BITWISE phi_r * D_returned, every nk row is
+  untouched, and the re-summed fractions agree with the frozen ones to
+  1e-12 relative. The plan's 40% move is exercised through the same
+  writeback (D x 1.4); the LM's own move size is design-dependent.
+- **The parameter map is positional, not by film row** — a bug the
+  Python merge/optimizer differential caught in the first
+  implementation: `assemble_jacobian_mapped` indexed its scratch
+  columns by film row, which is only correct when every earlier film
+  is also a parameter (pinned spans shift the layout). The deposits
+  are laid out in parameter order, so each parameter's base position
+  is derived from the map itself, and a map/flat-list disagreement is
+  an error, not an out-of-bounds panic.
+- **The clamp's pass structure carries the F0.3 rules:** during the
+  run only `ClampUpAlways` clamps up; the pipeline's FINAL pass
+  substitutes clamping for removal under both clamp-up policies. The
+  span scale-up rides the same structure (the evaluator's post-solve
+  sweep and the pipeline's during-run sweeps use final_pass = false;
+  the pipeline's final pass uses true). The Python `clamp_all(min,
+  max, clamp_up)` door is unchanged: `clamp_up = true` means the
+  strongest posture (rows AND scalable spans clamp up).
+
 **U2.** A profiled layer is one physical layer, so its total thickness is one
 number the optimizer should be allowed to move. **Vocabulary, fixed here for
 the whole item (B5): "profiled" means `inhomogen` *or* `gradient`, and every
@@ -2500,7 +2543,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.36 | F1.1 | 010c0ef | A4, A5, A6, A9.1, R4, N5, N7, B10 | done |
 | 0.6.37 | F1.2 | 7a499a7 | A9.2, N2 | done |
 | 0.6.38 | F1.3 | c3a20d6 | **B6**, B10 | done |
-| 0.6.39 | F1.6 | — | **U2**, **B5** | not started |
+| 0.6.39 | F1.6 | (hash pending) | **U2**, **B5** | done |
 | 0.6.40 | F1.7 | — | **U3, U4**, **B2, B3**, B8 | not started |
 | 0.6.41 | F1.4 | — | A3, R5, N4 | not started |
 | 0.6.42 | F1.5 | — | A5 (mirror), N9 | not started |

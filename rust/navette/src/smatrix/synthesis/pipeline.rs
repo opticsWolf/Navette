@@ -88,15 +88,14 @@ impl NeedlePipeline {
         contrast: ContrastMap,
     ) -> Result<Self, String> {
         let cfg = cfg.validated()?;
-        // F0.2 (licence item 2): a pinned profile above the manufacturing
-        // ceiling is an authoring error - the user asked for a film the
-        // machine cannot make, and silently squeezing it in answers a
-        // question nobody asked. Refuse at the door, name the span and
-        // both numbers. Scalable spans (F1.6) will instead get the
-        // ceiling as an LM bound; until then every multi-row span is
-        // pinned, so the refusal is unconditional.
+        // F0.2 (licence item 2) narrowed by F1.6: a PINNED profile above
+        // the manufacturing ceiling is an authoring error - the user
+        // asked for a film the machine cannot make, and silently
+        // squeezing it in answers a question nobody asked. A SCALABLE
+        // span (every bulk row optimize-flagged - F1.6's optimized
+        // profiled carriers) instead gets the ceiling as an LM bound.
         for sp in stack.spans() {
-            if sp.end - sp.start <= 1 {
+            if sp.end - sp.start <= 1 || stack.span_is_scalable(sp) {
                 continue;
             }
             let d: f64 = stack.films()[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
@@ -244,10 +243,12 @@ impl NeedlePipeline {
                 // Post-cleanup clamp (Clamped override semantics). F0.2:
                 // the report joins the phase's aggregate. F0.3: during
                 // the run the floor clamps up only under ClampUpAlways.
-                let rep = self.stack.clamp_all(
+                // F1.6: scalable spans follow the same pass structure.
+                let rep = self.stack.clamp_all_policy(
                     self.cfg.clamp_min_nm,
                     self.cfg.clamp_max_nm,
-                    self.cfg.thin_layer_policy == ThinLayerPolicy::ClampUpAlways,
+                    self.cfg.thin_layer_policy,
+                    false,
                 )?;
                 if !rep.is_empty() {
                     clamp_report.merge(rep);
@@ -273,10 +274,11 @@ impl NeedlePipeline {
                 // ordering above; enforce the AFTER clamp here too. F0.2:
                 // the report joins the phase's aggregate. F0.3: during
                 // the run the floor clamps up only under ClampUpAlways.
-                let rep = self.stack.clamp_all(
+                let rep = self.stack.clamp_all_policy(
                     self.cfg.clamp_min_nm,
                     self.cfg.clamp_max_nm,
-                    self.cfg.thin_layer_policy == ThinLayerPolicy::ClampUpAlways,
+                    self.cfg.thin_layer_policy,
+                    false,
                 )?;
                 if !rep.is_empty() {
                     clamp_report.merge(rep);
@@ -347,11 +349,14 @@ impl NeedlePipeline {
         ctx.optimize_thicknesses(&mut self.stack)?;
         // F0.3: the final pass substitutes clamping for removal under
         // both clamp-up policies; the reported merit is evaluated AFTER
-        // this sweep (the B7 ordering pin asserts it).
-        let rep_final = self.stack.clamp_all(
+        // this sweep (the B7 ordering pin asserts it). F1.6: scalable
+        // spans ride the same pass structure - scaled up/capped instead
+        // of removed/refused.
+        let rep_final = self.stack.clamp_all_policy(
             self.cfg.clamp_min_nm,
             self.cfg.clamp_max_nm,
-            self.cfg.thin_layer_policy != ThinLayerPolicy::Remove,
+            self.cfg.thin_layer_policy,
+            true,
         )?;
         let final_mf = ctx.evaluate_merit(&self.stack)?;
 
@@ -725,6 +730,56 @@ mod tests {
         );
     }
 
+    /// F1.6: the same span, marked optimize=true (NOT background - bg
+    /// empty), is a SCALABLE span: it no longer refuses at the door, it
+    /// gets the ceiling as an LM bound. The pinned twin above is
+    /// unchanged.
+    #[test]
+    fn f16_new_builds_scalable_span_above_the_ceiling() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = std::collections::HashMap::new();
+        nk.insert(
+            std::sync::Arc::from("TiO2"),
+            vec![num_complex::Complex64::new(2.35, 0.0); NW],
+        );
+        let graded = vec![crate::structure::Layer {
+            inhomogen: true,
+            inh_delta: 0.5,
+            ..crate::structure::Layer::film(1000.0, "TiO2")
+        }];
+        let (stack, warns) = DesignStack::from_design(
+            air(),
+            sub(),
+            &graded,
+            &nk,
+            &std::collections::HashMap::new(),
+            &wl,
+            &std::collections::HashSet::new(), // NOT background
+        )
+        .unwrap();
+        assert!(
+            warns.is_empty(),
+            "an optimized profiled carrier must not homogenize: {warns:?}"
+        );
+        assert_eq!(stack.films().len(), 57, "the profile kept all 57 rows");
+        assert!(stack.span_is_scalable(stack.spans().first().unwrap()));
+        let cfg = PipelineConfig {
+            clamp_max_nm: 300.0,
+            ..Default::default()
+        };
+        assert!(
+            NeedlePipeline::new(
+                stack,
+                dummy_spectral(),
+                cfg,
+                NeedleCycleConfig::default(),
+                ContrastMap::new(),
+            )
+            .is_ok(),
+            "a scalable span gets the ceiling as a bound, not a refusal"
+        );
+    }
+
     /// Licence item 6 (B4): the phase's clamp report is present when the
     /// floor removed something, absent otherwise - a no-span run's phase
     /// dict is byte-identical. The film is PINNED (optimize = false):
@@ -893,10 +948,12 @@ mod tests {
         );
     }
 
-    /// Span deferral twin: an under-thickness graded span is removed whole
-    /// with the F0.2 report under EVERY policy at this release - clamping
-    /// a span up is F1.6's scale operation and does not exist yet. The
-    /// twin inverts deliberately at F1.6.
+    /// Span deferral twin: an under-thickness PINNED graded span (the
+    /// carrier is background: optimize forced false) is removed whole
+    /// with the F0.2 report under EVERY policy. F1.6 landed the scale-up
+    /// for SCALABLE spans (f16_under_thickness_scalable_span_is_scaled_to
+    /// _the_floor); a pinned span's profile cannot be re-parameterized by
+    /// the optimizer, so removal is still the honest repair here.
     #[test]
     fn f03_thin_graded_span_is_removed_whole_under_clamp_up_too() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();

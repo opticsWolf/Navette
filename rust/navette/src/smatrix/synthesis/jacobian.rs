@@ -158,3 +158,103 @@ pub fn assemble_jacobian(
     }
     Ok(())
 }
+
+/// F1.6: the parameter-map assembly. `params` is the same list
+/// `optimize_thicknesses_report` built (each entry either one row or one
+/// scalable span's bulk rows with frozen fractions); the deposits are per
+/// FILM ROW, laid out in parameter order, so the assembly contracts each
+/// residual's per-row columns into per-parameter columns.
+///
+/// Bit-exactness, asserted not assumed (the no-span twin):
+///
+/// - A `Row` parameter is a one-element group with weight `1.0`; its
+///   output column is bitwise the row column `assemble_jacobian` would
+///   have written (the same additions in the same order — `1.0 * g` is
+///   `g` to the last bit, and here the multiply is skipped entirely).
+/// - A `Span` parameter's column is `sum_r phi_r * col_r` accumulated in
+///   the span's row order — exactly the closed form the Jacobian twin
+///   checks against the row columns.
+pub(crate) fn assemble_jacobian_mapped(
+    sens: &MeritSensitivity,
+    dep: &CurveDeposits,
+    n_wav: usize,
+    params: &[crate::smatrix::synthesis::evaluator::Param],
+    jac: &mut Vec<f64>,
+) -> Result<(), String> {
+    if let Some(&row) = sens.uncovered.first() {
+        return Err(format!(
+            "analytic jacobian: residual row {row} has no curve sensitivity \
+             (phase target or color demand) — use the finite-difference path"
+        ));
+    }
+    let m = sens.rows.len();
+    let n_out = params.len();
+    let n_flat = dep.n_par();
+    // Each parameter's base position in the FLAT deposit list: the
+    // deposits are laid out in parameter order (each parameter's rows
+    // consecutively), so the map is positional, not by film row.
+    let mut bases = Vec::with_capacity(params.len() + 1);
+    let mut run = 0usize;
+    for p in params {
+        bases.push(run);
+        match p {
+            crate::smatrix::synthesis::evaluator::Param::Row(_) => run += 1,
+            crate::smatrix::synthesis::evaluator::Param::Span { rows, .. } => run += rows.len(),
+        }
+    }
+    if run != n_flat {
+        return Err(format!(
+            "analytic jacobian: the parameter map covers {} row(s), but the \
+             deposits cover {n_flat} - the flat list and the map disagree",
+            run
+        ));
+    }
+    jac.clear();
+    jac.resize(m * n_out, 0.0);
+    // One residual row at a time: contract the deposits into per-ROW
+    // columns (exactly `assemble_jacobian`'s inner loop, same additions in
+    // the same order), then apply the parameter map.
+    let mut scratch = vec![0.0f64; n_flat];
+    for (i, row) in sens.rows.iter().enumerate() {
+        for v in scratch.iter_mut() {
+            *v = 0.0;
+        }
+        for term in row {
+            let channel = deposit_channel(term.curve).ok_or_else(|| {
+                format!(
+                    "analytic jacobian: no deposits for curve {:?} (row {i})",
+                    term.curve
+                )
+            })?;
+            let point = term.angle_row * n_wav + term.wavelength;
+            if point >= dep.n_points() {
+                return Err(format!(
+                    "analytic jacobian: row {i} reads grid point {point}, but the \
+                     deposits cover {} points",
+                    dep.n_points()
+                ));
+            }
+            let d = term.d_residual;
+            for (s, &g) in scratch.iter_mut().zip(dep.column(channel, point)) {
+                *s += d * g;
+            }
+        }
+        let out = &mut jac[i * n_out..(i + 1) * n_out];
+        for (p, par) in params.iter().enumerate() {
+            match par {
+                crate::smatrix::synthesis::evaluator::Param::Row(_) => {
+                    out[p] = scratch[bases[p]]
+                }
+                crate::smatrix::synthesis::evaluator::Param::Span { rows, fractions } => {
+                    let mut acc = 0.0f64;
+                    for (k, &w) in fractions.iter().enumerate() {
+                        acc += w * scratch[bases[p] + k];
+                    }
+                    let _ = rows; // rows.len() == fractions.len(), checked by construction
+                    out[p] = acc;
+                }
+            }
+        }
+    }
+    Ok(())
+}

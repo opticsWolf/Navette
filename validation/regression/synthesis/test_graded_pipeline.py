@@ -16,15 +16,33 @@ def films(stack):
   return stack.to_dict()["films"]
 
 
-def test_graded_homogenizes_with_warning():
-  with pytest.warns(UserWarning, match="homogeneous"):
+def test_graded_optimize_keeps_the_profile_and_homogenize_path_still_warns():
+  """F1.6 licence item 1/2 (the one non-additive change): optimize=true
+  on a profiled film used to mean "homogenize me"; it now keeps the
+  profile as ONE scalable span, silently. The homogenize-with-warning
+  path survives for the posture that always homogenized: optimize=false
+  + needle=true (not background - background requires needle=false)."""
+  # The F1.6 posture: full profile, no warning, one multi-row span.
+  import warnings
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")  # must NOT warn
     st, _ = stack_from_layers(
       [(TIO2, 50.0)], WL, {}, names=["TiO2"],
       per_film_flags={"TiO2": {"inhomogen": True, "inh_delta": 0.2}})
   fs = films(st)
-  assert len(fs) == 1  # single base-index row, profile dropped loudly
-  assert fs[0]["thickness"] == pytest.approx(50.0)
-  assert fs[0]["optimize"] and fs[0]["needle"]
+  assert len(fs) > 1  # the profile kept its sublayers
+  assert all(f["optimize"] for f in fs)  # every bulk row free
+
+  # The stable homogenize posture still warns.
+  with pytest.warns(UserWarning, match="homogeneous"):
+    st2, _ = stack_from_layers(
+      [(TIO2, 50.0)], WL, {}, names=["TiO2"],
+      per_film_flags={"TiO2": {"inhomogen": True, "inh_delta": 0.2,
+                                "optimize": False, "needle": True}})
+  fs2 = films(st2)
+  assert len(fs2) == 1  # single base-index row, profile dropped loudly
+  assert fs2[0]["thickness"] == pytest.approx(50.0)
+  assert not fs2[0]["optimize"] and fs2[0]["needle"]
 
 
 def test_background_pins_profile_silently():

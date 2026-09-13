@@ -25,7 +25,7 @@ use crate::smatrix::needle_operator::{
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::jacobian::CurveDeposits;
-use crate::smatrix::synthesis::jacobian::assemble_jacobian;
+use crate::smatrix::synthesis::jacobian::assemble_jacobian_mapped;
 use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
 use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
@@ -322,15 +322,13 @@ impl SmatrixContext {
         &mut self,
         stack: &mut DesignStack,
     ) -> Result<(f64, Option<OptimizerResult>), String> {
-        // Collect optimize-flagged film indices and their starting values.
-        let opt_indices: Vec<usize> = stack
-            .films()
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| l.optimize)
-            .map(|(i, _)| i)
-            .collect();
-        if opt_indices.is_empty() {
+        // F1.6 (U2/B5): the parameter list stops being a row list. A
+        // profiled carrier's span is ONE physical layer, so its total
+        // thickness is one parameter, distributed over the span's bulk
+        // rows by the frozen fractions. Everything else is today's row
+        // parameter, and the list is the same list it is today.
+        let params = build_params(stack);
+        if params.is_empty() {
             return self.evaluate_merit(stack).map(|mf| (mf, None));
         }
 
@@ -338,21 +336,19 @@ impl SmatrixContext {
         let base_stack = stack.clone();
         let spec = self.spec.clone();
         let ctx_self = self.clone();
-        let indices = opt_indices.clone();
+        let params_owned = params.clone();
 
         let residuals = move |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
             let mut st = base_stack.clone();
-            for (j, &i) in indices.iter().enumerate() {
-                st.set_thickness(i, x[j])?;
-            }
+            apply_params(&mut st, &params_owned, x)?;
             let sim = ctx_self.simulate(&st)?;
             spec.residuals(&sim, out)
                 .map_err(|c| format!("missing curve {c:?}"))
         };
 
-        let x0: Vec<f64> = opt_indices
+        let x0: Vec<f64> = params
             .iter()
-            .map(|&i| stack.films()[i].d_nm.clamp(0.0, self.clamp_max_nm))
+            .map(|p| p.value0(stack).clamp(0.0, self.clamp_max_nm))
             .collect();
         // F0.3 (U1): the lower bound moves with the policy. Under
         // `ClampUpAlways` the floor is a hard bound - without it, LM drives
@@ -383,7 +379,7 @@ impl SmatrixContext {
                 let src = DepositJacobian {
                     ctx: self.clone(),
                     base_stack: stack.clone(),
-                    indices: opt_indices.clone(),
+                    params: params.clone(),
                     n_wav: self.wavls.len(),
                 };
                 run_optimizer(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)?
@@ -398,20 +394,104 @@ impl SmatrixContext {
         // pipeline drains it into the phase result at record time - a
         // per-call message here would be noise (this fires after every
         // thickness optimization, dozens of times per cycle).
-        for (j, &i) in opt_indices.iter().enumerate() {
-            if i < stack.films().len() {
-                stack.set_thickness(i, res.x[j])?;
-            }
-        }
-        let rep = stack.clamp_all(
+        apply_params(stack, &params, &res.x)?;
+        // During the run: F0.3's pass structure (only ClampUpAlways
+        // clamps up mid-run; the pipeline's final pass carries
+        // ClampUpFinal). F1.6: scalable spans follow the same structure.
+        let rep = stack.clamp_all_policy(
             self.clamp_min_nm,
             self.clamp_max_nm,
-            self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways,
+            self.thin_layer_policy,
+            false,
         )?;
         self.clamp_accumulator.merge(rep);
 
         self.evaluate_merit(stack).map(|mf| (mf, Some(res)))
     }
+}
+
+/// F1.6 (U2/B5): one LM parameter.
+///
+/// - `Row(i)` is film i's own thickness — today's parameter, and the only
+///   kind a stack with no scalable span produces, in the same order.
+/// - `Span` is one profiled carrier's TOTAL thickness `D`, distributed over
+///   the span's bulk rows by fractions frozen at build time
+///   (`phi_r = d_r / D0`). The interface slice is not in `rows` and is not
+///   scaled: it is an interface property, not part of the layer's
+///   thickness. Scalable = the span has at least two bulk rows and every
+///   one of them is optimize-flagged — the shape `from_design` gives a
+///   profiled (`inhomogen` or `gradient`) carrier with `optimize = true`
+///   whose mode scales exactly (`InhMode::Fixed`, `GradientMode::FixedSpan`);
+///   the RateCapped modes depend on absolute depth and stay homogenized
+///   until F1.7.
+#[derive(Clone, Debug)]
+pub(crate) enum Param {
+    Row(usize),
+    Span {
+        rows: Vec<usize>,
+        fractions: Vec<f64>,
+    },
+}
+
+impl Param {
+    /// The parameter's starting value: the row's thickness, or the span
+    /// total D0 the fractions were frozen at.
+    fn value0(&self, stack: &DesignStack) -> f64 {
+        match self {
+            Param::Row(i) => stack.films()[*i].d_nm,
+            Param::Span { rows, .. } => rows.iter().map(|&r| stack.films()[r].d_nm).sum(),
+        }
+    }
+}
+
+/// The parameter list for one `optimize_thicknesses` call.
+///
+/// Span parameters first-class: each scalable span contributes ONE
+/// parameter (its bulk rows in row order, fractions frozen from the
+/// current row thicknesses). Every other optimize-flagged row is a `Row`
+/// parameter. A stack with no scalable span produces exactly today's
+/// `opt_indices` list, as `Row` params.
+pub(crate) fn build_params(stack: &DesignStack) -> Vec<Param> {
+    let films = stack.films();
+    let mut params = Vec::new();
+    for sp in stack.spans() {
+        if stack.span_is_scalable(sp) {
+            let rows: Vec<usize> = (sp.bulk_start..sp.end).collect();
+            let d0: f64 = rows.iter().map(|&r| films[r].d_nm).sum();
+            let fractions: Vec<f64> = rows.iter().map(|&r| films[r].d_nm / d0).collect();
+            params.push(Param::Span { rows, fractions });
+        } else {
+            for r in sp.bulk_start..sp.end {
+                if films[r].optimize {
+                    params.push(Param::Row(r));
+                }
+            }
+        }
+    }
+    params
+}
+
+/// Write one parameter vector into a stack. `Row` writes its row; a span
+/// writes `phi_r * D` per bulk row (frozen fractions, moving total). At
+/// `x[j] == D0` the rebuild agrees with the original stack to the
+/// multiply-divide rounding (~1 ulp per row) — the one place this path is
+/// not bitwise, and no fingerprint touches a span stack.
+pub(crate) fn apply_params(
+    stack: &mut DesignStack,
+    params: &[Param],
+    x: &[f64],
+) -> Result<(), String> {
+    for (j, p) in params.iter().enumerate() {
+        match p {
+            Param::Row(i) => stack.set_thickness(*i, x[j])?,
+            Param::Span { rows, fractions } => {
+                for (&r, &f) in rows.iter().zip(fractions.iter()) {
+                    stack.set_thickness(r, f * x[j])?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The analytic Jacobian of one `optimize_thicknesses` problem: rebuild the
@@ -424,17 +504,25 @@ impl SmatrixContext {
 struct DepositJacobian {
     ctx: SmatrixContext,
     base_stack: DesignStack,
-    indices: Vec<usize>,
+    params: Vec<Param>,
     n_wav: usize,
 }
 
 impl JacobianSource for DepositJacobian {
     fn fill(&self, x: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
         let mut st = self.base_stack.clone();
-        for (j, &i) in self.indices.iter().enumerate() {
-            st.set_thickness(i, x[j])?;
+        apply_params(&mut st, &self.params, x)?;
+        // The deposits are per FILM ROW (the flat list: each parameter's
+        // rows in parameter order), then the mapped assembly contracts
+        // row columns into parameter columns with the frozen weights.
+        let mut flat_rows = Vec::new();
+        for p in &self.params {
+            match p {
+                Param::Row(i) => flat_rows.push(*i),
+                Param::Span { rows, .. } => flat_rows.extend_from_slice(rows),
+            }
         }
-        let (sim, dep) = self.ctx.simulate_with_deposits(&st, &self.indices)?;
+        let (sim, dep) = self.ctx.simulate_with_deposits(&st, &flat_rows)?;
         let sens = self
             .ctx
             .spec
@@ -443,7 +531,7 @@ impl JacobianSource for DepositJacobian {
         if !sens.is_complete() {
             return Ok(None);
         }
-        assemble_jacobian(&sens, &dep, self.n_wav, jac)?;
+        assemble_jacobian_mapped(&sens, &dep, self.n_wav, &self.params, jac)?;
         Ok(Some(sens.rows.len()))
     }
 }
@@ -1202,7 +1290,7 @@ mod tests {
             let covered = DepositJacobian {
                 ctx: ctx3(spec),
                 base_stack: stack.clone(),
-                indices: vec![0, 1, 2],
+                params: vec![Param::Row(0), Param::Row(1), Param::Row(2)],
                 n_wav: WLS.len(),
             };
             let mut jac = Vec::new();
@@ -1220,7 +1308,7 @@ mod tests {
             let phase = DepositJacobian {
                 ctx: ar_ctx_pd(),
                 base_stack: stack,
-                indices: vec![0],
+                params: vec![Param::Row(0)],
                 n_wav: WLS.len(),
             };
             assert!(
@@ -1296,6 +1384,309 @@ mod tests {
             assert_eq!(d.n_points(), 2);
             assert_eq!(d.n_par(), 2);
             assert_eq!(d.get(3, 1, 1), 2.0);
+        }
+
+        // ------------------------------------------------------------
+        // F1.6 - one thickness parameter per graded span
+        // ------------------------------------------------------------
+
+        /// A span stack: one graded carrier (optimize=true, the F1.6
+        /// posture) expanded by `from_design` on the WLS grid, flanked by
+        /// pinned ambient/substrate.
+        use std::collections::{HashMap, HashSet};
+
+        /// The F1.6 test grid: ar_ctx's wavelengths (ar_spec's 1000 nm
+        /// demand is on-grid here).
+        const GWL: [f64; 3] = [900.0, 1000.0, 1100.0];
+
+        /// A span stack on the GWL grid: one graded carrier
+        /// (optimize=true, the F1.6 posture) expanded by `from_design`,
+        /// flanked by pinned ambient/substrate. `delta = None` builds a
+        /// PLAIN film (singleton span, Row parameter) for the no-span
+        /// control.
+        fn span_stack(delta: Option<f64>, d: f64) -> DesignStack {
+            let nw = GWL.len();
+            let mut nk = HashMap::new();
+            nk.insert(
+                std::sync::Arc::<str>::from("H"),
+                vec![Complex64::new(2.35, 0.01); nw],
+            );
+            let mut carrier = crate::structure::Layer::film(d, "H");
+            if let Some(delta) = delta {
+                carrier.inhomogen = true;
+                carrier.inh_delta = delta;
+            }
+            let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+            ambient.optimize = false;
+            ambient.needle = false;
+            let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, nw);
+            substrate.optimize = false;
+            substrate.needle = false;
+            let (stack, warns) = DesignStack::from_design(
+                ambient,
+                substrate,
+                std::slice::from_ref(&carrier),
+                &nk,
+                &HashMap::new(),
+                &GWL,
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert!(
+                warns.is_empty(),
+                "the F1.6 posture must not warn: {warns:?}"
+            );
+            stack
+        }
+
+        /// The span param's (rows, fractions, D0) for a stack with
+        /// exactly one span parameter.
+        fn span_param(stack: &DesignStack) -> (Vec<usize>, Vec<f64>, f64) {
+            let params = build_params(stack);
+            assert_eq!(params.len(), 1, "one span, one parameter");
+            match &params[0] {
+                Param::Span { rows, fractions } => {
+                    let d0: f64 = rows.iter().map(|&r| stack.films()[r].d_nm).sum();
+                    (rows.clone(), fractions.clone(), d0)
+                }
+                Param::Row(_) => panic!("expected a span parameter"),
+            }
+        }
+
+        /// J3 - the no-span bit-exactness gate, asserted not assumed: a
+        /// stack with only Row parameters must assemble the SAME Jacobian
+        /// through the parameter-map path as the pre-refactor row-level
+        /// assembly, to the last bit.
+        #[test]
+        fn f16_no_span_jacobian_is_bitwise_the_row_assembly() {
+            let stack = span_stack(None, 118.0);
+            let params = build_params(&stack);
+            assert_eq!(params.len(), 1);
+            assert!(matches!(params[0], Param::Row(0)));
+            let ctx = ar_ctx(1000.0);
+            let mut flat_rows = Vec::new();
+            for p in &params {
+                if let Param::Row(i) = p {
+                    flat_rows.push(*i);
+                }
+            }
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &flat_rows).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(sens.is_complete());
+            let mut old_style = Vec::new();
+            assemble_jacobian(&sens, &dep, GWL.len(), &mut old_style).unwrap();
+            let mut mapped = Vec::new();
+            assemble_jacobian_mapped(&sens, &dep, GWL.len(), &params, &mut mapped).unwrap();
+            assert_eq!(old_style, mapped, "bitwise, not close");
+        }
+
+        /// J2 - the weight twin: the span's analytic column is
+        /// `sum_r phi_r * (the analytic row columns)`, accumulated in the
+        /// span's row order, BITWISE. This is the twin that catches a
+        /// wrong weight.
+        #[test]
+        fn f16_span_column_is_the_frozen_weighted_sum_bitwise() {
+            let stack = span_stack(Some(0.2), 200.0);
+            let (rows, fractions, _) = span_param(&stack);
+            assert!(rows.len() >= 2);
+            let ctx = ar_ctx(1000.0);
+            let params = build_params(&stack);
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &rows).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(sens.is_complete());
+            // The row-level columns (the pre-refactor contract).
+            let mut row_jac = Vec::new();
+            assemble_jacobian(&sens, &dep, GWL.len(), &mut row_jac).unwrap();
+            // The mapped columns.
+            let mut mapped = Vec::new();
+            assemble_jacobian_mapped(&sens, &dep, GWL.len(), &params, &mut mapped).unwrap();
+            let m = sens.rows.len();
+            for i in 0..m {
+                let mut acc = 0.0f64;
+                for (&r, &w) in rows.iter().zip(&fractions) {
+                    acc += w * row_jac[i * rows.len() + r];
+                }
+                assert_eq!(
+                    mapped[i], acc,
+                    "residual row {i}: span column bitwise the weighted sum"
+                );
+            }
+        }
+
+        /// J1 - the FD twin: the analytic span column against a central
+        /// difference on D, to 1e-6 relative. The deposits make the
+        /// analytic column O(1) per row; the difference would cost two
+        /// full simulates - exact AND cheaper, which is why analytic is
+        /// the right answer here.
+        #[test]
+        fn f16_span_column_matches_central_difference() {
+            let stack = span_stack(Some(0.2), 200.0);
+            let (rows, fractions, d0) = span_param(&stack);
+            let ctx = ar_ctx(1000.0);
+            let params = build_params(&stack);
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &rows).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            let mut mapped = Vec::new();
+            assemble_jacobian_mapped(&sens, &dep, GWL.len(), &params, &mut mapped).unwrap();
+            // Central difference on D through the SAME parameterization
+            // the residual closure uses.
+            let spec = ctx.spec.clone();
+            let residuals = |dd: f64| -> Vec<f64> {
+                let mut st = stack.clone();
+                for (&r, &f) in rows.iter().zip(&fractions) {
+                    st.set_thickness(r, f * dd).unwrap();
+                }
+                let sim = ctx.simulate(&st).unwrap();
+                let mut out = Vec::new();
+                spec.residuals(&sim, &mut out).unwrap();
+                out
+            };
+            let h = 1e-4 * d0.max(1.0);
+            let plus = residuals(d0 + h);
+            let minus = residuals(d0 - h);
+            let m = sens.rows.len();
+            for i in 0..m {
+                let fd = (plus[i] - minus[i]) / (2.0 * h);
+                let an = mapped[i];
+                assert!(
+                    (fd - an).abs() <= 1e-6 * an.abs().max(1e-12),
+                    "residual row {i}: analytic {an} vs fd {fd}"
+                );
+            }
+        }
+
+        /// The parameter builder's no-span behavior: today's list, as
+        /// Row params, in today's order - including mixed-flag spans.
+        #[test]
+        fn f16_build_params_no_span_is_todays_list() {
+            let stack = ar_stack(118.0);
+            let ps = build_params(&stack);
+            assert_eq!(ps.len(), 1);
+            assert!(matches!(ps[0], Param::Row(0)));
+            // A pinned span (background carrier: no optimize rows)
+            // contributes NOTHING, and neighboring free rows still do.
+            let nw = WLS.len();
+            let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+            ambient.optimize = false;
+            ambient.needle = false;
+            let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, nw);
+            substrate.optimize = false;
+            substrate.needle = false;
+            let mut a = LayerSpec::constant("A", 2.0, 0.0, 50.0, nw);
+            a.optimize = true;
+            let mut b = LayerSpec::constant("B", 2.0, 0.0, 50.0, nw);
+            b.optimize = false;
+            let mut c = LayerSpec::constant("C", 2.0, 0.0, 50.0, nw);
+            c.optimize = true;
+            let stack = DesignStack::with_films(ambient, substrate, vec![a, b, c]).unwrap();
+            let ps = build_params(&stack);
+            assert_eq!(ps.len(), 2);
+            assert!(matches!(ps[0], Param::Row(0)));
+            assert!(matches!(ps[1], Param::Row(2)));
+        }
+
+        /// P - the profile-preservation twin: after an LM solve that
+        /// moves D substantially, every row is bitwise the frozen-fraction
+        /// writeback (`phi_r * D`) and every nk row is untouched. The
+        /// plan's literal "d_r / D unchanged to the last bit" is not
+        /// well-posed - D is re-summed from the rows, so `d_r/D` picks up
+        /// the summation's rounding; the writeback contract is the
+        /// bitwise oracle, and the re-summed fractions agree to 1e-12.
+        #[test]
+        fn f16_lm_solve_preserves_the_profile() {
+            let mut ctx = ar_ctx(1000.0);
+            let mut stack = span_stack(Some(0.2), 200.0);
+            let (rows, fractions, d0) = span_param(&stack);
+            let nk_before: Vec<Vec<Complex64>> =
+                rows.iter().map(|&r| stack.films()[r].nk.to_vec()).collect();
+
+            // Part 1 - the 40% move through the writeback contract
+            // itself: the plan's "moves D by 40%" exercised on the SAME
+            // operation the residual closure and the post-solve writeback
+            // run. The LM's own move size is design-dependent (here the
+            // Rs=0 attractor is local), so the fixed-ratio move is
+            // asserted through apply_params; part 2 checks a real solve.
+            let d_moved = 1.4 * d0;
+            {
+                let mut st = stack.clone();
+                apply_params(&mut st, &build_params(&stack), &[d_moved]).unwrap();
+                for (&r, &f) in rows.iter().zip(&fractions) {
+                    assert_eq!(
+                        st.films()[r].d_nm,
+                        f * d_moved,
+                        "row {r}: bitwise the frozen-fraction writeback"
+                    );
+                    assert_eq!(
+                        st.films()[r].nk.to_vec(),
+                        nk_before[rows.iter().position(|&q| q == r).unwrap()],
+                        "row {r}: nk untouched by the scale"
+                    );
+                }
+            }
+
+            // Part 2 - a real LM solve: whatever move it makes, every
+            // row is bitwise the frozen-fraction writeback of the
+            // parameter it returned, and the profile is undeformed.
+            let (mf, res) = ctx.optimize_thicknesses_report(&mut stack).unwrap();
+            let res = res.expect("there is a span to optimize");
+            let d_new = res.x[0];
+            assert!(
+                (d_new - d0).abs() > 1e-9,
+                "the solve moved D at all (d0 {d0}, d_new {d_new}, mf {mf})"
+            );
+            for (&r, &f) in rows.iter().zip(&fractions) {
+                assert_eq!(
+                    stack.films()[r].d_nm,
+                    f * d_new,
+                    "row {r}: bitwise the frozen-fraction writeback"
+                );
+                assert_eq!(
+                    stack.films()[r].nk.to_vec(),
+                    nk_before[rows.iter().position(|&q| q == r).unwrap()],
+                    "row {r}: nk untouched"
+                );
+            }
+            // The re-summed fractions agree with the frozen ones to
+            // 1e-12 relative (the summation's own rounding).
+            let total: f64 = rows.iter().map(|&r| stack.films()[r].d_nm).sum();
+            for (&r, &f) in rows.iter().zip(&fractions) {
+                let f_now = stack.films()[r].d_nm / total;
+                assert!(
+                    (f_now - f).abs() <= 1e-12 * f.abs().max(1e-12),
+                    "row {r}: fraction drifted from {f} to {f_now}"
+                );
+            }
+        }
+
+        /// The bound twin: the F0.2 cap case (1000 nm graded, ceiling
+        /// 300) now marked optimize=true constructs INSTEAD of refusing
+        /// (no homogenize warning, no NeedlePipeline-style refusal), and
+        /// the optimizer never returns a D above the ceiling.
+        #[test]
+        fn f16_cap_case_is_a_bound_not_a_refusal() {
+            let mut ctx = ar_ctx(300.0);
+            let mut stack = span_stack(Some(0.5), 1000.0);
+            assert_eq!(stack.films().len(), 57, "the plan's measured row count");
+            // The LM runs, respects the ceiling, and the clamp caps the
+            // span (fractions preserved) rather than refusing.
+            let (_mf, res) = ctx.optimize_thicknesses_report(&mut stack).unwrap();
+            let res = res.expect("there is a span to optimize");
+            assert!(res.x[0] <= 300.0, "D above the ceiling: {}", res.x[0]);
+            let total: f64 = (0..stack.films().len())
+                .map(|r| stack.films()[r].d_nm)
+                .sum();
+            assert!(
+                total <= 300.0 + 1e-9,
+                "span total {total} above the ceiling"
+            );
+            // Every row scaled by the same factor: the profile survived.
+            let factors: Vec<f64> = (0..stack.films().len())
+                .map(|r| stack.films()[r].d_nm)
+                .collect();
+            let f0 = factors[0];
+            for f in &factors {
+                assert!((*f / f0 - 1.0).abs() < 1e-9, "uniform scaling");
+            }
         }
     }
 }

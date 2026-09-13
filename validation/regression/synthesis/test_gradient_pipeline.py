@@ -107,23 +107,42 @@ def test_gradient_background_rows_match_manual_stack():
   assert ctx.evaluate_merit(st) == ctx.evaluate_merit(st_manual)
 
 
-def test_gradient_homogenizes_to_the_ema_at_f_mid():
-  """R4: the non-background gradient homogenizes to ONE row, bitwise the
-  direct EMA at f_mid, with a warning naming the mixture and f_mid."""
-  with pytest.warns(UserWarning, match="carries a gradient"):
+def test_gradient_optimize_keeps_the_profile_and_homogenize_path_still_warns():
+  """F1.6 licence item 1/2 (the one non-additive change): a FixedSpan
+  gradient with optimize=true no longer homogenizes - it keeps the
+  profile as ONE scalable span, silently. The R4 homogenize (warning,
+  EMA at f_mid) survives for the posture that always homogenized:
+  optimize=false + needle=true (not background)."""
+  import warnings
+  # The F1.6 posture: full profile, no warning.
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")  # must NOT warn
     st, _ = stack_from_layers(
       [(TIO2, 100.0)], WL, {}, names=["H"],
       per_film_flags={"H": {"gradient": {"material_b": SIO2,
                                           "f_start": 0.2, "f_end": 0.9,
                                           "ema": "Looyenga"}}})
   fs = films(st)
-  assert len(fs) == 1
-  assert fs[0]["optimize"] and fs[0]["needle"]
+  assert len(fs) > 1, "the profile kept its sublayers"
+  assert all(f["optimize"] for f in fs)
+
+  # The stable homogenize posture still warns, and the row is still
+  # bitwise the direct EMA at f_mid.
+  with pytest.warns(UserWarning, match="carries a gradient"):
+    st2, _ = stack_from_layers(
+      [(TIO2, 100.0)], WL, {}, names=["H"],
+      per_film_flags={"H": {"gradient": {"material_b": SIO2,
+                                          "f_start": 0.2, "f_end": 0.9,
+                                          "ema": "Looyenga"},
+                             "optimize": False, "needle": True}})
+  fs2 = films(st2)
+  assert len(fs2) == 1
+  assert not fs2[0]["optimize"] and fs2[0]["needle"]
   oracle = evaluate(MaterialSpec(model="Looyenga",
                                  params={"host": TIO2, "inclusion": SIO2,
                                          "fraction": 0.55}), WL)
-  assert np.array_equal(np.asarray(fs[0]["nk"]), np.asarray(oracle))
-  assert fs[0]["thickness"] == pytest.approx(100.0)
+  assert np.array_equal(np.asarray(fs2[0]["nk"]), np.asarray(oracle))
+  assert fs2[0]["thickness"] == pytest.approx(100.0)
 
 
 def test_gradient_span_survives_merge_and_optimizer():

@@ -4,6 +4,87 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.39] - F1.6: one thickness parameter per graded span
+
+A profiled layer is one physical layer, so its total thickness is one
+number the optimizer moves. The LM parameter list stops being a row
+list.
+
+### Added
+
+- **`Param` (`Row` | `Span { rows, fractions }`)** replaces the
+  parameter row list at the heart of `optimize_thicknesses`. A scalable
+  span - at least two bulk rows, every one optimize-flagged, the shape
+  `from_design` gives a profiled (`inhomogen` or `gradient`) carrier
+  with `optimize = true` whose mode scales exactly (`InhMode::Fixed`,
+  `GradientMode::FixedSpan`) - contributes ONE parameter: its total
+  thickness `D`, written back as `phi_r * D` per bulk row with the
+  fractions frozen at build time. The interface slice is never scaled
+  (an interface property, not part of the thickness). A stack with no
+  scalable span produces only `Row` params, in the same order as the
+  old row list - bit-identical, asserted.
+- **Bounds are span quantities:** `lb`/`ub` apply to `D` (the LM sees
+  one bound per physical layer). The manufacturing ceiling that never
+  fired on a graded film now fires correctly, as a bound.
+- **The F0.2 construction refusal narrows to PINNED spans**
+  (`NeedlePipeline::new` and `clamp_all`'s pre-scan): a scalable span
+  above the ceiling is CAPPED instead (fractions preserved,
+  `spans_capped` reported).
+- **F0.3's span branch lands:** an under-thickness scalable span under
+  an active clamp-up posture is SCALED to the floor (fractions
+  preserved) instead of removed whole; under `Remove`, and for pinned
+  spans, F0.3's rules stand unchanged. Clamp-ups remain non-Report.
+- **The analytic Jacobian stays analytic, exact, cheap:**
+  `assemble_jacobian_mapped` contracts the per-row deposit columns into
+  per-parameter columns - a `Row` param is a one-element group with
+  weight 1.0 (bitwise the old assembly, asserted), a `Span` param is
+  `sum_r phi_r * col_r` in row order (bitwise the closed form,
+  asserted). The deposits cost O(1) per row, so a 57-row span costs 57
+  O(1) terms, not 57 simulates. The map is positional (deposits laid
+  out in parameter order) and length-checked instead of indexed blind
+  - the Python merge/optimizer differential caught the first version
+  indexing by film row.
+
+### Changed (the one non-additive part)
+
+- **`optimize = true` on a profiled film no longer means "homogenize
+  me"** (licence item 1): the film keeps its full profile as one
+  scalable span and its thickness moves during optimization. The
+  homogenize warning stops firing for these films (item 2); it still
+  fires for the posture that always homogenized (`optimize = false,
+  needle = true`) and for the RateCapped modes, which stay homogenized
+  until F1.7 (they depend on absolute depth, not fractional position).
+  `optimize = false, needle = false` (pinned background) is untouched.
+- Needle host selection unchanged: a scalable span is still not a host
+  (scaling preserves a profile; splitting a foreign row into it does
+  not).
+
+### Twins (all landed)
+
+- **Scale-invariance (written before the feature):** a FixedSpan
+  gradient at 128/256 nm with the count pinned at 4 - nk rows bitwise
+  equal, thicknesses exactly doubled (binary-exact split); the legacy
+  engine has no count override and no doubling preserves its count
+  (t^0.4 grows 1.32x per doubling), so its twin uses the same-count
+  pair 100/120 nm (both ceil(t^0.4) = 7): nk rows bitwise equal, every
+  row thickness bitwise `t/sub`.
+- **Jacobian, two ways:** the span column against a central difference
+  on D to 1e-6 relative; and against `sum_r phi_r *` (the row columns)
+  BITWISE. Plus the no-span assertion: the mapped assembly of an all-Row
+  stack is bitwise `assemble_jacobian`.
+- **Profile preservation:** after a real LM solve, every row is bitwise
+  the frozen-fraction writeback of the returned D and every nk row is
+  untouched; the re-summed fractions agree to 1e-12 (the plan's literal
+  "d_r / D unchanged to the last bit" is not well-posed - D is
+  re-summed from the rows - so the writeback contract is the bitwise
+  oracle).
+- **Interface:** a scalable span's slice row thickness is unchanged by
+  the scale; the span partition holds.
+- **Bound:** the F0.2 cap case (1000 nm graded, ceiling 300) marked
+  optimize=true constructs with no warning, `NeedlePipeline::new`
+  builds, the LM never returns D above 300, the clamp caps the span
+  with fractions preserved.
+
 ## [0.6.38] - F1.3: `InhMode::RateCapped` - thickness-relative single-material drift
 
 The legacy scaling drift gains an application mode: the grading

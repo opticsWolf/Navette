@@ -891,7 +891,9 @@ mod tests {
     // ------------------------------------------------------------------
 
     use crate::materials::MixRule;
-    use crate::structure::gradient::{GradientSpec, InhMode, gradient_sub_layer_count, mix_row};
+    use crate::structure::gradient::{
+        GradientMode, GradientSpec, InhMode, ProfileShape, gradient_sub_layer_count, mix_row,
+    };
 
     fn grad_seq(t: f64, f_start: f64, f_end: f64, inv: bool) -> Vec<(Layer, bool)> {
         let mut l = Layer::film(t, "TiO2");
@@ -1369,6 +1371,117 @@ mod tests {
             deltas.iter().any(|d| *d > 0.16),
             "no draw exceeded the nominal cap - the draw is being clamped"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // F1.6 - the scale-invariance twin, written before the feature
+    // ------------------------------------------------------------------
+
+    /// THE PHYSICS CLAIM of F1.6 (U2), asserted before the optimizer
+    /// touches any of it: a profile whose fraction depends only on the
+    /// sublayer's FRACTIONAL position scales exactly - stretch the layer
+    /// and every sublayer's thickness scales while every sublayer's nk
+    /// stays bitwise put.
+    ///
+    /// Engine: `GradientMode::FixedSpan` with the `sublayers` override
+    /// pinning the count (the plan's "row count pinned to the same
+    /// value"). Thicknesses 128/256 nm are binary-exact so the row
+    /// thicknesses double BITWISE, including the remainder row
+    /// (128 = 4 x 32: no rounding anywhere).
+    #[test]
+    fn f16_scale_invariance_fixed_span_bitwise() {
+        let mk = |t: f64| {
+            let mut l = Layer::film(t, "TiO2");
+            l.gradient = Some(GradientSpec {
+                material_a: "glass".to_string(),
+                material_b: "TiO2".to_string(),
+                ema: MixRule::Bruggeman {
+                    max_iter: 100,
+                    tol: 1e-12,
+                },
+                mode: GradientMode::FixedSpan {
+                    f_start: 0.3,
+                    f_end: 0.7,
+                },
+                shape: ProfileShape::Linear,
+                sublayers: Some(4),
+            });
+            l
+        };
+        let (sa1, _) = expand(
+            &[(mk(128.0), false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let (sa2, _) = expand(
+            &[(mk(256.0), false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(sa1.n_rows(), 4);
+        assert_eq!(sa2.n_rows(), 4, "the pinned count");
+        for r in 0..4 {
+            assert_eq!(sa1.row(r), sa2.row(r), "row {r}: nk bitwise equal");
+        }
+        for r in 0..4 {
+            assert_eq!(
+                sa2.thicknesses[r],
+                2.0 * sa1.thicknesses[r],
+                "row {r}: thickness exactly doubled"
+            );
+            assert_eq!(sa1.thicknesses[r], 32.0, "binary-exact split");
+        }
+    }
+
+    /// The legacy engine's half of the same claim. Its row count has no
+    /// override, and no thickness doubling preserves the count
+    /// (t^0.4 grows by 2^0.5 per doubling, so t and 2t always ceil
+    /// differently) - the plan's 100/200 example was idealized. Same
+    /// count pair instead: 100 nm and 120 nm both give
+    /// ceil(t^0.4) = 7, i.e. the SAME 7-row ramp. The nk rows are then
+    /// bitwise equal (the ramp depends on i/(sub-1) only) and every row
+    /// thickness is bitwise the direct division t/sub, which is what
+    /// makes the profile scale-free at fixed count.
+    #[test]
+    fn f16_scale_invariance_inhomogen_same_count() {
+        let mk = |t: f64| {
+            let mut l = Layer::film(t, "TiO2");
+            l.inhomogen = true;
+            l.inh_delta = 0.2;
+            l
+        };
+        assert_eq!(mk(100.0).sub_layer_count(), mk(120.0).sub_layer_count());
+        let (sa1, _) = expand(
+            &[(mk(100.0), false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let (sa2, _) = expand(
+            &[(mk(120.0), false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(sa1.n_rows(), sa2.n_rows());
+        for r in 0..sa1.n_rows() {
+            assert_eq!(sa1.row(r), sa2.row(r), "row {r}: nk bitwise equal");
+        }
+        let sub = mk(100.0).sub_layer_count() as f64;
+        for r in 0..sa1.n_rows() {
+            assert_eq!(sa1.thicknesses[r], 100.0 / sub);
+            assert_eq!(sa2.thicknesses[r], 120.0 / sub);
+        }
     }
 
     #[test]
