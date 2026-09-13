@@ -484,7 +484,19 @@ fn emit_entry(
             );
         }
     } else if layer.inhomogen && sub > 1 {
-        let mut current_delta = (layer.inh_delta + group.inh_delta_summand) * 0.5;
+        // F1.3: the grading strength is the mode's `delta_layer` (the
+        // ONE source every reader consumes - B6), flowed through the
+        // FROZEN combination order. `Fixed` reads the authored
+        // `inh_delta` (byte-identical path); `RateCapped` computes
+        // D2's min-formula and then clamps the COMBINED nominal to
+        // [-cap, cap] BEFORE the stochastic draw - the cap binds the
+        // nominal, the noise is allowed to exceed it (clamping draws
+        // would bias Monte-Carlo statistics).
+        let delta_layer = layer.delta_layer();
+        let mut current_delta = (delta_layer + group.inh_delta_summand) * 0.5;
+        if let Some(cap) = layer.inh_mode.nominal_cap() {
+            current_delta = current_delta.clamp(-cap, cap);
+        }
         if opts.apply_errors
             && group.error_mask[crate::structure::enums::ErrorMask::InhDelta as usize] != 0
         {
@@ -879,7 +891,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     use crate::materials::MixRule;
-    use crate::structure::gradient::{GradientSpec, gradient_sub_layer_count, mix_row};
+    use crate::structure::gradient::{GradientSpec, InhMode, gradient_sub_layer_count, mix_row};
 
     fn grad_seq(t: f64, f_start: f64, f_end: f64, inv: bool) -> Vec<(Layer, bool)> {
         let mut l = Layer::film(t, "TiO2");
@@ -1256,6 +1268,107 @@ mod tests {
                 "low tail row {i}"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // F1.3 - InhMode::RateCapped: the B6 reader agreement + the draw
+    // ------------------------------------------------------------------
+
+    /// The frozen legacy arithmetic parameterized by the mode's delta:
+    /// the emitted ramp is `1 - delta_nom ..= 1 + delta_nom` with
+    /// `delta_nom = (delta_layer + summand) * 0.5` (the RateCapped
+    /// nominal clamped to [-cap, cap]), and the emitted row count is
+    /// exactly `sub_layer_count()` (B6 reader 1: emission is the truth).
+    #[test]
+    fn rate_capped_emission_matches_frozen_arithmetic() {
+        let mut l = Layer::film(400.0, "TiO2");
+        l.inhomogen = true;
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        // delta_layer = min(0.05*400/100, 0.3) = 0.2; nominal = 0.1.
+        let (sa, spans) = expand(
+            &[(l.clone(), false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let sp = &spans[0];
+        assert_eq!(
+            sp.end - sp.start,
+            l.sub_layer_count() as usize,
+            "B6: emission == prediction"
+        );
+        let base = mats().nk("TiO2", &WL).unwrap();
+        let sub = sp.end - sp.start;
+        for i in 0..sub {
+            let f = 1.0 - 0.1 + 2.0 * 0.1 * i as f64 / (sub - 1) as f64;
+            let want: Vec<Complex64> = base.iter().map(|z| z * f).collect();
+            assert_eq!(sa.row(sp.start + i), &want[..], "row {i} (f={f})");
+        }
+    }
+
+    /// B6: the statistical twin - the cap binds the NOMINAL, the draw
+    /// is unclamped, so at saturation the drawn spread exceeds the
+    /// clamped nominal and its mean sits AT the nominal (clamping the
+    /// draw would bias the mean below it).
+    #[test]
+    fn rate_capped_error_draw_survives_the_clamp_boundary() {
+        let mut groups = HashMap::new();
+        let mut g = Group::new("TiO2");
+        g.error_mask = [0, 0, 0, 0, 1, 0]; // InhDelta only
+        g.inh_delta_error_type = crate::structure::enums::ErrorType::Gaussian;
+        g.inh_delta_error_params.abs_mean_delta_g = 0.0;
+        g.inh_delta_error_params.abs_std_dev = 0.05;
+        groups.insert("TiO2".to_string(), g);
+        let mut l = Layer::film(1200.0, "TiO2");
+        l.inhomogen = true;
+        // Saturated: delta_layer = cap = 0.3 -> nominal 0.15.
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let sub = l.sub_layer_count();
+        let mut deltas: Vec<f64> = Vec::new();
+        for seed in 0..200u64 {
+            let (sa, spans) = expand(
+                &[(l.clone(), false)],
+                &mats(),
+                &WL,
+                &groups,
+                ExpandOptions {
+                    apply_errors: true,
+                    seed: Some(seed + 1),
+                },
+            )
+            .unwrap();
+            let sp = &spans[0];
+            assert_eq!(sp.end - sp.start, sub as usize);
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for r in sp.start..sp.end {
+                let f = sa.row(r)[0].re / 2.35; // the factor
+                lo = lo.min(f);
+                hi = hi.max(f);
+            }
+            deltas.push((hi - lo) / 2.0); // = |current_delta| drawn
+        }
+        let mean: f64 = deltas.iter().sum::<f64>() / deltas.len() as f64;
+        // The nominal is 0.15; a clamped draw would pull the mean below
+        // it, an unclamped zero-mean draw leaves it there.
+        assert!(
+            mean > 0.14,
+            "mean drawn delta {mean} collapsed below the nominal"
+        );
+        assert!(
+            deltas.iter().any(|d| *d > 0.16),
+            "no draw exceeded the nominal cap - the draw is being clamped"
+        );
     }
 
     #[test]

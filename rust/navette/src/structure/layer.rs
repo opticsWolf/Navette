@@ -19,7 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::structure::enums::{LayerType, RoughnessType};
-use crate::structure::gradient::GradientSpec;
+use crate::structure::gradient::{GradientSpec, InhMode};
 use crate::structure::validation::ValidationIssue;
 use crate::structure::version::{SCHEMA_VERSION, check_schema_version};
 
@@ -92,6 +92,14 @@ pub struct Layer {
     /// can hold a gradient layer before F1.5's Python surface, so the
     /// temporary omission cannot lose user data.
     pub gradient: Option<GradientSpec>,
+    /// Application mode of the legacy scaling drift (F1.3). `Fixed` is
+    /// the default and byte-identical to every pre-F1.3 build.
+    /// Serialized ADDITIVELY (only when `RateCapped`) - the PyO3
+    /// constructor makes the mode user-reachable at this version, and
+    /// the repo's own additive-key policy (types.py / test_roundtrip.py)
+    /// covers old readers; F1.4's version bump then covers the
+    /// newer-writer hazard for this key and `gradient` together.
+    pub inh_mode: InhMode,
 }
 
 impl Default for Layer {
@@ -111,6 +119,7 @@ impl Default for Layer {
             needle: true,
             layer_type: LayerType::Film,
             gradient: None,
+            inh_mode: InhMode::Fixed,
         }
     }
 }
@@ -134,10 +143,27 @@ impl Layer {
     /// loudly there, not silently here.
     pub fn sub_layer_count(&self) -> u32 {
         if self.inhomogen && self.thickness > 0.0 {
-            let factor = 1.0 + (self.inh_delta / 0.1) * 0.5;
+            let factor = 1.0 + (self.delta_layer() / 0.1) * 0.5;
             (self.thickness.powf(0.4).ceil() * factor) as u32 + 1
         } else {
             1
+        }
+    }
+
+    /// The grading strength as a pure function of the layer thickness
+    /// (F1.3/B6: the ONE source every reader consumes - emission, both
+    /// row-count predictions, the advisory, the PyO3 getter - so a
+    /// predicted count and an emitted count cannot diverge between
+    /// modes). `Fixed` reads the authored `inh_delta`;
+    /// `RateCapped` computes D2's `min(rate * t / ref, cap)`.
+    pub fn delta_layer(&self) -> f64 {
+        match self.inh_mode {
+            InhMode::Fixed => self.inh_delta,
+            InhMode::RateCapped {
+                rate,
+                ref_thickness,
+                cap,
+            } => (rate * self.thickness / ref_thickness).min(cap),
         }
     }
 
@@ -229,12 +255,28 @@ impl Layer {
          the sign of k -- which is optical gain, not a graded film.",
                 self.inh_delta
             )));
-        } else if self.inhomogen && self.inh_delta == 0.0 {
+        } else if self.inhomogen && self.delta_layer() == 0.0 {
+            // B6: the interpolated count is the mode-aware one, so the
+            // message can never contradict the solver.
             issues.push(note(format!(
                 "Graded layer with inh_delta 0 expands to {} identical sub-layers; \
          set inhomogen = false instead.",
                 self.sub_layer_count()
             )));
+        }
+
+        // F1.3: the drift mode's own numbers, then the inert-mode note.
+        for issue in self.inh_mode.issues() {
+            let is_err = issue.is_error();
+            let m = issue.message;
+            issues.push(if is_err { bad(m) } else { note(m) });
+        }
+        if !self.inhomogen && matches!(self.inh_mode, InhMode::RateCapped { .. }) {
+            issues.push(note(
+                "inh_mode RateCapped has no effect while inhomogen is false; \
+         set inhomogen = true (or drop the mode)."
+                    .to_string(),
+            ));
         }
 
         // Gradient profile (F1.1): the self-contained checks come from
@@ -354,8 +396,13 @@ impl fmt::Display for Layer {
 
 impl Serialize for Layer {
     /// Python `get_state` key-for-key (`material_name`, int enums, version).
+    /// F1.3: `inh_mode` rides ADDITIVELY, only when `RateCapped` - the
+    /// absence of the key means `Fixed` on read, so a layer without the
+    /// mode serializes byte-identically to every pre-F1.3 build (the
+    /// same only-when-present ethic F1.4 applies to `gradient`).
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut m = s.serialize_map(Some(13))?;
+        let rate_capped = !matches!(self.inh_mode, InhMode::Fixed);
+        let mut m = s.serialize_map(Some(13 + usize::from(rate_capped)))?;
         m.serialize_entry("schema_version", &SCHEMA_VERSION)?;
         m.serialize_entry("thickness", &self.thickness)?;
         m.serialize_entry("material_name", &self.material)?;
@@ -369,6 +416,9 @@ impl Serialize for Layer {
         m.serialize_entry("optimize", &self.optimize)?;
         m.serialize_entry("needle", &self.needle)?;
         m.serialize_entry("layer_type", &self.layer_type)?;
+        if rate_capped {
+            m.serialize_entry("inh_mode", &self.inh_mode)?;
+        }
         m.end()
     }
 }
@@ -430,6 +480,12 @@ impl<'de> Deserialize<'de> for Layer {
             // then the state round-trip holds a plain layer by
             // construction (no user-constructible gradient exists yet).
             gradient: None,
+            // F1.3, additive: absent key = `Fixed` (every pre-F1.3
+            // state reads unchanged); present = the tagged mode.
+            inh_mode: match get("inh_mode") {
+                Value::Null => InhMode::Fixed,
+                v => serde_json::from_value(v).map_err(serde::de::Error::custom)?,
+            },
         })
     }
 }
@@ -616,6 +672,49 @@ mod tests {
         }
     }
 
+    /// B6 reader 4: the advisory's interpolated count agrees with the
+    /// emitted rows (message-equality, not a row-count check). The
+    /// advisory fires for a graded layer whose effective delta is 0 -
+    /// the Fixed face of the condition, byte-identical to pre-F1.3.
+    #[test]
+    fn rate_capped_advisory_message_agrees_with_emission() {
+        use crate::structure::expansion::{ExpandOptions, expand};
+        use crate::structure::providers::{DictProvider, Entry};
+        use num_complex::Complex64;
+        use std::collections::HashMap;
+        let mut l = Layer::film(50.0, "TiO2");
+        l.inhomogen = true;
+        l.inh_delta = 0.0; // the advisory condition
+        let issues = l.property_issues("Layer");
+        let note = issues
+            .iter()
+            .map(|i| i.message.as_str())
+            .find(|m| m.contains("identical sub-layers"))
+            .expect("the advisory must fire")
+            .to_string();
+        // The emitted count for the same layer.
+        let mut entries = HashMap::new();
+        entries.insert(
+            "TiO2".to_string(),
+            Entry::Array(vec![Complex64::new(2.35, 0.0), Complex64::new(2.33, 0.0)]),
+        );
+        let p = DictProvider::with_grid(entries, vec![1000.0, 1500.0]).unwrap();
+        let (sa, spans) = expand(
+            &[(l.clone(), false)],
+            &p,
+            &[1000.0, 1500.0],
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let emitted = spans[0].end - spans[0].start;
+        // Parse the count out of the message and compare BOTH ways.
+        let digits: String = note.chars().filter(|c| c.is_ascii_digit()).collect();
+        let said: usize = digits.parse().unwrap();
+        assert_eq!(said, l.sub_layer_count() as usize, "message == prediction");
+        assert_eq!(said, emitted, "message == emission ({})", sa.n_rows());
+    }
+
     #[test]
     fn defaults_match_python_ctor() {
         let l = Layer::default();
@@ -626,5 +725,125 @@ mod tests {
         assert_eq!(l.inh_delta, 0.1);
         assert_eq!(l.layer_type, LayerType::Film);
         assert_eq!(l.sub_layer_count(), 1);
+        assert_eq!(l.inh_mode, InhMode::Fixed);
+    }
+
+    // ------------------------------------------------------------------
+    // F1.3 - InhMode::RateCapped
+    // ------------------------------------------------------------------
+
+    /// The delta formula against the hand-computed `min(rate*t/ref, cap)`
+    /// over a thickness sweep, with the saturation knee exact, and the
+    /// double-thickness-doubles-the-delta property below the cap.
+    #[test]
+    fn rate_capped_delta_layer_matches_hand_computed() {
+        let mk = |t: f64| Layer {
+            thickness: t,
+            inhomogen: true,
+            inh_mode: InhMode::RateCapped {
+                rate: 0.05,
+                ref_thickness: 100.0,
+                cap: 0.3,
+            },
+            ..Layer::default()
+        };
+        // The knee sits at t = cap * ref / rate = 600 nm.
+        let oracle = |t: f64| (0.05 * t / 100.0).min(0.3);
+        for t in [10.0, 25.0, 50.0, 100.0, 300.0, 599.0, 600.0, 900.0] {
+            assert_eq!(mk(t).delta_layer(), oracle(t), "t = {t}");
+        }
+        // Double the thickness below the cap: double the delta.
+        assert_eq!(mk(100.0).delta_layer() * 2.0, mk(200.0).delta_layer());
+        // The knee is exact: at t = 600 the delta IS the cap.
+        assert_eq!(mk(600.0).delta_layer(), 0.3);
+        assert_eq!(mk(1200.0).delta_layer(), 0.3, "saturated");
+        // A negative rate inverts the direction (negative delta, bounded
+        // by the nominal clamp at emission, not by the delta formula).
+        let neg = Layer {
+            thickness: 400.0,
+            inh_mode: InhMode::RateCapped {
+                rate: -0.05,
+                ref_thickness: 100.0,
+                cap: 0.3,
+            },
+            ..Layer::default()
+        };
+        assert_eq!(neg.delta_layer(), {
+            let raw: f64 = -0.05 * 400.0 / 100.0;
+            raw.min(0.3)
+        });
+    }
+
+    /// The mode's refusals surface in `property_issues` (the one rule
+    /// surface), and the inert-mode note fires while inhomogen is off.
+    #[test]
+    fn rate_capped_validation_findings() {
+        let probe = |l: Layer| l.property_issues("Layer");
+        let errs = |v: &[ValidationIssue]| -> Vec<String> {
+            v.iter()
+                .filter(|i| i.is_error())
+                .map(|i| i.message.clone())
+                .collect()
+        };
+        let mut l = Layer::film(100.0, "TiO2");
+        l.inh_mode = InhMode::RateCapped {
+            rate: f64::NAN,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        assert!(errs(&probe(l)).iter().any(|m| m.contains("rate")));
+        let mut l = Layer::film(100.0, "TiO2");
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 0.0,
+            cap: 0.3,
+        };
+        assert!(errs(&probe(l)).iter().any(|m| m.contains("ref_thickness")));
+        let mut l = Layer::film(100.0, "TiO2");
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 1.5,
+        };
+        assert!(errs(&probe(l)).iter().any(|m| m.contains("cap")));
+        // Inert-mode note (warning, not error).
+        let mut l = Layer::film(100.0, "TiO2");
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let iss = probe(l);
+        assert!(errs(&iss).is_empty());
+        assert_eq!(iss.len(), 1);
+        assert!(iss[0].message.contains("no effect"));
+        // Fixed + inhomogen: silent, exactly as before.
+        let mut l = Layer::film(100.0, "TiO2");
+        l.inhomogen = true;
+        assert!(probe(l).is_empty());
+    }
+
+    /// The serialized state carries `inh_mode` only when `RateCapped`
+    /// (the additive-key policy): a Fixed layer's key set is the 13-key
+    /// pre-F1.3 set, byte-identical; a RateCapped layer gains the key
+    /// and round-trips it.
+    #[test]
+    fn inh_mode_state_is_additive_and_only_when_rate_capped() {
+        let fixed = Layer::film(50.0, "TiO2");
+        let v = serde_json::to_value(&fixed).unwrap();
+        assert!(!v.as_object().unwrap().contains_key("inh_mode"));
+        let back: Layer = serde_json::from_value(v).unwrap();
+        assert_eq!(back, fixed);
+
+        let mut capped = Layer::film(50.0, "TiO2");
+        capped.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let v = serde_json::to_value(&capped).unwrap();
+        assert!(v["inh_mode"]["RateCapped"]["rate"] == serde_json::json!(0.05));
+        let back: Layer = serde_json::from_value(v).unwrap();
+        assert_eq!(back, capped);
     }
 }

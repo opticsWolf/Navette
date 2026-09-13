@@ -655,6 +655,44 @@ impl Architect {
 mod tests {
     use super::*;
     use crate::structure::providers::{DictProvider, Entry};
+
+    /// F1.3/B6 reader 3: the architect's provider-less prediction
+    /// agrees with the emitted rows for a RateCapped graded carrier.
+    #[test]
+    fn rate_capped_prediction_agrees_with_emission() {
+        use crate::structure::expansion::{ExpandOptions, expand};
+        use crate::structure::gradient::InhMode;
+        let mut l = Layer::film(400.0, "TiO2");
+        l.inhomogen = true;
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let st = Structure::new(vec![Layer::film(0.0, "glass"), l], HashMap::new());
+        let mut arch = Architect::new();
+        arch.add_structure(st, false, 1, "", BlockKind::Stack)
+            .unwrap();
+        // The architect's stored structure is the prediction's source;
+        // expand the same layer list for the emission truth.
+        let mut l2 = Layer::film(400.0, "TiO2");
+        l2.inhomogen = true;
+        l2.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let seq = vec![(Layer::film(0.0, "glass"), false), (l2, false)];
+        let (sa, _) = expand(
+            &seq,
+            &mats(),
+            &wl(),
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(arch.total_sub_layers(None, &wl()), sa.n_rows());
+    }
     use num_complex::Complex64;
 
     fn wl() -> Vec<f64> {

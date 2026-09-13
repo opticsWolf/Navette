@@ -99,6 +99,18 @@ def test_state_fingerprint():
     "fingerprint recorded at a different version — re-classify (see comment)"
   assert sorted(_full_layer().get_state()) == sorted(FINGERPRINT["Layer"])
   assert sorted(Group("g").get_state()) == sorted(FINGERPRINT["Group"])
+  # F1.3, additive key: a RateCapped layer's state gains `inh_mode`
+  # (only when the mode is not the Fixed default - a Fixed layer's key
+  # set above is unchanged, byte-identical to every pre-F1.3 build).
+  capped = Layer(50.0, "TiO2", inh_mode={"RateCapped": {"rate": 0.05,
+                                                       "ref_thickness": 100.0,
+                                                       "cap": 0.3}})
+  assert sorted(capped.get_state()) ==     sorted(FINGERPRINT["Layer"] + ["inh_mode"])
+  assert capped.get_state()["inh_mode"]["RateCapped"]["rate"] == 0.05
+  back = Layer.from_state(capped.get_state())
+  assert back.inh_mode == {"RateCapped": {"rate": 0.05,
+                                          "ref_thickness": 100.0,
+                                          "cap": 0.3}}
   st = Navette_Structure([Layer(10.0, "glass")], {"glass": Group("glass")}, MATS)
   assert sorted(st.get_state()) == sorted(FINGERPRINT["Navette_Structure"])
   arch = Navette_Architect(materials=MATS)

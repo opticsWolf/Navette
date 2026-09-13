@@ -29,9 +29,9 @@ use pyo3::types::{IntoPyDict, PyComplex, PyDict, PyList};
 use serde_json::Value;
 
 use navette::structure::{
-    expand, Architect, BlockKind, DictProvider, Entry, ExpandOptions, Group, Layer, LayerType,
-    MaterialProvider, MaterialSpec, RoughnessType, SharedGroup, SharedStructure, SolverArrays,
-    SpecProvider, Structure,
+    expand, Architect, BlockKind, DictProvider, Entry, ExpandOptions, Group, InhMode, Layer,
+    LayerType, MaterialProvider, MaterialSpec, RoughnessType, SharedGroup, SharedStructure,
+    SolverArrays, SpecProvider, Structure,
 };
 
 fn ver<T>(r: Result<T, String>) -> PyResult<T> {
@@ -188,10 +188,70 @@ pub struct PyLayer {
     inner: Layer,
 }
 
+/// F1.3: the drift mode of a native `Layer`, as the tagged one-key form
+/// `"fixed"` or `{"RateCapped": {"rate":.., "ref_thickness":.., "cap":..}}`
+/// (the same shape the core's serde derives).
+pub(crate) struct PyInhMode(pub InhMode);
+
+impl FromPyObject<'_, '_> for PyInhMode {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> Result<Self, PyErr> {
+        if let Ok(name) = obj.extract::<String>() {
+            if name == "fixed" {
+                return Ok(PyInhMode(InhMode::Fixed));
+            }
+            return Err(PyValueError::new_err(format!(
+                "unknown inh_mode '{name}' (one of 'fixed', {{'RateCapped': {{...}}}})"
+            )));
+        }
+        let dict = obj.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(
+                "inh_mode must be 'fixed' or a one-key {'RateCapped': params} map",
+            )
+        })?;
+        let mut it = dict.iter();
+        let (name, params) = it
+            .next()
+            .ok_or_else(|| PyValueError::new_err("empty inh_mode map"))?;
+        if it.next().is_some() {
+            return Err(PyValueError::new_err(
+                "inh_mode map must have exactly one key (the mode name)",
+            ));
+        }
+        let name: String = name.extract()?;
+        if name != "RateCapped" {
+            return Err(PyValueError::new_err(format!(
+                "unknown inh_mode '{name}' (one of 'fixed', {{'RateCapped': {{...}}}})"
+            )));
+        }
+        let g = |key: &str| -> PyResult<Option<f64>> {
+            match params.get_item(key) {
+                Ok(v) if !v.is_none() => Ok(Some(v.extract()?)),
+                Ok(_) => Ok(None),
+                Err(_) => Ok(None),
+            }
+        };
+        let req = |key: &str| -> PyResult<f64> {
+            g(key)?.ok_or_else(|| {
+                PyValueError::new_err(format!("inh_mode 'RateCapped' requires '{key}'."))
+            })
+        };
+        let rate = req("rate")?;
+        let ref_thickness = g("ref_thickness")?.unwrap_or(100.0);
+        let cap = g("cap")?.unwrap_or(0.3);
+        Ok(PyInhMode(InhMode::RateCapped {
+            rate,
+            ref_thickness,
+            cap,
+        }))
+    }
+}
+
 #[pymethods]
 impl PyLayer {
     #[new]
-    #[pyo3(signature = (thickness=1.0, material_name="", coherent=true, roughness=0.0, rough_type=0, inhomogen=false, inh_delta=0.1, interface=false, interface_thickness=0.0, optimize=true, needle=true, layer_type=1))]
+    #[pyo3(signature = (thickness=1.0, material_name="", coherent=true, roughness=0.0, rough_type=0, inhomogen=false, inh_delta=0.1, interface=false, interface_thickness=0.0, optimize=true, needle=true, layer_type=1, inh_mode=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -207,6 +267,7 @@ impl PyLayer {
         optimize: bool,
         needle: bool,
         layer_type: i32,
+        inh_mode: Option<PyInhMode>,
     ) -> PyResult<Self> {
         let inner = Layer {
             material: material_name.to_string(),
@@ -224,6 +285,7 @@ impl PyLayer {
             // F1.5 adds the Python-visible `gradient` surface; the native
             // constructor carries None until that surface exists.
             gradient: None,
+            inh_mode: inh_mode.map(|m| m.0).unwrap_or(InhMode::Fixed),
         };
         gate_layer(py, &inner)?;
         Ok(Self { inner })
@@ -362,6 +424,26 @@ impl PyLayer {
     #[getter]
     fn sub_layer_count(&self) -> u32 {
         self.inner.sub_layer_count()
+    }
+    #[getter]
+    /// F1.3: the drift mode, tagged (`None` = `Fixed`, the default).
+    fn inh_mode(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self.inner.inh_mode {
+            InhMode::Fixed => Ok(py.None()),
+            InhMode::RateCapped {
+                rate,
+                ref_thickness,
+                cap,
+            } => {
+                let d = PyDict::new(py);
+                let p = PyDict::new(py);
+                p.set_item("rate", rate)?;
+                p.set_item("ref_thickness", ref_thickness)?;
+                p.set_item("cap", cap)?;
+                d.set_item("RateCapped", p)?;
+                Ok(d.into_any().unbind())
+            }
+        }
     }
     #[getter]
     fn mask(&self) -> Vec<i32> {

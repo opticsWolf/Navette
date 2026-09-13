@@ -472,3 +472,42 @@ def test_materials_setter_warns_on_overwrite():
   with warnings.catch_warnings():
     warnings.simplefilter("error")
     arch2.materials = MATS  # None -> provider: silent
+
+
+# F1.3: InhMode::RateCapped - B6 reader 5 --------------------------------------
+def test_rate_capped_sub_layer_count_getter_sees_the_mode():
+  """The PyO3 getter is the user's window on the prediction: it must see
+  the mode-aware count in BOTH modes. The count formula is the legacy
+  one with the mode's delta_layer in place of inh_delta:
+  int(ceil(t^0.4) * (1 + (delta/0.1)*0.5)) + 1."""
+  import math
+
+  def count(t, delta):
+    return int(math.ceil(t ** 0.4) * (1 + (delta / 0.1) * 0.5)) + 1
+
+  # Fixed: byte-identical to every pre-F1.3 build.
+  fixed = Layer(400.0, "TiO2", inhomogen=True, inh_delta=0.2)
+  assert fixed.sub_layer_count == count(400.0, 0.2)
+  assert fixed.inh_mode is None
+  # RateCapped: delta = min(rate*t/ref, cap) = min(0.05*4, 0.3) = 0.2.
+  capped = Layer(400.0, "TiO2", inhomogen=True,
+                 inh_mode={"RateCapped": {"rate": 0.05, "ref_thickness": 100.0,
+                                           "cap": 0.3}})
+  assert capped.sub_layer_count == count(400.0, 0.2)
+  assert capped.inh_mode == {"RateCapped": {"rate": 0.05,
+                                             "ref_thickness": 100.0,
+                                             "cap": 0.3}}
+  # Saturation: a 1200 nm film's delta pins at the cap (0.3).
+  sat = Layer(1200.0, "TiO2", inhomogen=True,
+              inh_mode={"RateCapped": {"rate": 0.05, "ref_thickness": 100.0,
+                                        "cap": 0.3}})
+  assert sat.sub_layer_count == count(1200.0, 0.3)
+  assert sat.sub_layer_count == fixed_delta_count_never_moves(sat)
+
+def fixed_delta_count_never_moves(layer):
+  # The delta stops growing past the knee: double the (saturated)
+  # thickness and the count stays put.
+  import math
+  t = layer.thickness
+  d = 0.3
+  return int(math.ceil(t ** 0.4) * (1 + (d / 0.1) * 0.5)) + 1

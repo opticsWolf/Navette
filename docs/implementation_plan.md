@@ -138,7 +138,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F0.3~~ **DONE (0.6.35)** | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
 | ~~F1.1~~ **DONE (0.6.36)** | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
 | ~~F1.2~~ **DONE (0.6.37)** | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
-| F1.3 | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
+| ~~F1.3~~ **DONE (0.6.38)** | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | F1.6 | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
 | F1.7 | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
 | F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
@@ -1385,8 +1385,32 @@ bookkeeping path.
 
 ### F1.3 — `InhMode::RateCapped` for single-material drift (0.6.38)
 
-`delta_layer = min(rate * thickness / ref_thickness, cap)`, replacing the
-constant `inh_delta` as the input to the **frozen** legacy arithmetic.
+**DONE (0.6.38, see the feature commit).** Corrections from implementation:
+
+- **The nominal clamp is two-sided (`[-cap, cap]`), not the literal
+  `[0, cap]`.** The plan's own validation sentence - "rate finite (sign
+  free - negative inverts the drift direction)" - would be nullified by
+  a one-sided clamp: a negative rate's drift clamps to zero and
+  vanishes. The two-sided clamp preserves both the saturation semantics
+  the twins test (positive rates saturate at `+cap`) and the
+  inverted-direction reading (the frozen ramp runs inverted).
+- **`inh_mode` rides the state ADDITIVELY at this version, not at
+  F1.4.** The gate requires the PyO3 getter to see the RateCapped count,
+  and the only Python door to a RateCapped layer is the native
+  constructor - which makes the mode user-reachable NOW. Leaving the
+  key out of the state would lose user data on save/load. The repo's
+  own additive-key policy (types.py / the fingerprint comment)
+  sanctions exactly this; F1.4's bump then covers the newer-writer
+  hazard for `inh_mode` and `gradient` together. A Fixed layer's state
+  is byte-identical to every pre-F1.3 build (only-when-set), and the
+  fingerprint test gained the RateCapped key list.
+- **The B6 agreement is structural, then twin-pinned.** Both
+  predictions, the advisory and the getter already call
+  `sub_layer_count()`/`delta_layer()`; making `delta_layer` the one
+  source means the agreement holds by construction. The twins pin it
+  anyway: prediction-vs-emission for `Structure` and `Architect`
+  (provider-backed AND cold), a message-equality check for the
+  advisory, and a Python getter twin in both modes.
 
 The combination order is unchanged and stays exactly as
 [expansion.rs:259](rust/navette/src/structure/expansion.rs:259) has it:
@@ -2475,7 +2499,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.35 | F0.3 | cb44c02 | **U1** | done |
 | 0.6.36 | F1.1 | 010c0ef | A4, A5, A6, A9.1, R4, N5, N7, B10 | done |
 | 0.6.37 | F1.2 | 7a499a7 | A9.2, N2 | done |
-| 0.6.38 | F1.3 | — | **B6**, B10 | not started |
+| 0.6.38 | F1.3 | (hash pending) | **B6**, B10 | done |
 | 0.6.39 | F1.6 | — | **U2**, **B5** | not started |
 | 0.6.40 | F1.7 | — | **U3, U4**, **B2, B3**, B8 | not started |
 | 0.6.41 | F1.4 | — | A3, R5, N4 | not started |

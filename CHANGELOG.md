@@ -4,6 +4,62 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.38] - F1.3: `InhMode::RateCapped` - thickness-relative single-material drift
+
+The legacy scaling drift gains an application mode: the grading
+strength can grow with thickness (a deposition drift) instead of being
+a fixed property. The frozen legacy arithmetic is untouched - the mode
+only replaces the NUMBER that flows into it.
+
+### Added
+
+- **`InhMode`** (`Fixed` default | `RateCapped { rate, ref_thickness,
+  cap }`): `delta_layer = min(rate * thickness / ref_thickness, cap)`
+  (D2's formula) as a pure function of thickness, exposed as
+  `Layer::delta_layer` - the ONE source every reader consumes
+  (F1.3/B6): the emission, both row-count predictions (`Structure` and
+  `Architect`), the advisory message and the PyO3
+  `Layer.sub_layer_count` getter all read it, so a predicted count and
+  an emitted count cannot diverge between modes. Pinned by
+  prediction-vs-emission twins on every Rust reader and a getter twin
+  in Python.
+- **The frozen combination order, unchanged:** `delta_nominal =
+  (delta_layer + group.inh_delta_summand) * 0.5`; in RateCapped only,
+  `delta_nominal` is clamped BEFORE the stochastic error draw - the
+  cap binds the nominal, the noise is allowed to exceed it (clamping
+  draws would bias Monte-Carlo statistics). Pinned by a statistical
+  twin over 200 seeds: the mean drawn delta sits AT the clamped
+  nominal and individual draws exceed it.
+- **Validation** in `property_issues`: rate finite, `ref_thickness >
+  0`, `cap in [0, 1]`; an advisory when the mode is set while
+  `inhomogen` is false (the mode is inert there).
+- **Python surface:** the native `Layer` constructor accepts
+  `inh_mode` (`"fixed"` default, or `{'RateCapped': {'rate':...,
+  'ref_thickness': 100.0, 'cap': 0.3}}`); the `inh_mode` getter
+  returns the tagged form (`None` = Fixed).
+
+### Notes
+
+- **The nominal clamp is two-sided (`[-cap, cap]`), not the plan's
+  literal `[0, cap]`:** the plan's own validation says "rate finite
+  (sign free - negative inverts the drift direction)", which a one-
+  sided clamp would nullify (a negative rate's drift would clamp to
+  zero and vanish). The two-sided clamp keeps the saturation semantics
+  (positive rates saturate at `+cap` exactly as the twins test) AND
+  the inverted-direction reading (the frozen ramp runs inverted).
+- **`inh_mode` rides the state ADDITIVELY** (serialized only when not
+  `Fixed`): the PyO3 constructor makes the mode user-reachable at this
+  version, and the repo's own additive-key policy (types.py /
+  test_roundtrip.py's fingerprint comment) covers old readers - every
+  pre-F1.3 state parses unchanged and a Fixed layer's state is
+  byte-identical. F1.4's version bump then covers the newer-writer
+  hazard for this key and `gradient` together. The fingerprint test
+  gained the RateCapped key list.
+- `inhomogen` is NOT deprecated: `Fixed` is the default and the
+  existing randomized differential pins (Fixed rows bitwise vs the
+  legacy oracle) keep passing unmodified - the proof the frozen path
+  is intact.
+
 ## [0.6.37] - F1.2: gradient `RateCapped` - thickness-relative slope with caps
 
 The second gradient profile mode: `f(z) = f_start + rate * (z /

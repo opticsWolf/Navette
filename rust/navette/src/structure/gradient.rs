@@ -456,6 +456,69 @@ impl GradientJson {
     }
 }
 
+/// Application mode for the legacy scaling drift (physics frozen).
+///
+/// `Fixed` is today's behavior, byte for byte: the grading strength is
+/// the authored `inh_delta`. `RateCapped` (F1.3) makes the strength grow
+/// with thickness - D2's `delta_layer = min(rate * thickness /
+/// ref_thickness, cap)` - a deposition drift that scales with the film
+/// instead of being a fixed property. The clamp that binds the
+/// COMBINED nominal is two-sided ([-cap, cap]): a negative rate
+/// inverts the drift direction (the frozen ramp `1 - delta ..= 1 +
+/// delta` runs inverted), and the magnitude still saturates at `cap`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum InhMode {
+    /// Current behavior, bit-identical: `delta = inh_delta`.
+    #[default]
+    Fixed,
+    /// `delta_layer = min(rate * thickness / ref_thickness, cap)`
+    /// (D2's formula: the positive side saturates at `cap` in the
+    /// delta itself; the nominal clamp below bounds both sides).
+    RateCapped {
+        rate: f64,
+        ref_thickness: f64,
+        cap: f64,
+    },
+}
+
+impl InhMode {
+    /// Whether the mode needs the nominal clamp (and its bound); the
+    /// delta itself is [`Layer::delta_layer`] (it reads the layer's
+    /// thickness and, for `Fixed`, the authored `inh_delta`).
+    pub fn nominal_cap(&self) -> Option<f64> {
+        match *self {
+            InhMode::Fixed => None,
+            InhMode::RateCapped { cap, .. } => Some(cap),
+        }
+    }
+
+    /// The self-contained findings (the rate/ref/cap numbers). The
+    /// provider-independent half of the validation.
+    pub fn issues(&self) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        let bad = |m: String| ValidationIssue::error(m);
+        if let InhMode::RateCapped {
+            rate,
+            ref_thickness,
+            cap,
+        } = self
+        {
+            if !rate.is_finite() {
+                issues.push(bad(format!("inh rate {rate} is not finite.")));
+            }
+            if !(*ref_thickness > 0.0) {
+                issues.push(bad(format!(
+                    "inh ref_thickness {ref_thickness} must be > 0."
+                )));
+            }
+            if !(0.0..=1.0).contains(cap) {
+                issues.push(bad(format!("inh cap {cap} is outside [0, 1].")));
+            }
+        }
+        issues
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

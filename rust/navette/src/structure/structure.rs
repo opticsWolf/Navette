@@ -551,6 +551,40 @@ mod tests {
     use super::*;
     use crate::structure::providers::{DictProvider, Entry};
 
+    /// F1.3/B6 reader 2: the provider-less row-count prediction agrees
+    /// with the emitted rows for a RateCapped graded carrier (the
+    /// prediction reads the same `sub_layer_count` the emission does,
+    /// so the two cannot diverge between modes).
+    #[test]
+    fn rate_capped_prediction_agrees_with_emission() {
+        use crate::structure::expansion::{ExpandOptions, expand};
+        use crate::structure::gradient::InhMode;
+        let mut l = Layer::film(400.0, "TiO2");
+        l.inhomogen = true;
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let st = Structure::new(vec![Layer::film(0.0, "glass"), l], HashMap::new());
+        let p = mats();
+        let (sa, _) = expand(
+            &st.layers
+                .iter()
+                .cloned()
+                .map(|l| (l, false))
+                .collect::<Vec<_>>(),
+            &p,
+            &wl(),
+            &st.snapshot_groups(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(st.total_sub_layers(Some(&p), &wl()), sa.n_rows());
+        // The provider-LESS fallback agrees too (the cold struct).
+        assert_eq!(st.total_sub_layers(None, &wl()), sa.n_rows());
+    }
+
     fn wl() -> Vec<f64> {
         vec![1000.0, 1500.0]
     }
