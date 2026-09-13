@@ -2639,7 +2639,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.38 | F1.3 | c3a20d6 | **B6**, B10 | done |
 | 0.6.39 | F1.6 | 86e4fed | **U2**, **B5** | done |
 | 0.6.40 | F1.7 | 57b4602 | **U3, U4**, **B2, B3**, B8 | done |
-| 0.6.41 | F1.4 | (hash pending) | A3, R5, N4 | done |
+| 0.6.41 | F1.4 | f956574 | A3, R5, N4 | done |
 | 0.6.42 | F1.5 | — | A5 (mirror), N9 | not started |
 | 0.6.43 | F2.1 | — | A7, R6 | not started |
 | 0.6.44 | F2.2 | — | A4, A8 | not started |
