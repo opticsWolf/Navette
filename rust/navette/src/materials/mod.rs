@@ -104,7 +104,8 @@ impl MixRule {
             "MoriTanaka" => Ok(MixRule::MoriTanaka { l: 1.0 / 3.0 }),
             "PowerLaw" => Ok(MixRule::PowerLaw { alpha: 0.5 }),
             other => Err(format!(
-                "unknown mixing rule '{other}' (one of Bruggeman,                  MaxwellGarnett, Looyenga, Lichtenecker, MoriTanaka, PowerLaw)"
+                "unknown mixing rule '{other}' (one of Bruggeman, MaxwellGarnett, \
+                 Looyenga, Lichtenecker, MoriTanaka, PowerLaw)"
             )),
         }
     }

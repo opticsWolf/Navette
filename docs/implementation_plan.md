@@ -125,12 +125,16 @@ and B6 undercounts — and §0.4 records which.
 7. **Python-surface error messages stay ASCII** (cp1252 consoles).
    Clippy `-D warnings` rejects `///` doc comments on statements.
 
-   *Reality check:* the tree does not currently keep this — the homogenize
-   warning at
-   [structure.rs:230](rust/navette/src/smatrix/synthesis/structure.rs:230)
-   contains an em-dash, which is cp1252-safe but not ASCII. New messages
-   are ASCII; do not "fix" the existing one as drive-by, and do not treat
-   its punctuation as precedent (see A9.2 under F1.2).
+   *Reality check (retired at C3, amendment 3 / V8):* the exception this
+   paragraph carved out — an em-dash in the homogenize warning at
+   `structure.rs:230` — no longer exists (that line is `ambient()`;
+   F1.1 rewrote the homogenize warnings ASCII), and the encodable
+   non-ASCII still outstanding in production messages is written out in
+   `tools/check_message_whitespace.py`'s allowlist. The class is now
+   guarded by that tool (space runs and non-encodable chars blocking,
+   encodable chars allowlisted until F3.1's re-audit empties the list);
+   do not treat the allowlist's punctuation as precedent for new
+   messages — new messages are ASCII.
 
 ### 0.2 Priority / risk / effort
 
@@ -152,11 +156,10 @@ and B6 undercounts — and §0.4 records which.
 | ~~F1.3~~ **DONE (0.6.38)** | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | ~~F1.6~~ **DONE (0.6.39)** | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
 | ~~F1.7~~ **DONE (0.6.40)** | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
-| F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
-| ~~F1.5~~ **DONE (0.6.42)** | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
+| ~~F1.4~~ **DONE (0.6.41)** | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 || ~~F1.5~~ **DONE (0.6.42)** | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
 | ~~C1~~ **DONE (gate repair)** | Needle pin re-specified per-platform + ground rule 5's cross-platform sentence | none | **P0** | S (the probe settles it) | S | status review finding 1 |
 | ~~C2~~ **DONE (0.6.43)** | Interface-span clamp-up: singleton-bulk spans clamp instead of deleting | 0.6.43 | **P0** | S (arithmetic, not a scale) | S | status review finding 2 |
-| C3 | The sweep: message literals + scanner, stale comment, doc note, bookkeeping, `uv.lock` | 0.6.44 | P1 | S | M | status review findings 3–7 |
+| ~~C3~~ **DONE (0.6.44)** | The sweep: message literals + scanner, stale comment, doc note, bookkeeping, `uv.lock` | 0.6.44 | P1 | S | M | status review findings 3–7 |
 | F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.45 | P2 | S | M | §4.1–4.2 |
 | F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.46 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.47 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
@@ -2582,6 +2585,14 @@ Resolve at the item that first needs them; each is a one-liner.
    Python-side in `_film_dicts`, injected into the provider entries by
    `assemble_stack`. Refuse when absent; never fall back to `material_a`.
    *(F1.1, mirrored at F1.5)*
+
+   **RESOLVED (C3 bookkeeping, amendment 3): as recommended.** F1.1
+   (`010c0ef`) carries `GradientJson.nk_b` on the film-dict door,
+   injected into the provider entries by `assemble_stack`, refused when
+   absent; F1.5 (`3b08482`) mirrors the shape decision into the config
+   row as `GradientSpec` — named endpoints, not the nk_b transport (a
+   config document holding evaluated spectra would freeze a library
+   snapshot into a hand-edited file).
 9. **(A6, corrected) EMA selector type** — recommend `GradientSpec.ema` is
    the existing `MixRule`
    ([materials/mod.rs:54](rust/navette/src/materials/mod.rs:54)), not a new
@@ -2590,11 +2601,22 @@ Resolve at the item that first needs them; each is a one-liner.
    keeps one mixing vocabulary. Cost: add `Serialize`/`Deserialize`/
    `PartialEq` derives and name the serde representation deliberately, since
    it becomes schema-visible. *(F1.1)*
+
+   **RESOLVED (C3 bookkeeping, amendment 3): as recommended.** F1.1 uses
+   the existing `MixRule`; the serde representation is the
+   externally-tagged enum (the config door speaks
+   `{"Bruggeman": {"max_iter": 100, "tol": 1e-9}}`), made deliberate by
+   F1.5's nested `deny_unknown_fields` work.
 10. **(N4) `gradient` in the serialized state — always, or only when
     `Some`?** Recommend only-when-`Some`: a stack with no gradient then
     serialises byte-identically at v1 and v2 apart from the version tag,
     which makes "v2 changes nothing unless you use the feature" literally
     true. Cost: `test_state_fingerprint` needs two key lists. *(F1.4)*
+
+    **RESOLVED (C3 bookkeeping, amendment 3): as recommended.** F1.4
+    (`f956574`) carries `gradient` only-when-`Some`; the fingerprint's
+    nested key set (`"gradient"` → the six `GradientSpec` keys) pins the
+    map shape.
 11. **(N9) Program sections: inside `sections`, or top-level?** Recommend
     inside `sections`, matching every existing payload — and add the
     section-name whitelist in the same commit, because the silent-ignore
@@ -2611,6 +2633,12 @@ Resolve at the item that first needs them; each is a one-liner.
     — is more discoverable and adds a schema field; decide before F1.4,
     because F1.4 is the release that freezes the Phase A field set.
     *(F1.6, frozen by F1.4)*
+
+    **RESOLVED (C3 bookkeeping, amendment 3): as recommended.** F1.6
+    (`86e4fed`) reads `optimize` via `span_is_scalable_rows`; F1.4
+    (`f956574`) froze the Phase A field set without a `scalable` field.
+    The meaning-change side of the cost is exactly F1.7's branch
+    widening (optimize=true never means "homogenize me").
 13. **(U4) Should the per-cycle refresh be configurable?** Recommend no in
     v1: three fixed refresh points, no knob. A `refresh_profiles_each_cycle`
     toggle would let a user turn off the reconciliation that bounds the
@@ -2618,12 +2646,19 @@ Resolve at the item that first needs them; each is a one-liner.
     macro cycle — which F1.7 already argues is negligible next to the dozens
     of `optimize_thicknesses` invocations in the same cycle (B8). Revisit
     only if a profiling run says otherwise. *(F1.7)*
+
+    **RESOLVED (C3 bookkeeping, amendment 3): as recommended.** F1.7
+    (`57b4602`) ships three fixed refresh points and no knob.
 14. **(U1) Does `clamp_min_nm` get renamed?** Recommend no. It genuinely
     does two jobs — elimination threshold under `Remove`, manufacturing
     floor under the clamp-up policies — but renaming a public config key
     breaks every caller to buy clarity that a doc comment can supply. The
     doc comment must state both jobs and which policy selects which.
     *(F0.3)*
+
+    **RESOLVED (C3 bookkeeping, amendment 3): as recommended.** F0.3
+    (`cb44c02`) keeps the key and states both jobs; C2 (0.6.43)
+    completes the second job's behaviour (the interface case).
 15. **(B2) Does `expand`'s per-entry emission get factored out, or does
     `refresh_profiles` carry its own copy of it?** Recommend factoring:
     one `emit_entry`, called by both, extracted in F0.1. It is the only
@@ -2708,6 +2743,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.42 | F1.5 | 3b08482 | A5 (mirror), N9 | done |
 | — | C1 | e751852 | status review finding 1 (V5, V6) | done |
 | 0.6.43 | C2 | db3d5e1 | status review finding 2 (V3, V4, V9) | done |
+| 0.6.44 | C3 | (pending) | status review findings 3–7 (V1, V2, V7, V8) | done |
 | 0.6.45 | F2.1 | — | A7, R6 | not started |
 | 0.6.46 | F2.2 | — | A4, A8 | not started |
 | 0.6.47 | F2.3 | — | A8, N1 | not started |

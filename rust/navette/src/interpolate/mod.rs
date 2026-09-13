@@ -207,7 +207,9 @@ impl UniInterpolator {
         for (i, &xi) in tgt_x.iter().enumerate() {
             if xi < lo || xi > hi || xi.is_nan() {
                 return Err(format!(
-                    "extrap='error': target point {i} is {xi}, outside the knot range                      [{lo}, {hi}]. Use extrap='linear' or 'clamp' to extend past the                      data, or restrict the query grid."
+                    "extrap='error': target point {i} is {xi}, outside the knot range \
+                     [{lo}, {hi}]. Use extrap='linear' or 'clamp' to extend past the \
+                     data, or restrict the query grid."
                 ));
             }
         }

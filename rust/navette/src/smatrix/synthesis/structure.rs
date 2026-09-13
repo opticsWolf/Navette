@@ -1059,7 +1059,8 @@ impl DesignStack {
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
             if d > max_nm {
                 return Err(format!(
-                    "clamp_all: span '{}' is {:.1} nm thick, above the {:.1} nm ceiling -                      refusing rather than rescaling a profile",
+                    "clamp_all: span '{}' is {:.1} nm thick, above the {:.1} nm ceiling - \
+                     refusing rather than rescaling a profile",
                     self.films[sp.start].material, d, max_nm
                 ));
             }
@@ -2525,10 +2526,14 @@ mod tests {
                 .unwrap();
         assert_eq!(stack.films().len(), 57, "the plan's measured row count");
         let err = stack.clamp_all(2.0, 300.0, false).unwrap_err();
-        assert!(err.contains("'TiO2'"), "{err}");
-        assert!(err.contains("1000.0"), "{err}");
-        assert!(err.contains("300.0"), "{err}");
-        assert!(err.contains("refusing"), "{err}");
+        // The exact message (C3): deterministic format! output over
+        // pinned inputs - pin it whole, so a lost line-continuation can
+        // never regrow a whitespace run.
+        assert_eq!(
+            err,
+            "clamp_all: span 'TiO2' is 1000.0 nm thick, above the 300.0 nm ceiling - \
+             refusing rather than rescaling a profile"
+        );
         // Nothing changed behind the error.
         assert_eq!(stack.films().len(), 57);
         assert!((stack.total_thickness_nm() - 1000.0).abs() < 1e-12);

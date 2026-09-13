@@ -421,9 +421,13 @@ impl SmatrixContext {
 ///   thickness. Scalable = the span has at least two bulk rows and every
 ///   one of them is optimize-flagged — the shape `from_design` gives a
 ///   profiled (`inhomogen` or `gradient`) carrier with `optimize = true`
-///   whose mode scales exactly (`InhMode::Fixed`, `GradientMode::FixedSpan`);
-///   the RateCapped modes depend on absolute depth and stay homogenized
-///   until F1.7.
+///   whose mode scales exactly (`InhMode::Fixed`, `GradientMode::FixedSpan`).
+///   The RATE modes read absolute depth, so scaling one thickness moves
+///   every row's `f` — those spans are scalable too since F1.7, and
+///   `refresh_profiles` (at the construction points) rebuilds the profile
+///   at the new depth before anything reads it: the rebuild is what makes
+///   "one thickness per span" sound for every mode, not just the
+///   scale-exact ones.
 #[derive(Clone, Debug)]
 pub(crate) enum Param {
     Row(usize),

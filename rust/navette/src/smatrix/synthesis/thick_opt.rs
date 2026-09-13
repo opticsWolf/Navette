@@ -320,7 +320,8 @@ where
             Some(rows) => {
                 if rows != m || jac.len() != m * n {
                     return Err(format!(
-                        "levenberg_marquardt: analytic jacobian is {rows}×{} where the                          residual vector is {m} long",
+                        "levenberg_marquardt: analytic jacobian is {rows}x{} where the \
+                         residual vector is {m} long",
                         if rows == 0 {
                             0
                         } else {

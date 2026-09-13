@@ -4,6 +4,62 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.44] - C3: the sweep — message rendering, stale comment, doc note, bookkeeping
+
+Everything the status review found that does not change behaviour except
+message text (findings 3–7), plus the tool that guards the class.
+
+### Changed
+
+- **Five message literals fixed** (a lost `\` line-continuation leaves
+  the next line's indent INSIDE the string): the two F0.2 refusals the
+  user meets when the ceiling licence fires
+  (`clamp_all: ... ceiling - refusing rather than rescaling a profile`;
+  the `NeedlePipeline:` variant), the F1.1 `MixRule` parse refusal (V1 —
+  one typo away on every gradient a user authors), the pre-existing
+  `extrap='error'` range message, and the pre-existing
+  `levenberg_marquardt: analytic jacobian` message — which also carried
+  a non-ASCII `×`, now ASCII (ground rule 7). The two existing refusal
+  twins upgraded from substring asserts to the EXACT full message; a
+  new Python-side twin pins the `MixRule` wording (the only one of the
+  five reachable without constructing a stack).
+- **Two non-encodable characters left production messages** (ground
+  rule 7's actual bite — cp1252 consoles cannot encode them):
+  `stagnation_window must be >= 2.` (was `≥`) and
+  `material has non-positive n={n_real} at wl={...} nm` (was `λ`).
+- **New tool: `tools/check_message_whitespace.py`**, wired into CI and
+  the battery, staged exactly as amendment 3/V2 specifies:
+  space runs of 3+ inside string literals are BLOCKING with an empty
+  allowlist (the class is unambiguous); cp1252-unencodable characters
+  are BLOCKING; the encodable non-ASCII still outstanding (—, ×, · in
+  five production files) is written out as an explicit advisory
+  allowlist that F3.1's exposure re-audit retires. Test regions
+  (`#[cfg(test)]`, `rust/*/tests/`) and comments are skipped — the two
+  space-run sites the review's naive scan would have flagged are test
+  assert messages, and one quoted string sits inside a trailing
+  comment.
+- **A stale doc comment retired:** the `Param` enum still said the rate
+  modes "stay homogenized until F1.7" — F1.7 shipped; the comment now
+  states the refresh reconciliation in present tense.
+- **`Layer::sub_layer_count` documents its gradient exception:** a
+  gradient-only layer reports 1 (the count rule needs the wavelength
+  grid and both endpoint spectra, which a bare `Layer` does not have);
+  the emitted count is the expansion's `gradient_sub_layer_count`.
+  Whether the getter gets an honest sentinel is queued for F3.1.
+
+### Bookkeeping
+
+- F1.4's master-table row struck (ground rule 1's only miss).
+- §8 decisions 8, 9, 10, 12, 13, 14 stamped RESOLVED with their
+  resolving commits (decisions 1–5 and 11 stay open for Phase B).
+- Ground rule 7's reality-check paragraph retired (V8): the em-dash
+  exception it carved out no longer exists; the paragraph now points at
+  the scanner tool and the allowlist.
+- `uv.lock` tracked (V7: no gate consumes it — it records what the dev
+  environment resolved to when digests were recorded, which C1 made
+  load-bearing provenance; the alternative was `.gitignore`, not the
+  status quo).
+
 ## [0.6.43] - C2: an interface-carrying film clamps up instead of being deleted
 
 The review's measured case (finding 2): under a clamp-up policy, a plain

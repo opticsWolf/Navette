@@ -137,6 +137,15 @@ impl Layer {
     /// Solver sub-layer count (Python `_refine_layer_count`, transliterated
     /// exactly: `int(ceil(t^0.4) * factor) + 1`).
     ///
+    /// Gradient exception (C3, review finding 6): a gradient-only layer
+    /// reports 1 here even though it expands to 3+ rows — the gradient
+    /// count rule needs the wavelength grid and both endpoint spectra,
+    /// which a bare `Layer` does not have. The EMITTED count is the
+    /// expansion's `gradient_sub_layer_count`; treat this getter's
+    /// answer as the legacy (inhomogen) rule only. Whether it should
+    /// return an honest sentinel instead is queued for F3.1's exposure
+    /// re-audit (amendment 3, section 6).
+    ///
     /// NOTE: `powf` may differ from NumPy's power by 1 ulp; `ceil` at exact
     /// integer boundaries would then disagree. The differential suite pins
     /// counts over randomized thicknesses — any boundary divergence fails

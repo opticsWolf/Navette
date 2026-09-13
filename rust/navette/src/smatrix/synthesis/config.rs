@@ -188,7 +188,7 @@ impl PipelineConfig {
             return Err("clamp_max_nm must be greater than clamp_min_nm.".into());
         }
         if self.stagnation_window < 2 {
-            return Err("stagnation_window must be ≥ 2.".into());
+            return Err("stagnation_window must be >= 2.".into());
         }
         Ok(self)
     }

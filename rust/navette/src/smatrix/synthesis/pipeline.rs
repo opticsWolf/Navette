@@ -101,7 +101,9 @@ impl NeedlePipeline {
             let d: f64 = stack.films()[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
             if d > cfg.clamp_max_nm {
                 return Err(format!(
-                    "NeedlePipeline: span '{}' is {:.1} nm thick, above the                      clamp_max_nm ceiling of {:.1} nm - refusing rather than                      rescaling a pinned profile",
+                    "NeedlePipeline: span '{}' is {:.1} nm thick, above the \
+                     clamp_max_nm ceiling of {:.1} nm - refusing rather than \
+                     rescaling a pinned profile",
                     stack.films()[sp.start].material,
                     d,
                     cfg.clamp_max_nm
@@ -716,9 +718,15 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected the ceiling refusal"),
         };
-        assert!(err.contains("'TiO2'"), "{err}");
-        assert!(err.contains("1000.0"), "{err}");
-        assert!(err.contains("300.0"), "{err}");
+        // The exact message (C3): the refusal is deterministic format!
+        // output over pinned inputs - pin it whole, so a lost
+        // line-continuation can never regrow a whitespace run.
+        assert_eq!(
+            err,
+            "NeedlePipeline: span 'TiO2' is 1000.0 nm thick, above the \
+             clamp_max_nm ceiling of 300.0 nm - refusing rather than \
+             rescaling a pinned profile"
+        );
         // Control: the same span under a 1500 nm ceiling constructs.
         let (stack2, _) = DesignStack::from_design(
             air(),

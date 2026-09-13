@@ -341,6 +341,19 @@ def test_gradient_validation_is_native_f1_5():
     Layer(100.0, "TiO2", gradient={**_GRAD, "ema": "NotAKernel"})
 
 
+def test_mix_rule_refusal_message_is_exact_c3():
+  """C3 (V1): the MixRule parse refusal is the most user-reachable of
+  the whitespace-run sites - one typo away on every gradient a user
+  authors through the Python surface. Fixed at C3 (0.6.44, a lost
+  line-continuation had grown an 18-space run before MaxwellGarnett);
+  pinned whole, so the exact wording is now the gate."""
+  import re
+  exact = ("unknown mixing rule 'Bruggman' (one of Bruggeman, "
+           "MaxwellGarnett, Looyenga, Lichtenecker, MoriTanaka, PowerLaw)")
+  with pytest.raises(ValueError, match=re.escape(exact)):
+    Layer(100.0, "TiO2", gradient={**_GRAD, "ema": "Bruggman"})
+
+
 def test_gradient_layer_expands_through_the_provider_f1_5():
   """A gradient Layer inside a Structure expands against the PROVIDER:
   both endpoints resolve by name (the film's own nk is used only when

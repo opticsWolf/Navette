@@ -41,7 +41,7 @@ pub fn qwot_nm(
     let n_real = layer_nk[best].re;
     if n_real <= 0.0 {
         return Err(format!(
-            "material has non-positive n={n_real} at λ={} nm",
+            "material has non-positive n={n_real} at wl={} nm",
             wavls[best]
         ));
     }

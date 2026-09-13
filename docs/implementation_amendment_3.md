@@ -617,7 +617,22 @@ V2). **Version: 0.6.44** at all seven sites. The
 message-text change is user-visible behaviour, which is why the sweep
 gets a release rather than riding C2.
 
-**DONE:** — (recorded here when the item lands, with the commit hashes).
+**DONE:** — done (2026-09-13, feature commit pending). Five literals
+fixed (V1's `materials/mod.rs:107` included); the two existing refusal
+twins upgraded to exact full-message asserts and a Python-side twin pins
+the `MixRule` wording. V2's staging measured and honoured: the scanner
+found 10 encodable-non-ASCII advisory sites (the amendment's list was
+wrong in two directions — `tables.rs` and `solver.rs` live under
+`color/` and `smatrix/`, and `optimizer.rs`/`trf.rs` carry em-dashes the
+ledger missed; `thick_opt.rs`'s `x` was fixed by C3 itself) and TWO
+non-encodable production messages the ledger's count understated:
+`stagnation_window must be >= 2.` (was the `>=` sign) and `inflate.rs`'s
+`wl=` (was lambda) — both fixed. The tool is wired into CI and the
+battery; its own output is ASCII-safe (its first draft crashed printing
+findings on a cp1252 console - the exact class it polices). The stale
+`Param` comment, the `sub_layer_count` note, the F1.4 row strike, the
+six section-8 stamps, ground rule 7's paragraph retirement (V8), and
+`uv.lock` tracked all landed in this item.
 
 ---
 
@@ -652,10 +667,12 @@ gates) is unchanged.
 - The two pre-existing message sites move **out** of F3.1's scope (C3
   fixes them); F3.1 keeps the `check_message_whitespace.py` tool in its
   gate list like the other tools.
-- **NEW (V2):** F3.1 retires C3's non-ASCII allowlist — the ~6 remaining
-  cp1252-encodable literals (`—`, `×`, `·` in `tables.rs`, `solver.rs`,
-  `color_merit.rs`, `jacobian.rs`, `thick_opt.rs`,
-  `navette-py/src/synthesis_pipeline.rs`). The exposure re-audit reads
+- **NEW (V2, corrected as measured at C3):** F3.1 retires C3's non-ASCII
+  allowlist — the ten remaining cp1252-encodable literals (`—`, `×`, `·`
+  in `color/tables.rs`, `smatrix/solver.rs`, `color_merit.rs`,
+  `jacobian.rs`, `optimizer.rs`, `trf.rs`,
+  `navette-py/src/synthesis_pipeline.rs`); `thick_opt.rs` is already
+  clean (C3 fixed its `×`). The exposure re-audit reads
   every one of those messages anyway; emptying the allowlist there costs
   one pass instead of a separate item, and the tool goes fully blocking
   at that release.
