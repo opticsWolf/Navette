@@ -1052,6 +1052,14 @@ impl DesignStack {
         // left half-clamped behind an error. Scalable spans are exempt:
         // their total is an LM bound (ub), not an authoring error, and
         // the sweep below caps them.
+        //
+        // The row count here is DELIBERATE and diverges from the clamp-up
+        // branch's `is_singleton_bulk()` below (C2): the floor side clamps
+        // a plain interface film, the CEILING side keeps refusing it.
+        // Shrinking a plain film to the ceiling would be well-defined, but
+        // changing F0.2's refusal semantics is a separate decision -
+        // amendment 3 section 3 records the asymmetry. Revisit only with
+        // a real user case (review C, E3).
         for sp in &self.spans {
             if sp.end - sp.start <= 1 || self.span_is_scalable(sp) {
                 continue;

@@ -525,10 +525,11 @@ So the tool ships in two stages, both inside C3:
    lost `\`.
 2. **Non-ASCII: blocking for the cp1252-unencodable set** (which is what
    ground rule 7 actually protects), advisory-with-allowlist for the
-   rest, and the allowlist is written out explicitly with the five or six
-   entries it starts with rather than pretended away. Retiring those
+   rest, and the allowlist is written out explicitly with the entries it
+   starts with rather than pretended away. Retiring those
    entries is F3.1's exposure re-audit, where the messages are being read
-   anyway.
+   anyway. (The final measured count — seven files, ten literals — is in
+   the tool's comment; review C/E4 corrected the accounting.)
 
 ### 4.2 The stale F1.7 comment (review finding 4)
 
@@ -581,7 +582,11 @@ is a decision logged for F3.1's exposure re-audit — see §6.
 | 14 (U1) `clamp_min_nm` rename | F0.3 (`cb44c02`) | kept; both jobs documented (and C2 completes the second job's behaviour) |
 
   Decisions **1–5 and 11 stay open** — they are Phase B's to resolve at
-  their items, exactly as the plan prescribes.
+  their items, exactly as the plan prescribes. Decisions **6 and 7** are
+  also unstamped, but that is a different status — both are
+  self-documented in §8 as deferred until a real case lands (per-layer
+  EMA host selection by §D9.4; `ProfileShape` beyond `Linear` as new
+  enum variants), not Phase B work (review C, E6).
 
 - Re-version the ladder's Phase B rows (see §5's table).
 
@@ -671,11 +676,18 @@ gates) is unchanged.
   allowlist — the ten remaining cp1252-encodable literals (`—`, `×`, `·`
   in `color/tables.rs`, `smatrix/solver.rs`, `color_merit.rs`,
   `jacobian.rs`, `optimizer.rs`, `trf.rs`,
-  `navette-py/src/synthesis_pipeline.rs`); `thick_opt.rs` is already
+  `navette-py/src/synthesis_pipeline.rs` — seven files, the list E4
+  corrected); `thick_opt.rs` is already
   clean (C3 fixed its `×`). The exposure re-audit reads
   every one of those messages anyway; emptying the allowlist there costs
   one pass instead of a separate item, and the tool goes fully blocking
-  at that release.
+  at that release. If the retirement is to be a checklist rather than a
+  judgement call, take E4's `(file, line)` option then.
+- **NEW (review C, E1's ritual note):** F3.1's tool directory gains a
+  cell-count check over the plan's tables (three lines of Python) — the
+  second table-edit slip in the series (the C2-era row join) was caught
+  by hand only because the reviewer counted pipes; the check makes the
+  class a gate.
 
 ## 7. Ritual changes adopted from the review
 

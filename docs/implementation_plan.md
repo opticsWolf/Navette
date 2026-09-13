@@ -156,7 +156,8 @@ and B6 undercounts — and §0.4 records which.
 | ~~F1.3~~ **DONE (0.6.38)** | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | ~~F1.6~~ **DONE (0.6.39)** | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
 | ~~F1.7~~ **DONE (0.6.40)** | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
-| ~~F1.4~~ **DONE (0.6.41)** | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 || ~~F1.5~~ **DONE (0.6.42)** | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
+| ~~F1.4~~ **DONE (0.6.41)** | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
+| ~~F1.5~~ **DONE (0.6.42)** | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
 | ~~C1~~ **DONE (gate repair)** | Needle pin re-specified per-platform + ground rule 5's cross-platform sentence | none | **P0** | S (the probe settles it) | S | status review finding 1 |
 | ~~C2~~ **DONE (0.6.43)** | Interface-span clamp-up: singleton-bulk spans clamp instead of deleting | 0.6.43 | **P0** | S (arithmetic, not a scale) | S | status review finding 2 |
 | ~~C3~~ **DONE (0.6.44)** | The sweep: message literals + scanner, stale comment, doc note, bookkeeping, `uv.lock` | 0.6.44 | P1 | S | M | status review findings 3–7 |

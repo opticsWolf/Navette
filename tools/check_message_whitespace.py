@@ -23,10 +23,14 @@ the non-ASCII check is two-staged (C3/V2):
   anyway and retires the list there, at which point the tool goes fully
   blocking.
 
-Scope: `#[cfg(test)]` test regions and `rust/*/tests/` are skipped (test
-assert messages are not user-facing; their wrapping is nobody's
-problem), and `//`/`///`/`/* */` comments are never scanned (a quoted
-string inside a trailing comment is not a message).
+Scope: the trailing `#[cfg(test)] mod ... {` region and `rust/*/tests/`
+are skipped (test assert messages are not user-facing; their wrapping is
+nobody's problem), and `//`/`///`/`/* */` comments are never scanned (a
+quoted string inside a trailing comment is not a message). The cutoff is
+the trailing INLINE test module only (`_test_region_start`) - `cfg(test)`
+attributes on helpers inside production impl blocks and out-of-line test
+modules are not cutoffs; see the helper's docstring for the measured
+counts.
 
 Usage: python tools/check_message_whitespace.py
 Exit 1 on any blocking finding.
@@ -40,12 +44,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 TEST_DIRS = ("rust/navette/tests", "rust/navette-py/tests")
 
 # cp1252-encodable non-ASCII still outstanding in production messages.
-# Each entry names the FILE (any literal in it); retire them at F3.1
-# (amendment 3, section 6) and the tool goes fully blocking. Measured at
-# C3: tables.rs carries an em dash, solver.rs a multiplication sign,
-# color_merit.rs an em dash, jacobian.rs middle dots, and
-# navette-py/src/synthesis_pipeline.rs an em dash on a live PyO3 error
-# path - all cp1252-encodable, all advisory until F3.1's re-audit.
+# Each entry names the FILE, and the granularity is the whole file: a
+# NEWLY INTRODUCED encodable non-ASCII character anywhere in an
+# allowlisted file passes unremarked - acceptable only while the list
+# shrinks toward empty, which is why F3.1 retires it. Measured at C3
+# (review C/E4 corrected the count): SEVEN files, ten literals -
+# tables.rs and solver.rs carry an em dash and a multiplication sign,
+# color_merit.rs and synthesis_pipeline.rs em dashes, jacobian.rs middle
+# dots and an em dash, optimizer.rs and trf.rs em dashes. All
+# cp1252-encodable, all advisory until F3.1's re-audit.
 NON_ASCII_ALLOWLIST = {
     "rust/navette/src/color/tables.rs",
     "rust/navette/src/smatrix/solver.rs",
@@ -65,23 +72,43 @@ def is_encodable(char: str) -> bool:
         return False
 
 
-def scan_file(path: pathlib.Path):
-    """Yield (line_no, kind, detail) findings for one .rs file."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    lines = text.splitlines()
+def _test_region_start(lines: list[str]) -> int | None:
+    """1-based line of the trailing `#[cfg(test)] mod ... {` block, or None.
 
-    # Test region: everything from the first `#[cfg(test)]` line to EOF.
-    # This tree keeps every test module at the file end under that
-    # attribute; assert differently if that ever stops being true.
-    test_from = None
-    for i, line in enumerate(lines, 1):
-        if "#[cfg(test)]" in line:
-            test_from = i
-            break
+    NOT the first `#[cfg(test)]` in the file: that attribute also sits on
+    test-only helpers inside production impl blocks (structure.rs:1185,
+    solver.rs:831, providers.rs:321) and on out-of-line test modules
+    (color/mod.rs:83, `mod parity;`). Cutting at the first one hid 63-75%
+    of those files from the gate (review C, finding E2). Only an INLINE
+    `mod ... {` at column 0 runs to EOF and is safe to cut at; a file
+    with no such block is scanned whole.
+    """
+    for i in range(len(lines) - 1, -1, -1):
+        if not lines[i].startswith("#[cfg(test)]"):
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].startswith("#["):  # further attrs
+            j += 1
+        if (
+            j < len(lines)
+            and lines[j].startswith(("mod ", "pub mod "))
+            and lines[j].rstrip().endswith("{")
+        ):
+            return i + 1
+    return None
+
+
+def scan_file(path: pathlib.Path):
+    """Yield (line_no, kind, detail) findings for one .rs file.
+
+    UNFILTERED: every string literal in the file is scanned, including
+    test regions and comments' contents-adjacent literals - the caller
+    applies the test-region rule, so the cutoff lives in one place.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
 
     in_str = False
     in_line_comment = False
-    in_block_comment = False
     cont_skip_ws = False  # `\` + newline: rustc strips the next line's indent
     content: list[str] = []
     start_line = 0
@@ -100,7 +127,6 @@ def scan_file(path: pathlib.Path):
 
     i = 0
     lineno = 1
-    col = 0
     raw = text
     while i < len(raw):
         c = raw[i]
@@ -120,7 +146,6 @@ def scan_file(path: pathlib.Path):
                     content = []
             in_line_comment = False
             i += 1
-            col = 0
             continue
         if in_line_comment:
             i += 1
@@ -183,14 +208,8 @@ def main() -> int:
             findings = scan_file(path)
             if not findings:
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            lines = text.splitlines()
-            # test region starts at the first #[cfg(test)]
-            test_from = None
-            for i, line in enumerate(lines, 1):
-                if "#[cfg(test)]" in line:
-                    test_from = i
-                    break
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            test_from = _test_region_start(lines)
             for (ln, kind, detail) in findings:
                 if test_from is not None and ln >= test_from:
                     continue  # test region: not user-facing

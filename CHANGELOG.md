@@ -32,9 +32,9 @@ message text (findings 3–7), plus the tool that guards the class.
   space runs of 3+ inside string literals are BLOCKING with an empty
   allowlist (the class is unambiguous); cp1252-unencodable characters
   are BLOCKING; the encodable non-ASCII still outstanding (—, ×, · in
-  five production files) is written out as an explicit advisory
-  allowlist that F3.1's exposure re-audit retires. Test regions
-  (`#[cfg(test)]`, `rust/*/tests/`) and comments are skipped — the two
+  seven production files, ten literals) is written out as an explicit
+  advisory allowlist that F3.1's exposure re-audit retires. Test
+  regions (`#[cfg(test)]`, `rust/*/tests/`) and comments are skipped — the two
   space-run sites the review's naive scan would have flagged are test
   assert messages, and one quoted string sits inside a trailing
   comment.
