@@ -53,7 +53,7 @@ mod spectralweave_optical;
 mod spectralweave_target;
 mod structure;
 mod synthesis_merit;
-mod synthesis_pipeline;
+pub(crate) mod synthesis_pipeline;
 
 use pyo3::prelude::*;
 use pyo3::{wrap_pyfunction, wrap_pymodule};

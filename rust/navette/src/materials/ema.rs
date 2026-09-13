@@ -140,6 +140,18 @@ pub fn bruggeman(
     max_iter: usize,
     tol: f64,
 ) -> Array1<Complex64> {
+    // The exact endpoints ARE the endpoint permittivities, bitwise.
+    // Running Newton at f = 0/1 stops on |d_eps| <= tol and can leave a
+    // tolerance-sized artifact in the imaginary part (a lossless endpoint
+    // came back with k = -3.9e-22), which the structure path's
+    // nominal-expansion gate then refuses as k < 0. There is no mixture
+    // at f = 0 or f = 1 - the physics is the endpoint itself (F1.5).
+    if f == 0.0 {
+        return n_h.mapv(|z| z * z);
+    }
+    if f == 1.0 {
+        return n_i.mapv(|z| z * z);
+    }
     let inv_f = 1.0 - f;
     let tiny = Complex64::new(1.0e-15, 0.0);
     let tol_sq = tol * tol;

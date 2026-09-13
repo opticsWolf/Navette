@@ -155,6 +155,16 @@ impl LayerRow {
             0..=2 => {}
             t => return Err(format!("layer_type must be 0, 1 or 2 (got {t}).")),
         }
+        // F1.5: the gradient spec's own rule surface (one source, N5) -
+        // the same checks the Layer constructor's gate runs, at the
+        // config door where the layer does not exist yet.
+        if let Some(g) = &self.gradient {
+            for issue in g.issues() {
+                if issue.is_error() {
+                    return Err(issue.message);
+                }
+            }
+        }
         Ok(())
     }
 }

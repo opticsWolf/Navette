@@ -72,7 +72,13 @@ pub enum GradientMode {
 /// always the HOST, `f` is the volume fraction of B in A, and the
 /// asymmetric kernels (Maxwell-Garnett, Mori-Tanaka) change physics
 /// under an A/B swap.
+/// N9 (F1.5): the nested spec refuses unknown fields too - a typo'd key
+/// inside `gradient` must not vanish (the state path is safe: its
+/// version gate runs before any field parses, so a key this binary does
+/// not know arrives only from a newer build, which the range already
+/// refused).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GradientSpec {
     /// Host material (provider key); the `f = 0` endpoint. Names the same
     /// provider the layer's own material resolves through.
@@ -86,11 +92,20 @@ pub struct GradientSpec {
     /// Profile mode (F1.1: `FixedSpan` only).
     pub mode: GradientMode,
     /// Profile shape (F1.1: `Linear` only).
+    /// F1.5: optional on the serde doors - F1.1 ships `Linear` only, so
+    /// a document (or a hand-written state) that omits the key means
+    /// exactly that.
+    #[serde(default = "d_profile_shape")]
     pub shape: ProfileShape,
     /// Sublayer-count override. `Some(n)` is clamped to `[2, 256]` at
     /// expansion; outside that window it is an advisory finding, not an
     /// error (see [`Self::issues`]).
+    #[serde(default)]
     pub sublayers: Option<u32>,
+}
+
+fn d_profile_shape() -> ProfileShape {
+    ProfileShape::Linear
 }
 
 impl GradientSpec {

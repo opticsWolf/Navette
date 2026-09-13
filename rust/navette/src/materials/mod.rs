@@ -56,6 +56,7 @@ pub trait Dispersion {
 // one-key maps ({"Bruggeman": {"max_iter": 100, "tol": 1e-9}}) - pinned
 // by `gradient::tests::mix_rule_serde_representation_is_pinned`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum MixRule {
     /// Bruggeman symmetric-medium root (Newton–Raphson per point).
     /// `max_iter` caps iterations, `tol` is the |Δε| stop threshold.

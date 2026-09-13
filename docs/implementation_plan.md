@@ -142,7 +142,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F1.6~~ **DONE (0.6.39)** | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
 | ~~F1.7~~ **DONE (0.6.40)** | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
 | F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
-| F1.5 | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
+| ~~F1.5~~ **DONE (0.6.42)** | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
 | F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.43 | P2 | S | M | §4.1–4.2 |
 | F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.44 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.45 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
@@ -2145,6 +2145,44 @@ every new field. `_accepted_range` asserts `(1, 2)` for the state gate.
 
 ### F1.5 — config rows and Python surface (0.6.42)
 
+**DONE (0.6.42, see the feature commit).** Corrections from implementation:
+
+- **The plan's `GradientJson` for `LayerRow` became `GradientSpec`.**
+  The `nk_b`-carrying `GradientJson` is the Python film-dict door's
+  transport (A5: the design path there has no materials library, so
+  Python evaluates the inclusion spectrum) - a config document holding
+  evaluated spectra would freeze a library snapshot into a hand-edited
+  file. The row carries the named spec, and both native paths resolve
+  the endpoint spectra themselves (config through the provider at
+  expansion, design through the library's nk table). The plan's
+  "mirrors the decision into LayerRow" stands; the SHAPE is corrected.
+- **The nested spec needed `deny_unknown_fields` too.** The plan's N9
+  note covers the row struct; serde's default IGNORES unknown keys in
+  a nested object, so a typo'd key inside `gradient` would have
+  vanished silently on the config path. `GradientSpec` and `MixRule`
+  now deny as well; the state path is safe because its version gate
+  runs before any field parses, so a key this binary does not know can
+  only arrive from a newer build, which the range already refused.
+- **`shape` and `sublayers` needed serde defaults.** The derive
+  requires every field unless defaulted; a config document (or the
+  F1.4 hand-written state dict) omitting `shape` must mean `Linear`
+  (F1.1 ships Linear only), and omitting `sublayers` must mean None.
+- **The kernel's exact endpoints are now bitwise the endpoint spectra.**
+  The structure path's nominal-expansion gate refused the f=1 mixture
+  row as `k < 0`: the Newton root stops on `|d_eps| <= tol` and can
+  leave a `-3.9e-22` artifact in a lossless endpoint's k. The fix is
+  in the SHARED kernel (an f = 0/1 short-circuit to the endpoint
+  permittivity), so both the synthesis path and the `evaluate()`
+  oracle change together and every existing bitwise twin still holds.
+- **The two-profile-engines check moved into the layer's rule surface.**
+  `GradientSpec::issues` cannot see the layer's own `inhomogen` flag,
+  so the conflict surfaced only at expansion; it now runs in
+  `Layer::property_issues` (where both flags live) and the Python
+  constructor's gate refuses it at the door.
+- **The structure-path twin must attach a provider grid.** A gridless
+  provider's wavelengths are placeholder indices (the structure path's
+  pre-existing convention), which drive the count rule to its 64-row
+  ceiling; the twin builds `DictMaterialProvider(..., wavelength=wl)`.
 `design_config.rs::LayerRow` gains `gradient: Option<GradientJson>` next to
 the existing `inhomogen` flag at
 [design_config.rs:85](rust/navette/src/smatrix/synthesis/design_config.rs:85).
@@ -2640,7 +2678,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.39 | F1.6 | 86e4fed | **U2**, **B5** | done |
 | 0.6.40 | F1.7 | 57b4602 | **U3, U4**, **B2, B3**, B8 | done |
 | 0.6.41 | F1.4 | f956574 | A3, R5, N4 | done |
-| 0.6.42 | F1.5 | — | A5 (mirror), N9 | not started |
+| 0.6.42 | F1.5 | (hash pending) | A5 (mirror), N9 | done |
 | 0.6.43 | F2.1 | — | A7, R6 | not started |
 | 0.6.44 | F2.2 | — | A4, A8 | not started |
 | 0.6.45 | F2.3 | — | A8, N1 | not started |

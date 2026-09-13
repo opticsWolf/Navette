@@ -70,6 +70,16 @@ pub struct MaterialDef {
 }
 
 /// One stack row: film (`layer_type` 1), ambient (0), substrate (2).
+///
+/// N9 (F1.5): `deny_unknown_fields` is deliberate here, and it is the
+/// OPPOSITE of the state path's contract. A config document names its
+/// schema at the door and is re-validated on every load, so an unknown
+/// key is a typo, not a forward-compat hazard - refuse it. A state
+/// file, by contrast, is written once and read years later, so ITS
+/// readers ignore unknown keys and gate by version range instead. A v2
+/// request (with `gradient`) meeting a v1 binary refuses loudly on
+/// this struct - no range gate is needed on this path and none should
+/// be added.
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerRow {
@@ -95,6 +105,16 @@ pub struct LayerRow {
     pub needle: bool,
     #[serde(default = "d_layer_type")]
     pub layer_type: i32,
+    /// Mixture-gradient profile (F1.5). The row carries the SPEC -
+    /// named endpoints, kernel, mode - and both native paths resolve
+    /// the endpoint spectra themselves (the config path through the
+    /// provider at expansion, the design path through the library's
+    /// nk table). The `nk_b`-carrying `GradientJson` shape stays the
+    /// PYTHON film-dict door's transport (A5), where no library exists;
+    /// a config document holding evaluated spectra would freeze a
+    /// library snapshot into a hand-edited file.
+    #[serde(default)]
+    pub gradient: Option<crate::structure::gradient::GradientSpec>,
 }
 
 /// One fabrication-error channel (mirrors the Python `ErrorParams` model).
@@ -296,6 +316,7 @@ pub(crate) fn apply_row(layer: &mut Layer, row: &LayerRow) -> Result<(), String>
     layer.interface_thickness = row.interface_thickness_nm;
     layer.optimize = row.optimize;
     layer.needle = row.needle;
+    layer.gradient = row.gradient.clone();
     Ok(())
 }
 
@@ -501,6 +522,14 @@ pub fn build_design(
         if let Some(over) = req.per_film_flags.get(&row.material_code) {
             apply_flag_map(&mut layer, over)?;
         }
+        // F1.5: a gradient row's spec is gated here (the same rule
+        // surface the ArrayFilm driver runs at assemble_stack) - the
+        // expand-time checks still fire, but a bad kernel parameter is
+        // easier to act on before a stack exists.
+        if row.gradient.is_some() {
+            let issues = layer.property_issues(&format!("film {:?}", row.material_code));
+            crate::structure::validation::ValidationIssue::gate(&issues, "build_design")?;
+        }
         films.push(layer);
     }
 
@@ -528,9 +557,10 @@ pub fn build_design(
     }
 
     // Background is implied, not declared (mirrors the Python driver).
+    // A4: a gradient carrier is a profiled film for this rule too.
     let background: HashSet<String> = films
         .iter()
-        .filter(|l| l.inhomogen && !l.optimize && !l.needle)
+        .filter(|l| (l.inhomogen || l.gradient.is_some()) && !l.optimize && !l.needle)
         .map(|l| l.material.clone())
         .collect();
 
@@ -589,6 +619,7 @@ mod tests {
             optimize: true,
             needle: true,
             layer_type: 1,
+            gradient: None,
         }
     }
 
@@ -654,5 +685,124 @@ mod tests {
         assert!(warnings.is_empty()); // pinned: silent
         let n = stack.films().len();
         assert!(n > 2, "graded film must expand into slices, got {n}");
+    }
+
+    // ------------------------------------------------------------------
+    // F1.5 - the gradient rides the config rows
+    // ------------------------------------------------------------------
+
+    /// A gradient row flows row -> apply_row -> from_design: the carrier
+    /// keeps its profile as ONE span (F1.7 posture), the endpoint
+    /// spectra resolve through the library's nk table, and the expansion
+    /// is bitwise the direct gradient oracle (same count rule, same EMA
+    /// kernel) - the design request is a THIRD door into the same
+    /// expansion code, not a fourth expansion.
+    #[test]
+    fn gradient_row_expands_through_the_design_request() {
+        use crate::structure::gradient::{GradientMode, GradientSpec};
+        let wl = vec![500.0, 600.0];
+        let mut g = film("H", 100.0);
+        g.gradient = Some(GradientSpec {
+            material_a: "H".to_string(),
+            material_b: "L".to_string(),
+            ema: crate::materials::MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            mode: GradientMode::FixedSpan {
+                f_start: 0.0,
+                f_end: 1.0,
+            },
+            shape: crate::structure::gradient::ProfileShape::Linear,
+            sublayers: None,
+        });
+        let (stack, _, warnings) = build_design(&req(vec![film("L", 50.0), g]), &wl).unwrap();
+        assert!(
+            warnings.is_empty(),
+            "optimize keeps the profile: {warnings:?}"
+        );
+        let spans = stack.spans();
+        // The gradient carrier is ONE span of ONE parameter.
+        assert_eq!(spans.len(), 2, "L plain + H gradient span");
+        let films = stack.films();
+        let h_first = spans[1].start; // films[0..1] = L; the H span follows
+        assert_eq!(films[h_first].material.as_ref(), "H");
+        assert_eq!(
+            spans[1].end - spans[1].start,
+            5,
+            "count(100, [500,600]): max_step = min(20, 500/21) = 20"
+        );
+        // The span's rows are the EMA oracle (same kernel, same count).
+        let nk_a = [Complex64::new(2.1, 0.0), Complex64::new(2.1, 0.0)];
+        let nk_b = [Complex64::new(1.45, 0.0), Complex64::new(1.45, 0.0)];
+        for (i, row) in films[h_first..spans[1].end].iter().enumerate() {
+            let f_i = f64::from(i as u32) / 4.0;
+            let expect = crate::structure::gradient::mix_row(
+                crate::materials::MixRule::Bruggeman {
+                    max_iter: 100,
+                    tol: 1e-9,
+                },
+                &nk_b,
+                &nk_a,
+                f_i,
+            );
+            assert_eq!(row.nk[0], expect[0], "row {i} f={f_i}");
+        }
+    }
+
+    /// The row's own rule surface (N5, one source) fires at the config
+    /// door: the same checks the Layer constructor's gate runs.
+    #[test]
+    fn layer_row_validate_refuses_bad_gradient() {
+        use crate::structure::gradient::{GradientMode, GradientSpec};
+        let mut g = film("H", 100.0);
+        g.gradient = Some(GradientSpec {
+            material_a: "H".to_string(),
+            material_b: "H".to_string(),
+            ema: crate::materials::MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            mode: GradientMode::FixedSpan {
+                f_start: 0.0,
+                f_end: 1.0,
+            },
+            shape: crate::structure::gradient::ProfileShape::Linear,
+            sublayers: None,
+        });
+        let err = g.validate().unwrap_err();
+        assert!(err.contains("identical"), "got: {err}");
+    }
+
+    /// N9: `deny_unknown_fields` refuses a typo'd gradient key loudly
+    /// (the config path's contract, opposite of the state path's).
+    #[test]
+    fn unknown_gradient_key_refused_loudly() {
+        use crate::structure::gradient::{GradientMode, GradientSpec};
+        let g = film("H", 100.0);
+        let spec = GradientSpec {
+            material_a: "H".to_string(),
+            material_b: "L".to_string(),
+            ema: crate::materials::MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            mode: GradientMode::FixedSpan {
+                f_start: 0.0,
+                f_end: 1.0,
+            },
+            shape: crate::structure::gradient::ProfileShape::Linear,
+            sublayers: None,
+        };
+        let mut v = serde_json::to_value(&g).unwrap();
+        let mut grad = serde_json::to_value(&spec).unwrap();
+        grad.as_object_mut()
+            .unwrap()
+            .insert("bogus".to_string(), Value::from(1));
+        v.as_object_mut()
+            .unwrap()
+            .insert("gradient".to_string(), grad);
+        let err = serde_json::from_value::<LayerRow>(v).unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 }

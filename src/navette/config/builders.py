@@ -83,6 +83,7 @@ def layer_from_config(cfg: LayerConfig, material_provider: MaterialProvider) -> 
         optimize=cfg.optimize,
         needle=cfg.needle,
         layer_type=cfg.layer_type,
+        gradient=cfg.gradient,
     )
 
 def group_from_config(cfg: GroupConfig) -> Group:

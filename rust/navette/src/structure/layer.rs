@@ -288,6 +288,15 @@ impl Layer {
                 let m = issue.message;
                 issues.push(if is_err { bad(m) } else { note(m) });
             }
+            // The two-profile-engines conflict needs the LAYER's own
+            // inhomogen flag, so it runs here (F1.5: it is part of the
+            // rule surface the Python constructor's gate runs, not
+            // something first seen at expansion).
+            if self.inhomogen
+                && let Some(msg) = g.expansion_error(true)
+            {
+                issues.push(bad(msg));
+            }
         }
 
         issues

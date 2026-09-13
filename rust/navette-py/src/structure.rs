@@ -28,6 +28,8 @@ use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyComplex, PyDict, PyList};
 use serde_json::Value;
 
+use crate::synthesis_pipeline::{PyEma, PyGradMode};
+use navette::structure::gradient::GradientSpec;
 use navette::structure::{
     expand, Architect, BlockKind, DictProvider, Entry, ExpandOptions, Group, InhMode, Layer,
     LayerType, MaterialProvider, MaterialSpec, RoughnessType, SharedGroup, SharedStructure,
@@ -192,7 +194,6 @@ pub struct PyLayer {
 /// `"fixed"` or `{"RateCapped": {"rate":.., "ref_thickness":.., "cap":..}}`
 /// (the same shape the core's serde derives).
 pub(crate) struct PyInhMode(pub InhMode);
-
 impl FromPyObject<'_, '_> for PyInhMode {
     type Error = PyErr;
 
@@ -248,10 +249,68 @@ impl FromPyObject<'_, '_> for PyInhMode {
     }
 }
 
+/// F1.5: the mixture-gradient spec of a native `Layer`, as the named
+/// spec dict `{material_a, material_b, ema, mode, sublayers?}`.
+///
+/// Deliberately NOT the film-dict door's `PyGradientInput` shape: that
+/// one carries `nk_b` (A5, the design path has no materials library so
+/// Python evaluates the spectrum); a `Layer` lives next to a provider
+/// and both endpoints resolve through it at expansion, so the spec
+/// names them and carries no spectra. `shape` is absent (F1.1 ships
+/// `Linear` only; the state round-trip carries it via serde).
+/// Validation is native - the constructor's gate runs the spec's own
+/// rule surface, and endpoint existence is checked at expansion
+/// against the provider.
+pub(crate) struct PyGradSpec(pub GradientSpec);
+
+impl FromPyObject<'_, '_> for PyGradSpec {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> Result<Self, PyErr> {
+        let dict = obj.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(
+                "gradient must be a dict {material_a, material_b, ema, mode, sublayers?}",
+            )
+        })?;
+        let req_s = |key: &str| -> PyResult<String> {
+            match dict.get_item(key)? {
+                Some(v) if !v.is_none() => v.extract(),
+                _ => Err(PyValueError::new_err(format!("gradient requires '{key}'."))),
+            }
+        };
+        let material_a = req_s("material_a")?;
+        let material_b = req_s("material_b")?;
+        let ema = match dict.get_item("ema")? {
+            Some(v) if !v.is_none() => v.extract::<PyEma>()?.0,
+            _ => {
+                return Err(PyValueError::new_err("gradient requires 'ema'."));
+            }
+        };
+        let mode = match dict.get_item("mode")? {
+            Some(v) if !v.is_none() => v.extract::<PyGradMode>()?.0,
+            _ => {
+                return Err(PyValueError::new_err("gradient requires 'mode'."));
+            }
+        };
+        let sublayers = match dict.get_item("sublayers")? {
+            Some(v) if !v.is_none() => Some(v.extract::<u32>()?),
+            _ => None,
+        };
+        Ok(PyGradSpec(GradientSpec {
+            material_a,
+            material_b,
+            ema,
+            mode,
+            shape: navette::structure::gradient::ProfileShape::Linear,
+            sublayers,
+        }))
+    }
+}
+
 #[pymethods]
 impl PyLayer {
     #[new]
-    #[pyo3(signature = (thickness=1.0, material_name="", coherent=true, roughness=0.0, rough_type=0, inhomogen=false, inh_delta=0.1, interface=false, interface_thickness=0.0, optimize=true, needle=true, layer_type=1, inh_mode=None))]
+    #[pyo3(signature = (thickness=1.0, material_name="", coherent=true, roughness=0.0, rough_type=0, inhomogen=false, inh_delta=0.1, interface=false, interface_thickness=0.0, optimize=true, needle=true, layer_type=1, inh_mode=None, gradient=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -268,6 +327,7 @@ impl PyLayer {
         needle: bool,
         layer_type: i32,
         inh_mode: Option<PyInhMode>,
+        gradient: Option<PyGradSpec>,
     ) -> PyResult<Self> {
         let inner = Layer {
             material: material_name.to_string(),
@@ -282,9 +342,7 @@ impl PyLayer {
             optimize,
             needle,
             layer_type: ver(LayerType::try_from_i32(layer_type))?,
-            // F1.5 adds the Python-visible `gradient` surface; the native
-            // constructor carries None until that surface exists.
-            gradient: None,
+            gradient: gradient.map(|g| g.0),
             inh_mode: inh_mode.map(|m| m.0).unwrap_or(InhMode::Fixed),
         };
         gate_layer(py, &inner)?;
@@ -448,6 +506,35 @@ impl PyLayer {
     #[getter]
     fn mask(&self) -> Vec<i32> {
         self.inner.mask().to_vec()
+    }
+
+    /// F1.5: the mixture-gradient spec, as the same named-dict shape the
+    /// constructor takes (`None` = plain layer). Rides the state via
+    /// serde (F1.4: only when `Some`).
+    #[getter]
+    fn gradient(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.inner.gradient {
+            None => Ok(py.None()),
+            Some(g) => {
+                let v =
+                    serde_json::to_value(g).map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(crate::structure::json_to_py(py, &v)?)
+            }
+        }
+    }
+
+    /// The gate runs on the probe: a rejected spec leaves the layer as
+    /// it was, and the spec's own rule surface (not a Python copy of it)
+    /// is what vetoes.
+    #[setter]
+    fn set_gradient(&mut self, py: Python<'_>, v: Option<PyGradSpec>) -> PyResult<()> {
+        let probe = Layer {
+            gradient: v.map(|g| g.0),
+            ..self.inner.clone()
+        };
+        gate_layer(py, &probe)?;
+        self.inner.gradient = probe.gradient;
+        Ok(())
     }
 
     fn as_pair(&self) -> (String, f64) {

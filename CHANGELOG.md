@@ -4,6 +4,70 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.42] - F1.5: config rows and the Python gradient surface
+
+The last transport gap: gradients were constructible only through the
+synthesis film-dict door (which carries Python-evaluated spectra). Now
+they ride the config documents and the native `Layer` itself.
+
+### Added
+
+- **`LayerRow.gradient`** - the named SPEC (`GradientSpec`: material_a,
+  material_b, ema, mode, shape, sublayers), not the `GradientJson`
+  transport: both native paths resolve endpoint spectra themselves (the
+  config path through the provider at expansion, the design path
+  through the library's nk table), and a config document holding
+  evaluated spectra would freeze a library snapshot into a hand-edited
+  file. The `nk_b`-carrying `GradientJson` stays the Python film-dict
+  door's transport (A5), where no library exists.
+- **The native `Layer` constructor takes `gradient=`** (the named spec
+  dict), with a getter returning the full serde shape and a setter
+  gated on the probe (a rejected spec leaves the layer as it was).
+  `sublayers` and `shape` are optional on the ctor (F1.1 ships
+  `Linear` only).
+- **`builders.py` passes `gradient` through**, so config documents
+  reach gradients end to end: `LayerConfig` -> `layer_from_config` ->
+  `Layer` -> `Structure::expand` (endpoints resolved through the
+  provider).
+- **Validation is native everywhere** (no Python pre-checks): the
+  spec's own rule surface runs at the config door (`LayerRow::validate`),
+  at the Layer constructor's gate, and at expansion; the
+  two-profile-engines conflict (gradient + inhomogen) now runs in the
+  LAYER's rule surface, where both flags live, instead of surfacing
+  first at expansion.
+
+### Changed
+
+- **The exact endpoints of every EMA kernel are bitwise the endpoint
+  spectra.** The structure path's nominal-expansion gate refused the
+  f=1 mixture row as `k < 0` - the Newton root stops on
+  `|d_eps| <= tol` and can leave a `-4e-22` artifact in a lossless
+  endpoint's k. There is no mixture at f = 0 or f = 1: the kernel now
+  short-circuits to the endpoint itself, in the SHARED kernel, so both
+  the synthesis path and the `evaluate()` oracle change together and
+  every existing bitwise twin still holds.
+- **The nested spec refuses unknown fields too** (`deny_unknown_fields`
+  on `GradientSpec` and `MixRule`, extending N9): a typo'd key inside
+  `gradient` must not vanish. The state path is safe - its version
+  gate runs before any field parses.
+- **`build_design` gates a gradient row's rule surface** (the same
+  `ValidationIssue::gate` the ArrayFilm driver runs) and its
+  background rule counts gradient carriers as profiled films (the A4
+  mirror).
+
+### Twins
+
+- Rust: a gradient row through `build_design` expands bitwise the
+  direct EMA oracle (count rule included); bad specs refuse at
+  `LayerRow::validate`; a typo'd nested key refuses loudly.
+- Python: the ctor/getter/setter/state round-trip; native validation
+  wordings at the door (duplicate materials, out-of-range fractions,
+  two profile engines, unknown kernels); the config door end to end
+  (`LayerConfig` with gradient -> validate -> expand); and the
+  structure-path expansion - a gradient `Layer` in a `Structure`
+  against a gridded provider, rows bitwise the direct `evaluate()`
+  oracle (the F1.1 branch, Python-reachable for the first time).
+
 ## [0.6.41] - F1.4: schema v2 and a readable version range
 
 Every state file on disk reads through this gate; getting it wrong is a

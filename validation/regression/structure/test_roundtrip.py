@@ -198,7 +198,10 @@ def test_state_fingerprint():
   # every pre-F1.4 build). The layer is built through `from_state`
   # with a hand-written v2 dict: the constructor surface for gradient
   # is F1.5, but the STATE surface exists now and gets pinned now.
-  graded_state = _full_layer().get_state()
+  # A PLAIN base (not _full_layer: that one sets inhomogen, and
+  # gradient + inhomogen is the two-profile-engines refusal - the gate
+  # that proves F1.5's validation is native).
+  graded_state = Layer(50.0, "TiO2").get_state()
   graded_state["gradient"] = {
     "material_a": "TiO2", "material_b": "glass",
     "ema": {"Bruggeman": {"max_iter": 100, "tol": 1e-9}},
@@ -289,3 +292,90 @@ def test_validate_catches_solver_blockers():
     pass
   else:
     raise AssertionError("solve gate did not raise on invalid structure")
+
+
+# ---------------------------------------------------------------------------
+# F1.5 - the gradient surface on the native Layer
+# ---------------------------------------------------------------------------
+
+_GRAD = {"material_a": "TiO2", "material_b": "glass", "ema": "Bruggeman",
+          "mode": {"FixedSpan": {"f_start": 0.0, "f_end": 1.0}}}
+
+
+def test_gradient_ctor_surface_f1_5():
+  """The Layer constructor takes the named spec dict (NO spectra - a
+  Layer lives next to a provider and both endpoints resolve through it
+  at expansion; the nk_b-carrying film-dict shape stays the synthesis
+  door's). The getter returns the full serde shape (the ctor's optional
+  keys ride back explicitly), the state carries it (F1.4's only-when-
+  Some), and the round-trip preserves it."""
+  l = Layer(100.0, "TiO2", gradient=_GRAD)
+  g = l.gradient
+  assert g["material_a"] == "TiO2" and g["material_b"] == "glass"
+  assert g["shape"] == "Linear" and g["sublayers"] is None
+  assert g["mode"] == {"FixedSpan": {"f_start": 0.0, "f_end": 1.0}}
+  back = Layer.from_state(l.get_state())
+  assert back.gradient == g
+  # Clearing: None drops the key from the state entirely.
+  l.gradient = None
+  assert l.gradient is None
+  assert "gradient" not in l.get_state()
+
+
+def test_gradient_validation_is_native_f1_5():
+  """No Python pre-checks: the spec's own rule surface (N5) runs inside
+  the constructor's gate - a duplicate-materials spec, an out-of-range
+  fraction, and the two-profile-engines conflict all refuse AT the
+  door, with the rule's own wording."""
+  with pytest.raises(ValueError, match="identical"):
+    Layer(100.0, "TiO2", gradient={**_GRAD, "material_b": "TiO2"})
+  with pytest.raises(ValueError, match="outside"):
+    Layer(100.0, "TiO2",
+          gradient={**_GRAD, "mode": {"FixedSpan": {"f_start": -0.1,
+                                                     "f_end": 1.0}}})
+  with pytest.raises(ValueError, match="two profile engines"):
+    Layer(100.0, "TiO2", inhomogen=True, gradient=_GRAD)
+  # Unknown ema parameters refuse at the door too (the same surface the
+  # film-dict door uses).
+  with pytest.raises(ValueError, match="unknown mixing rule"):
+    Layer(100.0, "TiO2", gradient={**_GRAD, "ema": "NotAKernel"})
+
+
+def test_gradient_layer_expands_through_the_provider_f1_5():
+  """A gradient Layer inside a Structure expands against the PROVIDER:
+  both endpoints resolve by name (the film's own nk is used only when
+  an endpoint names the carrier), and the rows are bitwise the direct
+  EMA oracle over the provider's spectra. This is the structure path's
+  F1.1 branch, now reachable from Python for the first time."""
+  import numpy as np
+  from navette.materials import MaterialSpec, evaluate
+
+  # The provider carries the grid: a gridless provider's wavelengths are
+  # placeholder indices (the structure path's pre-existing convention),
+  # which would drive the count rule to its ceiling.
+  wl = np.array([1000.0])
+  mats = DictMaterialProvider({
+    "glass": np.full(1, 1.52 + 0j),
+    "TiO2": np.full(1, 2.35 + 0.01j),
+  }, wavelength=wl)
+  l = Layer(100.0, "TiO2", gradient=_GRAD)
+  st = Navette_Structure([l], {}, mats)
+  arch = Navette_Architect(materials=mats)
+  arch.add_structure(st)
+  arrays = arch.get_solver_inputs()
+  th = np.asarray(arrays.thicknesses)
+  nk = np.asarray(arrays.indices)
+  # count: max_step = min(20, 1000/(10*2.35)) = 20 -> ceil(100/20) = 5.
+  assert len(th) == 5
+  assert th.sum() == pytest.approx(100.0)
+  for i in range(5):
+    f_i = i / 4.0
+    # The oracle's endpoints are the same Konstant specs the provider
+    # shelves (evaluate() takes spec dicts, and the values are bitwise
+    # the provider's arrays).
+    expect = evaluate(MaterialSpec(
+      model="Bruggeman",
+      params={"host": {"model": "Konstant", "params": {"n": 2.35, "k": 0.01}},
+              "inclusion": {"model": "Konstant", "params": {"n": 1.52}},
+              "fraction": f_i}), wl)
+    assert np.array_equal(nk[i], np.asarray(expect)), f"row {i} (f={f_i})"

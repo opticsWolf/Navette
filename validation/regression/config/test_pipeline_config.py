@@ -100,3 +100,57 @@ def test_group_rides_along():
     s = NamedStructureConfig(label="t", layers=films, groups=[g])
     stack, _ = pipeline_from_config(s, LIB, WL)
     assert stack.film_count() == 2
+
+
+# --------------------------------------------------------------------------
+# F1.5 - the gradient rides the config rows
+# --------------------------------------------------------------------------
+
+# The config document speaks serde: parameterized kernels are one-key
+# maps (the bare-name sugar lives only in the Python film-dict door).
+_GRAD = {"material_a": "H", "material_b": "L",
+          "ema": {"Bruggeman": {"max_iter": 100, "tol": 1e-9}},
+          "mode": {"FixedSpan": {"f_start": 0.0, "f_end": 1.0}}}
+
+
+def test_gradient_row_expands_profile_f1_5():
+    """A gradient film row flows row -> apply_row -> from_design: the
+    carrier keeps its profile as ONE span (the F1.7 posture - optimize
+    keeps the profile, no homogenize warning), and the endpoint spectra
+    resolve through the LIBRARY (the config document names materials,
+    unlike the Python film-dict door which carries nk_b)."""
+    import warnings
+    films = [_film("L", 100.0), _film("H", 100.0, gradient=_GRAD)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # must NOT warn
+        s = NamedStructureConfig(label="t", layers=films)
+        stack, _ = pipeline_from_config(s, LIB, WL)
+    # max_step = min(20, 500/(10*2.1)) = 20 -> ceil(100/20) = 5 rows for
+    # the gradient carrier + 1 for L.
+    assert stack.film_count() == 6
+
+
+def test_gradient_row_bad_spec_refuses_at_the_door():
+    """The spec's own rule surface (N5) fires at the config door - the
+    same checks the Layer constructor's gate runs, before any stack."""
+    grad = dict(_GRAD, material_b="H")
+    with pytest.raises(ValueError, match="identical"):
+        _film("H", 100.0, gradient=grad)
+
+
+def test_gradient_row_typo_refuses_loudly():
+    """N9: the nested spec refuses unknown fields too - a typo'd key
+    inside `gradient` must not vanish (this is the config path's
+    contract, opposite of the state path's ignore-unknown-keys)."""
+    grad = dict(_GRAD, boguss=1)
+    with pytest.raises(ValueError, match="unknown field"):
+        _film("H", 100.0, gradient=grad)
+
+
+def test_layer_config_roundtrips_gradient():
+    cfg = _film("H", 100.0, gradient=_GRAD)
+    d = cfg.model_dump()
+    assert d["gradient"]["material_b"] == "L"
+    assert d["gradient"]["mode"] == {"FixedSpan": {"f_start": 0.0, "f_end": 1.0}}
+    back = LayerConfig(d)
+    assert back.model_dump()["gradient"] == d["gradient"]
