@@ -213,8 +213,8 @@ pub(crate) struct PyGradientInput {
     material_a: String,
     material_b: String,
     nk_b: Vec<(f64, f64)>,
-    f_start: f64,
-    f_end: f64,
+    /// The profile mode, tagged (F1.2: FixedSpan or RateCapped).
+    mode: PyGradMode,
     /// `#[pyo3(default)]` because `None` may ride as an explicit null or
     /// (from older callers) as an absent key.
     #[pyo3(default)]
@@ -289,6 +289,77 @@ impl FromPyObject<'_, '_> for PyEma {
     }
 }
 
+/// The profile mode of a gradient film dict (F1.2): the serde-tagged
+/// one-key form `{"FixedSpan": {"f_start":.., "f_end":..}}` or
+/// `{"RateCapped": {"f_start":.., "rate":.., "ref_thickness":..,
+/// "f_min":.., "f_max":..}}` - the same shape the core's serde derives,
+/// built here because the PyO3 door is not serde-bound.
+#[derive(Clone)]
+pub(crate) struct PyGradMode(pub navette::structure::gradient::GradientMode);
+
+impl FromPyObject<'_, '_> for PyGradMode {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> Result<Self, PyErr> {
+        use navette::structure::gradient::GradientMode;
+        let dict = obj.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(
+                "gradient mode must be a one-key {mode: params} map \
+                 ('FixedSpan' or 'RateCapped')",
+            )
+        })?;
+        let mut it = dict.iter();
+        let (name, params) = it
+            .next()
+            .ok_or_else(|| PyValueError::new_err("empty gradient mode map"))?;
+        if it.next().is_some() {
+            return Err(PyValueError::new_err(
+                "gradient mode map must have exactly one key (the mode name)",
+            ));
+        }
+        let name: String = name.extract()?;
+        let g = |params: &Bound<'_, PyAny>, key: &str| -> PyResult<Option<f64>> {
+            match params.get_item(key) {
+                Ok(v) if !v.is_none() => Ok(Some(v.extract()?)),
+                Ok(_) => Ok(None),
+                Err(_) => Ok(None),
+            }
+        };
+        let req = |params: &Bound<'_, PyAny>, key: &str| -> PyResult<f64> {
+            g(params, key)?.ok_or_else(|| {
+                PyValueError::new_err(format!("gradient mode '{name}' requires '{key}'."))
+            })
+        };
+        let mode = match name.as_str() {
+            "FixedSpan" => {
+                let f_start = req(&params, "f_start")?;
+                let f_end = req(&params, "f_end")?;
+                GradientMode::FixedSpan { f_start, f_end }
+            }
+            "RateCapped" => {
+                let f_start = g(&params, "f_start")?.unwrap_or(0.0);
+                let rate = req(&params, "rate")?;
+                let ref_thickness = g(&params, "ref_thickness")?.unwrap_or(100.0);
+                let f_min = g(&params, "f_min")?.unwrap_or(0.0);
+                let f_max = g(&params, "f_max")?.unwrap_or(1.0);
+                GradientMode::RateCapped {
+                    f_start,
+                    rate,
+                    ref_thickness,
+                    f_min,
+                    f_max,
+                }
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown gradient mode '{other}' (one of FixedSpan, RateCapped)"
+                )));
+            }
+        };
+        Ok(PyGradMode(mode))
+    }
+}
+
 /// The transport into the core (GradientJson, A5).
 fn gradient_json(g: PyGradientInput) -> navette::structure::gradient::GradientJson {
     navette::structure::gradient::GradientJson {
@@ -300,8 +371,7 @@ fn gradient_json(g: PyGradientInput) -> navette::structure::gradient::GradientJs
             .map(|(re, im)| Complex64::new(re, im))
             .collect(),
         ema: g.ema.0,
-        f_start: g.f_start,
-        f_end: g.f_end,
+        mode: g.mode.0,
         sublayers: g.sublayers,
     }
 }

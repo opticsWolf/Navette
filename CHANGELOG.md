@@ -4,6 +4,53 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.37] - F1.2: gradient `RateCapped` - thickness-relative slope with caps
+
+The second gradient profile mode: `f(z) = f_start + rate * (z /
+ref_thickness)`, clamped to `[f_min, f_max]` - the slope is
+thickness-relative, so a thick film saturates into a flat
+pure-material tail where the cap binds.
+
+### Added
+
+- **`GradientMode::RateCapped { f_start, rate, ref_thickness, f_min,
+  f_max }`** with the full validation set: `rate` finite (sign free),
+  `ref_thickness > 0`, `f_start` and both caps in `[0, 1]`,
+  `f_min <= f_max`, and `rate == 0` refused as the degenerate span
+  (the same rationale as FixedSpan's `f_start == f_end`). Serde rides
+  the one-key tagged form, pinned by a test.
+- **The Python door's mode discrimination (A9.2):** the gradient dict
+  needs exactly one slope spelling - `f_end` (FixedSpan) or `rate`
+  (RateCapped, with optional `f_start`/`ref_thickness`/`f_min`/
+  `f_max` defaults 0/100/0/1); supplying both is refused (`gradient:
+  'rate' and 'f_end' are the same slope - give one.` - the plan's
+  ASCII form; its 'delta' spelling maps to the FixedSpan endpoint key
+  at this door).
+- **The saturation physics, bitwise:** tail rows where the raw profile
+  value exceeds the cap are EMA at exactly `f_max` - bitwise pure
+  `material_b`; negative rates saturate at `f_min` the same way.
+- **The N2 merge twin:** the saturated film through the nk-keyed
+  merge - the tail rows collapse, the span stays one contiguous run of
+  the carrier material, and the simulated merit is unchanged to float
+  precision.
+
+### Notes
+
+- **The cap's binding is bitwise where the raw value strictly exceeds
+  it, not where the arithmetic lands one ulp short:** `0.1 + 0.3*3.0`
+  is `0.9999999999999999` in IEEE, so the plan's knee example
+  ("saturates at 1.0 from z = 300 nm") is idealized - at z = 300 the
+  profile value is the raw value. The twins use `rate = 0.25` (binary
+  exact) where the saturation is unambiguous. The BEHAVIOUR (flat
+  pure-material tail where the cap binds) is unchanged.
+- **The merge is a no-op to ~1e-15 relative, not bitwise:** folding two
+  rows into one makes `exp(i*d1)*exp(i*d2)` differ from
+  `exp(i*(d1+d2))` at the last ulp. The plan's "bitwise equal spectra
+  before and after the merge" is pinned as float-precision equality.
+- RateCapped is NOT scale-free (F1.6's table): its fraction depends on
+  absolute `z` - the scalable-span plumbing and the profile refresh
+  are F1.6/F1.7's territory, untouched here.
+
 ## [0.6.36] - F1.1: the gradient data model, `FixedSpan` expansion, the homogenize path
 
 A mixture gradient - a film whose composition interpolates between two

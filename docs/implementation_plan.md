@@ -137,7 +137,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F0.2~~ **DONE (0.6.34)** | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
 | ~~F0.3~~ **DONE (0.6.35)** | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
 | ~~F1.1~~ **DONE (0.6.36)** | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
-| F1.2 | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
+| ~~F1.2~~ **DONE (0.6.37)** | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
 | F1.3 | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | F1.6 | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
 | F1.7 | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
@@ -1323,9 +1323,29 @@ which makes this obligation load-bearing rather than theoretical.
 
 ### F1.2 — gradient `RateCapped` mode (0.6.37)
 
-`f(z) = f_start + rate * (z / ref_thickness)`, clamped to `[f_min, f_max]`.
-`ref_thickness` default 100 nm, caps default `[0.0, 1.0]`, `rate` finite with
-sign free.
+**DONE (0.6.37, see the feature commit).** Corrections from implementation:
+
+- **The knee arithmetic is one ulp short of the plan's example.**
+  `0.1 + 0.3 * 3.0` is `0.9999999999999999` in IEEE, so at z = 300 nm the
+  profile value is the RAW value, not the cap - the plan's "saturates at
+  1.0 from z = 300 nm" (with f_start 0.1, rate 0.3 per 100 nm) does not
+  bind bitwise at the knee. The clamp binds where the raw value strictly
+  exceeds the cap; the twins use rate = 0.25 (binary exact) where the
+  saturation is unambiguous, and the tail rows there ARE bitwise pure
+  `material_b`. The behaviour is the plan's; the example's arithmetic is
+  idealized.
+- **The merge is a no-op to ~1e-15 relative, not bitwise.** Folding two
+  rows into one makes `exp(i*d1)*exp(i*d2)` differ from
+  `exp(i*(d1+d2))` at the last ulp; the plan's "simulated spectra before
+  and after the merge are bitwise equal" is pinned as float-precision
+  equality (`pytest.approx(rel=1e-12)`), with the span-contiguity and
+  collapse assertions bitwise as planned.
+- **The A9.2 refusal's 'delta' key maps to `f_end` at this door.** The
+  F1.2 Python surface has no literal 'delta' key; the two slope
+  spellings are 'rate' (RateCapped) and 'f_end' (FixedSpan), and the
+  refusal carries the plan's ASCII sentence with 'f_end' substituted.
+  `rate == 0` is refused as the degenerate span (the RateCapped face of
+  the N2 rationale).
 
 **AMENDED (N2) — the saturation gate and `merge_adjacent` are the same fact.**
 The proof that saturation works ("the tail rows are bitwise equal to pure
@@ -2454,7 +2474,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.34 | F0.2 | e7a0e61 | A2, N3, **U5** (half), **B1**, B4, B7 | done |
 | 0.6.35 | F0.3 | cb44c02 | **U1** | done |
 | 0.6.36 | F1.1 | 010c0ef | A4, A5, A6, A9.1, R4, N5, N7, B10 | done |
-| 0.6.37 | F1.2 | — | A9.2, N2 | not started |
+| 0.6.37 | F1.2 | (hash pending) | A9.2, N2 | done |
 | 0.6.38 | F1.3 | — | **B6**, B10 | not started |
 | 0.6.39 | F1.6 | — | **U2**, **B5** | not started |
 | 0.6.40 | F1.7 | — | **U3, U4**, **B2, B3**, B8 | not started |

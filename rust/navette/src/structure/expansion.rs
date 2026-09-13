@@ -456,7 +456,7 @@ fn emit_entry(
             } else {
                 step
             };
-            let f_i = grad.f_sublayer(i, n_sub);
+            let f_i = grad.f_sublayer(i, n_sub, layer_thickness);
             rows.push((
                 d_i,
                 crate::structure::gradient::mix_row(grad.ema, &nk_b, &nk_a, f_i),
@@ -1159,6 +1159,103 @@ mod tests {
         .unwrap();
         assert_eq!(a, c);
         let _ = b; // the second run exercises the no-group path
+    }
+
+    /// F1.2 (D6 G-thickness, type b): the saturating RateCapped film's
+    /// tail rows are BITWISE pure `material_b` (the saturation proof -
+    /// EMA at exactly the cap), the head runs the formula, and the
+    /// thickness that doubles the film moves the knee, not the tail.
+    #[test]
+    fn rate_capped_saturation_tail_is_bitwise_pure() {
+        let mk = |t: f64| {
+            let mut l = Layer::film(t, "TiO2");
+            l.gradient = Some(GradientSpec::rate_capped(
+                "glass", "TiO2", 0.1, 0.25, 100.0, 0.0, 1.0,
+            ));
+            l
+        };
+        let nk_a = mats().nk("glass", &WL).unwrap();
+        let nk_b = mats().nk("TiO2", &WL).unwrap();
+        let pure_b = mix_row(
+            MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            &nk_b,
+            &nk_a,
+            1.0,
+        );
+        for t in [400.0, 800.0] {
+            let (sa, spans) = expand(
+                &[(mk(t), false)],
+                &mats(),
+                &WL,
+                &HashMap::new(),
+                ExpandOptions::deterministic(),
+            )
+            .unwrap();
+            let sp = &spans[0];
+            let n = (sp.end - sp.start) as u32;
+            // Tail rows (raw value past the cap) are bitwise pure_b.
+            let tail_start = (0..n)
+                .find(|i| 0.1 + 0.25 * (t * f64::from(*i) / f64::from(n - 1)) / 100.0 >= 1.0)
+                .unwrap();
+            for i in tail_start..n {
+                assert_eq!(
+                    sa.row(sp.start + i as usize),
+                    &pure_b[..],
+                    "tail row {i} must be bitwise pure material_b"
+                );
+            }
+            // The head rows follow the formula.
+            for i in 0..tail_start {
+                let f_i = 0.1 + 0.25 * (t * f64::from(i) / f64::from(n - 1)) / 100.0;
+                let want = mix_row(
+                    MixRule::Bruggeman {
+                        max_iter: 100,
+                        tol: 1e-9,
+                    },
+                    &nk_b,
+                    &nk_a,
+                    f_i,
+                );
+                assert_eq!(sa.row(sp.start + i as usize), &want[..], "head row {i}");
+            }
+        }
+        // Negative rate saturates to pure material_a at the low end.
+        let mut l = Layer::film(400.0, "TiO2");
+        l.gradient = Some(GradientSpec::rate_capped(
+            "glass", "TiO2", 0.9, -0.25, 100.0, 0.2, 1.0,
+        ));
+        let (sa, spans) = expand(
+            &[(l, false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let pure_a = mix_row(
+            MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            &nk_b,
+            &nk_a,
+            0.2,
+        );
+        let sp = &spans[0];
+        let n = (sp.end - sp.start) as u32;
+        let tail_start = (0..n)
+            .find(|i| (0.9 - 0.25 * (400.0 * f64::from(*i) / f64::from(n - 1)) / 100.0) <= 0.2)
+            .unwrap();
+        for i in tail_start..n {
+            assert_eq!(
+                sa.row(sp.start + i as usize),
+                &pure_a[..],
+                "low tail row {i}"
+            );
+        }
     }
 
     #[test]

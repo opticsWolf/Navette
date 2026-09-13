@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: LGPL-3.0-or-later
-"""Gradient mixture films in the synthesis pipeline (F1.1, A5/R4).
+"""Gradient mixture films in the synthesis pipeline (F1.1/F1.2, A5/R4).
 
 Design-path twins: a background gradient film expands WITH the profile
 (pinned, silent) and its rows are bit-equal to the same sublayers built
 explicitly from the native EMA oracle; a non-background gradient film
 homogenizes to ONE row that is bitwise the direct EMA call at f_mid,
 announced by a warning naming the mixture and f_mid; the span
-bookkeeping survives merge/optimizer passes.
+bookkeeping survives merge/optimizer passes; RateCapped saturates into
+a bitwise pure-material tail (F1.2).
 """
+import itertools
+
 import numpy as np
 import pytest
 
@@ -28,8 +31,6 @@ def _manual_sublayers(t_nm, f_start, f_end, host, incl, model="Bruggeman"):
   """The explicit twin rows: n sublayers, inclusive endpoint sampling,
   the last row absorbing the remainder - the expansion branch's exact
   conventions, fed by the native EMA oracle."""
-  # The count is read off a first assembly (the count differential is
-  # the Rust twin's job; here the VALUES are the contract).
   probe, _ = stack_from_layers(
     [(host, t_nm)], WL, {}, names=["probe"],
     per_film_flags={"probe": {"gradient": {"material_b": incl,
@@ -136,12 +137,12 @@ def test_gradient_span_survives_merge_and_optimizer():
     st, _ = stack_from_layers(
       [(SIO2, 120.0), (TIO2, 50.0)], WL, {}, names=["graded", "H"],
       per_film_flags={"graded": grad})
+
   def snapshot(stack):
     return [(f["material"], f["thickness"], f["optimize"], f["needle"],
              np.asarray(f["nk"]).tobytes()) for f in films(stack)]
 
-  before = snapshot(st)
-  graded_before = [s for s in before if s[0] == "graded"]
+  graded_before = [s for s in snapshot(st) if s[0] == "graded"]
   assert st.merge_adjacent() == 0
   assert [s for s in snapshot(st) if s[0] == "graded"] == graded_before
   ctx = _merit_ctx()
@@ -168,14 +169,14 @@ def test_gradient_python_door_refusals():
       [(TIO2, 50.0)], WL, {}, names=["H"],
       per_film_flags={"H": {"gradient": {"material_b": SIO2,
                                           "ema": "Wiener",
-                                          "f_start": 0., "f_end": 1.}}})
+                                          "f_end": 1.}}})
   with pytest.raises(ValueError, match="exactly one key"):
     stack_from_layers(
       [(TIO2, 50.0)], WL, {}, names=["H"],
       per_film_flags={"H": {"gradient": {"material_b": SIO2,
                                           "ema": {"Looyenga": None,
                                                    "Bruggeman": {}},
-                                          "f_start": 0., "f_end": 1.}}})
+                                          "f_end": 1.}}})
   with pytest.raises(TypeError, match="must be a mapping"):
     stack_from_layers([(TIO2, 50.0)], WL, {}, names=["H"],
                       per_film_flags={"H": {"gradient": 3}})
@@ -194,7 +195,7 @@ def test_gradient_python_door_refusals():
     stack_from_layers(
       [(TIO2, 50.0)], WL, {}, names=["TiO2"],
       per_film_flags={"TiO2": {"gradient": {"material_b": TIO2,
-                                             "f_start": 0., "f_end": 1.}}})
+                                             "f_end": 1.}}})
 
 
 def test_flat_films_stay_silent_with_gradient_key_present():
@@ -206,3 +207,138 @@ def test_flat_films_stay_silent_with_gradient_key_present():
     st, _ = stack_from_layers([(TIO2, 50.0)], WL, {}, names=["H"],
                               film_flags={"gradient": None})
   assert len(films(st)) == 1
+
+
+# ---------------------------------------------------------------------------
+# F1.2 - RateCapped: slope with caps, saturation, the N2 merge twin.
+# ---------------------------------------------------------------------------
+
+
+def _oracle(host, incl, f, model="Bruggeman"):
+  return evaluate(MaterialSpec(
+    model=model, params={"host": host, "inclusion": incl, "fraction": f}), WL)
+
+
+def test_rate_capped_saturates_to_bitwise_pure_tail():
+  """F1.2 (D6 G-thickness, type b): a rate-driven film saturates where
+  the cap binds - the tail rows are BITWISE pure material_b (EMA at
+  exactly f_max), the head rows follow the formula, and a 200 nm film
+  of the same spec never reaches the cap."""
+  import warnings
+  rate, f_start = 0.25, 0.1
+  grad = {"gradient": {"material_b": TIO2, "rate": rate, "f_start": f_start},
+            "optimize": False, "needle": False}
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    st, _ = stack_from_layers(
+      [(SIO2, 400.0)], WL, {}, names=["g"], per_film_flags={"g": grad})
+  rows = [f for f in films(st) if f["material"] == "g"]
+  n = len(rows)
+  assert sum(f["thickness"] for f in rows) == pytest.approx(400.0)
+  tail_seen = False
+  for i, f in enumerate(rows):
+    z = 400.0 * i / (n - 1)
+    raw = f_start + rate * (z / 100.0)
+    f_i = min(max(raw, 0.0), 1.0)
+    assert np.array_equal(np.asarray(f["nk"]), np.asarray(_oracle(SIO2, TIO2, f_i))), \
+      f"row {i} (f={f_i})"
+    tail_seen = tail_seen or raw >= 1.0
+  assert tail_seen, "the 400 nm film must saturate"
+  # The cap rows are bitwise pure material_b - the saturation proof.
+  pure_b = _oracle(SIO2, TIO2, 1.0)
+  assert any(np.array_equal(np.asarray(f["nk"]), np.asarray(pure_b))
+             for f in rows)
+  # 200 nm of the same spec (rate 0.3): the far face sits at
+  # 0.1 + 0.3*2 = 0.7 - below the cap, no saturation.
+  grad200 = {"gradient": {"material_b": TIO2, "rate": 0.3, "f_start": 0.1},
+               "optimize": False, "needle": False}
+  st2, _ = stack_from_layers(
+    [(SIO2, 200.0)], WL, {}, names=["g"], per_film_flags={"g": grad200})
+  rows2 = [f for f in films(st2) if f["material"] == "g"]
+  f_last = min(0.1 + 0.3 * (200.0 / 100.0), 1.0)
+  assert np.array_equal(np.asarray(rows2[-1]["nk"]),
+                        np.asarray(_oracle(SIO2, TIO2, f_last)))
+  assert not any(np.array_equal(np.asarray(f["nk"]), np.asarray(pure_b))
+                 for f in rows2), "the 200 nm film must NOT saturate"
+
+
+def test_rate_capped_negative_rate_saturates_low():
+  """A negative rate saturates at the f_min cap at the far end; with
+  the default caps the tail is the f = 0 mixture (the EMA kernels at
+  f = 0 return the host permittivity, so the tail rows are bitwise
+  the oracle's f = 0 row)."""
+  import warnings
+  grad = {"gradient": {"material_b": SIO2, "rate": -0.25, "f_start": 0.9},
+            "optimize": False, "needle": False}
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    st, _ = stack_from_layers(
+      [(TIO2, 400.0)], WL, {}, names=["g"], per_film_flags={"g": grad})
+  rows = [f for f in films(st) if f["material"] == "g"]
+  tail = _oracle(TIO2, SIO2, 0.0)
+  assert any(np.array_equal(np.asarray(f["nk"]), np.asarray(tail))
+             for f in rows), "the low tail must be the f = 0 mixture"
+  # And the head row is f_start (inside the caps here).
+  assert np.array_equal(np.asarray(rows[0]["nk"]),
+                        np.asarray(_oracle(TIO2, SIO2, 0.9)))
+
+
+def test_rate_capped_merge_twin_n2():
+  """N2: the saturated film through the nk-keyed merge - the tail rows
+  collapse, the span stays one contiguous run of the carrier material,
+  and the simulated merit is unchanged to float precision.
+
+  NOTE (CORRECTIONS to the plan's wording): the plan says the spectra
+  are BITWISE equal before and after the merge; they are not - the
+  merge folds two rows into one, and exp(i d1) exp(i d2) differs from
+  exp(i (d1 + d2)) at the last ulp. The merge is a no-op to ~1e-15
+  relative, and that is what this twin pins.
+  """
+  import warnings
+  grad = {"gradient": {"material_b": TIO2, "rate": 0.25, "f_start": 0.1},
+            "optimize": False, "needle": False}
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    st, _ = stack_from_layers(
+      [(SIO2, 400.0)], WL, {}, names=["g"], per_film_flags={"g": grad})
+  ctx = _merit_ctx()
+  m0 = ctx.evaluate_merit(st)
+  graded0 = [f for f in films(st) if f["material"] == "g"]
+  merged = st.merge_adjacent()
+  assert merged > 0, "the saturated tail must merge"
+  graded1 = [f for f in films(st) if f["material"] == "g"]
+  assert len(graded1) < len(graded0), "the tail rows collapsed"
+  # The span stays one contiguous run of the carrier material.
+  seq = [f["material"] for f in films(st)]
+  runs = [(k, len(list(g))) for k, g in itertools.groupby(seq)]
+  graded_runs = [r for r in runs if r[0] == "g"]
+  assert len(graded_runs) == 1, f"span split by the merge: {runs}"
+  # The optics are untouched (to float precision).
+  m1 = ctx.evaluate_merit(st)
+  assert m1 == pytest.approx(m0, rel=1e-12, abs=1e-12)
+
+
+def test_rate_capped_door_refusals():
+  """The A9.2 refusal (two slope spellings) and the RateCapped native
+  refusals surface at the door."""
+  both = {"material_b": SIO2, "rate": 0.3, "f_end": 0.9}
+  with pytest.raises(ValueError, match="same slope"):
+    stack_from_layers([(TIO2, 50.0)], WL, {}, names=["H"],
+                      per_film_flags={"H": {"gradient": both}})
+  neither = {"material_b": SIO2}
+  with pytest.raises(ValueError, match="requires 'f_end'"):
+    stack_from_layers([(TIO2, 50.0)], WL, {}, names=["H"],
+                      per_film_flags={"H": {"gradient": neither}})
+  # Native RateCapped validation: NaN rate, non-positive ref, empty cap
+  # window, zero rate (degenerate), f_* outside [0, 1].
+  for bad, match in [
+    ({"material_b": SIO2, "rate": float("nan")}, "finite"),
+    ({"material_b": SIO2, "rate": 0.3, "ref_thickness": 0.0}, "ref_thickness"),
+    ({"material_b": SIO2, "rate": 0.3, "f_min": 0.8, "f_max": 0.2}, "f_min"),
+    ({"material_b": SIO2, "rate": 0.0}, "degenerate"),
+    ({"material_b": SIO2, "rate": 0.3, "f_max": 1.5}, r"\[0, 1\]"),
+  ]:
+    with pytest.raises(ValueError, match=match):
+      stack_from_layers(
+        [(TIO2, 50.0)], WL, {}, names=["H"],
+        per_film_flags={"H": {"gradient": dict(bad)}})

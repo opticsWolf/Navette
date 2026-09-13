@@ -50,6 +50,20 @@ pub enum GradientMode {
     /// (only the sublayer count changes) - which is what makes the mode
     /// scale freely at F1.6.
     FixedSpan { f_start: f64, f_end: f64 },
+    /// (b) `f(z) = f_start + rate * (z / ref_thickness)`, clamped to
+    /// `[f_min, f_max]`. The slope is thickness-RELATIVE (e.g. 0.3 per
+    /// 100 nm); a thick film saturates into a flat pure-material tail
+    /// where the cap binds - which is both the physics and the merge
+    /// test (N2: the tail rows are nk-identical, so `merge_adjacent`
+    /// collapses them). NOT scale-free (F1.6's table: the fraction
+    /// depends on absolute `z`) - F1.7's refresh territory.
+    RateCapped {
+        f_start: f64,
+        rate: f64,
+        ref_thickness: f64,
+        f_min: f64,
+        f_max: f64,
+    },
 }
 
 /// Mixture gradient specification for one layer.
@@ -101,28 +115,80 @@ impl GradientSpec {
         }
     }
 
-    /// The endpoints of the span, in traversal order (deposition face
-    /// first). A `match` so F1.2's variant cannot be forgotten here.
-    pub fn endpoints(&self) -> (f64, f64) {
-        match self.mode {
-            GradientMode::FixedSpan { f_start, f_end } => (f_start, f_end),
+    /// The RateCapped constructor shorthand (F1.2): slope per
+    /// `ref_thickness` with the cap window; defaults per D0(b).
+    pub fn rate_capped(
+        material_a: impl Into<String>,
+        material_b: impl Into<String>,
+        f_start: f64,
+        rate: f64,
+        ref_thickness: f64,
+        f_min: f64,
+        f_max: f64,
+    ) -> Self {
+        Self {
+            material_a: material_a.into(),
+            material_b: material_b.into(),
+            ema: MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            mode: GradientMode::RateCapped {
+                f_start,
+                rate,
+                ref_thickness,
+                f_min,
+                f_max,
+            },
+            shape: ProfileShape::Linear,
+            sublayers: None,
         }
     }
 
-    /// The profile value at fractional depth `z_frac in [0, 1]` of the
-    /// layer (deposition face at 0). One `match` per mode; every mode's
-    /// arm is a pure function of the fraction for the scale-free modes.
-    pub fn f_at(&self, z_frac: f64) -> f64 {
+    /// The endpoints of the span, in traversal order (deposition face
+    /// first). A `match` so a new variant cannot be forgotten here.
+    pub fn endpoints(&self) -> (f64, f64) {
         match self.mode {
-            GradientMode::FixedSpan { f_start, f_end } => f_start + (f_end - f_start) * z_frac,
+            GradientMode::FixedSpan { f_start, f_end } => (f_start, f_end),
+            // RateCapped's "endpoints" for the advisory surface: the
+            // nominal start and the upper cap (f_min unused here).
+            GradientMode::RateCapped { f_start, f_max, .. } => (f_start, f_max),
+        }
+    }
+
+    /// The profile value at ABSOLUTE depth `z_nm` of a layer
+    /// `thickness_nm` thick (deposition face at 0), clamped for
+    /// `RateCapped`. One `match` per mode.
+    pub fn f_at(&self, z_nm: f64, thickness_nm: f64) -> f64 {
+        match self.mode {
+            GradientMode::FixedSpan { f_start, f_end } => {
+                let x = if thickness_nm > 0.0 {
+                    z_nm / thickness_nm
+                } else {
+                    0.0
+                };
+                f_start + (f_end - f_start) * x
+            }
+            GradientMode::RateCapped {
+                f_start,
+                rate,
+                ref_thickness,
+                f_min,
+                f_max,
+            } => (f_start + rate * (z_nm / ref_thickness)).clamp(f_min, f_max),
         }
     }
 
     /// Mid-profile value used by the design path's homogenize (§D4.3):
-    /// the mean of the two endpoints for `FixedSpan`.
-    pub fn f_mid(&self) -> f64 {
-        let (a, b) = self.endpoints();
-        (a + b) * 0.5
+    /// the mean of the two endpoints for `FixedSpan`; the mean of the
+    /// CLAMPED profile values at both faces for `RateCapped`.
+    pub fn f_mid(&self, thickness_nm: f64) -> f64 {
+        match self.mode {
+            GradientMode::FixedSpan { f_start, f_end } => (f_start + f_end) * 0.5,
+            GradientMode::RateCapped { .. } => {
+                (self.f_at(0.0, thickness_nm) + self.f_at(thickness_nm, thickness_nm)) * 0.5
+            }
+        }
     }
 
     /// The profile value of sublayer `i` of `n` - INCLUSIVE endpoints:
@@ -134,7 +200,7 @@ impl GradientSpec {
     /// endpoints"). §D3's "midpoint z_i" reading is deliberately NOT
     /// implemented: with midpoint sampling no row sits at an endpoint,
     /// and the gate's bitwise claim would be unimplementable.
-    pub fn f_sublayer(&self, i: u32, n: u32) -> f64 {
+    pub fn f_sublayer(&self, i: u32, n: u32, thickness_nm: f64) -> f64 {
         match self.mode {
             GradientMode::FixedSpan { f_start, f_end } => {
                 if n <= 1 || i == 0 {
@@ -149,6 +215,21 @@ impl GradientSpec {
                 } else {
                     f_start + (f_end - f_start) * f64::from(i) / f64::from(n - 1)
                 }
+            }
+            // RateCapped samples the SAME inclusive depth grid (the row
+            // itself is the profile value at z_i = t * i / (n - 1), the
+            // clamp binding where it binds - saturated tail rows come out
+            // bitwise pure material). One subtlety: unlike FixedSpan,
+            // f(0) is clamp(f_start), which is NOT f_start when f_start
+            // sits outside the caps - the caps govern, per the mode
+            // formula.
+            GradientMode::RateCapped { .. } => {
+                let z_i = if n <= 1 {
+                    0.0
+                } else {
+                    thickness_nm * f64::from(i) / f64::from(n - 1)
+                };
+                self.f_at(z_i, thickness_nm)
             }
         }
     }
@@ -167,12 +248,6 @@ impl GradientSpec {
                     .to_string(),
             );
         }
-        let (f_start, f_end) = self.endpoints();
-        for (name, v) in [("f_start", f_start), ("f_end", f_end)] {
-            if !(0.0..=1.0).contains(&v) {
-                return Some(format!("gradient {name} {v} is outside [0, 1]."));
-            }
-        }
         if self.material_a == self.material_b {
             return Some(format!(
                 "gradient materials are identical ('{}'): a gradient of a \
@@ -181,11 +256,57 @@ impl GradientSpec {
                 self.material_a
             ));
         }
-        if f_start == f_end {
-            return Some(format!(
-                "gradient f_start == f_end ({f_start}): a constant profile - \
-                 the span is degenerate and merges away; use a plain layer."
-            ));
+        match self.mode {
+            GradientMode::FixedSpan { f_start, f_end } => {
+                for (name, v) in [("f_start", f_start), ("f_end", f_end)] {
+                    if !(0.0..=1.0).contains(&v) {
+                        return Some(format!("gradient {name} {v} is outside [0, 1]."));
+                    }
+                }
+                if f_start == f_end {
+                    return Some(format!(
+                        "gradient f_start == f_end ({f_start}): a constant profile - \
+                         the span is degenerate and merges away; use a plain layer."
+                    ));
+                }
+            }
+            GradientMode::RateCapped {
+                f_start,
+                rate,
+                ref_thickness,
+                f_min,
+                f_max,
+            } => {
+                if !rate.is_finite() {
+                    return Some(format!("gradient rate {rate} is not finite."));
+                }
+                if !(ref_thickness > 0.0) {
+                    return Some(format!(
+                        "gradient ref_thickness {ref_thickness} must be > 0."
+                    ));
+                }
+                if !(0.0..=1.0).contains(&f_start) {
+                    return Some(format!("gradient f_start {f_start} is outside [0, 1]."));
+                }
+                for (name, v) in [("f_min", f_min), ("f_max", f_max)] {
+                    if !(0.0..=1.0).contains(&v) {
+                        return Some(format!("gradient {name} {v} is outside [0, 1]."));
+                    }
+                }
+                if f_min > f_max {
+                    return Some(format!(
+                        "gradient f_min {f_min} > f_max {f_max}: the cap window \
+                         is empty."
+                    ));
+                }
+                if rate == 0.0 {
+                    return Some(
+                        "gradient rate 0: a constant profile - the span is \
+                         degenerate and merges away; use a plain layer."
+                            .to_string(),
+                    );
+                }
+            }
         }
         None
     }
@@ -315,9 +436,8 @@ pub struct GradientJson {
     pub nk_b: Vec<Complex64>,
     /// Mixing kernel.
     pub ema: MixRule,
-    /// FixedSpan endpoints (the F1.1 mode).
-    pub f_start: f64,
-    pub f_end: f64,
+    /// The profile mode (F1.2: FixedSpan or RateCapped, tagged).
+    pub mode: GradientMode,
     /// Sublayer-count override (clamped at expansion).
     pub sublayers: Option<u32>,
 }
@@ -329,10 +449,7 @@ impl GradientJson {
             material_a: self.material_a.clone(),
             material_b: self.material_b.clone(),
             ema: self.ema,
-            mode: GradientMode::FixedSpan {
-                f_start: self.f_start,
-                f_end: self.f_end,
-            },
+            mode: self.mode,
             shape: ProfileShape::Linear,
             sublayers: self.sublayers,
         }
@@ -346,14 +463,116 @@ mod tests {
     #[test]
     fn f_at_and_f_mid_are_pure_functions_of_the_fraction() {
         let g = GradientSpec::fixed_span("A", "B", 0.2, 0.8);
-        assert_eq!(g.f_at(0.0), 0.2);
-        assert_eq!(g.f_at(1.0), 0.8);
-        assert_eq!(g.f_at(0.5), 0.5);
-        assert_eq!(g.f_mid(), 0.5);
+        assert_eq!(g.f_at(0.0, 100.0), 0.2);
+        assert_eq!(g.f_at(100.0, 100.0), 0.8);
+        assert_eq!(g.f_at(50.0, 100.0), 0.5);
+        assert_eq!(g.f_mid(100.0), 0.5);
         // Bitwise: f_at(midpoint of the endpoints) == f_mid.
-        assert_eq!(g.f_at(0.5), g.f_mid());
+        assert_eq!(g.f_at(50.0, 100.0), g.f_mid(100.0));
         let (a, b) = g.endpoints();
         assert_eq!((a, b), (0.2, 0.8));
+    }
+
+    /// F1.2 - RateCapped: the D0(b) formula, the clamp binding where it
+    /// binds, and the saturation gate (the tail rows are bitwise pure
+    /// material). 200 nm film, f_start 0.1, rate 0.3 per 100 nm: the far
+    /// face sits at 0.7; the same spec at 400 nm saturates to 1.0 from
+    /// z = 300 nm.
+    #[test]
+    fn rate_capped_formula_and_saturation() {
+        let g = GradientSpec::rate_capped("A", "B", 0.1, 0.3, 100.0, 0.0, 1.0);
+        // The 200 nm readout: f(0) = 0.1, f(200) = 0.1 + 0.3 * 2 = 0.7.
+        assert_eq!(g.f_at(0.0, 200.0), 0.1);
+        assert_eq!(g.f_at(200.0, 200.0), 0.1 + 0.3 * 2.0);
+        assert_eq!(g.f_at(100.0, 200.0), 0.1 + 0.3);
+        assert_eq!(g.f_mid(200.0), (0.1 + (0.1 + 0.3 * 2.0)) * 0.5);
+        // The 400 nm film: the clamp binds where the raw value exceeds
+        // the cap. NOTE the knee arithmetic: 0.1 + 0.3 * 3.0 is
+        // 0.9999999999999999 in IEEE (one ulp short of 1.0), so at
+        // z = 300 the profile value is the RAW value, not the cap - the
+        // plan's "saturates at 1.0 from z = 300" is idealized. The tail
+        // (raw clearly >= cap) is bitwise the cap, and those are the
+        // rows the saturation gate calls pure material_b.
+        assert_eq!(g.f_at(300.0, 400.0), 0.1 + 0.3 * 3.0);
+        assert_eq!(g.f_at(400.0, 400.0), 1.0, "raw 1.1 clamps to exactly 1.0");
+        assert_eq!(g.f_at(1000.0, 400.0), 1.0, "deep tail is bitwise the cap");
+        // Sub-caps bind too: a negative rate saturates to f_min.
+        let gneg = GradientSpec::rate_capped("A", "B", 0.9, -0.3, 100.0, 0.2, 1.0);
+        assert_eq!(gneg.f_at(0.0, 400.0), 0.9);
+        assert_eq!(gneg.f_at(300.0, 400.0), 0.2);
+        assert_eq!(gneg.f_at(400.0, 400.0), 0.2);
+        // f(0) respects the clamp when f_start sits outside the caps.
+        let gb = GradientSpec::rate_capped("A", "B", 0.1, 0.3, 100.0, 0.3, 1.0);
+        assert_eq!(gb.f_at(0.0, 400.0), 0.3, "the cap governs, not f_start");
+    }
+
+    /// RateCapped sublayer sampling: the same inclusive depth grid as
+    /// FixedSpan (z_i = t * i / (n - 1)), the clamp binding in the tail.
+    /// rate 0.25 keeps the knee arithmetic exact (0.25 * k is binary
+    /// exact), so the saturated tail rows are unambiguously bitwise
+    /// pure material_b.
+    #[test]
+    fn rate_capped_sublayer_sampling_hits_the_knee() {
+        let g = GradientSpec::rate_capped("A", "B", 0.1, 0.25, 100.0, 0.0, 1.0);
+        // t = 400, n = 4: z = 0, 133.33, 266.67, 400 -> f = 0.1, 0.4333..,
+        // 0.7666.., 1.0 (the raw value at z = 400 is 1.1, clamped).
+        let z1 = 400.0 * 1.0 / 3.0;
+        let z2 = 400.0 * 2.0 / 3.0;
+        assert_eq!(g.f_sublayer(0, 4, 400.0), 0.1);
+        assert_eq!(g.f_sublayer(1, 4, 400.0), 0.1 + 0.25 * (z1 / 100.0));
+        assert_eq!(g.f_sublayer(2, 4, 400.0), 0.1 + 0.25 * (z2 / 100.0));
+        assert_eq!(g.f_sublayer(3, 4, 400.0), 1.0, "tail row is bitwise pure");
+    }
+
+    /// The RateCapped refusals (D2's validation list).
+    #[test]
+    fn rate_capped_refusals() {
+        let refuses = |g: GradientSpec| g.expansion_error(false).unwrap();
+        let ok = GradientSpec::rate_capped("A", "B", 0.1, 0.3, 100.0, 0.0, 1.0);
+        assert!(ok.expansion_error(false).is_none());
+        let m = refuses(GradientSpec::rate_capped(
+            "A",
+            "B",
+            0.1,
+            f64::NAN,
+            100.0,
+            0.0,
+            1.0,
+        ));
+        assert!(m.contains("rate") && m.contains("finite"), "{m}");
+        let m = refuses(GradientSpec::rate_capped("A", "B", 0.1, 0.3, 0.0, 0.0, 1.0));
+        assert!(m.contains("ref_thickness"), "{m}");
+        let m = refuses(GradientSpec::rate_capped(
+            "A", "B", 1.2, 0.3, 100.0, 0.0, 1.0,
+        ));
+        assert!(m.contains("f_start"), "{m}");
+        let m = refuses(GradientSpec::rate_capped(
+            "A", "B", 0.1, 0.3, 100.0, 0.8, 0.2,
+        ));
+        assert!(m.contains("f_min") && m.contains("f_max"), "{m}");
+        let m = refuses(GradientSpec::rate_capped(
+            "A", "B", 0.1, 0.3, 100.0, 0.0, 1.5,
+        ));
+        assert!(m.contains("f_max") && m.contains("[0, 1]"), "{m}");
+        let m = refuses(GradientSpec::rate_capped(
+            "A", "B", 0.1, 0.0, 100.0, 0.0, 1.0,
+        ));
+        assert!(m.contains("rate 0") && m.contains("degenerate"), "{m}");
+    }
+
+    /// The RateCapped serde form (one-key tagged map, like MixRule).
+    #[test]
+    fn rate_capped_serde_representation() {
+        use serde_json::json;
+        let g = GradientSpec::rate_capped("A", "B", 0.1, 0.3, 100.0, 0.0, 1.0);
+        let v = serde_json::to_value(g.mode).unwrap();
+        assert_eq!(
+            v,
+            json!({"RateCapped": {"f_start": 0.1, "rate": 0.3,
+                                    "ref_thickness": 100.0, "f_min": 0.0, "f_max": 1.0}})
+        );
+        let back: GradientMode = serde_json::from_value(v).unwrap();
+        assert_eq!(back, g.mode);
     }
 
     /// The inclusive sublayer convention: first sublayer IS f_start,
@@ -363,11 +582,11 @@ mod tests {
     fn f_sublayer_hits_the_endpoints_exactly() {
         let g = GradientSpec::fixed_span("A", "B", 0.1, 0.9);
         for n in [2u32, 3, 7, 64, 256] {
-            assert_eq!(g.f_sublayer(0, n), 0.1);
-            assert_eq!(g.f_sublayer(n - 1, n), 0.9);
-            assert_eq!(g.f_sublayer(1, n), 0.1 + 0.8 / f64::from(n - 1));
+            assert_eq!(g.f_sublayer(0, n, 123.0), 0.1);
+            assert_eq!(g.f_sublayer(n - 1, n, 123.0), 0.9);
+            assert_eq!(g.f_sublayer(1, n, 123.0), 0.1 + 0.8 / f64::from(n - 1));
         }
-        assert_eq!(g.f_sublayer(0, 1), 0.1); // degenerate guard
+        assert_eq!(g.f_sublayer(0, 1, 123.0), 0.1); // degenerate guard
     }
 
     /// The sublayer-count differential pin (same technique as the legacy

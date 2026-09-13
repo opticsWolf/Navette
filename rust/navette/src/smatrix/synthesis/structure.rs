@@ -431,7 +431,7 @@ impl DesignStack {
                                 ),
                             ));
                         }
-                        let f_mid = grad.f_mid();
+                        let f_mid = grad.f_mid(h.thickness);
                         let row = crate::structure::gradient::mix_row(
                             grad.ema,
                             nk_b,

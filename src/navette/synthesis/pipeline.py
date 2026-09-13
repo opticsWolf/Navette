@@ -101,7 +101,10 @@ def _norm_gradient(g, film_name, wl, film_nk):
     (``<film>~b``, overridable via ``b_name``). ``material_a`` defaults
     to the film's own name: its registered nk IS the host spectrum.
     ``ema`` is a rule name (defaults per variant) or a one-key
-    ``{name: params}`` map.
+    ``{name: params}`` map. The profile mode needs exactly one slope
+    spelling (A9.2): ``f_end`` (FixedSpan - the F1.1 mode) or ``rate``
+    (RateCapped - F1.2: ``f(z) = f_start + rate*z/ref_thickness``
+    clamped to ``[f_min, f_max]``; supplying both is refused).
     """
     if not isinstance(g, Mapping):
         raise TypeError(f"film {film_name!r}: gradient must be a mapping.")
@@ -146,7 +149,35 @@ def _norm_gradient(g, film_name, wl, film_nk):
             "(the film's own nk IS material_b's) - a gradient of a material "
             "with itself is a spec bug; single-material drift is inhomogen."
         )
+    # F1.2: the profile mode - exactly one slope spelling (A9.2: two
+    # slope-like keys are refused, no silent precedence).
+    has_rate = "rate" in g
+    has_f_end = "f_end" in g
+    if has_rate and has_f_end:
+        raise ValueError(
+            f"film {film_name!r}: gradient: 'rate' and 'f_end' are the same "
+            "slope - give one."
+        )
+    if has_rate:
+        mode = {"RateCapped": {
+            "f_start": g.get("f_start", 0.0),
+            "rate": g["rate"],
+            "ref_thickness": g.get("ref_thickness", 100.0),
+            "f_min": g.get("f_min", 0.0),
+            "f_max": g.get("f_max", 1.0),
+        }}
+        for key in ("rate", "ref_thickness", "f_min", "f_max", "f_start"):
+            if key in mode["RateCapped"] and not isinstance(mode["RateCapped"][key], (int, float)):
+                raise TypeError(f"film {film_name!r}: gradient {key} must be a number.")
+    elif has_f_end:
+        mode = {"FixedSpan": {"f_start": g.get("f_start", 0.0), "f_end": g["f_end"]}}
+    else:
+        raise ValueError(
+            f"film {film_name!r}: gradient requires 'f_end' (FixedSpan) or "
+            "'rate' (RateCapped)."
+        )
     g["ema"] = ema
+    g["mode"] = mode
     g["material_a"] = g.get("material_a", film_name)
     g["material_b"] = g.get("b_name", f"{film_name}~b")
     g["nk_b"] = [(float(z.real), float(z.imag)) for z in nk_b]
