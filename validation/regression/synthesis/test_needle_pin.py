@@ -15,11 +15,35 @@ The double-run assertion proves that at pin time; the recorded digest is
 what every later item in the plan must hold.
 
 Recorded at 0.6.32 (``72a2d4d``, release build, before F0.1).
+
+Platform-keyed digests (amendment 3, C1; probe run 34770933572). The
+run's float values come from the Rust LM trajectory; libm
+``exp``/``cos``/``powf`` differ per platform by design (each within its
+ulp contract), and ``float.hex()`` is exact and bit-for-bit determined
+by the value, so the digest moves exactly when the trajectory's values
+move ON THAT PLATFORM. A digest recorded on one platform does not
+constrain another.
+
+Provenance per entry: (tree commit, runner image / OS, toolchain, build
+profile). Both recorded at the 0.6.32 tree, on release builds:
+- Windows: ``8a0ea5c``, windows-latest (= windows-2025), MSVC.
+- Linux: ``8a0ea5c``, ubuntu-latest (= ubuntu-24.04), GCC - read from
+  the probe run's printed digest, then confirmed bit-identical at the
+  0.6.42 tip (run 34749211804): the whole series moved neither.
+
+Adding a platform to the CI matrix requires recording its digest at the
+current tree first; the skip below names that. A digest that moves with
+an unchanged tree is an environment move (e.g. a runner image rotation
+shifting libm): re-record it with a provenance note in the commit
+message - a gate move, not a code move, and it never travels silently
+(ground rule 5, cross-platform sentence).
 """
 
 import hashlib
+import platform
 
 import numpy as np
+import pytest
 
 from navette.spectralweave.target import TargetCollection, SpectralTarget, AngularTarget
 from navette.synthesis.pipeline import run_needle
@@ -118,10 +142,19 @@ def _strip_keys(obj, drop):
 # Recorded on the 0.6.32 release build BEFORE F0.1 touched DesignStack.
 # Placeholder on first run; the value below is what F0.1 and every later
 # item must reproduce bit-exactly.
-RECORDED_DIGEST = "cf753a910c7bf1d2e6c5ea5b9f5c696601ab675abaf497db28bac5340a63044d"
+RECORDED_DIGESTS = {
+    "Windows": "cf753a910c7bf1d2e6c5ea5b9f5c696601ab675abaf497db28bac5340a63044d",
+    "Linux": "5c30981320d71b9228a2dbc3b1942599a59a0bcdecd1c921c8b49cc8dbf547da",
+}
+DIGEST = RECORDED_DIGESTS.get(platform.system())
 
 
 def test_needle_run_is_deterministic_and_matches_the_recorded_digest():
+    if DIGEST is None:
+        pytest.skip(
+            f"no recorded needle digest for {platform.system()} - "
+            "record one at the current tree before gating it (amendment 3, C1)"
+        )
     res1 = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
                       pipeline_config=_cfg(), names=NAMES)
     res2 = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
@@ -130,8 +163,9 @@ def test_needle_run_is_deterministic_and_matches_the_recorded_digest():
     # Determinism first: two runs of the same inputs, one digest. If this
     # fails the pin is measuring noise, and the recorded value is void.
     assert d1 == d2, "needle run is not deterministic - pin is void"
-    assert d1 == RECORDED_DIGEST, (
-        f"needle fingerprint moved: recorded {RECORDED_DIGEST}, got {d1}"
+    assert d1 == DIGEST, (
+        f"needle fingerprint moved on {platform.system()}: "
+        f"recorded {DIGEST}, got {d1}"
     )
 
 

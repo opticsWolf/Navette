@@ -85,7 +85,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Pinned runner images, not -latest: the needle pin's digests are
+        # recorded per platform (test_needle_pin.py provenance header),
+        # and a -latest image rotation that shifts libm would look like a
+        # fingerprint move with an unchanged tree. Rotation is a gate
+        # move: re-record with a provenance note, never silently.
+        os: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -131,7 +136,10 @@ jobs:
     # suite against that. Checking numpy alone would have let the other three
     # stay broken behind a green check.
     name: dependency floors
-    runs-on: ubuntu-latest
+    # Pinned (ubuntu-24.04): this job runs the Python suite, whose needle
+    # digest is recorded per platform (test_needle_pin.py). Same rotation
+    # rule as the python job's matrix.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
