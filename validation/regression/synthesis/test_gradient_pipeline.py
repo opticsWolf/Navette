@@ -361,3 +361,43 @@ def test_rate_capped_door_refusals():
       stack_from_layers(
         [(TIO2, 50.0)], WL, {}, names=["H"],
         per_film_flags={"H": {"gradient": dict(bad)}})
+
+
+def test_rate_capped_optimize_keeps_the_profile_f1_7():
+  """F1.7 completes F1.6's licence: optimize=true on a rate-driven
+  gradient film also keeps the full profile (the mode reads absolute
+  depth, so the span carries a recipe and is refreshed at the
+  construction points; the LM sees ONE parameter). The rows are the
+  hand-computed rate ramp at the authored thickness, same oracle as
+  the saturation twin."""
+  import warnings
+  rate, f_start = 0.25, 0.1
+  grad = {"gradient": {"material_b": TIO2, "rate": rate, "f_start": f_start}}
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")  # must NOT warn
+    st, _ = stack_from_layers(
+      [(SIO2, 200.0)], WL, {}, names=["g"], per_film_flags={"g": grad})
+  rows = [f for f in films(st) if f["material"] == "g"]
+  assert len(rows) > 1, "the rate profile kept its sublayers"
+  assert all(f["optimize"] for f in rows)
+  n = len(rows)
+  assert sum(f["thickness"] for f in rows) == pytest.approx(200.0)
+  for i, f in enumerate(rows):
+    z = 200.0 * i / (n - 1)
+    f_i = min(max(f_start + rate * (z / 100.0), 0.0), 1.0)
+    assert np.array_equal(np.asarray(f["nk"]), np.asarray(_oracle(SIO2, TIO2, f_i))), \
+      f"row {i} (f={f_i})"
+
+  # The stable posture still homogenizes loudly (EMA at f_mid).
+  with pytest.warns(UserWarning, match="carries a gradient"):
+    st2, _ = stack_from_layers(
+      [(SIO2, 200.0)], WL, {}, names=["g"],
+      per_film_flags={"g": {"gradient": {"material_b": TIO2, "rate": rate,
+                                          "f_start": f_start},
+                             "optimize": False, "needle": True}})
+  fs2 = [f for f in films(st2) if f["material"] == "g"]
+  assert len(fs2) == 1
+  # R4: EMA at f_mid, the mode's own mid-depth value (z = t/2 = 100).
+  f_mid = min(max(f_start + rate * (200.0 / 2.0 / 100.0), 0.0), 1.0)
+  assert np.array_equal(np.asarray(fs2[0]["nk"]), np.asarray(_oracle(SIO2, TIO2, f_mid)))
+  assert fs2[0]["thickness"] == pytest.approx(200.0)

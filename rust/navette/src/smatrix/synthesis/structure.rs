@@ -19,6 +19,7 @@
 //!   thicknesses   — [n_layers] nm
 //!   incoherent_flags / rough_types / rough_vals — [n_layers]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use num_complex::Complex64;
@@ -127,12 +128,18 @@ impl ClampReport {
 /// every constructor and count-changing mutator). Nothing observable of
 /// any existing run reads it yet; it is the bookkeeping F0.2/F1.6/F2.3
 /// consult.
+///
+/// F1.7: `recipes` rides alongside `spans`, aligned index-for-index —
+/// span `i`'s re-emission inputs (`None` for every plain film). It rides
+/// the same mutators `spans` does, and `assert_spans_partition` checks
+/// both lengths at once.
 #[derive(Clone, Debug)]
 pub struct DesignStack {
     ambient: LayerSpec,
     substrate: LayerSpec,
     films: Vec<LayerSpec>,
     spans: Vec<Span>,
+    recipes: Vec<Option<SpanRecipe>>,
     num_wavs: usize,
 }
 
@@ -155,17 +162,23 @@ impl DesignStack {
                 bulk_start: i,
             })
             .collect();
-        Self::from_parts(ambient, substrate, films, spans)
+        let recipes: Vec<Option<SpanRecipe>> = (0..films.len()).map(|_| None).collect();
+        Self::from_parts(ambient, substrate, films, spans, recipes)
     }
 
     /// The one internal constructor: validated row lists plus the span
     /// partition that covers them. `from_design` passes the spans it kept
-    /// from `expand`; every other door synthesizes singletons above.
+    /// from `expand` plus the recipes captured from the same emission;
+    /// every other door synthesizes singletons above and one `None` per
+    /// film. F1.7: `from_parts` checks the recipe vector's length against
+    /// the span vector (the both-lengths check B2 asks for) at every
+    /// observable point.
     fn from_parts(
         ambient: LayerSpec,
         substrate: LayerSpec,
         films: Vec<LayerSpec>,
         spans: Vec<Span>,
+        recipes: Vec<Option<SpanRecipe>>,
     ) -> Result<Self, String> {
         let num_wavs = ambient.nk.len();
         if substrate.nk.len() != num_wavs {
@@ -186,11 +199,20 @@ impl DesignStack {
                 ));
             }
         }
+        if recipes.len() != spans.len() {
+            return Err(format!(
+                "recipes length {} != spans length {} - the recipe vector must be \
+                 aligned index-for-index with the span partition",
+                recipes.len(),
+                spans.len()
+            ));
+        }
         let s = DesignStack {
             ambient,
             substrate,
             films,
             spans,
+            recipes,
             num_wavs,
         };
         s.assert_spans_partition();
@@ -286,8 +308,15 @@ impl DesignStack {
     /// span's `bulk_start` agrees with the arithmetic predicate (B9: one
     /// source, one assertion that it matches the derivation). Called at
     /// the tail of both constructors and every count-changing mutator;
-    /// F1.7 extends it to the recipe vector's length.
+    /// F1.7 extends it to the recipe vector's length (B2's both-lengths
+    /// check: `recipes` is aligned index-for-index with `spans`, checked
+    /// in `from_parts` and asserted here so a mutator bug cannot hide).
     pub(crate) fn assert_spans_partition(&self) {
+        assert_eq!(
+            self.recipes.len(),
+            self.spans.len(),
+            "recipes must stay aligned index-for-index with spans"
+        );
         let n = self.films.len();
         let mut next = 0usize;
         for sp in &self.spans {
@@ -345,12 +374,21 @@ impl DesignStack {
         // silent.
         //
         // Profiled films go one of two ways (F1.1 extends the graded
-        // rule to mixture gradients):
+        // rule to mixture gradients; F1.6/F1.7 reshape the second way):
         // - BACKGROUND (named in `background`): expanded WITH the profile
         //   and pinned (optimize/needle forced false on the whole carrier
         //   span). True physics, fixed: needle never hosts there, LM
         //   skips the rows, nk-keyed merge and flag-guarded cleanup preserve
         //   the span. No warning - explicit opt-in, nothing dropped.
+        // - otherwise, when `optimize` is true: the carrier KEEPS its
+        //   profile as ONE span, ONE LM parameter (the carrier's total
+        //   thickness, F1.6). This used to be gated on the mode scaling
+        //   exactly (Fixed / FixedSpan); F1.7 lands the profile-refresh
+        //   machinery, so the RATE modes (whose profiles read absolute
+        //   depth) keep their profiles too and are rebuilt at the
+        //   construction points - the one non-additive part of F1.6's
+        //   licence, completed: `optimize = true` never means
+        //   "homogenize me" for any profiled film.
         // - otherwise HOMOGENIZED with a warning per film: the pipeline's
         //   operators assume uniform slabs. A graded film homogenizes to
         //   its base index (the flag flip below works because the base nk
@@ -398,15 +436,17 @@ impl DesignStack {
                     if background.contains(h.material.as_str()) {
                         h.optimize = false;
                         h.needle = false;
-                    } else if h.optimize && profile_scales_exactly(&h) {
-                        // F1.6 (U2/B5): a profiled carrier with
-                        // `optimize = true` whose mode scales exactly
-                        // keeps its profile AND its optimize flag: the
-                        // span becomes ONE LM parameter (the carrier's
-                        // total thickness), so the film is neither
-                        // homogenized nor pinned. This is the one
-                        // non-additive part of F1.6: `optimize = true`
-                        // used to mean "homogenize me" for profiled
+                    } else if h.optimize {
+                        // F1.6 (U2/B5) + F1.7: a profiled carrier with
+                        // `optimize = true` keeps its profile AND its
+                        // optimize flag: the span becomes ONE LM parameter
+                        // (the carrier's total thickness), so the film is
+                        // neither homogenized nor pinned. The fixed modes
+                        // scale exactly; the rate modes ride
+                        // `refresh_profiles` (their recipes are captured
+                        // below). This is the one non-additive part of
+                        // F1.6's licence, completed at F1.7: `optimize =
+                        // true` used to mean "homogenize me" for profiled
                         // films. The needle flag stays as authored - a
                         // multi-row span is never a needle host
                         // (needle_host_refusal), so it cannot be
@@ -511,13 +551,53 @@ impl DesignStack {
             "from_design builds inv = false throughout; a true entry would \
              make emission reach backwards into previous spans"
         );
-        let (sa, spans) = crate::structure::expand(
+        let (sa, spans, sa_bulk_nk, owner_of) = crate::structure::expand_with_recipe_inputs(
             &seq,
             &provider,
             wavelengths,
             groups,
             crate::structure::ExpandOptions::deterministic(),
         )?;
+        // F1.7 (B2): the recipes are captured from the SAME emission that
+        // built the spans - one recipe per profiled carrier, `None` for
+        // every plain film. The design path is deterministic (B3), so the
+        // prev operand is the previous entry's phase-1 nk, and the owner
+        // resolved to Some(k) (self-owned) or None - the only shapes this
+        // path can produce (asserted beside the expansion above).
+        let groups = std::sync::Arc::new(groups.clone());
+        let provider: std::sync::Arc<crate::structure::DictProvider> =
+            std::sync::Arc::new(provider);
+        let mut recipes: Vec<Option<SpanRecipe>> = spans.iter().map(|_| None).collect();
+        for (si, span) in spans.iter().enumerate() {
+            let k = span.logical;
+            let carrier = &flat[k];
+            if carrier.inhomogen || carrier.gradient.is_some() {
+                // The per-span-refresh legality (B2): the design path's
+                // owner resolves to the entry itself or None - a foreign
+                // owner would make emission reach backwards into
+                // previous spans and refresh ill-defined.
+                debug_assert!(
+                    owner_of[k].is_none_or(|o| o == k),
+                    "the design path's owner must be the entry itself or None"
+                );
+                let emitted_total: f64 = sa.thicknesses[span.start..span.end].iter().sum();
+                recipes[si] = Some(SpanRecipe {
+                    layer: carrier.clone(),
+                    groups: std::sync::Arc::clone(&groups),
+                    bulk_nk: sa_bulk_nk[k].clone(),
+                    self_owned: owner_of[k].is_some(),
+                    prev_eff_nk: if k > 0 {
+                        Some(sa_bulk_nk[k - 1].clone())
+                    } else {
+                        None
+                    },
+                    provider: std::sync::Arc::clone(&provider),
+                    wavelengths: wavelengths.to_vec(),
+                    opts: crate::structure::ExpandOptions::deterministic(),
+                    emitted_total,
+                });
+            }
+        }
         let mut rows = Vec::with_capacity(sa.n_rows());
         for span in spans.iter() {
             let carrier = &seq[span.logical].0;
@@ -536,7 +616,18 @@ impl DesignStack {
                 });
             }
         }
-        Self::from_parts(ambient, substrate, rows, spans).map(|s| (s, warnings))
+        Self::from_parts(ambient, substrate, rows, spans, recipes).and_then(|mut s| {
+            // F1.7 (refresh point 1): a stack leaving any construction
+            // door has fresh profiles. For the rate spans this re-runs
+            // their emission at the totals just emitted - the gradient
+            // branch's totals are exact, so this is a bitwise no-op
+            // there; the legacy branch's uniform split sums to the
+            // carrier only to float precision (N7), so the re-emission
+            // reconciles the total, which is the honest extent. Fixed
+            // modes are visited and left alone.
+            s.refresh_profiles()?;
+            Ok((s, warnings))
+        })
     }
 
     // -- mutation primitives -------------------------------------------------
@@ -592,10 +683,18 @@ impl DesignStack {
         // re-thickened slice rows, so the slice flag follows whichever
         // half kept the span's leading edge.
         let old_spans = std::mem::take(&mut self.spans);
+        let old_recipes = std::mem::take(&mut self.recipes);
         let mut new_spans = Vec::with_capacity(old_spans.len() + 2);
-        for sp in &old_spans {
+        // F1.7: the recipe vector rides the rebuild. A split host's rows
+        // changed, so all three resulting spans drop their recipes (the
+        // affected spans keep their current rows and are simply never
+        // refreshed); untouched spans - before or shifted past - keep
+        // theirs (content-only, no row indices inside).
+        let mut new_recipes: Vec<Option<SpanRecipe>> = Vec::with_capacity(old_recipes.len() + 2);
+        for (sid, sp) in old_spans.iter().enumerate() {
             if sp.end <= film_idx {
                 new_spans.push(*sp);
+                new_recipes.push(old_recipes[sid].clone());
             } else if film_idx < sp.start {
                 new_spans.push(Span {
                     start: sp.start + 2,
@@ -604,6 +703,7 @@ impl DesignStack {
                     slice: sp.slice,
                     bulk_start: sp.bulk_start + 2,
                 });
+                new_recipes.push(old_recipes[sid].clone());
             } else {
                 // The host span [s, e) with film_idx in it.
                 let (s, e) = (sp.start, sp.end);
@@ -683,9 +783,15 @@ impl DesignStack {
                         bulk_start: e + 1,
                     });
                 }
+                // The host's rows changed shape (split): every result
+                // drops its recipe.
+                new_recipes.push(None);
+                new_recipes.push(None);
+                new_recipes.push(None);
             }
         }
         self.spans = new_spans;
+        self.recipes = new_recipes;
         self.assert_spans_partition();
         Ok(())
     }
@@ -731,9 +837,9 @@ impl DesignStack {
         }
 
         let mut merged: Vec<LayerSpec> = Vec::with_capacity(runs.len());
-        // Per output row: the span owning the run's leader row, and that
-        // leader's original row index.
-        let mut owners: Vec<(usize, usize)> = Vec::with_capacity(runs.len());
+        // Per output row: the span owning the run's leader row, and the
+        // run's old-row extent [s, e).
+        let mut owners: Vec<(usize, usize, usize)> = Vec::with_capacity(runs.len());
         for (s, e) in runs {
             let mut combined_d = films[s].d_nm;
             for r in s + 1..e {
@@ -742,7 +848,7 @@ impl DesignStack {
             let mut result = films[s].cloned();
             result.d_nm = combined_d;
             merged.push(result);
-            owners.push((span_index_of_row(&old_spans, s), s));
+            owners.push((span_index_of_row(&old_spans, s), s, e));
         }
 
         // Rebuild the partition: consecutive output rows owned by the
@@ -753,11 +859,13 @@ impl DesignStack {
         // slice row IS its surviving group's first row; if the slice row
         // was absorbed into an earlier run, the flag would point at a
         // row that no longer is one.
+        let old_recipes = std::mem::take(&mut self.recipes);
         let mut new_spans: Vec<Span> = Vec::new();
+        let mut new_recipes: Vec<Option<SpanRecipe>> = Vec::new();
         let mut p = 0usize;
         let mut g = 0usize;
         while g < owners.len() {
-            let (sid, leader) = owners[g];
+            let (sid, leader, _run_end) = owners[g];
             let mut h = g + 1;
             while h < owners.len() && owners[h].0 == sid {
                 h += 1;
@@ -771,12 +879,30 @@ impl DesignStack {
                 slice: slice_kept,
                 bulk_start: p + usize::from(slice_kept),
             });
+            // F1.7 recipe rule: the span's rows survived WHOLE (every old
+            // row is still here, none absorbed across the boundary, the
+            // leading edge intact) - an INTRA-span merge (the RateCapped
+            // saturated tail legitimately merges into itself, F1.2) only
+            // re-cut the rows, and refresh rebuilds them from the
+            // recipe's carrier at the new total. Anything else - a
+            // foreign row absorbed into this span, this span's leading
+            // edge eaten by the previous one - means re-emission would
+            // NOT reproduce what stands here: the recipe drops.
+            let old_lo = leader;
+            let old_hi = owners[h - 1].2;
+            let rows_whole = old_lo == old.start && old_hi == old.end;
+            new_recipes.push(if rows_whole {
+                old_recipes[sid].clone()
+            } else {
+                None
+            });
             p += h - g;
             g = h;
         }
 
         self.films = merged;
         self.spans = new_spans;
+        self.recipes = new_recipes;
         self.assert_spans_partition();
         merge_count
     }
@@ -798,10 +924,13 @@ impl DesignStack {
             ));
         }
         let old_spans = std::mem::take(&mut self.spans);
+        let old_recipes = std::mem::take(&mut self.recipes);
         let mut new_spans = Vec::with_capacity(old_spans.len());
-        for sp in old_spans {
+        let mut new_recipes: Vec<Option<SpanRecipe>> = Vec::with_capacity(old_recipes.len());
+        for (sid, sp) in old_spans.into_iter().enumerate() {
             if sp.end <= film_idx {
                 new_spans.push(sp);
+                new_recipes.push(old_recipes[sid].clone());
             } else if film_idx < sp.start {
                 new_spans.push(Span {
                     start: sp.start - 1,
@@ -810,8 +939,12 @@ impl DesignStack {
                     slice: sp.slice,
                     bulk_start: sp.bulk_start - 1,
                 });
+                new_recipes.push(old_recipes[sid].clone());
             } else if sp.end - sp.start > 1 {
-                // Containing span with rows surviving the removal.
+                // Containing span with rows surviving the removal: the
+                // row set changed, so the recipe drops (the surviving
+                // rows keep their current values and are never
+                // refreshed).
                 let slice_survives = sp.slice && film_idx != sp.start;
                 new_spans.push(Span {
                     start: sp.start,
@@ -820,10 +953,12 @@ impl DesignStack {
                     slice: slice_survives,
                     bulk_start: sp.start + usize::from(slice_survives),
                 });
+                new_recipes.push(None);
             }
             // else: the removed row was the span's only row — dropped.
         }
         self.spans = new_spans;
+        self.recipes = new_recipes;
         let removed = self.films.remove(film_idx);
         self.assert_spans_partition();
         Ok(removed)
@@ -927,12 +1062,14 @@ impl DesignStack {
 
         let old = std::mem::take(&mut self.films);
         let old_spans = std::mem::take(&mut self.spans);
+        let old_recipes = std::mem::take(&mut self.recipes);
         let mut surviving: Vec<LayerSpec> = Vec::with_capacity(old.len());
         let mut new_spans: Vec<Span> = Vec::with_capacity(old_spans.len());
+        let mut new_recipes: Vec<Option<SpanRecipe>> = Vec::with_capacity(old_recipes.len());
         let mut report = ClampReport::default();
         let mut p = 0usize;
 
-        for sp in &old_spans {
+        for (sid, sp) in old_spans.iter().enumerate() {
             let d: f64 = old[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
             // The span's scalability is read from the OLD rows (the
             // predicate only consults optimize flags, which the rebuild
@@ -960,6 +1097,10 @@ impl DesignStack {
                         slice: sp.slice,
                         bulk_start: p + usize::from(sp.slice),
                     });
+                    // The span survived with all its rows (scaled) - the
+                    // recipe rides 1:1 and refresh rebuilds the profile
+                    // at the new floor.
+                    new_recipes.push(old_recipes[sid].clone());
                     p = e;
                     continue;
                 }
@@ -974,6 +1115,7 @@ impl DesignStack {
                         slice: sp.slice,
                         bulk_start: p + usize::from(sp.slice),
                     });
+                    new_recipes.push(old_recipes[sid].clone());
                     p += 1;
                     continue;
                 }
@@ -1007,11 +1149,13 @@ impl DesignStack {
                 slice: sp.slice,
                 bulk_start: p + usize::from(sp.slice),
             });
+            new_recipes.push(old_recipes[sid].clone());
             p = e;
         }
 
         self.films = surviving;
         self.spans = new_spans;
+        self.recipes = new_recipes;
         self.assert_spans_partition();
         Ok(report)
     }
@@ -1031,6 +1175,145 @@ impl DesignStack {
             .get_mut(film_idx)
             .ok_or_else(|| format!("film_idx {} out of range", film_idx))?;
         f.d_nm = d_nm;
+        Ok(())
+    }
+
+    // -- profile refresh (F1.7, U3/U4) ---------------------------------------
+
+    /// Rebuild every rate-mode span's profile from its current total
+    /// thickness.
+    ///
+    /// A rate-type profile is a function of absolute thickness -
+    /// `f(z) = f_start + rate * z / ref_thickness` (gradient), `delta =
+    /// min(rate * D / ref, cap)` (legacy) - so scaling the span makes its
+    /// stored nk stale, and the span is re-emitted here. Fixed-mode spans
+    /// are visited and left alone: their profile was never a function of
+    /// the total (U3, verified in-tree).
+    ///
+    /// **Construction points only (U4, and it governs this item):**
+    /// `from_design`, the top of each macro cycle (before the budget
+    /// check and needle scan), and after the final clamp pass - and
+    /// nowhere else. Never inside an LM round, never inside the
+    /// Jacobian, never inside a needle scan or a cleanup trial: the row
+    /// count of a span is frozen for the duration of one LM solve (the
+    /// residual must not change length mid-solve, and a live profile
+    /// would put step discontinuities at every `ceil()` boundary). The
+    /// refresh-count twin pins the count mechanically; a fourth call
+    /// site appearing later makes it fail loudly.
+    ///
+    /// Row count may change HERE and only here, so
+    /// `assert_spans_partition` runs immediately after, and the F1.6
+    /// `fractions` are re-captured on the next `optimize_thicknesses`
+    /// call rather than carried across a refresh. The per-span legality
+    /// (re-emitting span k cannot disturb span k-1) rests on the design
+    /// path's `inv = false` emission - the debug assert below records
+    /// it.
+    pub(crate) fn refresh_profiles(&mut self) -> Result<(), String> {
+        if REFRESH_COUNTING.with(std::cell::Cell::get) {
+            REFRESH_CALLS.with(|c| c.set(c.get() + 1));
+        }
+        for si in 0..self.spans.len() {
+            let Some(recipe) = self.recipes[si].as_ref() else {
+                continue;
+            };
+            // B3: refresh never re-rolls the error ensemble. Unreachable
+            // through `from_design` today (it always expands
+            // deterministic); if a tolerancing path ever grows spans,
+            // this fails loudly at the door instead of quietly changing
+            // a per-run ensemble into a per-cycle one.
+            if recipe.opts.apply_errors {
+                return Err(format!(
+                    "refresh_profiles: span '{}' was built with apply_errors = true - \
+                     refreshing would re-roll the error ensemble; span recipes are \
+                     construction-only (deterministic) today",
+                    self.films[self.spans[si].start].material
+                ));
+            }
+            if !recipe.is_rate_mode() {
+                continue; // fixed modes: bitwise no-op by design
+            }
+            let sp = self.spans[si];
+            // The span's current slice-inclusive extent (B1): the
+            // interface carve draws from the carrier's thickness, so the
+            // slice IS part of the extent being refreshed.
+            let total: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            // A span whose rows still sum (bitwise) to the measured total
+            // of the last emission has not moved: its profile already
+            // describes this extent exactly, so refresh is a bitwise
+            // no-op. This is what makes the from_design call site a true
+            // no-op for freshly built spans instead of an ulp-chasing
+            // re-emission, and it is one-step convergent after a move
+            // (the marker is re-measured from the new rows).
+            if total == recipe.emitted_total {
+                continue;
+            }
+            // The sublayer-count and delta rules read the CARRIER's
+            // thickness (at construction it equals the emitted extent:
+            // identity groups on this path); refresh feeds the current
+            // extent through both channels.
+            let mut emitted_layer = recipe.layer.clone();
+            emitted_layer.thickness = total;
+            let block = crate::structure::emit_standalone(
+                &emitted_layer,
+                &recipe.groups,
+                &recipe.bulk_nk,
+                total,
+                recipe.self_owned,
+                recipe.prev_eff_nk.clone(),
+                recipe.opts,
+                &*recipe.provider,
+                &recipe.wavelengths,
+            )?;
+            let carrier = &recipe.layer;
+            let material: Arc<str> = Arc::from(carrier.material.as_str());
+            let n_old = sp.end - sp.start;
+            let n_new = block.thicknesses.len();
+            let mut new_rows = Vec::with_capacity(n_new);
+            for (r, d) in block.thicknesses.iter().enumerate() {
+                let is_slice = block.span.slice && r == 0;
+                new_rows.push(LayerSpec {
+                    material: material.clone(),
+                    nk: block.nk[r].clone().into(),
+                    d_nm: *d,
+                    coherent: block.coherent[r],
+                    rough_type: block.rough_types[r],
+                    rough_val: block.rough_vals[r],
+                    optimize: carrier.optimize && !is_slice,
+                    needle: carrier.needle && !is_slice,
+                });
+            }
+            let delta = n_new as isize - n_old as isize;
+            self.films.splice(sp.start..sp.end, new_rows);
+            // This span's record, re-based onto the stack (its logical
+            // identity is stable across mutators; the emission's local
+            // start is 0).
+            self.spans[si] = Span {
+                start: sp.start,
+                end: sp.start + n_new,
+                logical: sp.logical,
+                slice: block.span.slice,
+                bulk_start: sp.start + usize::from(block.span.slice),
+            };
+            // Later spans shift with the row count change; their recipes
+            // are content-only (no row indices) and follow untouched.
+            if delta != 0 {
+                for later in &mut self.spans[si + 1..] {
+                    later.start = (later.start as isize + delta) as usize;
+                    later.end = (later.end as isize + delta) as usize;
+                    later.bulk_start = (later.bulk_start as isize + delta) as usize;
+                }
+            }
+            // Re-measure the marker from the new rows (one-step
+            // convergence: the next refresh sees an unmoved span).
+            let new_total: f64 = self.films[sp.start..sp.start + n_new]
+                .iter()
+                .map(|l| l.d_nm)
+                .sum();
+            if let Some(r) = self.recipes[si].as_mut() {
+                r.emitted_total = new_total;
+            }
+        }
+        self.assert_spans_partition();
         Ok(())
     }
 
@@ -1093,21 +1376,134 @@ pub(crate) fn span_is_scalable_rows(sp: &Span, films: &[LayerSpec]) -> bool {
     bulk >= 2 && (sp.bulk_start..sp.end).all(|r| films[r].optimize)
 }
 
-/// F1.6: the scale-free half of the mode table. A profile scales exactly
-/// iff the index at a sublayer is a function of that sublayer's
-/// FRACTIONAL position, not its absolute depth: `InhMode::Fixed` (the
-/// ramp is `i/(sub-1)` only) and `GradientMode::FixedSpan` (normalized
-/// depth between two endpoints). The RateCapped modes read absolute `z`
-/// and stay homogenized until F1.7.
-pub(crate) fn profile_scales_exactly(l: &crate::structure::Layer) -> bool {
-    use crate::structure::gradient::{GradientMode, InhMode};
-    if let Some(grad) = &l.gradient {
-        matches!(grad.mode, GradientMode::FixedSpan { .. })
-    } else if l.inhomogen {
-        l.inh_mode == InhMode::Fixed
-    } else {
-        false
+// ---------------------------------------------------------------------------
+// SpanRecipe + profile refresh (F1.7)
+// ---------------------------------------------------------------------------
+
+/// What one span's re-emission needs (B2) - everything one iteration of
+/// `expand`'s emission loop reads, captured at the door that built the
+/// span. `None` for every plain film, so a stack with no profiled layer
+/// pays one `Vec` of `None` and nothing else.
+///
+/// Per-span refresh is legal because the design path builds `inv =
+/// false` throughout: `expand`'s backwards-rescale branch (entry `k`
+/// rescaling the PREVIOUS span's already-emitted rows) is unreachable
+/// here, so re-emitting span k cannot disturb span k-1. That is a
+/// property of the CALLER, not of the algorithm - `refresh_profiles`
+/// records it as a `debug_assert`.
+///
+/// The recipe rides `DesignStack::recipes`, aligned index-for-index with
+/// `spans` (never a map keyed by `logical` - a second index that
+/// renumbers on `remove_film` is exactly the failure mode F0.1 exists
+/// to prevent). Any mutator that alters a span's ROW SET drops its
+/// recipe to `None` (the affected span keeps its current rows and is
+/// simply never refreshed); spans that only shift keep theirs.
+#[derive(Clone)]
+pub(crate) struct SpanRecipe {
+    /// The carrier as the door rewrote it (flags, interface, roughness,
+    /// gradient spec, inh mode). `thickness` is the CONSTRUCTION value,
+    /// kept for the record; refresh feeds the span's current extent
+    /// through `emit_standalone` directly.
+    pub(crate) layer: crate::structure::Layer,
+    /// The groups map the emission resolves policy through (the
+    /// carrier's own group and, for gradients, each endpoint's).
+    pub(crate) groups: std::sync::Arc<HashMap<String, crate::structure::Group>>,
+    /// The entry's phase-1 spectrum (provider-resolved, group-scaled).
+    pub(crate) bulk_nk: Vec<num_complex::Complex64>,
+    /// Whether the span carries its own interface flag (the design
+    /// path's owner resolves to `Some(k)` - self-owned - or `None`).
+    pub(crate) self_owned: bool,
+    /// The PREVIOUS entry's terminal spectrum - the slice-mix "prev"
+    /// operand. `None` for the stack's first span.
+    pub(crate) prev_eff_nk: Option<Vec<num_complex::Complex64>>,
+    /// The run's provider (gradient endpoints resolve through it).
+    /// Concrete: the design path always builds a `DictProvider`, and a
+    /// trait object here would drag `!Send`/`!Sync` implementors
+    /// (`SpecProvider`'s RefCell cache, the PyO3 shelf) into a stack
+    /// type the LM bounds to `Send + Sync`.
+    pub(crate) provider: std::sync::Arc<crate::structure::DictProvider>,
+    /// The run's wavelength grid (the gradient sublayer rule reads it).
+    pub(crate) wavelengths: Vec<f64>,
+    /// The options the emission ran under (B3: refresh refuses
+    /// `apply_errors: true` rather than re-rolling the ensemble).
+    pub(crate) opts: crate::structure::ExpandOptions,
+    /// The extent the rows currently describe, MEASURED as the sum of the
+    /// span's rows at the last emission. A span whose current sum still
+    /// equals this (bitwise) has not moved since its profile was built -
+    /// refresh skips it, which is what makes refresh at construction a
+    /// bitwise no-op and the rate span's staleness detection exact
+    /// rather than heuristic. Updated after every re-emission to the new
+    /// rows' measured sum, so the next refresh skips it too (one-step
+    /// convergence, no ulp chasing).
+    pub(crate) emitted_total: f64,
+}
+
+impl std::fmt::Debug for SpanRecipe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpanRecipe")
+            .field("layer", &self.layer)
+            .field("bulk_nk.len", &self.bulk_nk.len())
+            .field("self_owned", &self.self_owned)
+            .field("prev_eff_nk", &self.prev_eff_nk.as_ref().map(|v| v.len()))
+            .field("wavelengths", &self.wavelengths)
+            .field("opts", &self.opts)
+            .finish_non_exhaustive()
     }
+}
+
+impl SpanRecipe {
+    /// Whether the recipe's profile is a function of the span's absolute
+    /// thickness (U3) - the spans `refresh_profiles` rebuilds. The rate
+    /// modes: `InhMode::RateCapped` (legacy single-material, delta grows
+    /// with thickness) and `GradientMode::RateCapped` (f grows with
+    /// depth). The fixed modes are scale-free (U3, verified) and are
+    /// left alone.
+    fn is_rate_mode(&self) -> bool {
+        use crate::structure::gradient::{GradientMode, InhMode};
+        if let Some(grad) = &self.layer.gradient {
+            matches!(grad.mode, GradientMode::RateCapped { .. })
+        } else if self.layer.inhomogen {
+            matches!(self.layer.inh_mode, InhMode::RateCapped { .. })
+        } else {
+            // A rate mode on a non-profiled layer is inert (F1.3's
+            // warning covers the authoring side); nothing to refresh.
+            false
+        }
+    }
+}
+
+thread_local! {
+    /// F1.7's refresh-count instrumentation (the U4 gate's counter).
+    /// Counts `refresh_profiles` CALLS while a test holds the counting
+    /// flag on. Thread-local, so parallel tests cannot pollute each
+    /// other's counts, and off by default so no production or test path
+    /// pays for it.
+    static REFRESH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REFRESH_COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Turn the refresh counter on (the refresh-count twin's harness).
+#[cfg(test)]
+pub(crate) fn refresh_counting_on() {
+    REFRESH_COUNTING.with(|c| c.set(true));
+}
+
+/// Turn the refresh counter off.
+#[cfg(test)]
+pub(crate) fn refresh_counting_off() {
+    REFRESH_COUNTING.with(|c| c.set(false));
+}
+
+/// Zero the refresh counter.
+#[cfg(test)]
+pub(crate) fn refresh_count_reset() {
+    REFRESH_CALLS.with(|c| c.set(0));
+}
+
+/// The refresh counter's value since the last reset.
+#[cfg(test)]
+pub(crate) fn refresh_count() -> usize {
+    REFRESH_CALLS.with(|c| c.get())
 }
 
 // ---------------------------------------------------------------------------
@@ -2330,5 +2726,335 @@ mod tests {
         fn film_count_public(&self) -> usize {
             self.films().len()
         }
+    }
+
+    // ------------------------------------------------------------------
+    // F1.7 - profile refresh for the rate modes (U3/U4)
+    // ------------------------------------------------------------------
+
+    /// A gradient RateCapped carrier on the F1.6 posture (optimize=true:
+    /// since F1.7 the rate profile is kept, not homogenized). `d` is the
+    /// carrier's authored thickness; `f_start`/`rate` set the ramp.
+    fn rate_gradient_stack(d: f64, rate: f64, with_interface: bool) -> DesignStack {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.01); NW]);
+        nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
+        // A lead film: the interface slice is carved by the flag owner,
+        // which resolves to Some(k) only from the second entry on; it
+        // also gives the slice-mix a real "prev" operand.
+        let mut lead = crate::structure::Layer::film(20.0, "L");
+        lead.optimize = false;
+        lead.needle = false;
+        let mut carrier = crate::structure::Layer::film(d, "H");
+        carrier.gradient = Some(crate::structure::GradientSpec::rate_capped(
+            "H", "L", 0.0, rate, 100.0, 0.0, 1.0,
+        ));
+        if with_interface {
+            carrier.interface = true;
+            carrier.interface_thickness = 5.0;
+        }
+        let (stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            &[lead, carrier],
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(
+            warns.is_empty(),
+            "the F1.6/F1.7 posture must not warn: {warns:?}"
+        );
+        stack
+    }
+
+    /// A legacy RateCapped carrier on the F1.6 posture.
+    fn rate_legacy_stack(d: f64, rate: f64) -> DesignStack {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.01); NW]);
+        let mut carrier = crate::structure::Layer::film(d, "H");
+        carrier.inhomogen = true;
+        carrier.inh_mode = crate::structure::InhMode::RateCapped {
+            rate,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let (stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            std::slice::from_ref(&carrier),
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(
+            warns.is_empty(),
+            "the F1.6/F1.7 posture must not warn: {warns:?}"
+        );
+        stack
+    }
+
+    /// The stack's film rows as comparable bytes: material, nk (le bytes
+    /// per component), thickness, and every flag. Two stacks are bitwise
+    /// equal iff this is equal.
+    fn films_bytes(s: &DesignStack) -> Vec<(String, Vec<u8>, f64, bool, i32, f64, bool, bool)> {
+        s.films()
+            .iter()
+            .map(|f| {
+                let mut nk_bytes = Vec::with_capacity(f.nk.len() * 16);
+                for z in f.nk.iter() {
+                    nk_bytes.extend_from_slice(&z.re.to_le_bytes());
+                    nk_bytes.extend_from_slice(&z.im.to_le_bytes());
+                }
+                (
+                    f.material.to_string(),
+                    nk_bytes,
+                    f.d_nm,
+                    f.coherent,
+                    f.rough_type,
+                    f.rough_val,
+                    f.optimize,
+                    f.needle,
+                )
+            })
+            .collect()
+    }
+
+    /// Refresh-correctness twin, gradient engine (full bitwise): a rate
+    /// span scaled by hand from 100 nm to 200 nm, then refreshed, is
+    /// BITWISE equal to the same span expanded from scratch at 200 nm.
+    /// The gradient branch's totals are exact (the last sublayer absorbs
+    /// the remainder, N7), so the refreshed extent is exactly the
+    /// hand-set total and the comparison is meaningful to the last bit.
+    /// Refresh and construction are the same code (B2) - this is a
+    /// regression pin, not a load-bearing proof.
+    #[test]
+    fn f17_refresh_rebuilds_the_gradient_rate_span_bitwise() {
+        let at_100 = rate_gradient_stack(100.0, 0.3, false);
+        let si = 1; // the carrier span (lead film is span 0)
+        let sp100 = at_100.spans()[si];
+        assert_eq!(
+            sp100.end - sp100.start,
+            6,
+            "count(100 nm) = ceil(100/min(20, 400/(10*2.35)))"
+        );
+        // Hand-scale: double every row (bitwise exact on the gradient
+        // branch's binary-exact split) and pin the total.
+        let mut scaled = at_100.clone();
+        for r in sp100.start..sp100.end {
+            let d = scaled.films()[r].d_nm * 2.0;
+            scaled.set_thickness(r, d).unwrap();
+        }
+        let total: f64 = (sp100.start..sp100.end)
+            .map(|r| scaled.films()[r].d_nm)
+            .sum();
+        assert_eq!(total, 200.0, "the hand-scale lands exactly on 200");
+        scaled.refresh_profiles().unwrap();
+
+        let at_200 = rate_gradient_stack(200.0, 0.3, false);
+        assert_eq!(
+            films_bytes(&scaled),
+            films_bytes(&at_200),
+            "refresh(100 -> 200) == construction(200), bitwise"
+        );
+        let sp200 = scaled.spans()[si];
+        assert_eq!(
+            sp200.end - sp200.start,
+            12,
+            "count(200 nm) doubles: the ceil re-derived at the refreshed extent"
+        );
+        assert_eq!(
+            (sp100.logical, sp100.slice, sp100.bulk_start - sp100.start),
+            (sp200.logical, sp200.slice, sp200.bulk_start - sp200.start),
+            "span bookkeeping shape survives the refresh"
+        );
+        scaled.assert_spans_partition();
+    }
+
+    /// The same twin with an INTERFACE slice on the rate carrier: the
+    /// slice row is re-carved at the new total and its mix nk is bitwise
+    /// the construction's (the recipe's "prev" operand feeds the same
+    /// looyenga_mix). The slice row's thickness is never scaled (F1.6).
+    #[test]
+    fn f17_refresh_recarves_the_interface_slice_bitwise() {
+        let at_100 = rate_gradient_stack(100.0, 0.3, true);
+        let si = 1;
+        let sp = at_100.spans()[si];
+        assert!(sp.slice, "the carrier carried its interface");
+        let slice_d = at_100.films()[sp.start].d_nm;
+        assert_eq!(slice_d, 5.0);
+        let mut scaled = at_100.clone();
+        for r in sp.start..sp.end {
+            let d = scaled.films()[r].d_nm * 2.0;
+            scaled.set_thickness(r, d).unwrap();
+        }
+        scaled.refresh_profiles().unwrap();
+        let at_200 = rate_gradient_stack(200.0, 0.3, true);
+        assert_eq!(
+            films_bytes(&scaled),
+            films_bytes(&at_200),
+            "refresh with an interface slice == construction, bitwise"
+        );
+        let sp2 = scaled.spans()[si];
+        assert!(sp2.slice);
+        assert_eq!(
+            scaled.films()[sp2.start].d_nm,
+            5.0,
+            "the slice is re-carved, not scaled"
+        );
+    }
+
+    /// Refresh-correctness twin, legacy engine: the NK rows are bitwise
+    /// the construction's (the ramp reads delta = rate*D/ref, and the
+    /// refreshed D is the span's current extent); the THICKNESS rows
+    /// agree to 1e-9 relative rather than bitwise, because the legacy
+    /// branch's uniform split sums to the carrier only to float
+    /// precision (N7) - the refreshed D is the float sum, within an ulp
+    /// of the hand-set total. The plan's flat "bitwise" is corrected
+    /// here in the same spirit as F1.6's d_r/D correction.
+    #[test]
+    fn f17_refresh_matches_construction_on_the_legacy_rate_span() {
+        let at_100 = rate_legacy_stack(100.0, 0.25);
+        let sp = at_100.spans()[0];
+        let n100 = sp.end - sp.start;
+        assert_eq!(n100, 16, "count(100 nm, rate 0.25): the F1.3 arithmetic");
+        let mut scaled = at_100.clone();
+        for r in sp.start..sp.end {
+            let d = scaled.films()[r].d_nm * 2.0;
+            scaled.set_thickness(r, d).unwrap();
+        }
+        scaled.refresh_profiles().unwrap();
+        let at_200 = rate_legacy_stack(200.0, 0.25);
+        assert_eq!(
+            scaled.films().len(),
+            at_200.films().len(),
+            "the re-derived count matches construction"
+        );
+        for (a, b) in scaled.films().iter().zip(at_200.films().iter()) {
+            assert_eq!(a.nk, b.nk, "the nk ramp is bitwise the construction's");
+            assert_eq!(a.material, b.material);
+            assert_eq!(a.coherent, b.coherent);
+            assert!((a.rough_val - b.rough_val).abs() < 1e-12);
+            let rel = ((a.d_nm - b.d_nm) / b.d_nm).abs();
+            assert!(
+                rel < 1e-9,
+                "thickness within float-precision of construction ({rel})"
+            );
+        }
+        scaled.assert_spans_partition();
+    }
+
+    /// Fixed-mode no-op twin (U3): refresh on Fixed and FixedSpan spans
+    /// is bitwise identity, over a randomized differential in the style
+    /// of `test_differential.py`'s seeded loops (300 seeds). The plan
+    /// names that file; the synthesis-level randomized differential runs
+    /// Rust-side because `refresh_profiles` is deliberately NOT public
+    /// API (a fourth, user-called refresh point is exactly the risk the
+    /// count twin guards against).
+    #[test]
+    fn f17_fixed_mode_refresh_is_bitwise_identity() {
+        use rand::{Rng, SeedableRng, rngs::StdRng};
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.01); NW]);
+        nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
+        for seed in 0..300u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let pick = |rng: &mut StdRng, lo: f64, hi: f64| {
+                lo + (hi - lo) * f64::from(rng.random::<u32>()) / f64::from(u32::MAX)
+            };
+            let n_films = 1 + (seed % 3) as usize;
+            let mut films = Vec::with_capacity(n_films);
+            for j in 0..n_films {
+                let d = pick(&mut rng, 40.0, 280.0);
+                let mut carrier = crate::structure::Layer::film(d, "H");
+                match (seed + j as u64) % 3 {
+                    0 => {
+                        carrier.inhomogen = true;
+                        carrier.inh_delta = pick(&mut rng, 0.05, 0.3);
+                    }
+                    1 => {
+                        carrier.gradient = Some(crate::structure::GradientSpec::fixed_span(
+                            "H",
+                            "L",
+                            pick(&mut rng, 0.0, 0.3),
+                            pick(&mut rng, 0.7, 1.0),
+                        ));
+                    }
+                    _ => {} // plain film
+                }
+                films.push(carrier);
+            }
+            let (stack, _) = DesignStack::from_design(
+                air(0.0),
+                sub(0.0),
+                &films,
+                &nk,
+                &HashMap::new(),
+                &wl,
+                &HashSet::new(),
+            )
+            .unwrap();
+            let before_films = films_bytes(&stack);
+            let before_spans = stack.spans().to_vec();
+            let mut refreshed = stack.clone();
+            refreshed.refresh_profiles().unwrap();
+            assert_eq!(
+                films_bytes(&refreshed),
+                before_films,
+                "fixed-mode refresh is bitwise identity (seed {seed})"
+            );
+            assert_eq!(
+                refreshed.spans(),
+                &before_spans[..],
+                "fixed-mode refresh leaves the partition alone (seed {seed})"
+            );
+        }
+    }
+
+    /// B3 errors-on refusal twin: a recipe carrying `apply_errors: true`
+    /// is refused by name, instead of re-rolling the ensemble.
+    /// Unreachable through `from_design` (it always expands
+    /// deterministic); the twin constructs one directly, so the door is
+    /// proved shut before anything opens it.
+    #[test]
+    fn f17_recipe_with_errors_is_refused() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let films = vec![LayerSpec::constant("H", 2.35, 0.01, 100.0, NW)];
+        let spans = vec![Span {
+            start: 0,
+            end: 1,
+            logical: 0,
+            slice: false,
+            bulk_start: 0,
+        }];
+        let recipe = SpanRecipe {
+            layer: crate::structure::Layer::film(100.0, "H"),
+            groups: Arc::new(HashMap::new()),
+            bulk_nk: films[0].nk.to_vec(),
+            self_owned: false,
+            prev_eff_nk: None,
+            provider: Arc::new(crate::structure::DictProvider::new()),
+            wavelengths: wl.clone(),
+            opts: crate::structure::ExpandOptions {
+                apply_errors: true,
+                seed: None,
+            },
+            emitted_total: 100.0,
+        };
+        let mut stack =
+            DesignStack::from_parts(air(0.0), sub(0.0), films, spans, vec![Some(recipe)]).unwrap();
+        let err = match stack.refresh_profiles() {
+            Err(e) => e,
+            Ok(()) => panic!("expected the errors-on refusal"),
+        };
+        assert!(err.contains("apply_errors"), "{err}");
+        assert!(err.contains("re-roll"), "{err}");
     }
 }

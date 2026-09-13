@@ -242,9 +242,7 @@ pub(crate) fn assemble_jacobian_mapped(
         let out = &mut jac[i * n_out..(i + 1) * n_out];
         for (p, par) in params.iter().enumerate() {
             match par {
-                crate::smatrix::synthesis::evaluator::Param::Row(_) => {
-                    out[p] = scratch[bases[p]]
-                }
+                crate::smatrix::synthesis::evaluator::Param::Row(_) => out[p] = scratch[bases[p]],
                 crate::smatrix::synthesis::evaluator::Param::Span { rows, fractions } => {
                     let mut acc = 0.0f64;
                     for (k, &w) in fractions.iter().enumerate() {

@@ -54,6 +54,13 @@ ALLOWLIST = {
     # Structure.expand / DesignStack.from_design; the Python gradient
     # surface (F1.5) binds its own doors, not these kernels.
     "gradient_sub_layer_count", "mix_row",
+    # F1.7's re-emission pair: `expand_with_recipe_inputs` is `expand` plus
+    # the recipe capture (one emission body, B2), `emit_standalone` is the
+    # refresh's single-span door into it. Both run only inside the design
+    # path's construction points (`DesignStack::from_design` /
+    # `refresh_profiles`); the plan forbids a fourth, user-called refresh
+    # point, so these stay unbound on purpose.
+    "expand_with_recipe_inputs", "emit_standalone",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",

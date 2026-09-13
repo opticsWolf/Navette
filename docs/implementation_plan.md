@@ -140,7 +140,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F1.2~~ **DONE (0.6.37)** | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
 | ~~F1.3~~ **DONE (0.6.38)** | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | ~~F1.6~~ **DONE (0.6.39)** | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
-| F1.7 | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
+| ~~F1.7~~ **DONE (0.6.40)** | Profile refresh for the rate modes — at construction points only | 0.6.40 | P1 | M (a refresh in the wrong place costs 1000×) | **L** | **U3, U4**, B2, B3 |
 | F1.4 | Schema v2 + a readable-version **range**, not a point | 0.6.41 | **P0** | M (every state file reads through this gate) | M | §D5 + correction §1.2 |
 | F1.5 | `design_config` rows + Python `Layer.gradient` surface | 0.6.42 | P1 | S | M | §D5 |
 | F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.43 | P2 | S | M | §4.1–4.2 |
@@ -1675,6 +1675,62 @@ item 1), which is why it is called out as non-additive rather than buried.
 
 ### F1.7 — profile refresh for the rate modes, at construction only (0.6.40)
 
+**DONE (0.6.40, see the feature commit).** Corrections from implementation:
+
+- **The refresh at `from_design` needed an exact staleness marker, or it
+  would have moved freshly built rows.** The plan's "re-derive at the
+  span's current total D" is well-posed for a MOVED span (D is the
+  rows' re-summed extent), but at construction the legacy branch's
+  uniform split sums to the carrier only to float precision (N7) - a
+  naive re-derivation re-emits every rate span at the re-summed total
+  and shifts its rows by an ulp at EVERY construction, forever. The
+  landed design: the recipe carries `emitted_total`, the MEASURED sum
+  of the rows at the last emission; a span whose current sum still
+  equals it (bitwise) has not moved, its profile already describes the
+  extent exactly, and refresh skips it. One-step convergent after any
+  move (the marker re-measures from the new rows). The plan's call-site
+  list stands; its "initial assembly" point is now a true no-op for
+  fresh spans by construction rather than by coincidence.
+- **The count and delta rules read the CARRIER's thickness, so refresh
+  must feed the extent through that channel too.** `emit_entry` reads
+  `layer.thickness` for `sub_layer_count`/`delta_layer` and `bulk_t`
+  for the emitted extent (identity groups on this path make them equal
+  at construction); the first implementation fed only the extent and
+  the legacy re-derivation kept the construction-time count. The
+  differential caught it: refresh must set the carrier's `thickness`
+  to the current extent before re-emitting.
+- **The legacy refresh-correctness twin is full bitwise only for an
+  exact-sum scenario.** The plan's "scaled by hand from 100 nm to
+  200 nm ... bitwise equal" holds whenever the hand-scale lands exactly
+  on the target extent: at 100 nm with rate 0.25 the count is 16
+  (binary-exact 6.25 nm rows), the doubled total is exactly 200.0, and
+  both sides run the same code at the same extent with the delta
+  clamped on both sides. A generic (t, rate) pair reaches only 1-ulp
+  agreement (N7 again) - the twin pins the exact-sum scenario and the
+  plan's wording is corrected to say which.
+- **The Fixed-mode no-op twin runs Rust-side.** The plan cites
+  `test_differential.py` (the structure engine's py-rs comparison,
+  which has no `DesignStack` surface); the synthesis-level randomized
+  differential runs as a Rust twin over 300 seeded stacks in the same
+  style. `refresh_profiles` also stays deliberately UNBOUND to Python:
+  a user-called refresh would be exactly the fourth call site the
+  count twin exists to prevent (the exposure allowlist records the
+  rationale).
+- **The rate-mode design posture is not Python-reachable at this
+  release.** `per_film_flags` carries `gradient` (F1.1) but not
+  `inh_mode` (F1.5's surface); a Python twin for the graded RateCapped
+  posture was attempted and correctly refused by the unknown-flag door.
+  The gradient RateCapped posture IS reachable and is pinned
+  Python-side; the graded one arrives with F1.5's flags.
+- **The row-count-frozen twin's numbers are the measured ones.** The
+  plan's "parameterized to cross a ceil() boundary" became: 12 rows at
+  221 nm; the AR demand's attractor pulls the real solve UP to 260 nm,
+  across the 12/13 boundary; frozen at 12 through the solve, refreshed
+  to 14 after. The drift-bound twin's tolerance is the measured pair:
+  the staleness correction (6.9) is under half the excursion's own
+  merit response (26.9) and under 5% of the merit, on the plan's own
+  5 nm / rate 0.3 / ref 100 scenario.
+
 **U3.** A rate-type profile is a function of absolute thickness — `f(z) =
 f_start + rate · z / ref_thickness` — so scaling the span makes its stored nk
 stale. Those spans need the profile recalculated.
@@ -2544,7 +2600,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.37 | F1.2 | 7a499a7 | A9.2, N2 | done |
 | 0.6.38 | F1.3 | c3a20d6 | **B6**, B10 | done |
 | 0.6.39 | F1.6 | 86e4fed | **U2**, **B5** | done |
-| 0.6.40 | F1.7 | — | **U3, U4**, **B2, B3**, B8 | not started |
+| 0.6.40 | F1.7 | (hash pending) | **U3, U4**, **B2, B3**, B8 | done |
 | 0.6.41 | F1.4 | — | A3, R5, N4 | not started |
 | 0.6.42 | F1.5 | — | A5 (mirror), N9 | not started |
 | 0.6.43 | F2.1 | — | A7, R6 | not started |

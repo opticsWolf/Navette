@@ -4,6 +4,97 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.40] - F1.7: profile refresh for the rate modes, at construction only
+
+A rate-type profile is a function of absolute thickness, so scaling the
+span makes its stored nk stale. The rate modes now keep their profiles
+like the fixed modes do, and the profile is re-derived at the
+construction points.
+
+### Added
+
+- **`SpanRecipe`** - everything one iteration of `expand`'s emission
+  loop reads, captured at the door that built the span (B2: the
+  extraction was done at F0.1, so refresh and construction are the
+  SAME code, not two functions that agree). Rides
+  `DesignStack::recipes`, aligned index-for-index with `spans` (never a
+  map keyed by `logical` - a second index that renumbers on
+  `remove_film` is the failure mode F0.1 exists to prevent). `None`
+  for every plain film. Any mutator that alters a span's row set drops
+  its recipe; spans that only shift keep theirs; the merge's intra-span
+  case (the RateCapped saturated tail merging into itself) keeps the
+  recipe because refresh rebuilds from the carrier at the new total.
+- **`refresh_profiles(&mut stack)`** - rebuilds every rate-mode span's
+  profile from its current total. Called at exactly THREE places:
+  `from_design`, the top of each macro cycle (before the budget check
+  and needle scan), and after the final clamp pass. NOWHERE else -
+  never inside an LM round, never inside the Jacobian, never inside a
+  needle scan or a cleanup trial (U4). The refresh-count twin pins the
+  counter at exactly `1 + N cycles + 1` (5 for a 3-cycle pipeline); a
+  fourth call site later makes it fail loudly.
+- **A span whose rows still sum (bitwise) to the measured total of its
+  last emission is skipped** - the marker is exact staleness detection,
+  not a heuristic: refresh at construction is a bitwise no-op for
+  freshly built spans, and the marker re-measures from the new rows
+  after every move (one-step convergence, no ulp chasing).
+- **Rate spans are now LM parameters too** (completing F1.6's licence):
+  the from_design keep-profile branch widens from the two scale-free
+  modes to ALL profiled modes. `optimize = true` never means
+  "homogenize me" for any profiled film.
+- **B3's refusal:** a recipe carrying `apply_errors: true` is refused
+  by `refresh_profiles` (refresh would re-roll the error ensemble);
+  unreachable through `from_design` today, proved shut by the twin
+  before anything can open it.
+
+### Changed (the completion of F1.6's one non-additive part)
+
+- **`optimize = true` on a rate-profiled film keeps the profile** (was:
+  homogenize with a warning, for the two RateCapped modes). The
+  homogenize warning still fires for the posture that always
+  homogenized (`optimize = false, needle = true`) and for pinned
+  backgrounds. Within one macro cycle the rate span's profile is the
+  one built at that cycle's top (the plan's staleness bound: a 5 nm
+  excursion moves the end fraction by `0.05 * rate`; the drift twin
+  measures the merit correction at under half the excursion's own
+  response and under 3% of the merit); every merit number shown to the
+  user is evaluated after a refresh (refresh point 3).
+
+### The Jacobian stays analytic
+
+With the profile frozen for the solve, the stack LM minimizes genuinely
+is the frozen-profile stack, so F1.6's exact contraction is the exact
+derivative of the actual objective. U4 buys the analytic Jacobian for
+rate modes twice over.
+
+### Twins (all landed)
+
+- **Refresh-count (the item's most important test, written per the
+  plan's sequencing):** a moving mock over 3 macro cycles - the counter
+  reads exactly 5.
+- **Refresh-correctness, gradient engine, full bitwise:** 100 -> 200 nm
+  (count 6 -> 12, the ceil re-derived) equals the same span expanded
+  from scratch at 200 nm, films bitwise; with an interface slice, the
+  slice is re-carved (not scaled) bitwise.
+- **Refresh-correctness, legacy engine, full bitwise:** the scenario is
+  chosen to make that honest - at 100 nm with rate 0.25 the count is 16
+  (binary-exact 6.25 nm rows), so the hand-doubled total is exactly
+  200.0 and both sides run the same code at the same extent, the delta
+  clamped on both sides. A generic (t, rate) pair only reaches 1-ulp
+  agreement (N7: the legacy uniform split sums to the carrier to float
+  precision) - the plan's flat "bitwise" holds where the arithmetic is
+  exact and is documented where it cannot.
+- **Fixed-mode no-op:** bitwise identity over 300 seeded randomized
+  stacks (mixed Fixed graded / FixedSpan gradient / plain films). The
+  plan's citation points at `test_differential.py`, which is the
+  structure engine's py-rs comparison - the synthesis-level randomized
+  differential runs Rust-side, same seeded style (plan correction).
+- **Row-count-frozen:** a real solve moves 221 -> 260 nm (across the
+  12/13 boundary): the count stays 12 through the solve and the refresh
+  re-derives 14. Frozen-then-healed is the whole U4 contract.
+- **Drift-bound + reported-merit:** the staleness correction (6.9 on a
+  26.9 excursion response, 2.7% of the merit); `final_mf`'s snapshot is
+  bitwise the returned (refreshed) stack.
+
 ## [0.6.39] - F1.6: one thickness parameter per graded span
 
 A profiled layer is one physical layer, so its total thickness is one

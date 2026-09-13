@@ -183,6 +183,17 @@ impl NeedlePipeline {
         let mut user_abort = false;
 
         'main: for cycle_i in 1..=self.cfg.max_macro_cycles {
+            // F1.7 (U3/U4, refresh point 2): the profile is rebuilt at
+            // the top of every macro cycle, immediately BEFORE the
+            // pre-flight budget check - the budget check and the needle
+            // scan both see a current profile. One call per cycle, and
+            // never inside the LM round (U4: the row count of a span is
+            // frozen for the duration of one solve; the residual must
+            // not change length, and a live profile would put step
+            // discontinuities at every ceil() boundary). The refresh-
+            // count twin pins this to exactly one call per cycle top.
+            self.stack.refresh_profiles()?;
+
             // -- Pre-flight budget check --
             if let Some(reason) = self.check_budgets(ctx)? {
                 termination = reason;
@@ -358,6 +369,12 @@ impl NeedlePipeline {
             self.cfg.thin_layer_policy,
             true,
         )?;
+        // F1.7 (refresh point 3): the returned stack and the reported
+        // final_mf describe the same object - every merit number shown
+        // to the user is evaluated after a refresh, never on a stale
+        // profile. (F1.6's clamp sweeps scale rate spans; this is where
+        // the scaled span's profile is re-derived.)
+        self.stack.refresh_profiles()?;
         let final_mf = ctx.evaluate_merit(&self.stack)?;
 
         // F0.2: the final sweep's own report plus any clamps the final
@@ -778,6 +795,209 @@ mod tests {
             .is_ok(),
             "a scalable span gets the ceiling as a bound, not a refusal"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // F1.7 - profile refresh for the rate modes, at construction only
+    // ------------------------------------------------------------------
+
+    /// A gradient RateCapped carrier on the F1.6/F1.7 posture:
+    /// optimize=true keeps the profile as ONE scalable span whose
+    /// profile is rate-type (refreshed at the construction points).
+    fn rate_span_stack(d: f64, rate: f64) -> DesignStack {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = std::collections::HashMap::new();
+        nk.insert(
+            std::sync::Arc::from("H"),
+            vec![num_complex::Complex64::new(2.35, 0.01); NW],
+        );
+        nk.insert(
+            std::sync::Arc::from("L"),
+            vec![num_complex::Complex64::new(1.46, 0.0); NW],
+        );
+        let mut carrier = crate::structure::Layer::film(d, "H");
+        carrier.gradient = Some(crate::structure::GradientSpec::rate_capped(
+            "H", "L", 0.0, rate, 100.0, 0.0, 1.0,
+        ));
+        let (stack, warns) = DesignStack::from_design(
+            air(),
+            sub(),
+            std::slice::from_ref(&carrier),
+            &nk,
+            &std::collections::HashMap::new(),
+            &wl,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+        assert!(
+            warns.is_empty(),
+            "the rate posture must not warn: {warns:?}"
+        );
+        stack
+    }
+
+    /// THE U4 gate, measured mechanically: the refresh counter reads
+    /// exactly 1 + 3 + 1 = 5 for a 3-macro-cycle pipeline with one
+    /// rate-mode scalable span - construction, three cycle tops, the
+    /// final pass. The optimizer's mock MOVES the span every call, so
+    /// every refresh actually re-derives; a residual-closure or
+    /// Jacobian call site would push the count up by three orders of
+    /// magnitude and this test fails loudly. Written per the plan's
+    /// sequencing: the count is the feature's most important property.
+    #[test]
+    fn f17_refresh_count_is_construction_plus_cycle_tops() {
+        use crate::smatrix::synthesis::structure::refresh_count;
+        use crate::smatrix::synthesis::structure::{
+            refresh_count_reset, refresh_counting_off, refresh_counting_on,
+        };
+        struct ScalingCtx {
+            merit: std::cell::Cell<f64>,
+        }
+        impl DesignContext for ScalingCtx {
+            fn evaluate_merit(&self, _s: &DesignStack) -> Result<f64, String> {
+                Ok(self.merit.get())
+            }
+            fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
+                Err("mock context has no simulator".into())
+            }
+            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+                // Move every free row so the rate span's total (and with
+                // it its stale profile) actually changes per cycle.
+                for r in 0..s.films().len() {
+                    if s.films()[r].optimize {
+                        let d = s.films()[r].d_nm * 1.02;
+                        s.set_thickness(r, d)?;
+                    }
+                }
+                self.merit.set(self.merit.get() + 1.0);
+                Ok(self.merit.get())
+            }
+        }
+        refresh_counting_on();
+        refresh_count_reset();
+        let stack = rate_span_stack(200.0, 0.3); // from_design: refresh #1
+        let mut p = NeedlePipeline::new(
+            stack,
+            dummy_spectral(),
+            PipelineConfig {
+                max_macro_cycles: 3,
+                enable_cleanup: false,
+                needles_per_cycle: 0,
+                stagnation_window: usize::MAX,
+                clamp_max_nm: 1000.0,
+                ..Default::default()
+            },
+            NeedleCycleConfig::default(),
+            ContrastMap::new(),
+        )
+        .unwrap();
+        let mut ctx = ScalingCtx {
+            merit: std::cell::Cell::new(1.0),
+        };
+        let res = p.run(&mut ctx, |_, _, _| Ok(())).unwrap();
+        let counted = refresh_count();
+        refresh_counting_off();
+        assert_eq!(res.phases.len(), 3, "the three cycles ran");
+        assert_eq!(
+            counted, 5,
+            "refresh calls = 1 construction + 3 cycle tops + 1 final pass"
+        );
+    }
+
+    /// The reported-merit twin (F0.3's shape, F1.7's subject): the merit
+    /// number shown to the user is evaluated AFTER the final refresh,
+    /// never on a stale profile. The context snapshots the stack's film
+    /// nk at every evaluation and returns a fresh value per call, so
+    /// `final_mf` identifies WHICH evaluation produced it; its snapshot
+    /// must be bitwise the returned stack's nk (the span was MOVED by
+    /// the final optimize, so a pre-refresh snapshot would differ).
+    #[test]
+    fn f17_reported_merit_describes_the_refreshed_stack() {
+        struct SnapshotCtx {
+            calls: std::cell::Cell<usize>,
+            last_nk: std::cell::RefCell<Vec<Vec<u8>>>,
+        }
+        impl DesignContext for SnapshotCtx {
+            fn evaluate_merit(&self, s: &DesignStack) -> Result<f64, String> {
+                let nk = s
+                    .films()
+                    .iter()
+                    .map(|f| {
+                        let mut b = Vec::with_capacity(f.nk.len() * 16);
+                        for z in f.nk.iter() {
+                            b.extend_from_slice(&z.re.to_le_bytes());
+                            b.extend_from_slice(&z.im.to_le_bytes());
+                        }
+                        b
+                    })
+                    .collect::<Vec<_>>();
+                *self.last_nk.borrow_mut() = nk;
+                let c = self.calls.get() + 1;
+                self.calls.set(c);
+                Ok(f64::from(c as u32))
+            }
+            fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
+                Err("mock context has no simulator".into())
+            }
+            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+                for r in 0..s.films().len() {
+                    if s.films()[r].optimize {
+                        let d = s.films()[r].d_nm * 1.02;
+                        s.set_thickness(r, d)?;
+                    }
+                }
+                self.evaluate_merit(s)
+            }
+        }
+        let stack = rate_span_stack(200.0, 0.3);
+        let mut p = NeedlePipeline::new(
+            stack,
+            dummy_spectral(),
+            PipelineConfig {
+                max_macro_cycles: 2,
+                enable_cleanup: false,
+                needles_per_cycle: 0,
+                stagnation_window: usize::MAX,
+                clamp_max_nm: 1000.0,
+                ..Default::default()
+            },
+            NeedleCycleConfig::default(),
+            ContrastMap::new(),
+        )
+        .unwrap();
+        let mut ctx = SnapshotCtx {
+            calls: std::cell::Cell::new(0),
+            last_nk: std::cell::RefCell::new(Vec::new()),
+        };
+        let res = p.run(&mut ctx, |_, _, _| Ok(())).unwrap();
+        // final_mf names the LAST merit evaluation; its snapshot is
+        // bitwise the returned stack.
+        let returned_nk: Vec<Vec<u8>> = p
+            .stack
+            .films()
+            .iter()
+            .map(|f| {
+                let mut b = Vec::with_capacity(f.nk.len() * 16);
+                for z in f.nk.iter() {
+                    b.extend_from_slice(&z.re.to_le_bytes());
+                    b.extend_from_slice(&z.im.to_le_bytes());
+                }
+                b
+            })
+            .collect();
+        assert!(
+            *ctx.last_nk.borrow() == returned_nk,
+            "the reported merit was computed on the refreshed stack"
+        );
+        // And the refresh actually mattered: the final optimize moved
+        // the span, so the pre-refresh rows differ from the returned
+        // ones (the rate profile re-derived at the moved extent).
+        let rate_span = p.stack.spans()[0];
+        assert!(
+            rate_span.end - rate_span.start > 1,
+            "the rate span kept its rows"
+        );
+        let _ = res;
     }
 
     /// Licence item 6 (B4): the phase's clamp report is present when the

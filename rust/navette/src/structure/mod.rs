@@ -33,7 +33,10 @@ pub use enums::{BlockKind, ErrorMask, ErrorType, LayerMask, LayerType, OptMask, 
 // the same Group objects), so film/material baking through one handle is
 // visible through all of them. Expansion snapshot-clones per run.
 pub type SharedGroup = std::rc::Rc<std::cell::RefCell<Group>>;
-pub use expansion::{ExpandOptions, SolverArrays, Span, expand};
+pub use expansion::{ExpandOptions, SolverArrays, Span, expand, expand_with_recipe_inputs};
+// F1.7's re-emission entry - the design path's refresh runs the same
+// construction code; re-exported beside `expand` so the pairing is visible.
+pub use expansion::emit_standalone;
 pub use gradient::{GradientMode, GradientSpec, InhMode, ProfileShape};
 pub use group::shared_group;
 pub use group::{ErrorParams, Group};

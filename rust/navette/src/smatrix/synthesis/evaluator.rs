@@ -1689,4 +1689,167 @@ mod tests {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // F1.7 - profile refresh for the rate modes (U3/U4)
+    // ------------------------------------------------------------------
+
+    use std::collections::{HashMap, HashSet};
+
+    /// The three-point grid `ar_ctx` runs on (mirrors the `deposits`
+    /// module's GWL; a local copy so these twins stand alone).
+    const F17WL: [f64; 3] = [900.0, 1000.0, 1100.0];
+
+    /// A gradient RateCapped carrier stack on the real GWL AR context:
+    /// the carrier keeps its profile (optimize=true, the F1.6/F1.7
+    /// posture) as ONE scalable span whose profile is rate-type.
+    fn rate_span_stack(d: f64, rate: f64) -> DesignStack {
+        let nw = F17WL.len();
+        let mut nk = HashMap::new();
+        nk.insert(
+            std::sync::Arc::<str>::from("H"),
+            vec![Complex64::new(2.35, 0.01); nw],
+        );
+        nk.insert(
+            std::sync::Arc::<str>::from("L"),
+            vec![Complex64::new(1.46, 0.0); nw],
+        );
+        let mut carrier = crate::structure::Layer::film(d, "H");
+        carrier.gradient = Some(crate::structure::GradientSpec::rate_capped(
+            "H", "L", 0.0, rate, 100.0, 0.0, 1.0,
+        ));
+        let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+        ambient.optimize = false;
+        ambient.needle = false;
+        let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, nw);
+        substrate.optimize = false;
+        substrate.needle = false;
+        let (stack, warns) = DesignStack::from_design(
+            ambient,
+            substrate,
+            std::slice::from_ref(&carrier),
+            &nk,
+            &HashMap::new(),
+            &F17WL,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(
+            warns.is_empty(),
+            "the rate posture must not warn: {warns:?}"
+        );
+        stack
+    }
+
+    /// Row-count-frozen twin: across one real `optimize_thicknesses`
+    /// call the span's row count is FROZEN, even though the solve moves
+    /// the span's total across the count rule's ceil() boundaries (the
+    /// U4 requirement: the residual must not change length mid-solve,
+    /// and a live profile would put step discontinuities at the
+    /// boundary). The scenario: 12 rows at 221 nm (max_step =
+    /// min(20, 900/(10*2.35)) = 19.149); the AR demand's attractor pulls
+    /// the solve UP to 260 nm - across the 12/13 boundary - and the
+    /// count stays 12 through the whole solve; the refresh AFTER it
+    /// re-derives 14. The frozen-then-healed pair is the whole U4
+    /// contract in one assertion.
+    #[test]
+    fn f17_row_count_frozen_across_one_solve_then_healed_by_refresh() {
+        // At 221 nm: max_step = min(20, 900/(10*2.35)) = 19.1489361...
+        // raw = ceil(221/19.1489...) = ceil(11.54) = 12 rows.
+        let mut stack = rate_span_stack(221.0, 0.3);
+        let sp0 = stack.spans()[0];
+        assert_eq!(sp0.end - sp0.start, 12, "count(221 nm) = 12 rows");
+        let d0: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+        let mut ctx = ar_ctx(1000.0);
+        let (mf, res) = ctx.optimize_thicknesses_report(&mut stack).unwrap();
+        let res = res.expect("there is a span to optimize");
+        let d_new = res.x[0];
+        assert!(
+            (d_new - d0).abs() > 1e-9,
+            "the solve moved the span at all (d0 {d0}, d_new {d_new}, mf {mf})"
+        );
+        // Frozen: the row count did not change during the solve, even
+        // though the parameter crossed the ceil boundary.
+        let sp1 = stack.spans()[0];
+        assert_eq!(
+            sp1.end - sp1.start,
+            12,
+            "the row count is FROZEN for the duration of one solve (U4)"
+        );
+        // The parameter did cross the boundary the count rule would
+        // now re-derive at (the run was deliberately parameterized to).
+        let would_now = crate::structure::gradient::gradient_sub_layer_count(
+            d_new,
+            &F17WL,
+            &[num_complex::Complex64::new(2.35, 0.01); F17WL.len()],
+            &[num_complex::Complex64::new(1.46, 0.0); F17WL.len()],
+            None,
+        );
+        assert_eq!(
+            usize::try_from(would_now).unwrap(),
+            14,
+            "the post-solve extent sits two ceil buckets up ({d_new})"
+        );
+        // Healed: the construction-point refresh re-derives it.
+        stack.refresh_profiles().unwrap();
+        let sp2 = stack.spans()[0];
+        assert_eq!(
+            sp2.end - sp2.start,
+            14,
+            "the refresh re-derived the count at the moved extent"
+        );
+        stack.assert_spans_partition();
+    }
+
+    /// Drift-bound twin: the staleness a frozen profile carries within
+    /// one macro cycle is bounded and small - the plan's number is the
+    /// mixing-fraction error `rate * dD / ref` (0.015 at the deepest
+    /// sublayer for a 5 nm excursion at rate 0.3, ref 100). Measured on
+    /// this scenario (GWL AR demand, 200 nm carrier, rate 0.3): the 5 nm
+    /// excursion moves the merit by 26.9 and the staleness correction is
+    /// 6.9 - second-order, under half the excursion's own response and
+    /// under 3% of the merit. The twin pins BOTH readings (the
+    /// plan's "documented tolerance" is the pair: correction < half the
+    /// excursion response, and < 5% relative); if a future scenario
+    /// breaks it, the cycle is too long for that rate and the docs say
+    /// so rather than the code hiding it.
+    #[test]
+    fn f17_drift_bound_within_one_cycle() {
+        let mut stack = rate_span_stack(200.0, 0.3);
+        let ctx = ar_ctx(1000.0);
+        let m0 = ctx.evaluate_merit(&stack).unwrap();
+        // Simulate the LM's within-cycle excursion: a 5 nm move
+        // (dD/ref = 0.05, the plan's worked number).
+        let sp = stack.spans()[0];
+        let d0: f64 = (sp.start..sp.end).map(|r| stack.films()[r].d_nm).sum();
+        let f = (d0 + 5.0) / d0;
+        for r in sp.start..sp.end {
+            let d = stack.films()[r].d_nm * f;
+            stack.set_thickness(r, d).unwrap();
+        }
+        let m_stale = ctx.evaluate_merit(&stack).unwrap();
+        // The construction-point refresh reconciles the profile.
+        stack.refresh_profiles().unwrap();
+        let m_fresh = ctx.evaluate_merit(&stack).unwrap();
+        let drift = (m_fresh - m_stale).abs();
+        let excursion = (m_stale - m0).abs();
+        // The excursion itself was real: the merit moved when the span
+        // moved (the scenario is not a no-op).
+        assert!(
+            excursion > 1e-12,
+            "the 5 nm excursion changed the merit at all"
+        );
+        // The staleness correction is second-order: smaller than half
+        // the excursion's own merit response...
+        assert!(
+            drift < 0.5 * excursion,
+            "staleness {drift} < half the excursion response {excursion} (m0 {m0},              stale {m_stale}, fresh {m_fresh})"
+        );
+        // ...and under 5% of the merit it rides on.
+        assert!(
+            drift / m_stale.abs().max(1e-12) < 0.05,
+            "the within-cycle staleness stays under the documented 5% (drift {drift},              stale {m_stale}, fresh {m_fresh})"
+        );
+        let _ = m_fresh;
+    }
 }

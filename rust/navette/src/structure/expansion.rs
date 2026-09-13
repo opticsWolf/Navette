@@ -125,39 +125,42 @@ pub fn expand(
     groups: &HashMap<String, Group>,
     opts: ExpandOptions,
 ) -> Result<(SolverArrays, Vec<Span>), String> {
+    expand_with_recipe_inputs(seq, provider, wavelengths, groups, opts)
+        .map(|(sa, spans, _, _)| (sa, spans))
+}
+
+/// F1.7: `expand` plus the per-entry emission inputs the design path's
+/// recipe capture needs (B2): the phase-1 bulk nk vectors and the owner
+/// resolution. The emission itself is byte-identical to `expand` (one
+/// shared body); the extra returns are pure copies of what `expand`
+/// already computed internally.
+pub fn expand_with_recipe_inputs(
+    seq: &[(Layer, bool)],
+    provider: &dyn MaterialProvider,
+    wavelengths: &[f64],
+    groups: &HashMap<String, Group>,
+    opts: ExpandOptions,
+) -> Result<
+    (
+        SolverArrays,
+        Vec<Span>,
+        Vec<Vec<Complex64>>,
+        Vec<Option<usize>>,
+    ),
+    String,
+> {
     if seq.is_empty() {
         return Err(
             "_LayerExpander.expand: No layers to expand. Empty layer sequence provided."
                 .to_string(),
         );
     }
-    let default_group = Group::new("_default_");
-    let group_of = |material: &str| groups.get(material).unwrap_or(&default_group);
-
     // ---- Phase 1: deterministic bulk resolution (no RNG). ----
-    let mut bulk_nk: Vec<Vec<Complex64>> = Vec::with_capacity(seq.len());
-    let mut bulk_t: Vec<f64> = Vec::with_capacity(seq.len());
-    let mut owner_of: Vec<Option<usize>> = Vec::with_capacity(seq.len());
-    for (k, (layer, inv)) in seq.iter().enumerate() {
-        let group = group_of(layer.material.as_str());
-        let base = provider.nk(layer.material.as_str(), wavelengths)?;
-        let scaled = if group.n_factor != 1.0 || group.k_factor != 1.0 {
-            base.iter()
-                .map(|z| Complex64::new(z.re * group.n_factor, z.im * group.k_factor))
-                .collect()
-        } else {
-            base
-        };
-        bulk_nk.push(scaled);
-        bulk_t.push(layer.thickness * group.thick_factor + group.thick_summand);
-        owner_of.push(if *inv && k > 0 && seq[k - 1].1 {
-            Some(k - 1)
-        } else if !inv && k > 0 {
-            Some(k)
-        } else {
-            None
-        });
-    }
+    // F1.7: extracted (with its own group_of) so `expand_with_recipe_inputs`
+    // (the design path's recipe capture) runs the identical precompute -
+    // one source, not two copies of the loop.
+    let (bulk_nk, bulk_t, owner_of) =
+        precompute_emission_inputs(seq, provider, wavelengths, groups)?;
 
     // ---- Phase 2: emission in traversal order (RNG draws here). ----
     //
@@ -203,7 +206,46 @@ pub fn expand(
         rough_vals: em.col_r_val,
     };
     debug_assert_eq!(sa.indices.len(), n_rows * wavelengths.len());
-    Ok((sa, em.spans))
+    Ok((sa, em.spans, bulk_nk, owner_of))
+}
+
+/// The deterministic phase-1 precompute shared by `expand` and the
+/// design path's recipe capture (F1.7): per-entry provider-resolved,
+/// group-scaled spectra; the emitted totals; and the owner resolution
+/// (pure code motion from `expand`'s former inline loop - same reads,
+/// same order, same arithmetic).
+fn precompute_emission_inputs(
+    seq: &[(Layer, bool)],
+    provider: &dyn MaterialProvider,
+    wavelengths: &[f64],
+    groups: &HashMap<String, Group>,
+) -> Result<(Vec<Vec<Complex64>>, Vec<f64>, Vec<Option<usize>>), String> {
+    let default_group = Group::new("_default_");
+    let group_of = |material: &str| groups.get(material).unwrap_or(&default_group);
+    let mut bulk_nk: Vec<Vec<Complex64>> = Vec::with_capacity(seq.len());
+    let mut bulk_t: Vec<f64> = Vec::with_capacity(seq.len());
+    let mut owner_of: Vec<Option<usize>> = Vec::with_capacity(seq.len());
+    for (k, (layer, inv)) in seq.iter().enumerate() {
+        let group = group_of(layer.material.as_str());
+        let base = provider.nk(layer.material.as_str(), wavelengths)?;
+        let scaled = if group.n_factor != 1.0 || group.k_factor != 1.0 {
+            base.iter()
+                .map(|z| Complex64::new(z.re * group.n_factor, z.im * group.k_factor))
+                .collect()
+        } else {
+            base
+        };
+        bulk_nk.push(scaled);
+        bulk_t.push(layer.thickness * group.thick_factor + group.thick_summand);
+        owner_of.push(if *inv && k > 0 && seq[k - 1].1 {
+            Some(k - 1)
+        } else if !inv && k > 0 {
+            Some(k)
+        } else {
+            None
+        });
+    }
+    Ok((bulk_nk, bulk_t, owner_of))
 }
 
 /// Mutable per-`expand` emission state: exactly the accumulators one
@@ -603,6 +645,91 @@ fn perturb_nk(nk: &mut [Complex64], group: &Group, rng: &mut dyn RngCore) {
             z.im += dk_abs + dk_rel * z.im;
         }
     }
+}
+
+/// F1.7: the standalone re-emission of ONE carrier entry - the same
+/// `emit_entry` construction runs, into a fresh `Emission`, so refresh
+/// and construction cannot be two different functions in disguise (B2).
+/// This is the whole reason the F0.1 extraction exists.
+///
+/// `total` is the span's current slice-inclusive physical extent (the
+/// sum of the span's rows, which the interface carve draws from - B1).
+/// The emitted rows sum to it exactly on the gradient branch (the last
+/// sublayer absorbs the remainder) and to float precision on the legacy
+/// branch's uniform split - N7's convention, unchanged.
+///
+/// `owner_self` mirrors the design path's only reachable owner shape:
+/// the entry carrying its own interface flag. `prev_eff_nk` is the
+/// PREVIOUS entry's terminal spectrum - the slice-mix operand - as
+/// captured at construction (under `apply_errors = false` this is the
+/// previous entry's phase-1 nk; B3 keeps recipes deterministic, so the
+/// capture is exact).
+#[allow(clippy::too_many_arguments)]
+pub struct EntryBlock {
+    pub(crate) thicknesses: Vec<f64>,
+    /// One nk vector per emitted row (len == wavelengths).
+    pub(crate) nk: Vec<Vec<Complex64>>,
+    pub(crate) coherent: Vec<bool>,
+    pub(crate) rough_vals: Vec<f64>,
+    pub(crate) rough_types: Vec<i32>,
+    /// The entry's span record in LOCAL coordinates (start 0, logical 0);
+    /// the caller re-bases it onto the stack.
+    pub(crate) span: Span,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn emit_standalone(
+    layer: &crate::structure::layer::Layer,
+    groups: &HashMap<String, Group>,
+    bulk_nk: &[Complex64],
+    total: f64,
+    owner_self: bool,
+    prev_eff_nk: Option<Vec<Complex64>>,
+    opts: ExpandOptions,
+    provider: &dyn MaterialProvider,
+    wavelengths: &[f64],
+) -> Result<EntryBlock, String> {
+    let mut em = Emission::with_capacity(1);
+    let seq = [(layer.clone(), false)];
+    // errors off (B3 refuses the on-recipe upstream) => nothing draws;
+    // the seeded(0) RNG is exactly what `expand` itself uses unused.
+    let mut rng = AnyRng::Seeded(Box::new(rand::rngs::StdRng::seed_from_u64(0)));
+    let mut prev = prev_eff_nk;
+    emit_entry(
+        &mut em,
+        &seq,
+        0,
+        groups,
+        bulk_nk,
+        total,
+        owner_self.then_some(0),
+        opts,
+        &mut rng,
+        &mut prev,
+        provider,
+        wavelengths,
+    )?;
+    debug_assert_eq!(em.spans.len(), 1, "one entry emits one span");
+    let n_rows = em.col_thick.len();
+    let nw = wavelengths.len();
+    debug_assert_eq!(em.col_nk.len(), n_rows * nw, "flat nk layout");
+    let nk = (0..n_rows)
+        .map(|r| em.col_nk[r * nw..(r + 1) * nw].to_vec())
+        .collect();
+    Ok(EntryBlock {
+        thicknesses: em.col_thick,
+        nk,
+        coherent: em.col_coh,
+        rough_vals: em.col_r_val,
+        rough_types: em.col_r_type,
+        span: Span {
+            start: 0,
+            end: n_rows,
+            logical: 0,
+            slice: em.spans[0].slice,
+            bulk_start: em.spans[0].bulk_start,
+        },
+    })
 }
 
 /// Scalar (abs, rel) draws for one channel in legacy order.

@@ -72,3 +72,4 @@ def test_flat_stacks_stay_silent():
     warnings.simplefilter("error")
     st, _ = stack_from_layers([(TIO2, 50.0)], WL, {}, names=["TiO2"])
   assert len(films(st)) == 1
+
