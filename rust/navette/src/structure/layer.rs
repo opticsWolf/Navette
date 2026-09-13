@@ -400,9 +400,15 @@ impl Serialize for Layer {
     /// absence of the key means `Fixed` on read, so a layer without the
     /// mode serializes byte-identically to every pre-F1.3 build (the
     /// same only-when-present ethic F1.4 applies to `gradient`).
+    /// F1.4: `gradient` rides the same way, only when `Some` - a stack
+    /// with no gradient serializes byte-identically at v1 and v2 apart
+    /// from the version tag (the plan's only-when-Some decision).
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let rate_capped = !matches!(self.inh_mode, InhMode::Fixed);
-        let mut m = s.serialize_map(Some(13 + usize::from(rate_capped)))?;
+        let has_gradient = self.gradient.is_some();
+        let mut m = s.serialize_map(Some(
+            13 + usize::from(rate_capped) + usize::from(has_gradient),
+        ))?;
         m.serialize_entry("schema_version", &SCHEMA_VERSION)?;
         m.serialize_entry("thickness", &self.thickness)?;
         m.serialize_entry("material_name", &self.material)?;
@@ -416,6 +422,9 @@ impl Serialize for Layer {
         m.serialize_entry("optimize", &self.optimize)?;
         m.serialize_entry("needle", &self.needle)?;
         m.serialize_entry("layer_type", &self.layer_type)?;
+        if let Some(g) = &self.gradient {
+            m.serialize_entry("gradient", g)?;
+        }
         if rate_capped {
             m.serialize_entry("inh_mode", &self.inh_mode)?;
         }
@@ -476,10 +485,16 @@ impl<'de> Deserialize<'de> for Layer {
                     ));
                 }
             },
-            // F1.4 moves `gradient` into the state map (schema v2); until
-            // then the state round-trip holds a plain layer by
-            // construction (no user-constructible gradient exists yet).
-            gradient: None,
+            // F1.4 (schema v2): the state carries `gradient` only when
+            // the layer has one; absence means a plain layer. A v1 state
+            // (no key at all) reads identically - the range gate lets it
+            // through and the field reconstructs empty.
+            gradient: match get("gradient") {
+                Value::Null => None,
+                v => Some(serde_json::from_value(v).map_err(|e| {
+                    serde::de::Error::custom(format!("Layer: bad 'gradient': {e}"))
+                })?),
+            },
             // F1.3, additive: absent key = `Fixed` (every pre-F1.3
             // state reads unchanged); present = the tagged mode.
             inh_mode: match get("inh_mode") {
@@ -561,7 +576,9 @@ mod tests {
         );
         assert_eq!(v["rough_type"], json!(2));
         assert_eq!(v["layer_type"], json!(1));
-        assert_eq!(v["schema_version"], json!(1));
+        // F1.4: the writer tags at the current version; a plain layer's
+        // key set is UNCHANGED from the v1 list (only-when-Some).
+        assert_eq!(v["schema_version"], json!(2));
         // Unknown keys ignored; version enforced.
         let mut with_bogus = v.clone();
         with_bogus["bogus"] = json!(1);
@@ -845,5 +862,69 @@ mod tests {
         assert!(v["inh_mode"]["RateCapped"]["rate"] == serde_json::json!(0.05));
         let back: Layer = serde_json::from_value(v).unwrap();
         assert_eq!(back, capped);
+    }
+
+    /// F1.4: the state carries `gradient` only when the layer has one
+    /// (the same additive-key policy as `inh_mode`), a v1-shaped state
+    /// (no key at all, version tag 1) reads as a plain layer under the
+    /// range gate, and the nested `GradientSpec` key set is pinned -
+    /// a nested object would otherwise have weaker protection than
+    /// every top-level key.
+    #[test]
+    fn gradient_state_is_additive_v1_states_still_read() {
+        use crate::structure::gradient::GradientSpec;
+
+        // A plain layer: no gradient key, byte-identical to the v1 set.
+        let plain = Layer::film(50.0, "TiO2");
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(!v.as_object().unwrap().contains_key("gradient"));
+
+        // A v1-shaped state (tag 1, no gradient key) still reads.
+        let mut v1 = v.clone();
+        v1["schema_version"] = json!(1);
+        let back: Layer = serde_json::from_value(v1).unwrap();
+        assert_eq!(back, plain);
+        assert!(back.gradient.is_none());
+
+        // A gradient layer: gains exactly the one key and round-trips.
+        let mut graded = Layer::film(50.0, "TiO2");
+        graded.gradient = Some(GradientSpec::fixed_span("TiO2", "glass", 0.0, 1.0));
+        let v = serde_json::to_value(&graded).unwrap();
+        let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys.iter().filter(|k| k.as_str() != "gradient").count(),
+            13,
+            "the v1 base set rides unchanged"
+        );
+        let back: Layer = serde_json::from_value(v).unwrap();
+        assert_eq!(back, graded);
+
+        // Both additive keys together: base + gradient + inh_mode.
+        graded.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let v = serde_json::to_value(&graded).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 15);
+        let back: Layer = serde_json::from_value(v).unwrap();
+        assert_eq!(back, graded);
+
+        // The nested key set (the derive's field names, pinned).
+        let gs = serde_json::to_value(GradientSpec::fixed_span("TiO2", "glass", 0.0, 1.0)).unwrap();
+        let mut gk: Vec<_> = gs.as_object().unwrap().keys().cloned().collect();
+        gk.sort();
+        assert_eq!(
+            gk,
+            [
+                "ema",
+                "material_a",
+                "material_b",
+                "mode",
+                "shape",
+                "sublayers"
+            ]
+        );
     }
 }

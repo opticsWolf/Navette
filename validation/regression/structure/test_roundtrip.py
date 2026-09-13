@@ -108,37 +108,60 @@ def test_newer_build_state_refused():
 
 
 def test_stale_schema_versions_refused():
-  from navette.structure.types import SCHEMA_VERSION
+  """F1.4: the gate is a readable RANGE, and the refusals name direction.
+
+  The pre-F1.4 test asserted SCHEMA_VERSION - 1 is refused; after the
+  bump that is v1, which the range MUST accept (the committed v1
+  fixture is the oracle). Inverted deliberately: v1 accepted, v0
+  refused as stale, a newer-build version refused with the newer-build
+  reason, an untagged state still refused as malformed.
+  """
+  from navette.structure.types import MIN_READABLE_SCHEMA_VERSION, SCHEMA_VERSION
   layer_state = _full_layer().get_state()
   assert layer_state["schema_version"] == SCHEMA_VERSION
+  # The readable past: a v1-tagged state (this test's pre-F1.4
+  # 'SCHEMA_VERSION - 1' case) loads.
+  older = dict(layer_state)
+  older["schema_version"] = MIN_READABLE_SCHEMA_VERSION
+  assert Layer.from_state(older).get_state() == layer_state
   untagged = dict(layer_state)
-  del untagged["schema_version"]  # no past: untagged is malformed
+  del untagged["schema_version"]  # no past before v1: untagged is malformed
   with pytest.raises(ValueError):
     Layer.from_state(untagged)
+  stale = dict(layer_state)
+  stale["schema_version"] = MIN_READABLE_SCHEMA_VERSION - 1
+  with pytest.raises(ValueError, match="stale"):
+    Layer.from_state(stale)
   arch = Navette_Architect(materials=MATS)
   arch.add_structure(Navette_Structure([Layer(10.0, "glass")], {}, None))
-  stale = arch.get_state()
-  stale["schema_version"] = SCHEMA_VERSION - 1
-  with pytest.raises(ValueError):
-    Navette_Architect.from_state(stale, materials=MATS)
   future = arch.get_state()
   future["schema_version"] = SCHEMA_VERSION + 999
-  with pytest.raises(ValueError):
+  with pytest.raises(ValueError, match="newer build"):
     Navette_Architect.from_state(future, materials=MATS)
 
 
 # Fingerprint: the exact serialized key set per entity, at the version it
 # was recorded at. If this fails, the key set changed — classify FIRST:
-# removed/renamed key or changed meaning  -> breaking: bump SCHEMA_VERSION,
-#   then update the fingerprint below;
-# purely additive key (unknown keys are ignored by every from_state, so old
-#   readers stay safe)                    -> update the fingerprint only.
+# any key-set change                            -> bump SCHEMA_VERSION,
+#   re-record the fingerprint below (F1.4 rewrote this policy: the
+#   newer-writer hazard means even additive keys bump the version - the
+#   readable PAST widens via MIN_READABLE_SCHEMA_VERSION instead);
+# a key older writers leave implicit with a reconstruct-on-read default
+#   (F1.3's inh_mode, F1.4's gradient)           -> the key list here
+#   grows a conditional entry, and the plain key set stays byte-
+#   identical to every earlier release.
 FINGERPRINT = {
-  "version": 1,
+  "version": 2,
   "Layer": ["coherent", "inh_delta", "inhomogen", "interface",
               "interface_thickness", "layer_type", "material_name",
               "needle", "optimize", "rough_type", "roughness",
               "schema_version", "thickness"],
+  # F1.4: `gradient` rides only when Some, so a no-gradient stack's v2
+  # state is byte-identical to its v1 state apart from the tag. The
+  # nested key set gets its own entry - a nested object would otherwise
+  # have weaker protection than every top-level key.
+  "GradientSpec": ["ema", "material_a", "material_b", "mode", "shape",
+                    "sublayers"],
   "Group": ["group_name", "inh_delta_summand", "inh_delta_error_params",
               "inh_delta_error_type", "interface_error_params",
               "interface_error_type", "interface_summand", "k_error_params",
@@ -170,6 +193,23 @@ def test_state_fingerprint():
   assert back.inh_mode == {"RateCapped": {"rate": 0.05,
                                           "ref_thickness": 100.0,
                                           "cap": 0.3}}
+  # F1.4, additive key: a gradient layer's state gains `gradient`
+  # (only when Some - the plain list above stays byte-identical to
+  # every pre-F1.4 build). The layer is built through `from_state`
+  # with a hand-written v2 dict: the constructor surface for gradient
+  # is F1.5, but the STATE surface exists now and gets pinned now.
+  graded_state = _full_layer().get_state()
+  graded_state["gradient"] = {
+    "material_a": "TiO2", "material_b": "glass",
+    "ema": {"Bruggeman": {"max_iter": 100, "tol": 1e-9}},
+    "mode": {"FixedSpan": {"f_start": 0.0, "f_end": 1.0}},
+    "shape": "Linear", "sublayers": None,
+  }
+  graded = Layer.from_state(graded_state)
+  gs = graded.get_state()
+  assert sorted(gs) == sorted(FINGERPRINT["Layer"] + ["gradient"])
+  assert sorted(gs["gradient"]) == sorted(FINGERPRINT["GradientSpec"])
+  assert Layer.from_state(gs).get_state() == gs  # v2 -> v2 preserves it
   st = Navette_Structure([Layer(10.0, "glass")], {"glass": Group("glass")}, MATS)
   assert sorted(st.get_state()) == sorted(FINGERPRINT["Navette_Structure"])
   arch = Navette_Architect(materials=MATS)

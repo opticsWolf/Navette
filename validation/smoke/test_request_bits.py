@@ -230,7 +230,13 @@ def test_needle_bits_are_dense_and_unique():
 # --------------------------------------------------------------------------
 
 def _accepted_version(gate, lo=0, hi=8):
-    """The one version a native gate accepts, discovered by probing it."""
+    """The one version a native gate accepts, discovered by probing it.
+
+    Point gates only. F1.4 widens the STATE gate to a readable range,
+    which fails the single-version assertion by construction; use
+    `_accepted_range` for that gate (F2.4's program gate moves over
+    when its bump lands).
+    """
     ok = []
     for v in range(lo, hi + 1):
         try:
@@ -242,19 +248,50 @@ def _accepted_version(gate, lo=0, hi=8):
     return ok[0]
 
 
+def _accepted_range(gate, lo=0, hi=8):
+    """The readable range a native gate accepts, discovered by probing.
+
+    F1.4 (written here, reused at F2.4): a range gate's contract is the
+    PAIR (oldest readable, current writer), so the probe returns the
+    (lo, hi) endpoints and asserts the accepted set is CONTIGUOUS - a
+    hole in the middle would mean a version is refused while both its
+    neighbors are accepted, which no schema policy justifies.
+    """
+    ok = []
+    for v in range(lo, hi + 1):
+        try:
+            gate(v)
+        except Exception:
+            continue
+        ok.append(v)
+    assert ok, "gate accepts nothing at all"
+    assert ok == list(range(ok[0], ok[-1] + 1)), \
+        f"gate accepts a non-contiguous set {ok} - a hole in the middle"
+    return (ok[0], ok[-1])
+
+
 def test_state_schema_version_matches_the_native_gate():
     """``structure.types.SCHEMA_VERSION`` vs the version Rust actually accepts.
 
     ``check_schema_version`` is a thin shim over ``structure/version.rs``, so
     probing it reads the Rust constant at runtime -- no source parsing, and it
     works from an installed wheel.
-    """
-    from navette.structure.types import SCHEMA_VERSION, check_schema_version
 
-    native = _accepted_version(
+    F1.4: the gate is a readable RANGE, so the probe asserts the pair
+    (MIN_READABLE_SCHEMA_VERSION, SCHEMA_VERSION) and both Python
+    constants agree with the endpoints.
+    """
+    from navette.structure.types import (
+        MIN_READABLE_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+        check_schema_version,
+    )
+
+    lo, hi = _accepted_range(
         lambda v: check_schema_version({"schema_version": v}, "sync-probe"))
-    assert SCHEMA_VERSION == native, (
-        f"python SCHEMA_VERSION={SCHEMA_VERSION}, rust accepts {native}")
+    assert (lo, hi) == (MIN_READABLE_SCHEMA_VERSION, SCHEMA_VERSION), (
+        f"python range=({MIN_READABLE_SCHEMA_VERSION}, {SCHEMA_VERSION}), "
+        f"rust accepts ({lo}, {hi})")
 
 
 def test_state_schema_gate_refuses_an_untagged_state():

@@ -215,6 +215,18 @@ TableMaterialParams = _Params
 TabulatedData = _TabData
 
 
+def _state_version_ok(v: Any) -> bool:
+    """F1.4's readable range, shared by both state wrappers.
+
+    The native gate (structure/version.rs) accepts
+    [MIN_READABLE_SCHEMA_VERSION, SCHEMA_VERSION]; these wrappers
+    pre-check the same range so a v1 state dict is not bounced before
+    the native reader gets to accept it.
+    """
+    from navette.structure.types import MIN_READABLE_SCHEMA_VERSION
+    return isinstance(v, int) and MIN_READABLE_SCHEMA_VERSION <= v <= SCHEMA_VERSION
+
+
 class StructureState(_NativeModel):
     """Serializable stack (version gate lives natively in load paths)."""
 
@@ -223,10 +235,10 @@ class StructureState(_NativeModel):
     def __init__(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
         merged = dict(data or {})
         merged.update(kwargs)
-        if merged.get("schema_version") != SCHEMA_VERSION:
+        if not _state_version_ok(merged.get("schema_version")):
             raise ValueError(
                 f"StructureState schema_version {merged.get('schema_version')} "
-                f"unsupported (code reads {SCHEMA_VERSION}).")
+                f"unsupported (code reads up to {SCHEMA_VERSION}).")
         self._data = dict(merged)
 
 
@@ -238,8 +250,8 @@ class ArchitectState(_NativeModel):
     def __init__(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
         merged = dict(data or {})
         merged.update(kwargs)
-        if merged.get("schema_version") != SCHEMA_VERSION:
+        if not _state_version_ok(merged.get("schema_version")):
             raise ValueError(
                 f"ArchitectState schema_version {merged.get('schema_version')} "
-                f"unsupported (code reads {SCHEMA_VERSION}).")
+                f"unsupported (code reads up to {SCHEMA_VERSION}).")
         self._data = dict(merged)

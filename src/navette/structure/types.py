@@ -109,14 +109,29 @@ class ErrorMask(IntEnum):
     INTERFACE = 5
 
 # State-schema version (structure get_state dicts + config states).
-# v1 = the current baseline. There is no past: untagged states are
-# malformed, not legacy. Bump on any breaking change (removed/renamed
-# keys, changed meaning of an existing key); purely additive keys are
-# safe without a bump (readers ignore unknown keys) — the fingerprint
-# test in validation/regression/structure/test_roundtrip.py enforces
-# this decision on every key-set change. Readers refuse anything but
-# the current version (no silent misreads).
-SCHEMA_VERSION = 1
+# v2 = the current baseline; MIN_READABLE_SCHEMA_VERSION = 1 (F1.4).
+# There is no past before v1: untagged states are malformed, not legacy.
+#
+# The gate is a RANGE [MIN_READABLE, SCHEMA_VERSION], not a point, and
+# the two refusals name their direction:
+#   - below the range = STALE (written by an older build that knew
+#     less): refuse;
+#   - above the range = NEWER BUILD (written by a build that knows
+#     more): refuse, and say a newer build wrote it - the remedy is
+#     upgrading, not hand-editing the file.
+#
+# Bump policy (rewritten at F1.4; the pre-F1.4 text said additive keys
+# were safe without a bump - the newer-writer hazard says otherwise):
+# ANY key-set change bumps SCHEMA_VERSION and re-records the fingerprint
+# test in validation/regression/structure/test_roundtrip.py. An added
+# key with a reconstruct-on-read default widens the readable past
+# (older states stay truthful), so MIN_READABLE stays put; a removed,
+# renamed or re-meaninged key makes older states unreadable and moves
+# MIN_READABLE up to the first version that had the new shape. Readers
+# refuse everything outside the range (no silent misreads), and every
+# state file written by this build carries SCHEMA_VERSION.
+SCHEMA_VERSION = 2
+MIN_READABLE_SCHEMA_VERSION = 1
 
 
 def check_schema_version(state, what: str) -> None:

@@ -4,6 +4,67 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
+## [0.6.41] - F1.4: schema v2 and a readable version range
+
+Every state file on disk reads through this gate; getting it wrong is a
+data-loss-shaped bug, so the item is P0 and landed before the Python
+surface.
+
+### Added
+
+- **A readable RANGE, not a point** (F1.4's whole point): the state gate
+  now accepts `[MIN_READABLE_SCHEMA_VERSION, SCHEMA_VERSION]` =
+  `[1, 2]` and refuses outside it with a reason that names direction -
+  below the range is *stale* ("refusing a stale state"), above the
+  range is *newer* ("refusing a state written by a newer build -
+  upgrade navette to read it"). Rationale: v1 states written by
+  pre-F1.4 builds are still truthfully readable (the v2 keys ride
+  additively and reconstruct on read), so refusing them would discard
+  user data for no misread; the top of the range stays closed because a
+  newer writer's keys/meanings cannot be known here.
+- **`MIN_READABLE_SCHEMA_VERSION`** at both halves (Rust `version.rs`,
+  Python `structure/types.py`) and in the sync probe.
+- **`_accepted_range`** in `test_request_bits.py`: probes the gate and
+  asserts the pair (oldest readable, current writer) plus CONTIGUITY
+  (a hole - a version refused while both neighbors are accepted -
+  would mean a refusal no schema policy justifies). The state test
+  asserts `(1, 2)`. The old single-version helper stays for the
+  program gate, which is still a point until F2.4.
+
+### Changed
+
+- **`SCHEMA_VERSION` = 2 at every half in the same commit**: the Rust
+  constant, the Python constant, and BOTH policy comments (the
+  pre-F1.4 text said additive keys were safe without a bump; F1.4's
+  newer-writer hazard justifies bumping anyway, and the rewritten
+  comments now say so - including the fingerprint test's own header).
+- **`gradient` rides the state additively, only when `Some`** (the
+  same ethic as F1.3's `inh_mode`): a stack with no gradient
+  serializes byte-identically at v1 and v2 apart from the version
+  tag. The nested `GradientSpec` key set has its own fingerprint
+  entry - a nested object would otherwise have weaker protection
+  than every top-level key.
+- **`Layer`'s hand-written serde** (no derives to hang defaults on -
+  the plan's N4 correction): the field is read with an explicit
+  `None` fallback matching the surrounding style, and the map length
+  became `13 + rate_capped + has_gradient` instead of a bare 13.
+- **The config-path state wrappers** (`StructureState` / `ArchitectState`
+  in `config/models.py`, the Python half A3 understated further)
+  pre-check the same range through one shared helper.
+
+### Inverted deliberately (the amendment's test list)
+
+- `test_stale_schema_versions_refused`: v1 now loads (the pre-F1.4
+  `SCHEMA_VERSION - 1` case), v0 refuses as stale, v+999 refuses with
+  the newer-build reason, untagged still refuses as malformed.
+- The v1 fixture (committed at `ab7e27b`, BEFORE the gate changed -
+  R5) loads and expands bit-identically to its live-built equivalent;
+  the loaded state re-tags itself at the current version on write, so
+  the oracle is stable across the bump.
+- A hand-built v2 gradient layer state round-trips v2 -> v2 through
+  `from_state` (the constructor surface for gradient is F1.5, but the
+  STATE surface exists at F1.4 and is pinned at F1.4).
+
 ## [0.6.40] - F1.7: profile refresh for the rate modes, at construction only
 
 A rate-type profile is a function of absolute thickness, so scaling the

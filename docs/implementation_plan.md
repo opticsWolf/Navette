@@ -2001,6 +2001,44 @@ symptom showed up. The refresh-count twin is the guard against precisely that.
 
 ### F1.4 — schema v2 and a readable version range (0.6.41)
 
+**DONE (0.6.41, see the feature commit).** Corrections from implementation:
+
+- **R5 was honored with a third commit.** The v1 fixture plus both
+  oracle tests (loads-and-expands, newer-build-refused) were committed
+  at `ab7e27b` while the tree was still 0.6.40 and the gate was still a
+  point - the acceptance oracle predates the change that must satisfy
+  it. The fixture carries a graded layer, a plain layer, an ACTIVE
+  RateCapped layer (F1.3's additive key riding a v1 state) and a
+  group, and the oracle compares dict equality plus bitwise solver
+  inputs. One subtlety makes the oracle stable across the bump: the
+  version tag is checked, not stored, so a loaded state re-tags at the
+  current version on write and the fixture-loaded stack equals the
+  live-built one at BOTH releases.
+- **A3's Python half was wider than A3 said.** Besides `types.py`, the
+  config-path wrappers `StructureState`/`ArchitectState`
+  (`config/models.py`) pre-check the same constant as a POINT gate and
+  would have bounced a v1 dict before the native reader ever saw it;
+  both now go through one shared `_state_version_ok` range helper.
+- **The gradient key is pinned at F1.4 without the F1.5 surface.** The
+  plan's "two key lists: with and without a gradient" is asserted
+  through `Layer.from_state` with a hand-written v2 dict - the
+  constructor cannot set `gradient` until F1.5, but the state
+  deserializer reads it today, so the fingerprint's conditional entry
+  and the nested `GradientSpec` list start protecting the key NOW
+  rather than one release late.
+- **`_accepted_range` asserts contiguity as well as the pair.** A hole
+  (a version refused while both its neighbors are accepted) would mean
+  a refusal no schema policy justifies; the probe would catch a
+  half-written range or a misused exclusive bound. The plan's "asserts
+  `(1, 2)`" stands and is the returned pair.
+- **The plan's "N4 map length must move" landed as an arithmetic
+  sum** (`13 + rate_capped + has_gradient`) rather than `None` - the
+  exact length stays checkable, and serde_json's map serializer keeps
+  the explicit count honest.
+- **The old point-probe helper stays.** The program gate is still a
+  point until F2.4, so `_accepted_version` remains beside
+  `_accepted_range` with a docstring pointing at the successor; F2.4
+  reuses the range helper and retires the point one.
 The correction from §1.2 above. **Sequenced before the Python surface**
 because every state file on disk reads through this gate, and getting it
 wrong is a data-loss-shaped bug rather than a feature defect.
@@ -2601,7 +2639,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.38 | F1.3 | c3a20d6 | **B6**, B10 | done |
 | 0.6.39 | F1.6 | 86e4fed | **U2**, **B5** | done |
 | 0.6.40 | F1.7 | 57b4602 | **U3, U4**, **B2, B3**, B8 | done |
-| 0.6.41 | F1.4 | — | A3, R5, N4 | not started |
+| 0.6.41 | F1.4 | (hash pending) | A3, R5, N4 | done |
 | 0.6.42 | F1.5 | — | A5 (mirror), N9 | not started |
 | 0.6.43 | F2.1 | — | A7, R6 | not started |
 | 0.6.44 | F2.2 | — | A4, A8 | not started |
