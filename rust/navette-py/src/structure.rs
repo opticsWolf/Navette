@@ -221,6 +221,9 @@ impl PyLayer {
             optimize,
             needle,
             layer_type: ver(LayerType::try_from_i32(layer_type))?,
+            // F1.5 adds the Python-visible `gradient` surface; the native
+            // constructor carries None until that surface exists.
+            gradient: None,
         };
         gate_layer(py, &inner)?;
         Ok(Self { inner })

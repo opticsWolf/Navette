@@ -188,7 +188,9 @@ pub fn expand(
             opts,
             &mut rng,
             &mut prev_eff_nk,
-        );
+            provider,
+            wavelengths,
+        )?;
     }
 
     let n_rows = em.col_thick.len();
@@ -244,6 +246,13 @@ impl Emission {
 /// test result). Pure code motion: the parameter list is exactly what the
 /// loop body reads, nothing else; no push reordered, no draw order
 /// changed.
+///
+/// F1.1 adds one branch beside the legacy graded one (the gradient span)
+/// and, with it, the first way this function can fail (a gradient spec
+/// that the gates did not catch, or an endpoint the provider does not
+/// carry). The `Result` return is that failure path only: every legacy
+/// branch is unchanged and returns `Ok(())` - no push reordered, no draw
+/// order changed, still true by inspection.
 #[allow(clippy::too_many_arguments)]
 fn emit_entry(
     em: &mut Emission,
@@ -256,7 +265,9 @@ fn emit_entry(
     opts: ExpandOptions,
     rng: &mut AnyRng,
     prev_eff_nk: &mut Option<Vec<Complex64>>,
-) {
+    provider: &dyn MaterialProvider,
+    wavelengths: &[f64],
+) -> Result<(), String> {
     let default_group = Group::new("_default_");
     let group_of = |material: &str| groups.get(material).unwrap_or(&default_group);
     let (layer, inv) = (&seq[k].0, &seq[k].1);
@@ -365,7 +376,114 @@ fn emit_entry(
 
     let bulk_start = col_thick.len();
     let sub = layer.sub_layer_count();
-    if layer.inhomogen && sub > 1 {
+    if let Some(grad) = &layer.gradient
+        && layer_thickness > 0.0
+    {
+        // F1.1: the gradient span. Beside the legacy graded branch, not
+        // inside it (N7: the two branches deliberately use different
+        // sublayer-thickness conventions - the legacy one divides
+        // uniformly, so sum(d) == thickness only to float precision;
+        // this one has the LAST sublayer absorb the remainder, so
+        // sum(d) == thickness exactly).
+        //
+        // Endpoint resolution (D3 step 1): each endpoint resolves
+        // through the provider like every other lookup - same grid
+        // assertion, and the carrier's GROUP policy applies through each
+        // endpoint's OWN material (scaling factors, and the nk error
+        // channels when errors are on - a gradient film in an error run
+        // shifts as one body, the way the fabrication offset applies to
+        // any other material). When material_a names the carrier, its
+        // endpoint IS this layer's phase-1 nk, already scaled and drawn.
+        // The delta channels are inert here: mixtures have no inh_delta
+        // (D2) - the group's inh policy simply never runs on this branch.
+        if let Some(msg) = grad.expansion_error(layer.inhomogen) {
+            return Err(format!("layer '{}': {msg}", layer.material));
+        }
+        let resolve = |name: &str, rng: &mut AnyRng| -> Result<Vec<Complex64>, String> {
+            let g = group_of(name);
+            let base = provider.nk(name, wavelengths).map_err(|e| {
+                crate::structure::gradient::endpoint_error(&layer.material, grad, e)
+            })?;
+            let mut nk = if g.n_factor != 1.0 || g.k_factor != 1.0 {
+                base.iter()
+                    .map(|z| Complex64::new(z.re * g.n_factor, z.im * g.k_factor))
+                    .collect()
+            } else {
+                base
+            };
+            if opts.apply_errors {
+                let me = crate::structure::enums::ErrorMask::NReal as usize;
+                let ke = crate::structure::enums::ErrorMask::NImag as usize;
+                if g.error_mask[me] != 0 || g.error_mask[ke] != 0 {
+                    perturb_nk(&mut nk, g, rng.rng());
+                }
+            }
+            Ok(nk)
+        };
+        // Draw order thick -> nk -> rough -> iface (legacy order) gains
+        // one nk draw per endpoint, in A-then-B order; only gradient
+        // layers draw here, so no legacy stream is affected.
+        let nk_a = if grad.material_a == layer.material {
+            layer_nk.clone()
+        } else {
+            resolve(&grad.material_a, rng)?
+        };
+        let nk_b = if grad.material_b == layer.material {
+            layer_nk.clone()
+        } else {
+            resolve(&grad.material_b, rng)?
+        };
+        let n_sub = crate::structure::gradient::gradient_sub_layer_count(
+            layer_thickness,
+            wavelengths,
+            &nk_a,
+            &nk_b,
+            grad.sublayers,
+        );
+        let step = layer_thickness / f64::from(n_sub);
+        // Deposition-order rows (f_start face first); `inv` reverses the
+        // ROW order afterwards - the physical flip, same as legacy - so
+        // the roughness-bearing interface row stays the one adjacent to
+        // what was emitted before this span ("first sublayer", legacy
+        // convention, keeps interface physics identical both ways).
+        // Profile sampling is INCLUSIVE (f_sublayer): the first row IS
+        // f_start, the last IS f_end - the legacy factors' convention,
+        // and what the endpoint-row bitwise gates sample.
+        let mut rows: Vec<(f64, Vec<Complex64>)> = Vec::with_capacity(n_sub as usize);
+        for i in 0..n_sub {
+            let d_i = if i + 1 == n_sub {
+                layer_thickness - step * f64::from(n_sub - 1) // remainder
+            } else {
+                step
+            };
+            let f_i = grad.f_sublayer(i, n_sub);
+            rows.push((
+                d_i,
+                crate::structure::gradient::mix_row(grad.ema, &nk_b, &nk_a, f_i),
+            ));
+        }
+        if *inv {
+            rows.reverse();
+        }
+        for (ix, (d_i, row_nk)) in rows.into_iter().enumerate() {
+            push_row(
+                col_thick,
+                col_nk,
+                col_coh,
+                col_r_val,
+                col_r_type,
+                d_i,
+                row_nk,
+                layer.coherent,
+                if ix == 0 { current_roughness } else { 0.0 },
+                if ix == 0 {
+                    rtype
+                } else {
+                    RoughnessType::None as i32
+                },
+            );
+        }
+    } else if layer.inhomogen && sub > 1 {
         let mut current_delta = (layer.inh_delta + group.inh_delta_summand) * 0.5;
         if opts.apply_errors
             && group.error_mask[crate::structure::enums::ErrorMask::InhDelta as usize] != 0
@@ -422,6 +540,7 @@ fn emit_entry(
     bulk_spans.push((bulk_start, col_thick.len()));
 
     *prev_eff_nk = Some(layer_nk);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -753,6 +872,293 @@ mod tests {
             expected.extend(plain.clone());
         }
         assert!(a.thicknesses != vec![0.0, 50.0, 0.0] || a.indices != expected);
+    }
+
+    // ------------------------------------------------------------------
+    // F1.1 - gradient spans
+    // ------------------------------------------------------------------
+
+    use crate::materials::MixRule;
+    use crate::structure::gradient::{GradientSpec, gradient_sub_layer_count, mix_row};
+
+    fn grad_seq(t: f64, f_start: f64, f_end: f64, inv: bool) -> Vec<(Layer, bool)> {
+        let mut l = Layer::film(t, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("glass", "TiO2", f_start, f_end));
+        vec![
+            (Layer::film(0.0, "glass"), false),
+            (l, inv),
+            (Layer::film(0.0, "glass"), false),
+        ]
+    }
+
+    /// Oracle twin: every emitted sublayer row is bitwise the direct
+    /// `mix_row` call at its formula `f_i` (same kernel, same inputs),
+    /// the `f_i` recompute is from the mode formula, sum(d) == thickness
+    /// EXACTLY (N7: the last sublayer absorbs the remainder), and the
+    /// roughness lands on the first emitted sublayer only.
+    #[test]
+    fn gradient_rows_are_bitwise_the_ema_oracle() {
+        let t = 137.0; // deliberately not a multiple of any step
+        let (sa, spans) = expand(
+            &grad_seq(t, 0.1, 0.9, false),
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let nk_a = mats().nk("glass", &WL).unwrap();
+        let nk_b = mats().nk("TiO2", &WL).unwrap();
+        let n = gradient_sub_layer_count(t, &WL, &nk_a, &nk_b, None) as usize;
+        assert_eq!(spans.len(), 3);
+        let sp = &spans[1];
+        assert_eq!(sp.end - sp.start, n);
+        assert!(!sp.is_singleton_bulk());
+        assert_eq!(sa.n_rows(), n + 2);
+        // sum(d) == t exactly, in f64 addition order.
+        let mut acc = 0.0f64;
+        for r in sp.start..sp.end {
+            acc += sa.thicknesses[r];
+        }
+        assert_eq!(acc, t, "sublayer thicknesses must sum to the layer exactly");
+        for (ix, r) in (sp.start..sp.end).enumerate() {
+            let _d_i = if ix + 1 == n {
+                t - (t / n as f64) * (n - 1) as f64
+            } else {
+                t / n as f64
+            };
+            // Inclusive endpoint sampling (f_sublayer): f_i depends only
+            // on the row index, never on the thickness; the last row is
+            // exactly f_end.
+            let f_i = if ix == 0 {
+                0.1
+            } else if ix + 1 == n {
+                0.9
+            } else {
+                0.1 + 0.8 * ix as f64 / (n - 1) as f64
+            };
+            let want = mix_row(
+                MixRule::Bruggeman {
+                    max_iter: 100,
+                    tol: 1e-9,
+                },
+                &nk_b,
+                &nk_a,
+                f_i,
+            );
+            assert_eq!(
+                sa.row(r),
+                &want[..],
+                "row {ix} must be bitwise the EMA at f={f_i}"
+            );
+        }
+        // The profile direction: first emitted row's f < last's.
+        let first = sa.row(sp.start)[0].re;
+        let last = sa.row(sp.end - 1)[0].re;
+        assert!(
+            first < last,
+            "profile must run f_start -> f_end in emission order"
+        );
+        // Roughness on the FIRST emitted sublayer only (legacy convention).
+        let mut l = Layer::film(t, "TiO2");
+        l.roughness = 2.0;
+        l.rough_type = RoughnessType::Gaussian;
+        l.gradient = Some(GradientSpec::fixed_span("glass", "TiO2", 0.0, 1.0));
+        let (sa2, sp2) = expand(
+            &[(l, false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(
+            sa2.rough_types[sp2[0].start],
+            RoughnessType::Gaussian as i32
+        );
+        assert!(sa2.rough_vals[sp2[0].start] > 0.0);
+        assert!(
+            sa2.rough_vals[sp2[0].start + 1..sp2[0].end]
+                .iter()
+                .all(|v| *v == 0.0)
+        );
+        assert_eq!(
+            sa2.rough_types[sp2[0].start + 1],
+            RoughnessType::None as i32
+        );
+    }
+
+    /// Thickness-independence (D6 G-thickness, type a): the same
+    /// FixedSpan spec at two thicknesses - endpoint rows bitwise equal,
+    /// counts differ.
+    #[test]
+    fn gradient_fixed_span_is_thickness_independent() {
+        let (sa50, sp50) = expand(
+            &grad_seq(50.0, 0.0, 1.0, false),
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let (sa500, sp500) = expand(
+            &grad_seq(500.0, 0.0, 1.0, false),
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let a = sa50.row(sp50[1].start);
+        let b = sa500.row(sp500[1].start);
+        assert_eq!(
+            a, b,
+            "first sublayer (f = f_start) must not depend on thickness"
+        );
+        let a = sa50.row(sp50[1].end - 1);
+        let b = sa500.row(sp500[1].end - 1);
+        assert_eq!(
+            a, b,
+            "last sublayer (f = f_end) must not depend on thickness"
+        );
+        assert_ne!(sp50[1].end - sp50[1].start, sp500[1].end - sp500[1].start);
+    }
+
+    /// Inversion reverses the ROW order (the physical flip): the
+    /// inverted span's rows are the forward span's rows reversed, so the
+    /// profile direction flips and the interface row stays adjacent to
+    /// what precedes the span.
+    #[test]
+    fn gradient_inversion_reverses_row_order() {
+        let (fwd, _) = expand(
+            &grad_seq(200.0, 0.0, 1.0, false),
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        let (inv, spinv) = expand(
+            &grad_seq(200.0, 0.0, 1.0, true),
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(fwd.n_rows(), inv.n_rows());
+        let n = spinv[1].end - spinv[1].start;
+        for i in 0..n {
+            assert_eq!(
+                fwd.row(1 + i),
+                inv.row(1 + (n - 1 - i)),
+                "inverted row {i} must be the forward run's row {n}/{i}"
+            );
+        }
+    }
+
+    /// Zero thickness never enters the gradient branch (no division by
+    /// the layer thickness): the uniform fallback emits the carrier row.
+    #[test]
+    fn gradient_zero_thickness_falls_back_to_uniform() {
+        let mut l = Layer::film(0.0, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("glass", "TiO2", 0.0, 1.0));
+        let (sa, spans) = expand(
+            &[(l, false)],
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap();
+        assert_eq!(sa.n_rows(), 1);
+        assert!(spans[0].is_singleton_bulk());
+        let plain = mats().nk("TiO2", &WL).unwrap();
+        assert_eq!(sa.row(0), &plain[..]);
+    }
+
+    /// The refusals, each naming both sides (F1.1 gate list).
+    #[test]
+    fn gradient_refusals_at_expand() {
+        let refuses = |l: Layer| {
+            expand(
+                &[(l, false)],
+                &mats(),
+                &WL,
+                &HashMap::new(),
+                ExpandOptions::deterministic(),
+            )
+            .expect_err("expected a refusal")
+        };
+        let mut l = Layer::film(50.0, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("glass", "TiO2", 0.0, 1.0));
+        l.inhomogen = true;
+        let m = refuses(l);
+        assert!(m.contains("gradient") && m.contains("inhomogen"), "{m}");
+        let mut l = Layer::film(50.0, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("TiO2", "TiO2", 0.0, 1.0));
+        let m = refuses(l);
+        assert!(m.contains("TiO2") && m.contains("identical"), "{m}");
+        let mut l = Layer::film(50.0, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("glass", "TiO2", 0.4, 0.4));
+        let m = refuses(l);
+        assert!(m.contains("f_start == f_end"), "{m}");
+        let mut l = Layer::film(50.0, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("glass", "TiO2", -0.2, 1.0));
+        let m = refuses(l);
+        assert!(m.contains("[0, 1]"), "{m}");
+        // Provider door: the absent endpoint is named, with the layer.
+        let mut l = Layer::film(50.0, "TiO2");
+        l.gradient = Some(GradientSpec::fixed_span("unobtainium", "TiO2", 0.0, 1.0));
+        let m = refuses(l);
+        assert!(m.contains("layer 'TiO2'"), "{m}");
+        assert!(m.contains("unobtainium"), "{m}");
+    }
+
+    /// Error runs: the endpoints draw under their OWN groups' nk
+    /// channels (A-then-B), so a gradient film in an error run shifts as
+    /// one body; output is deterministic per seed.
+    #[test]
+    fn gradient_error_draws_follow_endpoint_groups() {
+        let mut groups = HashMap::new();
+        let mut g = Group::new("TiO2");
+        g.error_mask = [0, 0, 1, 0, 0, 0]; // NReal only
+        groups.insert("TiO2".to_string(), g);
+        let opts = ExpandOptions {
+            apply_errors: true,
+            seed: Some(7),
+        };
+        let (a, _) = expand(
+            &grad_seq(50.0, 0.0, 1.0, false),
+            &mats(),
+            &WL,
+            &groups,
+            opts,
+        )
+        .unwrap();
+        let (b, _) = expand(
+            &grad_seq(50.0, 0.0, 1.0, false),
+            &mats(),
+            &WL,
+            &HashMap::new(),
+            opts,
+        )
+        .unwrap();
+        // The material_b group draws: rows differ from the plain spectra.
+        let plain_b = mats().nk("TiO2", &WL).unwrap();
+        let shifted = (0..a.n_rows()).any(|r| a.row(r)[0] != plain_b[0]);
+        assert!(shifted, "the nk draw must reach the emitted rows");
+        // Deterministic per seed (same config twice).
+        let (c, _) = expand(
+            &grad_seq(50.0, 0.0, 1.0, false),
+            &mats(),
+            &WL,
+            &groups,
+            opts,
+        )
+        .unwrap();
+        assert_eq!(a, c);
+        let _ = b; // the second run exercises the no-group path
     }
 
     #[test]

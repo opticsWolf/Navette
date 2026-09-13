@@ -16,6 +16,7 @@
 
 use ndarray::{Array1, Array2, ArrayView1};
 use num_complex::Complex64;
+use serde::{Deserialize, Serialize};
 
 pub mod common;
 pub mod grid;
@@ -50,7 +51,11 @@ pub trait Dispersion {
 ///
 /// Each rule blends inclusion/host **permittivities** at volume fraction
 /// `f`; see [`ema`] for the closed forms. The caller applies √ to obtain n̂.
-#[derive(Clone, Copy, Debug)]
+// The serde representation is the schema-visible surface (A6): unit
+// variants ride as bare names ("Looyenga"), parameterized variants as
+// one-key maps ({"Bruggeman": {"max_iter": 100, "tol": 1e-9}}) - pinned
+// by `gradient::tests::mix_rule_serde_representation_is_pinned`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MixRule {
     /// Bruggeman symmetric-medium root (Newton–Raphson per point).
     /// `max_iter` caps iterations, `tol` is the |Δε| stop threshold.
@@ -66,6 +71,42 @@ pub enum MixRule {
     MoriTanaka { l: f64 },
     /// Birchak general power law with exponent `alpha`.
     PowerLaw { alpha: f64 },
+}
+
+impl MixRule {
+    /// The variant's own name (messages, warnings).
+    pub fn name(&self) -> &'static str {
+        match self {
+            MixRule::Bruggeman { .. } => "Bruggeman",
+            MixRule::MaxwellGarnett => "MaxwellGarnett",
+            MixRule::Looyenga => "Looyenga",
+            MixRule::Lichtenecker => "Lichtenecker",
+            MixRule::MoriTanaka { .. } => "MoriTanaka",
+            MixRule::PowerLaw { .. } => "PowerLaw",
+        }
+    }
+
+    /// The name-keyed constructor for the gradient surface (A6): all six
+    /// in-tree kernels work from a name; the parameterized variants take
+    /// the defaults `MaterialSpec`'s dispatcher uses (`Bruggeman`
+    /// 100/1e-9, `MoriTanaka` spheres, `PowerLaw` alpha 0.5). Explicit
+    /// parameters ride the serde-tagged form instead.
+    pub fn from_name(name: &str) -> Result<MixRule, String> {
+        match name {
+            "Bruggeman" => Ok(MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            }),
+            "MaxwellGarnett" => Ok(MixRule::MaxwellGarnett),
+            "Looyenga" => Ok(MixRule::Looyenga),
+            "Lichtenecker" => Ok(MixRule::Lichtenecker),
+            "MoriTanaka" => Ok(MixRule::MoriTanaka { l: 1.0 / 3.0 }),
+            "PowerLaw" => Ok(MixRule::PowerLaw { alpha: 0.5 }),
+            other => Err(format!(
+                "unknown mixing rule '{other}' (one of Bruggeman,                  MaxwellGarnett, Looyenga, Lichtenecker, MoriTanaka, PowerLaw)"
+            )),
+        }
+    }
 }
 
 /// A material model. Arms delegate to the free-function kernels; composite

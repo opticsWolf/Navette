@@ -323,17 +323,27 @@ impl DesignStack {
         use std::collections::HashMap;
         // Two things are corrected-and-announced here rather than
         // refused, and this is the only place either can be: an absorbing
-        // incident medium (R3.4), and a graded film the pipeline cannot
-        // carry. Both follow the same rule -- never refused, never silent.
+        // incident medium (R3.4), and a graded/gradient film the pipeline
+        // cannot carry. Both follow the same rule -- never refused, never
+        // silent.
         //
-        // Graded films go one of two ways:
+        // Profiled films go one of two ways (F1.1 extends the graded
+        // rule to mixture gradients):
         // - BACKGROUND (named in `background`): expanded WITH the profile
         //   and pinned (optimize/needle forced false on the whole carrier
         //   span). True physics, fixed: needle never hosts there, LM
         //   skips the rows, nk-keyed merge and flag-guarded cleanup preserve
-        //   the span. No warning — explicit opt-in, nothing dropped.
-        // - otherwise HOMOGENIZED (base index, single row) with a warning
-        //   per film: the pipeline's operators assume uniform slabs.
+        //   the span. No warning - explicit opt-in, nothing dropped.
+        // - otherwise HOMOGENIZED with a warning per film: the pipeline's
+        //   operators assume uniform slabs. A graded film homogenizes to
+        //   its base index (the flag flip below works because the base nk
+        //   exists); a gradient film has NO base nk, so it must synthesise
+        //   its own uniform row - EMA at f_mid over both endpoint spectra
+        //   (R4: never reach for the flag flip here, there is nothing to
+        //   flip to). The row is emitted by rewriting the film's own
+        //   provider entry and dropping the gradient before `expand`, so
+        //   the carrier name, flags and span bookkeeping are the uniform
+        //   path's, and the emitted nk is bitwise the direct EMA call.
         let mut warnings = Vec::new();
 
         // THE LAYER-0 GATE (R3.4, 0.6.27). Every production `DesignStack`
@@ -356,39 +366,106 @@ impl DesignStack {
             warnings.push(msg);
         }
 
+        // The nk table is built FIRST: the gradient homogenize below
+        // resolves both endpoint spectra through it, rewrites the film's
+        // own entry, and only then does the provider freeze it.
+        let mut entries = HashMap::new();
+        for (name, values) in nk {
+            entries.insert(name.to_string(), values.clone());
+        }
         let flat: Vec<crate::structure::Layer> = films
             .iter()
             .map(|l| {
                 let mut h = l.clone();
-                if h.inhomogen {
+                if h.inhomogen || h.gradient.is_some() {
                     if background.contains(h.material.as_str()) {
                         h.optimize = false;
                         h.needle = false;
-                    } else {
+                    } else if h.inhomogen {
                         warnings.push(format!(
-                            "DesignStack::from_design: film '{}' is graded (inhomogen) — the pipeline treats it as \
+                            "DesignStack::from_design: film '{}' is graded (inhomogen) - the pipeline treats it as \
                              homogeneous (base index, profile dropped); needle/thickness steps assume uniform slabs. \
                              Pin it (optimize=False, needle=False) to keep the profile as background.",
                             h.material
                         ));
                         h.inhomogen = false;
+                    } else {
+                        // R4 (D4.3): the gradient homogenize. Both
+                        // endpoint spectra must be registered (A5 keeps
+                        // the path self-contained) - the refusals name
+                        // the layer + the absent material, never a
+                        // half-mixture fallback.
+                        let grad = h.gradient.clone().expect("checked above");
+                        if let Some(msg) = grad.expansion_error(h.inhomogen) {
+                            return Err(format!("layer '{}': {msg}", h.material));
+                        }
+                        let wav_n = wavelengths.len();
+                        let Some(nk_a) = entries.get(grad.material_a.as_str()) else {
+                            return Err(crate::structure::gradient::endpoint_error(
+                                &h.material,
+                                &grad,
+                                format!(
+                                    "the provider does not carry '{}' (the film's own nk rides its name)",
+                                    grad.material_a
+                                ),
+                            ));
+                        };
+                        let Some(nk_b) = entries.get(grad.material_b.as_str()) else {
+                            return Err(crate::structure::gradient::endpoint_error(
+                                &h.material,
+                                &grad,
+                                format!(
+                                    "the provider does not carry '{}' (nk_b must ride the film dict)",
+                                    grad.material_b
+                                ),
+                            ));
+                        };
+                        if nk_a.len() != wav_n || nk_b.len() != wav_n {
+                            return Err(crate::structure::gradient::endpoint_error(
+                                &h.material,
+                                &grad,
+                                format!(
+                                    "endpoint spectrum length {} / {} != grid length {wav_n}",
+                                    nk_a.len(),
+                                    nk_b.len()
+                                ),
+                            ));
+                        }
+                        let f_mid = grad.f_mid();
+                        let row = crate::structure::gradient::mix_row(
+                            grad.ema,
+                            nk_b,
+                            nk_a,
+                            f_mid,
+                        );
+                        entries.insert(h.material.as_str().to_string(), row);
+                        h.gradient = None;
+                        warnings.push(format!(
+                            "DesignStack::from_design: film '{}' carries a gradient ('{}' -> '{}', {}); the pipeline treats \
+                             it as homogeneous (EMA at f_mid = {:.6}); pin it (optimize=False, needle=False) to keep \
+                             the profile as background.",
+                            h.material,
+                            grad.material_a,
+                            grad.material_b,
+                            grad.ema.name(),
+                            f_mid
+                        ));
                     }
                 }
-                h
+                Ok(h)
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         let num_wavs = wavelengths.len();
         if ambient.nk.len() != num_wavs || substrate.nk.len() != num_wavs {
             return Err("DesignStack::from_design: boundary nk length != grid length.".to_string());
         }
-        let mut entries = HashMap::new();
-        for (name, values) in nk {
-            entries.insert(
-                name.to_string(),
-                crate::structure::Entry::Array(values.clone()),
-            );
-        }
-        let provider = crate::structure::DictProvider::with_grid(entries, wavelengths.to_vec())?;
+        let provider = crate::structure::DictProvider::with_grid(
+            entries
+                .into_iter()
+                .map(|(name, values)| (name, crate::structure::Entry::Array(values)))
+                .collect(),
+            wavelengths.to_vec(),
+        )?;
         let seq: Vec<(crate::structure::Layer, bool)> =
             flat.iter().cloned().map(|l| (l, false)).collect();
         // F0.1 / §8.15: `expand`'s backwards-rescale branch (entry `k`
@@ -947,6 +1024,92 @@ mod tests {
 
     fn stack(films: Vec<LayerSpec>) -> DesignStack {
         DesignStack::with_films(air(0.0), sub(0.0), films).unwrap()
+    }
+
+    /// F1.1 (R4): a non-background gradient film homogenizes to ONE row
+    /// that is bitwise the direct EMA call at f_mid over both endpoint
+    /// spectra; the warning names the mixture and f_mid. A background
+    /// gradient film expands WITH the full profile, pinned.
+    #[test]
+    fn gradient_homogenize_is_bitwise_the_ema_and_background_expands() {
+        use crate::materials::MixRule;
+        use crate::structure::gradient::{GradientSpec, mix_row};
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.01); NW]);
+        nk.insert(Arc::from("L"), vec![Complex64::new(1.46, 0.0); NW]);
+        let mut film = crate::structure::Layer::film(100.0, "H");
+        film.gradient = Some(GradientSpec::fixed_span("H", "L", 0.0, 1.0));
+
+        // Non-background: one row, bitwise the EMA at f_mid, warning
+        // names the mixture and f_mid.
+        let (stack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            std::slice::from_ref(&film),
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(stack.films().len(), 1);
+        assert!((stack.films()[0].d_nm - 100.0).abs() < 1e-12);
+        let want = mix_row(
+            MixRule::Bruggeman {
+                max_iter: 100,
+                tol: 1e-9,
+            },
+            &nk[&Arc::from("L")],
+            &nk[&Arc::from("H")],
+            0.5,
+        );
+        assert_eq!(&stack.films()[0].nk[..], &want[..]);
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(
+            warns[0].contains("'H'") && warns[0].contains("'L'"),
+            "{}",
+            warns[0]
+        );
+        assert!(warns[0].contains("f_mid = 0.5"), "{}", warns[0]);
+        assert!(warns[0].contains("Bruggeman"), "{}", warns[0]);
+
+        // Background: the FULL profile expands, pinned, silent.
+        let mut bg = HashSet::new();
+        bg.insert("H".to_string());
+        let (bstack, warns) = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            std::slice::from_ref(&film),
+            &nk,
+            &HashMap::new(),
+            &wl,
+            &bg,
+        )
+        .unwrap();
+        assert!(warns.is_empty());
+        assert!(bstack.films().len() > 1, "profile expanded, not flattened");
+        let d: f64 = bstack.films().iter().map(|f| f.d_nm).sum();
+        assert!((d - 100.0).abs() < 1e-9);
+        assert!(bstack.films().iter().all(|f| !f.optimize && !f.needle));
+        assert!(!bstack.span_of_row(0).is_singleton_bulk());
+
+        // Provider door: a missing inclusion spectrum refuses, naming
+        // the absent material and the layer - never a half-mixture.
+        let mut partial = HashMap::new();
+        partial.insert(Arc::from("H"), vec![Complex64::new(2.35, 0.01); NW]);
+        let err = DesignStack::from_design(
+            air(0.0),
+            sub(0.0),
+            std::slice::from_ref(&film),
+            &partial,
+            &HashMap::new(),
+            &wl,
+            &HashSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.contains("layer 'H'"), "{err}");
+        assert!(err.contains("'L'"), "{err}");
     }
 
     /// D1: design films expand through the structure model (interface

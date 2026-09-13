@@ -10,6 +10,7 @@
 pub mod architect;
 pub mod enums;
 pub mod expansion;
+pub mod gradient;
 pub mod group;
 pub mod layer;
 pub mod providers;
@@ -33,6 +34,7 @@ pub use enums::{BlockKind, ErrorMask, ErrorType, LayerMask, LayerType, OptMask, 
 // visible through all of them. Expansion snapshot-clones per run.
 pub type SharedGroup = std::rc::Rc<std::cell::RefCell<Group>>;
 pub use expansion::{ExpandOptions, SolverArrays, Span, expand};
+pub use gradient::{GradientMode, GradientSpec, ProfileShape};
 pub use group::shared_group;
 pub use group::{ErrorParams, Group};
 pub use layer::Layer;

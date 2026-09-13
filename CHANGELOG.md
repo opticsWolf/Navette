@@ -4,7 +4,84 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
 `docs/implementation_plan.md` (Fx.y).
 
-## [0.6.35] — F0.3: `ThinLayerPolicy` — clamp up to the minimum instead of removing
+## [0.6.36] - F1.1: the gradient data model, `FixedSpan` expansion, the homogenize path
+
+A mixture gradient - a film whose composition interpolates between two
+materials through an EMA kernel - becomes a first-class layer property,
+safe from the first commit: the default is `None`, and the plan's own
+defect ledger (B1's lesson) is why the bookkeeping half shipped first.
+
+### Added
+
+- **`GradientSpec`** (`structure/gradient.rs`): `material_a` (host,
+  `f = 0`), `material_b` (inclusion, `f = 1`), `ema` (a whole `MixRule`
+  - all six in-tree kernels work on day one, parameters live in the
+  variants, A6), `mode` (`FixedSpan { f_start, f_end }` - `RateCapped`
+  is F1.2), `shape` (`Linear` - enum-ready per D9.2), `sublayers`
+  override (clamped `[2, 256]`, advisory outside). The docstring
+  obligation (D9.4) lives on the module: `material_a` is ALWAYS the
+  host and `f` is the volume fraction of B in A - Maxwell-Garnett and
+  Mori-Tanaka are host/inclusion-asymmetric, so an A<->B swap is not
+  the same physics. Kernels are called inclusion-first, mirroring
+  `MaterialSpec`'s argument order.
+- **`Layer.gradient: Option<GradientSpec>`** (default `None`), with the
+  self-contained validation in `property_issues` (the one rule surface,
+  N5): `gradient` + `inhomogen` refused (two profile engines, message
+  names both and points at the alternative); `f_*` outside `[0, 1]`
+  refused; `material_a == material_b` refused; `f_start == f_end`
+  refused (N2 - a degenerate span merges away silently otherwise);
+  sublayers outside `[2, 256]` advisory (clamped at expansion).
+- **The expansion branch** beside the legacy graded branch, with the
+  resolved sublayer rule `n = clamp(ceil(t / max_step), 3, 64)`,
+  `max_step = min(20 nm, lambda_min / (10 * n_max_re))` (D3's "exact
+  formula fixed at implementation"), the last sublayer absorbing the
+  float remainder so `sum(d) == thickness` exactly (N7), INCLUSIVE
+  endpoint sampling (first sublayer IS `f_start`, last IS `f_end` -
+  the legacy graded convention, and the one that makes the endpoint
+  rows bitwise thickness-independent), row-order inversion as the
+  physical flip, and roughness/type on the first emitted sublayer
+  only. Endpoints resolve through the provider under their own
+  materials' groups (scaling, and the nk error channels when errors
+  are on); the delta channels are inert on this branch (mixtures have
+  no inh_delta).
+- **The design path (A5):** `ArrayFilm.gradient`
+  (`Option<GradientJson>`) with `nk_b` evaluated Python-side in
+  `_film_dicts` (the design path has no materials library; the
+  inclusion spectrum rides the film dict, registered under a
+  `<film>~b` provider key); `material_a` defaults to the film's own
+  name - its registered nk IS the host spectrum; absent `nk_b` or a
+  shadowed `material_b` is refused, never a half-mixture fallback.
+- **The homogenize path (R4/D4.3):** a non-background gradient film
+  homogenizes to ONE row that is bitwise the direct EMA call at
+  `f_mid` over both endpoint spectra, announced by a warning naming
+  the mixture and `f_mid`. Never the `inhomogen = false` flag flip -
+  a gradient film has no base nk. Background gradient films expand
+  WITH the full profile, pinned, silent (A4's background predicate
+  gains the `gradient.is_some()` disjunct).
+
+### Notes
+
+- Profile sampling is inclusive (`f_sublayer`), not the midpoint
+  reading D3's prose suggests: with midpoint sampling no row sits at an
+  endpoint and the gate's bitwise endpoint-row claim is unimplementable;
+  the F1.6 table's "normalized depth between two endpoints" and the
+  legacy factors' `i / (sub - 1)` convention both point at inclusive.
+- `MixRule` gained `Serialize`/`Deserialize`/`PartialEq` (the serde
+  representation is the schema-visible surface, pinned by a test);
+  `Layer.gradient` is deliberately NOT yet in the serialized state map
+  (F1.4 moves it in with the schema bump - no user-constructible
+  gradient exists before F1.5's Python surface, so the temporary
+  omission cannot lose user data).
+- The structure path's provider-less row-count predictions (cold
+  `Structure`/`Architect` fallbacks) count a gradient carrier as 1:
+  documented at the sites; every production caller takes the
+  provider-backed exact path.
+- Both fingerprints hold (gradient absent, `None`, untouched paths);
+  743 + 5 new gradient twins in `validation/regression/synthesis/
+test_gradient_pipeline.py` and the Rust oracle twins in `expansion.rs`
+/ `gradient.rs` / `structure.rs`.
+
+## [0.6.35] - F0.3: `ThinLayerPolicy` - clamp up to the minimum instead of removing
 
 "Remove a layer that got too thin" and "set that layer to the minimum
 thickness you can actually deposit" are two different operations with two

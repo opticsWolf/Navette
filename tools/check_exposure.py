@@ -48,6 +48,12 @@ ALLOWLIST = {
     # Nevot-Croce interface factors: shared by all four rtype-5 branches,
     # reached through every solve/field/needle path (R1.1)
     "nevot_croce_factors",
+    # gradient expansion internals (F1.1): `mix_row` is the EMA dispatch
+    # the expansion branch and the design-path homogenize call; the count
+    # rule is D3's resolved formula. Both are reached through
+    # Structure.expand / DesignStack.from_design; the Python gradient
+    # surface (F1.5) binds its own doors, not these kernels.
+    "gradient_sub_layer_count", "mix_row",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",

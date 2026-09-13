@@ -136,7 +136,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F0.1~~ **DONE (0.6.33)** | Span provenance on `DesignStack` — the bookkeeping, and no behaviour change | 0.6.33 | **P0** | M | **L** | §D4.1–2, corrected §2 |
 | ~~F0.2~~ **DONE (0.6.34)** | Span-level pipeline accounting — floor, cap, layer budget, inflate, reported counts | 0.6.34 | **P0** | **L** (the only item licensed to move a number) | M | **U5**, A2, N3, **B1**, B4 |
 | ~~F0.3~~ **DONE (0.6.35)** | `ThinLayerPolicy` — clamp up to the minimum instead of removing | 0.6.35 | P1 | M (the LM lower bound couples to it) | M | **U1** |
-| F1.1 | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
+| ~~F1.1~~ **DONE (0.6.36)** | Gradient data model + `FixedSpan` expansion + homogenize path | 0.6.36 | P1 | M (new expansion branch) | L | §D2–D3, §D4.3 |
 | F1.2 | Gradient `RateCapped` mode — thickness-relative slope with caps | 0.6.37 | P1 | M (saturation meets `merge_adjacent`) | M | §D0(b), §D2 |
 | F1.3 | `InhMode::RateCapped` — thickness-relative single-material drift | 0.6.38 | P1 | M (legacy path must stay bitwise) | M | §D0(b), §D2 |
 | F1.6 | One thickness parameter per graded span — the scale-free profiles | 0.6.39 | P1 | M (the LM parameter list stops being a row list) | L | **U2** |
@@ -1103,10 +1103,38 @@ sequencing and the gates.
 
 ### F1.1 — data model + `FixedSpan` expansion + homogenize path (0.6.36)
 
-**Scope.** `GradientSpec`, the EMA model selector, `GradientMode::FixedSpan`,
-`ProfileShape::Linear`, validation, the expansion branch, and the
+**DONE (0.6.36, see the feature commit).** Corrections from implementation:
+
+- **Profile sampling is inclusive (`f_sublayer`), not the midpoint reading
+  §D3 step 3's "midpoint `z_i`" suggests.** With midpoint sampling no row
+  sits at an endpoint, and this item's own gate ("same `FixedSpan` spec at
+  50 nm and 500 nm -> endpoint rows bitwise equal, counts differ") is
+  unimplementable. The F1.6 table's "normalized depth between two
+  endpoints" and the legacy factors' `i / (sub - 1)` convention both point
+  at inclusive; the last row returns exactly `f_end` (the ratio form is
+  one ulp off). Recorded at `f_sublayer` and in the gate twin.
+- **The design door's `material_b` is an evaluable material** (A5's "nk_b
+  evaluated Python-side in `_film_dicts`" made concrete): the design path
+  has no materials library, so a bare provider-key string cannot resolve;
+  `_norm_gradient` evaluates the material and registers the spectrum under
+  a generated `<film>~b` key (overridable via `b_name`). The a == b
+  refusal is enforced Python-side by comparing the evaluated spectra
+  bitwise (the generated key can never equal the film's own name), and at
+  the Rust doors by comparing the provider keys (structure path).
+- **`emit_entry` gained the provider and wavelengths parameters** - the
+  gradient branch resolves endpoints through the provider, which the
+  F0.1 extraction contract (§8.15, "the parameter list is exactly what
+  the loop body reads") now has to admit. The Result return came with
+  the branch too. Legacy branches: unchanged, `Ok(())`-returning.
+- Endpoint nk error draws follow each endpoint's OWN group (A-then-B
+  draw order inside the gradient branch only) - a gradient film in an
+  error run shifts as one body; no legacy RNG stream is touched.
+- `assemble_stack` refuses a `material_b` shadowed by a later film of
+  the same name (the post-loop spectrum check) and a `material_a` that
+  is not the film's own name - the design path's host spectrum rides
+  the film's registration, by A5's construction.
 non-background homogenize path (§D4.3) so the feature is safe from the first
-commit.
+commit. **DONE (0.6.36).**
 
 **Where.**
 
@@ -2425,7 +2453,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.33 | F0.1 | cebed9c | A9.3, R1, R2, R3, N1, N2, **U5** (half), **B9**, B2 (the `emit_entry` extraction) | done |
 | 0.6.34 | F0.2 | e7a0e61 | A2, N3, **U5** (half), **B1**, B4, B7 | done |
 | 0.6.35 | F0.3 | cb44c02 | **U1** | done |
-| 0.6.36 | F1.1 | — | A4, A5, A6, A9.1, R4, N5, N7, B10 | not started |
+| 0.6.36 | F1.1 | (hash pending) | A4, A5, A6, A9.1, R4, N5, N7, B10 | done |
 | 0.6.37 | F1.2 | — | A9.2, N2 | not started |
 | 0.6.38 | F1.3 | — | **B6**, B10 | not started |
 | 0.6.39 | F1.6 | — | **U2**, **B5** | not started |

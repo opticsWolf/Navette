@@ -19,6 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::structure::enums::{LayerType, RoughnessType};
+use crate::structure::gradient::GradientSpec;
 use crate::structure::validation::ValidationIssue;
 use crate::structure::version::{SCHEMA_VERSION, check_schema_version};
 
@@ -84,6 +85,13 @@ pub struct Layer {
     pub needle: bool,
     /// Design role (ambient/film/substrate markers delimit stacks).
     pub layer_type: LayerType,
+    /// Mixture-gradient profile (F1.1). `None` = plain layer; when set,
+    /// mutually exclusive with `inhomogen` (two profile engines, refused
+    /// by validation). NOT yet part of the serialized state map: the
+    /// state schema gains the key at F1.4's version bump, and no user
+    /// can hold a gradient layer before F1.5's Python surface, so the
+    /// temporary omission cannot lose user data.
+    pub gradient: Option<GradientSpec>,
 }
 
 impl Default for Layer {
@@ -102,6 +110,7 @@ impl Default for Layer {
             optimize: true,
             needle: true,
             layer_type: LayerType::Film,
+            gradient: None,
         }
     }
 }
@@ -226,6 +235,17 @@ impl Layer {
          set inhomogen = false instead.",
                 self.sub_layer_count()
             )));
+        }
+
+        // Gradient profile (F1.1): the self-contained checks come from
+        // the spec itself (one rule surface, N5); the provider-existence
+        // check needs the provider and lives at the two provider doors.
+        if let Some(g) = &self.gradient {
+            for issue in g.issues() {
+                let is_err = issue.is_error();
+                let m = issue.message;
+                issues.push(if is_err { bad(m) } else { note(m) });
+            }
         }
 
         issues
@@ -406,6 +426,10 @@ impl<'de> Deserialize<'de> for Layer {
                     ));
                 }
             },
+            // F1.4 moves `gradient` into the state map (schema v2); until
+            // then the state round-trip holds a plain layer by
+            // construction (no user-constructible gradient exists yet).
+            gradient: None,
         })
     }
 }

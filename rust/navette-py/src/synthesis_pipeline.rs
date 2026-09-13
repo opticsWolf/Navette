@@ -14,7 +14,7 @@
 //! result = pipe.run()                          # dict + final "stack"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use num_complex::Complex64;
@@ -197,6 +197,113 @@ pub(crate) struct PyFilmInput<'a> {
     interface_thickness: f64,
     optimize: bool,
     needle: bool,
+    /// Absent (or `None`) = plain film. F1.1/A5: the design path's
+    /// gradient transport; `nk_b` rides the dict, Python-evaluated.
+    #[pyo3(default)]
+    gradient: Option<PyGradientInput>,
+}
+
+/// The gradient film-dict fields (A5). `material_a` must name the film
+/// itself (its nk is the registered host spectrum); `nk_b` is the
+/// inclusion spectrum on the grid as `(re, im)` pairs.
+#[derive(FromPyObject)]
+#[pyo3(from_item_all)]
+#[derive(Clone)]
+pub(crate) struct PyGradientInput {
+    material_a: String,
+    material_b: String,
+    nk_b: Vec<(f64, f64)>,
+    f_start: f64,
+    f_end: f64,
+    /// `#[pyo3(default)]` because `None` may ride as an explicit null or
+    /// (from older callers) as an absent key.
+    #[pyo3(default)]
+    sublayers: Option<u32>,
+    ema: PyEma,
+}
+
+/// The mixing-rule surface of a gradient film dict (A6): a bare name
+/// (defaults per variant, same ones `MaterialSpec`'s dispatcher uses) or
+/// the serde-tagged one-key map `{name: {param: value}}`.
+#[derive(Clone)]
+pub(crate) struct PyEma(pub navette::materials::MixRule);
+
+impl FromPyObject<'_, '_> for PyEma {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> Result<Self, PyErr> {
+        use navette::materials::MixRule;
+        if let Ok(name) = obj.extract::<String>() {
+            return MixRule::from_name(&name)
+                .map(PyEma)
+                .map_err(PyValueError::new_err);
+        }
+        let dict = obj.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(
+                "ema must be a mixing-rule name (e.g. 'Bruggeman') or a one-key \
+                 {name: params} map",
+            )
+        })?;
+        let mut it = dict.iter();
+        let (name, params) = it
+            .next()
+            .ok_or_else(|| PyValueError::new_err("empty ema map"))?;
+        if it.next().is_some() {
+            return Err(PyValueError::new_err(
+                "ema map must have exactly one key (the rule name)",
+            ));
+        }
+        let name: String = name.extract()?;
+        let mut p: BTreeMap<String, f64> = if params.is_none() {
+            BTreeMap::new()
+        } else {
+            params.extract()?
+        };
+        let rule = match name.as_str() {
+            "Bruggeman" => MixRule::Bruggeman {
+                max_iter: p.remove("max_iter").map(|v| v as usize).unwrap_or(100),
+                tol: p.remove("tol").unwrap_or(1e-9),
+            },
+            "MaxwellGarnett" => MixRule::MaxwellGarnett,
+            "Looyenga" => MixRule::Looyenga,
+            "Lichtenecker" => MixRule::Lichtenecker,
+            "MoriTanaka" => MixRule::MoriTanaka {
+                l: p.remove("l").unwrap_or(1.0 / 3.0),
+            },
+            "PowerLaw" => MixRule::PowerLaw {
+                alpha: p.remove("alpha").unwrap_or(0.5),
+            },
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown mixing rule '{other}' (one of Bruggeman, \
+                     MaxwellGarnett, Looyenga, Lichtenecker, MoriTanaka, PowerLaw)"
+                )));
+            }
+        };
+        if !p.is_empty() {
+            return Err(PyValueError::new_err(format!(
+                "unknown ema parameters {p:?} for '{name}'"
+            )));
+        }
+        Ok(PyEma(rule))
+    }
+}
+
+/// The transport into the core (GradientJson, A5).
+fn gradient_json(g: PyGradientInput) -> navette::structure::gradient::GradientJson {
+    navette::structure::gradient::GradientJson {
+        material_a: g.material_a,
+        material_b: g.material_b,
+        nk_b: g
+            .nk_b
+            .into_iter()
+            .map(|(re, im)| Complex64::new(re, im))
+            .collect(),
+        ema: g.ema.0,
+        f_start: g.f_start,
+        f_end: g.f_end,
+        sublayers: g.sublayers,
+    }
 }
 
 /// Assemble evaluated arrays into an expanded stack (thin over
@@ -233,6 +340,7 @@ pub(crate) fn assemble_design(
             interface_thickness: f.interface_thickness,
             optimize: f.optimize,
             needle: f.needle,
+            gradient: f.gradient.clone().map(gradient_json),
         })
         .collect();
     let gm: std::collections::HashMap<String, navette::structure::Group> = groups
@@ -334,6 +442,7 @@ pub(crate) fn run_design(
             interface_thickness: f.interface_thickness,
             optimize: f.optimize,
             needle: f.needle,
+            gradient: f.gradient.clone().map(gradient_json),
         })
         .collect();
     let gm: std::collections::HashMap<String, navette::structure::Group> = groups

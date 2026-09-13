@@ -42,6 +42,10 @@ pub struct ArrayFilm {
     pub interface_thickness: f64,
     pub optimize: bool,
     pub needle: bool,
+    /// Mixture-gradient profile (F1.1, A5). The JSON carries the
+    /// inclusion spectrum (`nk_b`) Python-side; the host is expected to
+    /// name the film itself, whose nk is already registered.
+    pub gradient: Option<crate::structure::gradient::GradientJson>,
 }
 
 /// One contrast seed: host name → fresh seed carrier.
@@ -118,16 +122,55 @@ pub fn assemble_stack(
         layer.interface_thickness = f.interface_thickness;
         layer.optimize = f.optimize;
         layer.needle = f.needle;
+        if let Some(grad) = &f.gradient {
+            // A5: nk_b must ride the film dict (never a fallback to the
+            // film's own nk - a half-mixture is worse than a refusal),
+            // on the grid, and the host is expected to name the film
+            // itself (whose nk is already registered).
+            if grad.nk_b.len() != wavelengths.len() {
+                return Err(format!(
+                    "film {:?}: gradient nk_b length {} != {} wavelengths",
+                    f.name,
+                    grad.nk_b.len(),
+                    wavelengths.len()
+                ));
+            }
+            if grad.material_a != f.name {
+                return Err(format!(
+                    "film {:?}: gradient host '{}' is not the film's own name; the design path \
+                     resolves the host spectrum through the film's registered nk",
+                    f.name, grad.material_a
+                ));
+            }
+            layer.gradient = Some(grad.to_spec());
+        }
         let issues = layer.property_issues(&format!("film {:?}", f.name));
         crate::structure::validation::ValidationIssue::gate(&issues, "assemble_stack")?;
         film_warnings.extend(issues.iter().map(|i| i.message.clone()));
         nk_map.insert(Arc::from(f.name.as_str()), f.nk.clone());
+        if let Some(grad) = &f.gradient {
+            nk_map.insert(Arc::from(grad.material_b.as_str()), grad.nk_b.clone());
+        }
         design.push(layer);
     }
-    // Background is implied, not declared (mirrors the other drivers).
+    // A gradient's material_b entry must still be ITS spectrum when the
+    // loop ends: a later film named like an earlier gradient's inclusion
+    // would otherwise shadow the endpoint silently.
+    for f in films {
+        if let Some(grad) = &f.gradient
+            && nk_map.get(grad.material_b.as_str()) != Some(&grad.nk_b)
+        {
+            return Err(format!(
+                "film {:?}: gradient material_b {:?} is shadowed by another film of the same name",
+                f.name, grad.material_b
+            ));
+        }
+    }
+    // Background is implied, not declared (mirrors the other drivers);
+    // A4: a gradient carrier is a profiled film for this rule too.
     let background: HashSet<String> = design
         .iter()
-        .filter(|l| l.inhomogen && !l.optimize && !l.needle)
+        .filter(|l| (l.inhomogen || l.gradient.is_some()) && !l.optimize && !l.needle)
         .map(|l| l.material.clone())
         .collect();
     DesignStack::from_design(
@@ -244,6 +287,7 @@ mod tests {
                 interface_thickness: 0.0,
                 optimize: true,
                 needle: true,
+                gradient: None,
             },
             ArrayFilm {
                 name: "H".to_string(),
@@ -258,6 +302,7 @@ mod tests {
                 interface_thickness: 0.0,
                 optimize: true,
                 needle: true,
+                gradient: None,
             },
         ]
     }

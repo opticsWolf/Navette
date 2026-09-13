@@ -85,7 +85,72 @@ _LAYER_KEYS = ("roughness", "rough_type", "interface", "interface_thickness")
 _FILM_DEFAULTS = dict(coherent=True, optimize=True, needle=True,
                       roughness=0.0, rough_type=0, inhomogen=False,
                       inh_delta=0.1, interface=False,
-                      interface_thickness=0.0)
+                      interface_thickness=0.0,
+                      gradient=None)
+
+_EMA_RULE_NAMES = ("Bruggeman", "MaxwellGarnett", "Looyenga",
+                   "Lichtenecker", "MoriTanaka", "PowerLaw")
+
+
+def _norm_gradient(g, film_name, wl, film_nk):
+    """Shape one film's ``gradient`` flag into the native dict (F1.1/A5).
+
+    The design path has no materials library - every nk is film-supplied
+    - so the inclusion spectrum is evaluated HERE and rides the film
+    dict (``nk_b``), registered under a provider key of its own
+    (``<film>~b``, overridable via ``b_name``). ``material_a`` defaults
+    to the film's own name: its registered nk IS the host spectrum.
+    ``ema`` is a rule name (defaults per variant) or a one-key
+    ``{name: params}`` map.
+    """
+    if not isinstance(g, Mapping):
+        raise TypeError(f"film {film_name!r}: gradient must be a mapping.")
+    g = dict(g)
+    if "material_b" not in g:
+        raise ValueError(f"film {film_name!r}: gradient requires 'material_b'.")
+    mb = g["material_b"]
+    if isinstance(mb, str):
+        raise ValueError(
+            f"film {film_name!r}: gradient material_b must be a material "
+            "(spec/mapping/nk array) - the design path has no materials "
+            "library to resolve a bare name; the host is the film itself "
+            "(material_a defaults to the film's own name)."
+        )
+    ema = g.get("ema", "Bruggeman")
+    if isinstance(ema, str):
+        if ema not in _EMA_RULE_NAMES:
+            raise ValueError(
+                f"film {film_name!r}: unknown mixing rule {ema!r} "
+                f"(one of {', '.join(_EMA_RULE_NAMES)})."
+            )
+    elif isinstance(ema, Mapping):
+        if len(ema) != 1:
+            raise ValueError(
+                f"film {film_name!r}: ema map must have exactly one key "
+                "(the rule name)."
+            )
+        ((name, params),) = ema.items()
+        if name not in _EMA_RULE_NAMES:
+            raise ValueError(
+                f"film {film_name!r}: unknown mixing rule {name!r} "
+                f"(one of {', '.join(_EMA_RULE_NAMES)})."
+            )
+        if params is not None and not isinstance(params, Mapping):
+            raise ValueError(f"film {film_name!r}: ema params must be a mapping.")
+    else:
+        raise TypeError(f"film {film_name!r}: ema must be a name or a one-key mapping.")
+    nk_b = _eval_nk(mb, wl)
+    if np.array_equal(nk_b, film_nk):
+        raise ValueError(
+            f"film {film_name!r}: gradient materials are identical "
+            "(the film's own nk IS material_b's) - a gradient of a material "
+            "with itself is a spec bug; single-material drift is inhomogen."
+        )
+    g["ema"] = ema
+    g["material_a"] = g.get("material_a", film_name)
+    g["material_b"] = g.get("b_name", f"{film_name}~b")
+    g["nk_b"] = [(float(z.real), float(z.imag)) for z in nk_b]
+    return g
 
 
 def _film_dicts(layers, names, wl, film_flags=None, per_film_flags=None):
@@ -94,6 +159,18 @@ def _film_dicts(layers, names, wl, film_flags=None, per_film_flags=None):
     Merge order per film: defaults < global ``film_flags`` < per-film
     override (``rough_val`` aliases ``roughness``); materials evaluate
     to nk on ``wl``. Shared by ``stack_from_layers`` and ``run_needle``.
+
+    F1.1: the ``gradient`` flag carries a mixture gradient. Its
+    ``material_b`` is an evaluable material (evaluated HERE - the design
+    path has no materials library, so the inclusion spectrum rides the
+    film dict as ``nk_b``, registered under a ``<film>~b`` provider
+    key); ``material_a`` defaults to the film's own name, whose
+    registered nk IS the host spectrum. Background-pinned gradient
+    films (``optimize=False, needle=False``) expand WITH the profile
+    (inclusive endpoint sampling: the first sublayer IS ``f_start``,
+    the last IS ``f_end``); any other gradient film homogenizes to the
+    EMA at ``f_mid`` with a warning (R4 - a gradient film has no base
+    index to flip to).
     """
     flags = dict(film_flags or {})
     if "rough_val" in flags:
@@ -113,8 +190,9 @@ def _film_dicts(layers, names, wl, film_flags=None, per_film_flags=None):
         if unknown:
             raise TypeError(f"film {nm!r}: unknown flags {sorted(unknown)}.")
         fd.update(local)
-        out.append({
-            "name": str(nm), "nk": _eval_nk(mat, wl), "d_nm": float(d),
+        row_nk = _eval_nk(mat, wl)
+        row = {
+            "name": str(nm), "nk": row_nk, "d_nm": float(d),
             "coherent": bool(fd["coherent"]),
             "roughness": float(fd["roughness"]),
             "rough_type": int(fd["rough_type"]),
@@ -124,7 +202,10 @@ def _film_dicts(layers, names, wl, film_flags=None, per_film_flags=None):
             "interface_thickness": float(fd["interface_thickness"]),
             "optimize": bool(fd["optimize"]),
             "needle": bool(fd["needle"]),
-        })
+        }
+        if fd["gradient"] is not None:
+            row["gradient"] = _norm_gradient(fd["gradient"], str(nm), wl, row_nk)
+        out.append(row)
     return out
 
 
@@ -158,7 +239,8 @@ def stack_from_layers(layers: Sequence[Tuple[Any, float]],
     the film material names (default ``film0…``); ``contrast`` maps host
     name *or film index* → seed material. ``ambient``/``substrate`` are
     ``(material, name)``; always fixed, non-hosts. ``film_flags`` are
-    per-film ``LayerSpec`` defaults (``optimize``/``needle``/…).
+    per-film ``LayerSpec`` defaults (``optimize``/``needle``/…, and the
+    F1.1 ``gradient`` mixture profile - see ``_film_dicts``).
     ``groups`` maps material name → bound ``Group`` (or param dict):
     thickness/nk scaling, roughness and interface policy expand here —
     the silent-drop limitation is gone. Graded films take one of two
