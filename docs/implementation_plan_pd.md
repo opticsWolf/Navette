@@ -265,7 +265,7 @@ re-open them:
 
 ## 2. PD1 — the reference index becomes wavelength-dependent (0.6.45)
 
-**DONE:** — done (2026-09-14, feature commit pending). The reference
+**DONE:** — done (2026-09-14, feature commit `82998a7`). The reference
 indices are per-λ rows (`Arc<[f64]>`, length `wavelengths.len()` or 1,
 broadcast) filled from the whole `n_stack_cache` column; the merit inner
 loop samples the row with the complex rows' own two-pointer machinery,
