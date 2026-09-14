@@ -45,9 +45,11 @@ the three bookkeeping items in the docs commit that follows.
   names only the demanded side.
 - Rust: `demanded_reference_sides_tracks_the_labels` (front/back/none
   from the label table, including the hypothetical back-curve case).
-- Measured: merit op point vs `compute(PDts)` now agree bitwise at
-  ambient/substrate thicknesses 999/777 nm (they would have disagreed
-  before G2).
+- `compute-observable` (the PD4 twin) gains the half-space case: the
+  `PDts`/`PDtp` merit op point is **bitwise** unmoved at ambient/
+  substrate thicknesses 999/777 nm. Added in the review's second round,
+  which found the G2 fix unpinned — reverting the interior sum left the
+  whole battery green; it now fails this check by 5.03 rad.
 
 ## [0.6.48] - PD4: PDts/PDtp as first-class compute() observables
 

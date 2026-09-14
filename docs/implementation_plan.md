@@ -165,13 +165,14 @@ and B6 undercounts — and §0.4 records which.
 | ~~PD2~~ **DONE (0.6.46)** | The FFI/Python doors accept a per-λ reference; the scalar door gets the permanent guard | 0.6.46 | P1 | S | S | PD plan §3 |
 | ~~PD3~~ **DONE (0.6.47)** | GD/GDD over Δφ: the convention PD1 disturbs, decided and pinned | 0.6.47 | P1 | S (a decision + twins) | S | PD plan §4 |
 | ~~PD4~~ **DONE (0.6.48)** | `PDts`/`PDtp` become first-class `compute()` observables | 0.6.48 | P1 | S | M | PD plan §5 |
+| ~~PDR~~ **DONE (0.6.49)** | PD review applied: the scalar guard's demanded sides + one `total_d` | 0.6.49 | **P0** | S | S | review PD §4 |
 | F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.50 | P2 | S | M | §4.1–4.2 |
 | F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.51 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.52 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
 | F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.6.53 | P1 | **M** (second schema gate) | **L** | §4.5 |
 | F3.1 | Docs, worked examples, exposure re-audit, release | 0.6.54 | P3 | S | M | §7-S5, §D7 |
 
-Nineteen items, `0.6.33 → 0.6.54` (Phase B
+Twenty-three items, `0.6.33 → 0.6.54` (Phase B
 re-versioned twice: amendment 3 §5, then the PD series per
 `docs/implementation_plan_pd.md` §0.4). Tag `v0.7.0` at F3.1 if the minor marker is
 wanted; the version number itself stays on the `0.0.1` ladder throughout.
@@ -2755,7 +2756,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.46 | PD2 | 12ed85a | PD plan §3 — the doors + the surviving guard | done |
 | 0.6.47 | PD3 | 8d400c6 | PD plan §4 — the GD/GDD convention, decided and pinned | done |
 | 0.6.48 | PD4 | fab63d1 | PD plan §5 — PDts/PDtp as compute() observables | done |
-| 0.6.49 | PD review | 32adee2 | review PD §4 — G1 (the guard's sides) + G2 (one total_d) | done |
+| 0.6.49 | PDR | 32adee2 | review PD §4 — G1 (the guard's sides) + G2 (one total_d) | done |
 | 0.6.50 | F2.1 | — | A7, R6 | not started |
 | 0.6.51 | F2.2 | — | A4, A8 | not started |
 | 0.6.52 | F2.3 | — | A8, N1 | not started |

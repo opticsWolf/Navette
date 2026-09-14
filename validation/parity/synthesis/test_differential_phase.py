@@ -35,10 +35,11 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
      per-wavelength reference; scalar == length-1 bitwise; the scalar
      guard warns (once, remedy, ASCII); a bad length refuses naming
      both numbers; the dispersive oracle holds at 1e-12.
-15. ``guard-sides`` (PD2, review G1) - the scalar guard reports only
-     the sides a demand can read: a front-only spec with per-lambda
-     n_front and the default scalar n_back is silent; a scalar n_front
-     is reported alone (no spurious n_back half).
+12a. ``guard-sides`` (PD2, review G1; same function as 12) - the
+     scalar guard reports only the sides a demand can read: a
+     front-only spec with per-lambda n_front and the default scalar
+     n_back is silent; a scalar n_front is reported alone (no spurious
+     n_back half).
 13. ``gd-gdd-convention`` (PD3) - GD/GDD over the corrected Dphi
      include the reference's dispersion (decision: option 1). A
      two-point hand case is bitwise-exact; GDD over Dphi is non-zero
@@ -48,8 +49,9 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
 14. ``compute-observable`` (PD4) - PDts/PDtp as first-class
      compute() keys: the rotation oracle and the native merit's
      op-point Dphi both agree with the new surface to 1e-12
-     (dispersive ambient, both polarizations); expected_keys
-     round-trips.
+     (dispersive ambient, both polarizations); the op point is
+     BITWISE unmoved by a non-zero half-space thickness (review G2);
+     expected_keys round-trips.
 
 NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
 engine separates polarizations by branch, the fold by channel).
@@ -690,6 +692,10 @@ def test_compute_observable():
     * compute(PD_TS) == the native merit's op-point Dphi (the residual of
       a zero-target PD demand on the engine-filled sim), 1e-12 — the two
       surfaces agree, not merely both exist.
+    * the same op point is BITWISE unmoved when the half-spaces carry a
+      non-zero thickness (review G2) — the evaluator's D is the INTERIOR
+      sum, the expression the engine's PD keys use. A plain sum over all
+      rows passes every other check in this file and fails only this one.
     * expected_keys round-trips the new bits.
     """
     print("--- PD4: compute()-level differential phase ---")
@@ -728,6 +734,26 @@ def test_compute_observable():
         check(f"compute({pd_key}) == native merit op point (1e-12)",
               float(np.max(np.abs(pd - r))) < 1e-12,
               f"max|d|={np.max(np.abs(pd - r)):.2e}")
+        # review G2: `DesignStack`'s direct door accepts a non-zero
+        # half-space thickness (the engine treats rows 0/last as
+        # half-spaces and ignores it). The evaluator's coating thickness
+        # D must therefore be the INTERIOR sum - the expression the
+        # engine's PD keys use - or the merit's reference shifts by
+        # 2*pi*n(lam)*(d_amb+d_sub)*cos(th)/lam (~2.5 rad here) while
+        # compute() stays put. Bitwise: the half-spaces contribute
+        # nothing to either surface, so the op point must not move AT
+        # ALL. Nothing else in this file distinguishes the two sums.
+        dst_hs = DesignStack(
+            LayerSpec("amb", (A + B / wl ** 2) + 0j, 999.0,
+                      optimize=False, needle=False),
+            LayerSpec("sub", np.full(4, 1.5 + 0j), 777.0,
+                      optimize=False, needle=False),
+            [LayerSpec("L", np.full(4, nf + 0j), d)])
+        r_hs = np.asarray(spec.residuals(ctx.simulate(dst_hs))).ravel() * 0.05
+        check(f"{pd_key} op point unmoved by 999/777 nm half-spaces "
+              "(bitwise)",
+              np.array_equal(r_hs, r),
+              f"max|d|={np.max(np.abs(r_hs - r)):.2e}")
     from navette.smatrix.smatrix import expected_keys
     check("expected_keys round-trip",
           expected_keys(Request.PD_TS) == ["PDts"]

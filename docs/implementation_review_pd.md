@@ -428,3 +428,164 @@ CORRECTIONS:
    (557 / 561 / 566); post-application the counts are 553 lib / 567
    all-features (the new `demanded_reference_sides` test). All green;
    noted so the next reader does not treat the drift as a regression.
+
+---
+
+## 7. Second round — review of the applied fixes
+
+Reviewed at `b86998f`, branch `dev_feature`, against a **fresh
+`maturin develop --release` build** of that tree (the extension in the
+working copy predated the last `merit.rs` edit, so every behavioural
+claim below is measured against a rebuild, not against the diff).
+
+**Verdict: all five findings are genuinely fixed, and one of the two
+fixes was not pinned.** Findings are **H1–H4**; `H*` is verified free
+across `docs/`.
+
+### 7.1 What the fixes actually do
+
+**G1.** Re-measured on the rebuilt extension, the three-row table that
+made the case now reads:
+
+| `n_front` | `n_back` | before | after |
+|---|---|---|---|
+| scalar | default | `(n_front=1, n_back=1)` | `(n_front=1)` — demanded side alone |
+| per-λ array | default | **`(n_back=1)` — entirely spurious** | **silent** |
+| per-λ array | per-λ array | silent | silent |
+
+`demanded_reference_sides()` mirrors its consumers exactly: the
+row-selection branches at `merit.rs:1032` (`residuals_into`) and
+`needle_pass.rs:353` (the gain-shift hoist) use the same
+`key.curve.is_back()` predicate the new method walks. Pinned twice —
+the `guard-sides` checks in the PD2 door twin and the Rust
+`demanded_reference_sides_tracks_the_labels`.
+
+**G2.** Merit op point vs `compute(PDts)`, measured across four
+half-space configurations on the rebuilt extension:
+
+| ambient `d` | substrate `d` | merit op point vs `compute(PDts)` |
+|---|---|---|
+| 0 | 0 | bitwise equal |
+| 999 | 0 | bitwise equal |
+| 999 | 777 | bitwise equal |
+| 0 | 777 | bitwise equal |
+
+Pre-fix the reference would have been displaced by up to **2.47 rad**
+at 999 nm and **2.21 rad** at 1776 nm. The slice is also safe at the
+boundary: `n_layers = ambient + films + substrate ≥ 2` by construction
+(`solver_arrays` chains `once(ambient) + films + once(substrate)`), so
+`[1..nl-1]` is at worst empty, never inverted.
+
+**G4.** The doc comment's claim was checked, not taken: the only live
+read of `n_front_re`/`n_back_re` in `merit.rs` is `residuals_into` at
+`:1032–1035`. `curve_sensitivity_into` genuinely never touches them, so
+the absent guard is correct.
+
+**G3, G5, incidental.** Present and correct; all five markdown files
+verify cell-consistent, zero raw `||` in any table.
+
+**Gates, all re-run at `b86998f`:** 553 lib / 22 parity / 15 py; 567
+all-features; `cargo fmt --all --check`; `cargo clippy --workspace
+--all-targets -- -D warnings`; 771 passed + 1 skipped; five
+`tools/check_*.py`; ten `validation/review/*.py`; both bit-exactness
+fingerprints; seven version sites at `0.6.49`. Every number matches
+what `32adee2` claimed.
+
+### 7.2 H1 — the G2 fix was pinned by nothing (**P1**)
+
+Reverting `evaluator.rs:217` to the plain `.iter().sum()`, rebuilding,
+and running the full battery left **everything green**: 553 Rust lib
+tests, the differential-phase harness (`ALL OK`), 771 pytest. Nothing
+in the tree distinguished the two expressions.
+
+The reason is structural: every test stack sets both half-spaces to
+zero, which is exactly the regime where the two sums agree. `ar_stack`
+builds `LayerSpec::constant("air", 1.0, 0.0, 0.0, nw)`; all four
+`DesignStack(...)` constructions in the PD harness pass `0.0`. The
+`simulate_fills_pd_metadata_and_complex_t` assertion `total_d == d`
+holds under both expressions.
+
+`32adee2`'s message lists the 999/777 measurement under `Twins:`
+alongside two real twins, which reads as three. The CHANGELOG was
+honest about it (`Measured:`, not a twin), so the durable record never
+claimed more than was done — but the effect was the same: a P1 fix in a
+repository whose ritual is *one item, one twin* had no twin, and any
+later refactor could have undone it silently.
+
+**Applied.** `compute-observable` (the PD4 twin) gains the half-space
+case, inside the polarization loop so both `PDts` and `PDtp` are
+covered. Verified in both directions: it passes on the fixed tree
+(`max|d| = 0.00e+00`, bitwise) and **fails on the reverted tree by
+5.03 rad, exit 1**. A twin that was not watched fail is not a twin.
+
+### 7.3 H2 — §0.3 had no row for the 0.6.49 rung (**P2**)
+
+The progress ledger recorded `0.6.49` at `implementation_plan.md:2758`;
+the master item table jumped `0.6.48 → 0.6.50`. That is the same
+ledger-vs-table split G3 was about, one commit later and in mirror
+image.
+
+**Applied.** §0.3 gains `| ~~PDR~~ **DONE (0.6.49)** | ... |`, and the
+ledger's ID column now reads `PDR` to match. All 14 tables still verify
+cell-consistent.
+
+### 7.4 H3 — the harness docstring numbered 15 strategies for 14 functions (**P3**)
+
+The `guard-sides` entry took the next free number (`15`) but was filed
+between `12` and `13`, and had no section of its own: its two checks
+live inside item 12's `test_dispersive_rotation_door`.
+
+**Applied.** Renumbered `12a` (same function as 12), which fixes the
+ordering and the count together; item 14's entry gains the half-space
+twin H1 added.
+
+### 7.5 H4 — §6 CORRECTIONS 1 names a warning that does not fire on this path (**P3**)
+
+CORRECTIONS 1 argues G2's optional half (refusing a non-zero half-space
+in `with_films`) is unnecessary partly because "the engine's own warning
+at `solver.rs:1131` still fires". It does not fire on the path G2 was
+about. `solve_arrays` — the only function carrying that warning — is
+reached from `navette-py/src/structure.rs:1644`, the `ScatterMatrix`
+door, and from its own tests. The synthesis evaluator's `simulate`
+never calls it. Measured: building a `DesignStack` with 999/777 nm
+half-spaces and running it through `SmatrixContext.simulate` emits
+**zero** warnings.
+
+The conclusion CORRECTIONS 1 reaches is unaffected — with the interior
+sum, the two surfaces now agree on any stack, so there is nothing left
+to warn about on the merit path, and H1's twin pins that. Only the
+supporting clause was wrong. Recorded here rather than edited into §6,
+which is an append-only record of what was believed at the time.
+
+### 7.6 Not a regression
+
+§0.3's item count has been stale since the C rows landed: at `a095f60`
+it read "Fifteen items" against 18 rows, and PD1 correctly added four
+to an already-low number, giving "Nineteen" against 22. Inherited, not
+introduced — same class as the CHANGELOG `|n|` cell. Corrected while
+editing the same sentence: the count is now derived from the table
+(**twenty-three** rows, including `C1`, which carries no version).
+
+### 7.7 Disposition
+
+| # | Finding | Priority | Action |
+|---|---|---|---|
+| **H1** | The G2 fix was pinned by nothing | **P1** | Half-space twin added to `compute-observable`; watched fail at 5.03 rad |
+| **H2** | §0.3 had no row for 0.6.49 | P2 | `PDR` row added; ledger ID matched |
+| **H3** | 15 numbered strategies, 14 functions | P3 | `guard-sides` renumbered `12a`; item 14 updated |
+| **H4** | CORRECTIONS 1 names a warning off this path | P3 | Recorded here; the conclusion stands, the clause does not |
+
+**No version bump.** Nothing here changes shipped behaviour: one added
+regression test, three documentation corrections, and one CHANGELOG
+sentence brought in line with the tree it describes. This is the
+`138bdcb` / `b86998f` shape — a bookkeeping commit that corrects the
+existing section in place rather than opening a new one.
+
+CORRECTIONS:
+
+1. §5's first bullet stands: the `nondispersive-bitwise` literals are
+   still not reproduced from outside, and this round did not attempt it
+   again. §1.3's independent route continues to carry the claim.
+2. This round verified the *fixes*, not the PD series a second time.
+   §1's measurements were not re-derived from scratch; the gates were
+   re-run and the four G-finding sites re-measured.
