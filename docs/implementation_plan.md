@@ -2753,6 +2753,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.44 | C3 | a91fc3d | status review findings 3–7 (V1, V2, V7, V8) | done |
 | 0.6.45 | PD1 | 82998a7 | PD plan finding (b) — the frozen reference index | done |
 | 0.6.46 | PD2 | 12ed85a | PD plan §3 — the doors + the surviving guard | done |
+| 0.6.47 | PD3 | 8d400c6 | PD plan §4 — the GD/GDD convention, decided and pinned | done |
 | 0.6.49 | F2.1 | — | A7, R6 | not started |
 | 0.6.50 | F2.2 | — | A4, A8 | not started |
 | 0.6.51 | F2.3 | — | A8, N1 | not started |

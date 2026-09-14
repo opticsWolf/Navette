@@ -560,7 +560,7 @@ without revisiting this decision.
   a non-dispersive one. Two asserts, and they are the whole decision.
 - Non-dispersive: GD/GDD bitwise unchanged from 0.6.46.
 
-DONE: — done (2026-09-14, feature commit pending). Decision recorded as
+DONE: — done (2026-09-14, feature commit `8d400c6`). Decision recorded as
 option 1; the stale doc sentence replaced (with the analytic
 corrections); CHANGELOG states the numeric consequence; the parity
 check `gd-gdd-convention` (13th PD check) pins all three asserts:
