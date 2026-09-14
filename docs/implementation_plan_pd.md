@@ -437,7 +437,7 @@ included, plus:
 
 ## 3. PD2 — the array surface at the FFI and Python doors (0.6.46)
 
-**DONE:** — done (2026-09-14, feature commit pending). All five doors
+**DONE:** — done (2026-09-14, feature commit `12ed85a`). All five doors
 accept `float | FloatArray`; the length rule is native (length 1 or
 `len(wavelengths)`, refusals name both numbers); the scalar guard warns
 at `reference_rotation` (covering the numpy path) and at the
