@@ -378,3 +378,53 @@ Stated plainly so the gaps are known:
   trajectories for dispersive specs) was verified by construction — it
   follows from item 1 — not by running an optimization to convergence
   and comparing designs.
+
+---
+
+## 6. Applied
+
+Every finding was re-verified against the tree before fixing; all five
+stood as written (G1's three-row table reproduced exactly, including the
+entirely-spurious middle row). Applied in two commits on `dev_feature`:
+
+| # | Action | Where |
+|---|---|---|
+| **G1** | `MeritSpec::demanded_reference_sides()` (walk targets, collect `key.curve.is_back()` per differential demand); `warn_scalar_reference` reports only demanded sides. Front-only + per-λ front + default back is now **silent**; a scalar front is reported alone. Twins: `guard-sides` in the PD2 door twin + Rust `demanded_reference_sides_tracks_the_labels` (front/back/none, incl. the hypothetical back curve). | `32adee2` (0.6.49) |
+| **G2** | `evaluator.rs` `total_d` now sums `[1..nl-1]`, matching the engine's PD keys; the comment claiming the two expressions were one rule is now true. Measured: merit op point vs `compute(PDts)` agree **bitwise** at half-space thicknesses 999/777 nm (they would have disagreed pre-fix); bitwise identical for legal stacks. | `32adee2` (0.6.49) |
+| **G4** | `# Panics` sections on `MeritSpec::merit` and `::residuals`; the deliberate-no-guard note on `curve_sensitivity` (the reference is additive and independent of the curve, so it drops out of d(residual)/d(curve)). | `32adee2` (docs-only in substance; they ride the bump commit) |
+| **G3** | §0.3 rows for PD2/PD3/PD4 struck (`~~PD2~~ **DONE (0.6.46)**` etc.), matching PD1's convention; every row verifies at 7 unescaped-pipe cells. | this commit |
+| **G5** | §4 gains a **Differential Phase Observables** bullet (`PDts`/`PDtp` keys, the view, the per-λ reference, the wrap, the shared derivation, the coherent caveat) — targeted edit, not a blanket sweep. | this commit |
+| incidental | `CHANGELOG.md`'s `\|n\|` cell now escapes its pipe; the row renders at 2 cells again. | this commit |
+
+The review's recommended shape was followed: G1 took its own bump
+(`0.6.49`, G2 riding it), Phase B slides to `0.6.50–0.6.54` (§0.4's table
+restamped: Was = amendment 3's assignment, Becomes = today's), and
+G3/G4/G5 + the incidental landed as one no-bump bookkeeping commit — the
+`138bdcb` shape.
+
+CI: the review was written before CI ran on `54af967`; that run
+(34898484657) has since completed green on all four jobs, which closes
+the Linux-fingerprint gap above. What remains open is the first bullet:
+the `nondispersive-bitwise` literals are still not reproduced from
+outside (rebuilding the 0.6.44 tree would clobber the installed
+extension; §1.3's route carries the claim independently).
+
+CORRECTIONS:
+
+1. G2's optional half — "zero or refuse a non-zero half-space thickness
+   in `with_films`" — was **not** done. With the interior-sum alignment
+   the two surfaces agree on any stack, so the disagreement the option
+   guarded against no longer exists; the engine's own warning at
+   `solver.rs:1131` still fires. A door-level refusal remains future
+   work if a stack with a thick half-space is ever judged worth
+   refusing rather than warning about.
+2. The disposition's "one commit" for the bookkeeping items became two
+   files' worth of Rust doc comments landing in the *bump* commit
+   instead — they are code-adjacent (fmt/clippy apply to them), and
+   splitting them out would have made the docs commit compile-unclean
+   for no reader benefit. Recorded because the shape differs from the
+   review's table.
+3. The review's gate table reports feature-specific lib-test counts
+   (557 / 561 / 566); post-application the counts are 553 lib / 567
+   all-features (the new `demanded_reference_sides` test). All green;
+   noted so the next reader does not treat the drift as a regression.

@@ -63,9 +63,11 @@ compatible with. Fix the quantity, then publish it.
 
 ### 0.4 Version ladder, and the Phase B interaction
 
-Phase B currently holds 0.6.45–0.6.49 (amendment 3 §5, itself already one
-re-versioning). This plan takes 0.6.45–0.6.48 and pushes Phase B down by
-four:
+Phase B currently holds 0.6.50–0.6.54. Amendment 3 §5 assigned it
+0.6.45–0.6.49; this plan took 0.6.45–0.6.48 for PD1–PD4 and pushed Phase B
+down by four; the PD review's G1 bump pushed it down one more
+(review §4, disposition). The Was column is amendment 3's assignment;
+the Becomes column is today's:
 
 | Item | Was | Becomes |
 |---|---|---|
@@ -73,11 +75,11 @@ four:
 | PD2 array surface + scalar guard | — | **0.6.46** |
 | PD3 GD/GDD convention | — | **0.6.47** |
 | PD4 `compute()` observable | — | **0.6.48** |
-| F2.1 environment segment schema | 0.6.45 | **0.6.49** |
-| F2.2 K assemblies, `residuals_multi` | 0.6.46 | **0.6.50** |
-| F2.3 needle + LM joint | 0.6.47 | **0.6.51** |
-| F2.4 Python `environments=` surface | 0.6.48 | **0.6.52** |
-| F3.1 docs, examples, release | 0.6.49 | **0.6.53** |
+| F2.1 environment segment schema | 0.6.45 | **0.6.50** |
+| F2.2 K assemblies, `residuals_multi` | 0.6.46 | **0.6.51** |
+| F2.3 needle + LM joint | 0.6.47 | **0.6.52** |
+| F2.4 Python `environments=` surface | 0.6.48 | **0.6.53** |
+| F3.1 docs, examples, release | 0.6.49 | **0.6.54** |
 
 **Why before Phase B and not after.** (b) is a wrong answer, not a missing
 feature, and it is live in a **published** release — 0.6.44 went to PyPI
@@ -278,7 +280,8 @@ CORRECTIONS:
 
 1. §7 decision 1 (PD before Phase B) is **resolved by instruction**:
    implementing the plan adopts its own §0.4 recommendation (0.6.45–
-   0.6.48; Phase B slides to 0.6.49–0.6.53).
+   0.6.48; Phase B slides to 0.6.49–0.6.53; the PD review (§7) slides
+   it once more, to 0.6.50–0.6.54).
 2. §7 decision 2 (`n_inc.unwrap_or(1.0)` reachability): **`None` is
    unreachable with a differential demand** — both `sample_op_value`
    call sites match `(Some(sim), Some(rows))` before calling and `n_inc`
@@ -695,7 +698,8 @@ green CI → next item.
 2. **PD2** (0.6.46) — the doors and the surviving guard.
 3. **PD3** (0.6.47) — the GD/GDD convention PD1 disturbed.
 4. **PD4** (0.6.48) — the simulation surface, last by design.
-5. Phase B resumes at **0.6.49** (F2.1), per §0.4's ladder.
+5. Phase B resumes at **0.6.50** (F2.1), per §0.4's ladder (the PD
+   review's G1 bump pushed it down one more).
 
 The master-item table of `implementation_plan.md` §0.3 gains four rows and
 the Phase B rows are re-versioned; both edits ride PD1's docs commit. Per

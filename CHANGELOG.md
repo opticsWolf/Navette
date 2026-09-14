@@ -2975,7 +2975,7 @@ asked for are errors; the message names the offending index and value.
 | negative thickness | same numbers as **deleting the layer** |
 | NaN / inf thickness | same numbers as **deleting the layer** |
 | NaN or inf refractive index | every output NaN, nothing naming the layer |
-| refractive index with `|n|` past `sqrt(DBL_MAX)` | `n**2` overflowed inside the solve; NaN out |
+| refractive index with `\|n\|` past `sqrt(DBL_MAX)` | `n**2` overflowed inside the solve; NaN out |
 | NaN wavelength | NaN output |
 | wavelength <= 0 | `k = 2*pi/lambda` divides by zero |
 | duplicated wavelength | NaN `GD`/`GDD`/`TOD`/`FOD` (the kernels divide by the grid spacing) |
