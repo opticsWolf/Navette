@@ -656,6 +656,32 @@ second call site.
 Full battery, plus `validation/smoke/test_request_bits.py` — the request
 mask has a dedicated smoke test and two new bits must appear in it.
 
+DONE: — done (2026-09-14, feature commit pending). Both bits landed at
+49/50 exactly as planned; the derivation lives in
+`core_engine.rs::differential_phase_rows` (the same wrap expression the
+merit's Phase arm applies to residuals, so the emitted key and the
+merit's op point agree bit for bit — the merit twin measures 0.0e+00
+exactly); the view + `expected_keys` + the `.pyi` stub are in; the
+smoke test sweeps the new bits behaviourally. The rotation-oracle twin
+holds to 4.4e-16 (dispersive ambient, both polarizations).
+
+CORRECTIONS:
+
+1. The `ts_c`/`tp_c` buffers now also exist under `REQ_PD_*` (the
+   derivation reads them), so their `keep_c!` emissions needed an
+   explicit `requested & REQ_TS_C != 0` guard — without it a PD-only
+   request leaked the amplitudes, and the request-bit smoke test's
+   single-bit sweep caught exactly that before it could ship. Recorded
+   because it is the second time that sweep has caught a real bug in
+   this series.
+2. `check_exposure.py` flagged the new helper; allowlisted with the
+   rationale (the Python surface is the view and the keys, not the
+   kernel), per the tool's catalog rule.
+3. The merit-residual door returns the SCALED residual (diff/tol), so
+   the op-point twin compares against `residuals * tol` — a test-side
+   detail, recorded so the next reader does not mistake the scale for
+   the convention.
+
 ---
 
 ## 6. Execution order

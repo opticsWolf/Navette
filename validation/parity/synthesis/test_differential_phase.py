@@ -41,6 +41,11 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
      for a dispersive ambient and zero for a constant one; the
      ABSOLUTE GD/GDD keys carry no reference term (the 0.6.46
      behaviour, pinned).
+14. ``compute-observable`` (PD4) - PDts/PDtp as first-class
+     compute() keys: the rotation oracle and the native merit's
+     op-point Dphi both agree with the new surface to 1e-12
+     (dispersive ambient, both polarizations); expected_keys
+     round-trips.
 
 NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
 engine separates polarizations by branch, the fold by channel).
@@ -649,6 +654,63 @@ def test_gd_gdd_convention():
           f"max={np.max(np.abs(gdd_ck)):.2e}")
 
 
+def test_compute_observable():
+    """PD4: PDts/PDtp as first-class compute() observables.
+
+    The engine derives them from the complex forward-t rows it already
+    computes for TS_C/TP_C, minus the equivalent incidence-medium layer
+    (wrapped principal value). Twins:
+
+    * compute(PD_TS|PD_TP) == apply_reference_rotation on compute(TS_C/
+      TP_C) -> np.angle, 1e-12 — the rotation oracle, now spanning the
+      new surface (dispersive ambient, both polarizations).
+    * compute(PD_TS) == the native merit's op-point Dphi (the residual of
+      a zero-target PD demand on the engine-filled sim), 1e-12 — the two
+      surfaces agree, not merely both exist.
+    * expected_keys round-trips the new bits.
+    """
+    print("--- PD4: compute()-level differential phase ---")
+    from navette.smatrix.smatrix import Request, ScatterMatrix
+    d, nf = 300.0, 2.0
+    A, B = 1.45, 4000.0
+    wl = np.array([450.0, 500.0, 600.0, 700.0])
+    n_inc = A + B / wl ** 2
+    st = ScatterMatrix(
+        np.array([n_inc, np.full(4, nf), np.full(4, 1.5)]),
+        np.array([0.0, d, 0.0]), wavelengths=wl, angles=[0.0])
+    for pol, pd_bit, pd_key in [("s", "PD_TS", "PDts"), ("p", "PD_TP", "PDtp")]:
+        ts = np.asarray(st.compute(getattr(Request, "T" + pol.upper() + "_C")
+                                   )["t" + pol + "_c"])[None, :]
+        pd = np.asarray(st.compute(getattr(Request, pd_bit))[pd_key]).ravel()
+        rot = apply_reference_rotation(ts, wl, 0.0, n_inc, d, 1.0)
+        check(f"compute({pd_key}) == rotation oracle (1e-12)",
+              float(np.max(np.abs(pd - np.angle(rot[0])))) < 1e-12,
+              f"max|d|={np.max(np.abs(pd - np.angle(rot[0]))):.2e}")
+        # The native merit's op point: a zero-target PD demand on the
+        # engine-filled sim; the residual IS the wrapped op-point Dphi.
+        tc = TargetCollection()
+        tc.add(SpectralTarget(wl, np.zeros(4), np.full(4, 0.05), 0.0, pol,
+                              pd_key, kind="e", phase=True))
+        spec = build_merit_spec(tc)
+        from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+        dst = DesignStack(
+            LayerSpec("amb", (A + B / wl ** 2) + 0j, 0.0,
+                      optimize=False, needle=False),
+            LayerSpec("sub", np.full(4, 1.5 + 0j), 0.0,
+                      optimize=False, needle=False),
+            [LayerSpec("L", np.full(4, nf + 0j), d)])
+        ctx = SmatrixContext(spec, np.array([0.0]), wl)
+        sim = ctx.simulate(dst)
+        r = np.asarray(spec.residuals(sim)).ravel() * 0.05  # the door scales by tol
+        check(f"compute({pd_key}) == native merit op point (1e-12)",
+              float(np.max(np.abs(pd - r))) < 1e-12,
+              f"max|d|={np.max(np.abs(pd - r)):.2e}")
+    from navette.smatrix.smatrix import expected_keys
+    check("expected_keys round-trip",
+          expected_keys(Request.PD_TS) == ["PDts"]
+          and expected_keys(Request.PD_TP) == ["PDtp"])
+
+
 if __name__ == "__main__":
     test_hand()
     test_oracle_kinds()
@@ -663,5 +725,6 @@ if __name__ == "__main__":
     test_nondispersive_bitwise()
     test_dispersive_rotation_door()
     test_gd_gdd_convention()
+    test_compute_observable()
     print("ALL OK" if not FAILURES else f"MISMATCH {FAILURES}")
     sys.exit(1 if FAILURES else 0)

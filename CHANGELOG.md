@@ -5,6 +5,46 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.6.48] - PD4: PDts/PDtp as first-class compute() observables
+
+The differential phase was reachable through the synthesis merit and the
+numpy rotation recipe, but not from the simulation surface itself:
+`ScatterMatrix.compute()` had no way to ask for it.
+
+### Added
+
+- **Two request bits**: `PD_TS = 1 << 49`, `PD_TP = 1 << 50`
+  (`REQ_PD_TS`/`REQ_PD_TP` in `core_engine.rs`, the `Request` IntFlag in
+  `smatrix.py`), emitting keys `PDts` / `PDtp`, wired into
+  `expected_keys`. The request-bit smoke test sweeps them end to end.
+- **The derivation**: the complex forward-t rows the engine already
+  computes for `TS_C`/`TP_C`, minus `reference_phase(λ, n_front_re[λ],
+  θ, D, 1)` — `D` the sum of the interior thicknesses (ambient and
+  substrate carry zero, the same rule the synthesis evaluator relies
+  on) and `n_front_re` layer 0's real index per wavelength (PD1's
+  column, at a second call site). No new user plumbing.
+- **A convenience view**: `differential_phase(*, s_pol=True,
+  p_pol=True)` alongside `complex_amplitudes()` and `dispersion()`.
+- **Decisions stated** (per the plan, not discovered): the keys emit
+  the **wrapped principal value** in `(−π, π]`, consistent with
+  `phi_ts`/`phi_tp` — unwrapping across the grid is the caller's job;
+  and Δφ inherits `dispersion()`'s coherent-stacks caveat verbatim.
+- `.pyi` stubs for the new request builder (`check_pyi_sync.py`
+  blocking); `check_exposure.py` allowlists the row-derivation helper
+  with its rationale (the Python surface is the view and the keys, not
+  the kernel).
+
+### Twins
+
+- `compute(PD_TS|PD_TP)` equals `apply_reference_rotation` on
+  `compute(TS_C|TP_C)` followed by `np.angle`, to 1e-12 (dispersive
+  ambient, both polarizations) — the rotation oracle, now spanning the
+  new surface.
+- `compute(PD_TS)` equals the native merit's op-point Δφ for the same
+  stack and grid (bitwise, 0.0e+00) — the two surfaces agree rather
+  than merely both existing.
+- `expected_keys` round-trips the new bits.
+
 ## [0.6.47] - PD3: GD/GDD over Δφ carry the reference's dispersion (decision pinned)
 
 PD1 made the differential reference per-λ. That silently changed what

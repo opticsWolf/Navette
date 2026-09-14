@@ -48,6 +48,7 @@ try:
         solver_amplitudes_request as _amplitudes_request,
         solver_stokes_request as _stokes_request,
         solver_dispersion_request as _dispersion_request,
+        solver_differential_phase_request as _differential_phase_request,
         solver_energy_conservation as _energy_conservation,
         w_function,
         redheffer_product_real,
@@ -133,6 +134,8 @@ class Request(IntFlag):
     RBP_C = 1 << 46
     TBS_C = 1 << 47    # complex back-transmission s amplitude
     TBP_C = 1 << 48
+    PD_TS = 1 << 49    # differential transmitted phase, s (key PDts)
+    PD_TP = 1 << 50    # differential transmitted phase, p (key PDtp)
 
     # Convenience bundles
     PHOTOMETRY = RS | RP | TS | TP | R_AVG | T_AVG
@@ -195,6 +198,7 @@ _SCALAR_KEYS = {
     Request.RBS_C: "rbs_c", Request.RBP_C: "rbp_c",
     Request.TBS_C: "tbs_c", Request.TBP_C: "tbp_c",
     Request.CROSS_R: "cross_R", Request.CROSS_T: "cross_T",
+    Request.PD_TS: "PDts", Request.PD_TP: "PDtp",
 }
 
 
@@ -657,6 +661,27 @@ class ScatterMatrix:
         """
         return self.compute(_dispersion_request(
             bool(reflection), bool(transmission), bool(s_pol), bool(p_pol)))
+
+    def differential_phase(
+        self, *, s_pol: bool = True, p_pol: bool = True,
+    ) -> Dict[str, np.ndarray]:
+        """Coating-induced transmitted phase (keys ``PDts`` / ``PDtp``).
+
+        ``arg(t)`` minus ``2*pi*n_front_re(λ)*D*cos(θ_inc)/λ`` — the phase of
+        the complex forward-t amplitudes the engine already derives, with the
+        equivalent incidence-medium layer subtracted (``passes = 1``; ``D``
+        the total coating thickness, i.e. the sum of the interior layer
+        thicknesses, and ``n_front_re`` layer 0's real index per wavelength,
+        so a dispersive ambient carries its index at every λ).
+
+        Emitted as the **wrapped principal value** in ``(−π, π]``, consistent
+        with the absolute-phase keys (``phi_ts``/``phi_tp``); unwrapping
+        across the grid is the caller's job (``numpy.unwrap``).
+
+        Physically meaningful only for coherent stacks (``FULLY_COHERENT`` mode
+        or a stack with no incoherent boundaries).
+        """
+        return self.compute(_differential_phase_request(bool(s_pol), bool(p_pol)))
 
     def energy_conservation(self) -> np.ndarray:
         """``max(|1 - Rs - Ts|, |1 - Rp - Tp|)`` per grid point.

@@ -455,6 +455,12 @@ fn solver_dispersion_request(
 }
 
 #[pyfunction]
+fn solver_differential_phase_request(s_pol: bool, p_pol: bool) -> PyResult<u64> {
+    navette::smatrix::solver::differential_phase_request(s_pol, p_pol)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+#[pyfunction]
 fn solver_energy_conservation<'py>(
     py: Python<'py>,
     rs: PyReadonlyArrayDyn<f64>,
@@ -882,6 +888,7 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solver_amplitudes_request, m)?)?;
     m.add_function(wrap_pyfunction!(solver_stokes_request, m)?)?;
     m.add_function(wrap_pyfunction!(solver_dispersion_request, m)?)?;
+    m.add_function(wrap_pyfunction!(solver_differential_phase_request, m)?)?;
     m.add_function(wrap_pyfunction!(solver_energy_conservation, m)?)?;
     m.add("NREQ_P", NREQ_P)?;
     m.add("NREQ_P_MB", NREQ_P_MB)?;
