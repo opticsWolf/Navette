@@ -656,7 +656,7 @@ second call site.
 Full battery, plus `validation/smoke/test_request_bits.py` — the request
 mask has a dedicated smoke test and two new bits must appear in it.
 
-DONE: — done (2026-09-14, feature commit pending). Both bits landed at
+DONE: — done (2026-09-14, feature commit `fab63d1`). Both bits landed at
 49/50 exactly as planned; the derivation lives in
 `core_engine.rs::differential_phase_rows` (the same wrap expression the
 merit's Phase arm applies to residuals, so the emitted key and the
