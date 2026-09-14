@@ -560,6 +560,38 @@ without revisiting this decision.
   a non-dispersive one. Two asserts, and they are the whole decision.
 - Non-dispersive: GD/GDD bitwise unchanged from 0.6.46.
 
+DONE: — done (2026-09-14, feature commit pending). Decision recorded as
+option 1; the stale doc sentence replaced (with the analytic
+corrections); CHANGELOG states the numeric consequence; the parity
+check `gd-gdd-convention` (13th PD check) pins all three asserts:
+the two-point hand case is bitwise-exact through the library
+`dispersion()` (residual ~1e-16), GDD over Δφ is non-zero for a
+dispersive ambient (matching `−3·B·ω·D/(2π²c³)` at the uniform-grid
+centre to 1.5e-12 relative — the chained non-uniform stencil is exact
+there) and zero (1e-12) for a constant ambient, and the absolute
+GD/GDD keys carry no reference term (bitwise `n·D/c` for the linear
+row).
+
+CORRECTIONS:
+
+1. The plan's "GDD over Δφ is zero for a non-dispersive one" is
+   realized as: the GDD *correction* (GDD of the stack minus GDD of
+   the reference-only stack) is zero for a constant ambient — the
+   coating's own GDD is not zero in general, so the twin isolates the
+   reference's contribution, which is the quantity the decision is
+   about.
+2. The hand-exact construction needed film index == substrate index:
+   with a different substrate the Fabry-Perot denominator is complex
+   and its arg contributes a λ-dependent phase (measured: a 1.9e-4
+   relative error in the two-point GD delta), so the absolute row is
+   no longer the exact linear `n·ω·D/c`. Recorded because the same
+   trap will bite anyone hand-computing GD on a real stack.
+3. The chained non-uniform stencil is exact for the cubic reference
+   row only at the centre of a uniform grid (endpoints carry a
+   one-sided-difference tail through the second pass); the tight
+   analytic assert lives at the centre, the plan's "non-zero" assert
+   covers every point.
+
 ### Gates
 
 Full battery. This item is mostly a decision, a doc edit and three

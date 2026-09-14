@@ -35,6 +35,12 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
      per-wavelength reference; scalar == length-1 bitwise; the scalar
      guard warns (once, remedy, ASCII); a bad length refuses naming
      both numbers; the dispersive oracle holds at 1e-12.
+13. ``gd-gdd-convention`` (PD3) - GD/GDD over the corrected Dphi
+     include the reference's dispersion (decision: option 1). A
+     two-point hand case is bitwise-exact; GDD over Dphi is non-zero
+     for a dispersive ambient and zero for a constant one; the
+     ABSOLUTE GD/GDD keys carry no reference term (the 0.6.46
+     behaviour, pinned).
 
 NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
 engine separates polarizations by branch, the fold by channel).
@@ -556,6 +562,93 @@ def test_dispersive_rotation_door():
     check("engine fill never warns", len(e_texts) == 0)
 
 
+def test_gd_gdd_convention():
+    """PD3: GD/GDD over the corrected Dphi include the reference's
+    dispersion (PD plan option 1); the ABSOLUTE GD/GDD keys do not.
+
+    All asserts drive the library surface (``ScatterMatrix.dispersion``
+    — the same unwrap+gradient chain the solver keys use), so the twin
+    cannot co-drift with a private reimplementation.
+
+    Constructions (normal incidence, real indices):
+    * Hand-exact stack: film index == substrate index kills the
+      Fabry-Perot denominator, so arg(t_stack) = nf*w*D/c exactly and
+      Dphi = (nf - n_inc(lam))*w*D/c.  With n_inc linear in lambda the
+      reference is linear in omega, so its GD is the exact constant
+      b*D/c — the two-point hand case is bitwise.
+    * The reference-only stack (the equivalent ambient layer, all
+      matched) has arg(t) = ref exactly — its GD/GDD ARE d(ref)/dw,
+      d2(ref)/dw2 as computed by the library operator.
+    * Cauchy ambient n = A + B/lam^2 makes ref cubic in omega, so its
+      GDD is the exact 3*B*w*D/(2*pi^2*c^3) at the centre of a uniform
+      omega grid (the chained non-uniform stencil is exact there).
+    """
+    print("--- PD3: GD/GDD over Dphi carry the reference's dispersion ---")
+    from navette.smatrix.smatrix import ScatterMatrix
+    C = 299.792458  # nm/ps — the solver's constant: omega = 2*pi*C/lam (rad/ps), GD in ps
+
+    def run_disp(st):
+        kw = dict(transmission=True, reflection=False, s_pol=True, p_pol=False)
+        out = st.dispersion(**kw)
+        return (np.asarray(out["GD_T_s"]).ravel(),
+                np.asarray(out["GDD_T_s"]).ravel())
+
+    # ---- T1: two-point hand case (GD over Dphi == GD(arg t) - d(ref)/dw) ----
+    nf, d = 2.0, 300.0
+    a, b = 2.0e-4, 1.30
+    lam2 = np.array([450.0, 700.0])
+    n_lin = a * lam2 + b
+    stack = ScatterMatrix(np.array([n_lin, np.full(2, nf), np.full(2, nf)]),
+                          np.array([0.0, d, 0.0]), wavelengths=lam2, angles=[0.0])
+    ref_st = ScatterMatrix(np.array([n_lin, n_lin, n_lin]),
+                           np.array([0.0, d, 0.0]), wavelengths=lam2, angles=[0.0])
+    gd_s, gdd_s = run_disp(stack)
+    gd_r, gdd_r = run_disp(ref_st)
+    check("absolute GD carries no reference (bitwise nf*D/c)",
+          bool(np.all(gd_s == nf * d / C)),
+          f"resid={np.max(np.abs(gd_s - nf * d / C)):.2e}")
+    check("reference stack GD == d(ref)/dw (b*D/c, exact)",
+          bool(np.max(np.abs(gd_r - b * d / C)) < 1e-12),
+          f"resid={np.max(np.abs(gd_r - b * d / C)):.2e}")
+    delta = gd_s - gd_r
+    hand = (nf - b) * d / C
+    check("GD over Dphi == hand (nf-b)*D/c (1e-12)",
+          bool(np.max(np.abs(delta - hand)) < 1e-12),
+          f"delta={delta[0]:.15f} hand={hand:.15f}")
+    check("absolute GDD of the linear row is zero",
+          bool(np.max(np.abs(gdd_s)) < 1e-12),
+          f"max={np.max(np.abs(gdd_s)):.2e}")
+
+    # ---- T2: GDD non-zero for a dispersive ambient, zero for a constant one ----
+    A, B = 1.45, 4000.0
+    om_u = np.linspace(3.6, 3.2, 5)          # uniform descending -> lam ascending
+    lam_u = 2 * np.pi * C / om_u
+    nC = A + B / lam_u ** 2
+    nK = np.full(5, 1.45)
+    films = np.array([0.0, d, 0.0])
+    st_c = ScatterMatrix(np.array([nC, np.full(5, nf), np.full(5, nf)]), films,
+                         wavelengths=lam_u, angles=[0.0])
+    rf_c = ScatterMatrix(np.array([nC, nC, nC]), films, wavelengths=lam_u, angles=[0.0])
+    st_k = ScatterMatrix(np.array([nK, np.full(5, nf), np.full(5, nf)]), films,
+                         wavelengths=lam_u, angles=[0.0])
+    rf_k = ScatterMatrix(np.array([nK, nK, nK]), films, wavelengths=lam_u, angles=[0.0])
+    gdd_ca = run_disp(st_c)[1] - run_disp(rf_c)[1]
+    gdd_ck = run_disp(st_k)[1] - run_disp(rf_k)[1]
+    analytic = -3.0 * B * om_u * d / (2.0 * np.pi ** 2 * C ** 3)
+    check("GDD over Dphi non-zero for a dispersive ambient",
+          bool(np.all(np.abs(gdd_ca) > 1e-3)),
+          f"min|gdd|={np.min(np.abs(gdd_ca)):.4f}")
+    # The uniform-grid centre: the chained stencil is exact for the cubic
+    # reference row there (endpoints carry a one-sided-difference tail).
+    mid = len(om_u) // 2
+    check("GDD correction == analytic d2(ref)/dw2 at the grid centre",
+          abs(gdd_ca[mid] - analytic[mid]) < 1e-10 * abs(analytic[mid]),
+          f"delta={gdd_ca[mid]:.12e} analytic={analytic[mid]:.12e}")
+    check("GDD over Dphi zero for a constant ambient (1e-12)",
+          bool(np.max(np.abs(gdd_ck)) < 1e-12),
+          f"max={np.max(np.abs(gdd_ck)):.2e}")
+
+
 if __name__ == "__main__":
     test_hand()
     test_oracle_kinds()
@@ -569,5 +662,6 @@ if __name__ == "__main__":
     test_dispersive_hand()
     test_nondispersive_bitwise()
     test_dispersive_rotation_door()
+    test_gd_gdd_convention()
     print("ALL OK" if not FAILURES else f"MISMATCH {FAILURES}")
     sys.exit(1 if FAILURES else 0)

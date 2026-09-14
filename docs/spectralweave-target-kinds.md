@@ -169,10 +169,19 @@ $$\Delta\varphi(\lambda) = \arg t(\lambda) - passes\cdot\frac{2\pi\,n_{inc}\,D\c
 
 with `passes = 1` (single traversal; `passes = 2` covers a reflection
 round trip if reflection labels are ever added), `D` the total coating
-thickness and `n_inc` the real incidence index. Group delay / GDD over
-$\Delta\varphi$ come for free (finite differences kill the reference
-anyway); the differential form matters for absolute-phase targets and
-for correct needle-gain bookkeeping.
+thickness and `n_inc` the real incidence index. GD/GDD (and TOD/FOD)
+over $\Delta\varphi$ carry the reference's dispersion (PD3, decision:
+option 1) — with $n_{inc}(\omega)$ dispersive, $\mathrm{GD}_{ref} =
+(n_{inc} + \omega\,dn_{inc}/d\omega)\,D\cos\theta_{inc}/c$ is $\lambda$-dependent
+and the reference's GDD contribution $2\,dn/d\omega + \omega\,d^2n/d\omega^2$
+is non-zero, so finite differences of the corrected $\Delta\varphi$ (or
+GD/GDD of the reference-only stack subtracted from the absolute keys)
+are the right recipe. Before 0.6.45 a frozen scalar index contributed a
+constant GD and exactly zero GDD, which is what made the old "finite
+differences kill the reference anyway" remark true. The differential
+form matters for absolute-phase targets and for correct needle-gain
+bookkeeping; the absolute GD/GDD keys (`GD_T_s`, …) stay reference-free
+— pinned by the PD3 parity twin.
 
 Evaluation points (all in solver convention — see the sign note below):
 

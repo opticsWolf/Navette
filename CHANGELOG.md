@@ -5,6 +5,50 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.6.47] - PD3: GD/GDD over Δφ carry the reference's dispersion (decision pinned)
+
+PD1 made the differential reference per-λ. That silently changed what
+"GD/GDD over Δφ" means: a frozen scalar index contributed a constant
+group delay and exactly zero GDD (which is what made the old doc remark
+"finite differences kill the reference anyway" true); a per-λ index
+contributes a λ-dependent GD shift and a genuine GDD term.
+
+### Decided
+
+**Option 1 — report GD/GDD over the corrected Δφ.** The series exists to
+make the reference correct; carving the dispersion orders out would
+reintroduce, one level up, exactly the inconsistency being removed.
+Option 3 (both sets of keys) is deferred, not refused: additive keys can
+be added later without revisiting the decision.
+
+### Changed
+
+- `docs/spectralweave-target-kinds.md`: the stale "finite differences
+  kill the reference anyway" sentence replaced with the corrected
+  recipe and the analytic corrections (`GD_ref = (n + ω·dn/dω)·D·cosθ/c`,
+  the reference's GDD term `2·dn/dω + ω·d²n/dω²`).
+
+### Numeric consequence (dispersive ambients)
+
+For a dispersive incidence index the GD over Δφ acquires the
+λ-dependent shift `−(n_inc + ω·dn_inc/dω)·D·cosθ_inc/c` and the GDD over
+Δφ acquires `−(2·dn_inc/dω + ω·d²n_inc/dω²)·D·cosθ_inc/c` relative to
+the pre-0.6.45 numbers. For a constant ambient index: **no change at
+all** — GD shifts by the constant `−n_inc·D·cosθ/c` only in the
+differential keys (as always) and GDD is untouched.
+
+### Added
+
+- Parity check `gd-gdd-convention` (13th check in the PD file): a
+  two-point hand case through the library `dispersion()` is
+  bitwise-exact (film index = substrate index kills the Fabry-Perot
+  denominator, so `arg(t) = n·ω·D/c` exactly); GDD over Δφ is non-zero
+  for a dispersive ambient and matches the analytic
+  `−3·B·ω·D/(2π²c³)` at the uniform-grid centre to 1e-12, and is zero
+  (1e-12) for a constant ambient; the absolute GD/GDD keys carry no
+  reference term (the 0.6.46 behaviour, pinned bitwise for the linear
+  row).
+
 ## [0.6.46] - PD2: the doors accept a per-λ reference; the scalar door gets its permanent guard
 
 After PD1 the native path is correct by construction (it reads the
