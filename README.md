@@ -73,7 +73,14 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 
 - **Multi-domain Targets**: One joint merit over spectral, angular, and CIE color demands — multiple angles, illuminants with own-white metamerism control, and per-target wavelength windows — all folded into the needle gradient with analytic chain-rule terms, so a single run designs for daylight and showroom light at once.
 
-- **Graded Media**: Gradient-index profiles expand natively for simulation and serve as pinned background (substrate diffusion gradients, rugate foundations) while the needle designs around them.
+- **Graded Media**: Mixture gradients are a first-class layer property, not a hand-built stack of sublayers. A `gradient` spec names the two endpoint materials, the EMA kernel (any of the six in-tree mixing rules) and the profile mode — `FixedSpan`, where composition runs `f_start` → `f_end` across the film, or `RateCapped`, a thickness-relative slope clamped to `[f_min, f_max]` so a thick film saturates into a pure-material tail. Single-material drift (`InhMode`) has the same two modes. Graded layers still serve as pinned background (substrate diffusion gradients, rugate foundations) while the needle designs around them — what is new is that a graded span's thickness can itself be an optimizer parameter.
+
+- **One Physical Layer, One Parameter**: A profiled film is *one* layer, so the optimizer moves its total thickness as a single number rather than one parameter per sublayer, and a thickness-relative profile is re-derived at the construction points when its span rescales instead of carrying stale nk. For the same reason the thin-layer floor, the thickness ceiling and the layer budget are span quantities: they count design layers, not solver rows.
+
+- **Thin-Layer Policy**: A film driven below the minimum thickness you can actually deposit need not be deleted. `thin_layer_policy` decides: `'remove'` (the default, and bit-for-bit the historical behaviour), `'clamp_up_final'` — the search runs exactly as before and only the final pass lifts a surviving sub-minimum film to the floor — or `'clamp_up_always'`. A film that carries an interface slice clamps up like any other single layer.
+
+- **Saved Designs Stay Readable**: state files carry a schema version and the reader accepts a *range* (`[1, 2]`), not a point. A state written by an older build is reconstructed from its defaults rather than refused; one written by a *newer* build is refused with a message that says so, because the remedy there is upgrading, not hand-editing the file.
+
 ### Technical Specifications
 
 |**Feature**|**Implementation & Engineering Benefit**|
@@ -164,8 +171,12 @@ docs/plans/exposure_audit.md).
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 `cargo test --workspace`, a zero-compiler-warnings check (`-D warnings`),
-`pytest validation` on Windows and Linux, the exposure and CIE-sync lints,
-and an assertion that the installed extension is a release build.
+`pytest validation` on Windows and Linux (pinned runner images, so the
+recorded fingerprints stay platform-stable), four blocking lints — exposure,
+CIE sync, `.pyi` surface sync, and message hygiene
+(`tools/check_message_whitespace.py`: space runs and console-unencodable
+characters inside message literals) — and an assertion that the installed
+extension is a release build.
 `cargo clippy -D warnings` (since 0.6.6) and `cargo fmt --all --check`
 (since 0.6.32) are blocking; nothing in the workflow is advisory any more.
 
