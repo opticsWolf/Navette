@@ -160,7 +160,8 @@ def build_merit_spec(collection: TargetCollection,
     return _compile(_json.dumps(doc))
 
 def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
-                             n_inc: float = 1.0, total_d: float = 0.0,
+                             n_inc: float | np.ndarray = 1.0,
+                             total_d: float = 0.0,
                              passes: float = 1.0):
     """Rotate complex amplitudes into differential-phase space.
 
@@ -169,12 +170,17 @@ def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
     ``total_d`` share units; ``angle_deg`` is degrees in the incidence
     medium), so ``arg()`` of the result is the differential phase
     ``Δφ = arg(a) − ref``. Last axis is wavelength; leading axes (angles)
-    broadcast. An absolute-phase demand on the rotated rows is exactly a
+    broadcast. ``n_inc`` is a float (constant medium) or a per-wavelength
+    float array (a dispersive medium; PD2) — the native kernel broadcasts
+    length 1, validates anything else, and warns when a scalar index meets
+    a differential rotation (it cannot know the medium it was not given).
+    An absolute-phase demand on the rotated rows is exactly a
     differential-phase demand on the raw rows (the test oracle for
     ``PDts``/``PDtp`` — native and numpy paths must agree to 1e-12).
     """
-    # Thin over the native kernel: factors computed in Rust, broadcast
-    # multiply stays numpy (arbitrary leading axes are presentation).
+    # Thin over the native kernel: factors computed in Rust (length rule
+    # and scalar-guard included), broadcast multiply stays numpy (arbitrary
+    # leading axes are presentation).
     from navette._smatrix import reference_rotation as _ref_rot
     a = np.asarray(cplx)
     wl = np.asarray(wavelengths, dtype=np.float64).ravel()
@@ -182,8 +188,13 @@ def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
         raise ValueError(
             f"last axis {a.shape[-1]} != {wl.size} wavelengths."
         )
-    rot = np.asarray(_ref_rot(wl, float(angle_deg), float(n_inc),
-                              float(total_d), float(passes)))
+    if np.ndim(n_inc) == 0:
+        rot = np.asarray(_ref_rot(wl, float(angle_deg), float(n_inc),
+                                  float(total_d), float(passes)))
+    else:
+        n = np.ascontiguousarray(np.asarray(n_inc, dtype=np.float64).ravel())
+        rot = np.asarray(_ref_rot(wl, float(angle_deg), n,
+                                  float(total_d), float(passes)))
     return a * rot.reshape((1,) * (a.ndim - 1) + (-1,))
 
 
@@ -191,8 +202,8 @@ def sim_curves_from_arrays(angles, wavelengths,
                            curves: Dict[str, np.ndarray],
                            complex_curves: Dict[str, np.ndarray] | None = None,
                            total_d: float = 0.0,
-                           n_front: float = 1.0,
-                           n_back: float = 1.0):
+                           n_front: float | np.ndarray = 1.0,
+                           n_back: float | np.ndarray = 1.0):
     """Build a native ``SimCurves`` from row-major ``[n_angles, n_wavs]`` maps.
 
     ``curves`` maps CurveId codes (``"Rs"``…``"ABu"``) to float rows;
@@ -201,13 +212,16 @@ def sim_curves_from_arrays(angles, wavelengths,
     ``total_d``/``n_front``/``n_back`` are the stack metadata for
     differential-phase (``PDts``/``PDtp``) demands — total coating
     thickness (same units as ``wavelengths``) and the real
-    incidence/exit indices. Defaults zero the reference.
+    incidence/exit indices, a float (length-1 broadcast) or a
+    per-wavelength float array (a dispersive medium; PD2). Lengths are
+    validated natively (length 1 or ``len(wavelengths)``). Defaults zero
+    the reference.
     """
     # Thin: lengths + key rules validated natively in set_curve/set_complex.
     angles = np.ascontiguousarray(np.asarray(angles, dtype=np.float64)).ravel()
     wavelengths = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64)).ravel()
     sim = _NativeSimCurves(angles, wavelengths, float(total_d),
-                            float(n_front), float(n_back))
+                            n_front, n_back)
     for code, arr in curves.items():
         sim.set_curve(code, np.ascontiguousarray(
             np.asarray(arr, dtype=np.float64)).ravel())

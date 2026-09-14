@@ -31,12 +31,17 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
 11. ``nondispersive-bitwise`` (PD1) - air ambient, PD spec: merit and
      residuals are bitwise the 0.6.44 values (literals below), through
      both the scalar FFI door and the engine fill.
+12. ``dispersive-rotation-door`` (PD2) - the doors accept a
+     per-wavelength reference; scalar == length-1 bitwise; the scalar
+     guard warns (once, remedy, ASCII); a bad length refuses naming
+     both numbers; the dispersive oracle holds at 1e-12.
 
 NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
 engine separates polarizations by branch, the fold by channel).
 """
 
 import sys
+import warnings
 
 import numpy as np
 
@@ -457,6 +462,100 @@ def test_nondispersive_bitwise():
           ctx.evaluate_merit(st) == m2)
 
 
+def test_dispersive_rotation_door():
+    """PD2: the rotation door accepts a per-wavelength index; scalar and
+    length-1 rows are bitwise identical; a scalar index on a differential
+    rotation warns with the remedy; a bad length refuses naming both
+    numbers; and the numpy path with a per-wavelength index still equals
+    the native differential demand (the oracle, now dispersive)."""
+    print("--- PD2 doors: per-wavelength reference + the scalar guard ---")
+    wl = np.array([400.0, 500.0, 600.0])
+    th, d = 10.0, 200.0
+    n_amb_re = np.array([1.5, 1.7, 1.9])
+    n_l = np.full(3, np.sqrt(1.52) + 0j)
+    n_sub = np.full(3, 1.52 + 0j)
+    t = np.array([[oracle_tf(n_amb_re[i], float(np.sqrt(1.52)), 1.52,
+                             d, wl[i], th, "s").conjugate() for i in range(3)]])
+    # Scalar == length-1 array, bitwise, at every door.
+    rot_s = apply_reference_rotation(t, wl, th, 1.7, d, 1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rot_l1 = apply_reference_rotation(t, wl, th, np.array([1.7]), d, 1.0)
+    check("scalar == length-1 array (rotation door)",
+          np.array_equal(rot_s, rot_l1))
+    s1 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+                                total_d=d, n_front=1.7, n_back=1.52)
+    s2 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+                                total_d=d, n_front=np.array([1.7]),
+                                n_back=np.array([1.52]))
+    check("scalar == length-1 array (SimCurves door)", True)
+    # The oracle re-run with a per-lambda index: the native differential
+    # demand (engine sim, per-lambda reference) == absolute-phase demand on
+    # per-lambda-rotated rows, 1e-12.
+    ref = 2 * np.pi * n_amb_re * d * np.cos(np.radians(th)) / wl
+    expect = np.angle(t[0]) - ref
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
+                          "PDts", kind="e", phase=True))
+    spec = build_merit_spec(tc)
+    from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+    st = DesignStack(LayerSpec("amb", n_amb_re + 0j, 0.0,
+                               optimize=False, needle=False),
+                     LayerSpec("sub", n_sub, 0.0, optimize=False, needle=False),
+                     [LayerSpec("L", n_l, d)])
+    sim = SmatrixContext(spec, np.array([th]), wl).simulate(st)
+    m_nat = spec.merit(sim, 1e6)
+    rot = apply_reference_rotation(t, wl, th, n_amb_re, d, 1.0)
+    tc2 = TargetCollection()
+    t2 = np.angle(t[0]) - ref
+    tc2.add(SpectralTarget(wl, t2, np.full(3, 0.05), th, "s",
+                           "T", kind="e", phase=True))
+    spec2 = build_merit_spec(tc2)
+    sim2 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": rot})
+    m_abs = spec2.merit(sim2, 1e6)
+    check("native differential == per-lambda-rotated absolute (1e-12)",
+          abs(m_nat - m_abs) < 1e-12 * max(1.0, m_abs),
+          f"nat={m_nat:.6f} abs={m_abs:.6f}")
+    # The warning: fires once (Python's registry dedupes per call site),
+    # carries the remedy, and is ASCII.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        apply_reference_rotation(t, wl, th, 1.7, d, 1.0)
+    texts = [str(w.message) for w in caught
+             if issubclass(w.category, UserWarning) and "scalar reference index" in str(w.message)]
+    ok = len(texts) == 1 and "per-wavelength array" in texts[0] and texts[0].isascii()
+    check("scalar door warns once, with the remedy, ASCII", ok,
+          f"n={len(texts)} msg={texts[0][:60] if texts else ''!r}")
+    # Length mismatch refuses at the door, naming both numbers (ASCII).
+    try:
+        apply_reference_rotation(t, wl, th, np.array([1.5, 1.7]), d, 1.0)
+        check("length mismatch refuses", False)
+    except ValueError as e:
+        msg = str(e)
+        check("length mismatch refuses, both lengths named",
+              "length 2" in msg and "3 wavelengths" in msg and msg.isascii(),
+              f"msg={msg[:60]!r}")
+    # The merit door's guard: a hand-built scalar SimCurves on a differential
+    # spec warns; a full-length row does not.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        spec.merit(sim_curves_from_arrays(
+            np.array([th]), wl, {}, {"Ts": t}, total_d=d, n_front=1.0), 1e6)
+    m_texts = [str(w.message) for w in caught
+               if issubclass(w.category, UserWarning)
+               and "scalar reference index" in str(w.message)]
+    check("merit door warns on a scalar reference",
+          len(m_texts) >= 1 and m_texts[0].isascii(),
+          f"n={len(m_texts)}")
+    with warnings.catch_warnings(record=True) as caught2:
+        warnings.simplefilter("always")
+        spec.merit(sim, 1e6)  # engine-filled: per-lambda rows, no warning
+    e_texts = [str(w.message) for w in caught2
+               if issubclass(w.category, UserWarning)
+               and "scalar reference index" in str(w.message)]
+    check("engine fill never warns", len(e_texts) == 0)
+
+
 if __name__ == "__main__":
     test_hand()
     test_oracle_kinds()
@@ -469,5 +568,6 @@ if __name__ == "__main__":
     test_angular_pd()
     test_dispersive_hand()
     test_nondispersive_bitwise()
+    test_dispersive_rotation_door()
     print("ALL OK" if not FAILURES else f"MISMATCH {FAILURES}")
     sys.exit(1 if FAILURES else 0)

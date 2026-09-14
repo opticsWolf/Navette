@@ -5,6 +5,48 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.6.46] - PD2: the doors accept a per-λ reference; the scalar door gets its permanent guard
+
+After PD1 the native path is correct by construction (it reads the
+stack). The remaining way to hand a frozen scalar index to a dispersive
+medium is a hand-assembled `SimCurves` — and every door that takes a
+reference index still took a scalar.
+
+### Changed
+
+- **`SimCurves.__init__`** (`n_front`/`n_back`): accept `float | FloatArray`
+  — a float becomes a length-1 broadcast row, an array passes through for
+  the native length rule (length 1 or `len(wavelengths)`; anything else
+  refuses via `reference_length_issue`, naming both numbers).
+- **`reference_rotation`**: `n_inc` accepts `float | FloatArray`, length 1
+  or `len(wavelengths)`; a wrong length refuses naming both numbers. The
+  core kernel is per-λ (`n_inc: &[f64]`, broadcast) — the per-λ arithmetic
+  is bitwise the pre-PD2 scalar kernel when the row is constant.
+- **`apply_reference_rotation` / `sim_curves_from_arrays`**: pass-through
+  (thin, as before — the validation stays native).
+- `.pyi` stubs updated (`check_pyi_sync.py` green).
+
+### Added
+
+- **The permanent guard (the part that outlives PD1):** when a scalar
+  (length-1) index meets an active differential demand, the door emits a
+  `UserWarning` naming the quantity, the supplied value, and the remedy
+  — pass the per-λ array (ground rule 6: announced, never silent;
+  ground rule 7: ASCII). A warning, not a refusal: air is a legitimate
+  scalar and by far the common case, and the door cannot know the stack
+  it was not given. Python's warning registry dedupes per call site, so
+  an LM loop sees it once. Wired at `reference_rotation` (covering
+  `apply_reference_rotation`'s numpy path) and at the merit/residuals/
+  `build_needle_targets` FFI doors (a hand-built sim + a differential
+  spec). The engine fill (per-λ rows) never warns.
+- Parity check `dispersive-rotation-door`: scalar == length-1 array
+  bitwise at both doors; the dispersive oracle (native differential ==
+  per-λ-rotated absolute) holds at 1e-12 — what keeps the numpy path a
+  real oracle instead of a co-drifting copy; the guard warns once with
+  the remedy and is ASCII; the length mismatch refuses naming both
+  numbers. Rust unit tests for the kernel's broadcast rule and refusals
+  (551 lib tests).
+
 ## [0.6.45] - PD1: the differential-phase reference index follows the wavelength
 
 The differential-phase reference was a **scalar frozen at the centre

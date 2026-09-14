@@ -437,6 +437,29 @@ included, plus:
 
 ## 3. PD2 — the array surface at the FFI and Python doors (0.6.46)
 
+**DONE:** — done (2026-09-14, feature commit pending). All five doors
+accept `float | FloatArray`; the length rule is native (length 1 or
+`len(wavelengths)`, refusals name both numbers); the scalar guard warns
+at `reference_rotation` (covering the numpy path) and at the
+merit/residuals/`build_needle_targets` FFI doors, once per call site
+via Python's warning registry; the engine fill never warns.
+
+CORRECTIONS:
+
+1. The plan's guard paragraph says "the door emits a warning" — the
+   ctor and `sim_curves_from_arrays` cannot see a demand (they build
+   sims, not consume specs), so the warning there had to live at the
+   consumption doors that CAN see both facts: `reference_rotation`
+   (`passes` visible) and the merit/residuals/`build_needle_targets`
+   FFI wrappers (the spec's `uses_differential()` + the sim's row
+   shape). The Python helpers stay thin, as the plan directs.
+2. `MeritSpec.merit`'s PyO3 signature gained `PyResult<f64>` (the
+   warning path can surface a warning-as-error); callers see no
+   change.
+3. The plan's twin "the warning fires once" is realized by Python's
+   warning registry (dedupe per call site) — an LM loop of thousands of
+   merit calls prints it once.
+
 ### Change
 
 Sites 9–13 of §1.1. Each door that takes a scalar index learns to take an

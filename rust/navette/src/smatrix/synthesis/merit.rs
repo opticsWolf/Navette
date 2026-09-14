@@ -1486,22 +1486,43 @@ fn push_terms(
 /// Reference-rotation factors for differential-phase demands:
 /// `exp(-i·ref)` with `ref = passes·2π·n_inc·total_d·cosθ/λ` per
 /// wavelength. `arg(a·factor)` is the differential phase `Δφ`.
+///
+/// `n_inc` is per-λ (PD1/PD2): length 1 broadcasts (the scalar door),
+/// otherwise exactly `wavelengths.len()`; anything else refuses, naming
+/// both numbers. The per-λ arithmetic is identical to the pre-PD2 scalar
+/// kernel when the row is constant — same `f64` operand, same order.
 pub fn reference_rotation(
     wavelengths: &[f64],
     angle_deg: f64,
-    n_inc: f64,
+    n_inc: &[f64],
     total_d: f64,
     passes: f64,
-) -> Vec<num_complex::Complex64> {
+) -> Result<Vec<num_complex::Complex64>, String> {
     use std::f64::consts::PI;
+    if n_inc.is_empty() {
+        return Err("reference_rotation: n_inc is empty - supply length 1 \
+             (constant medium) or one value per wavelength"
+            .into());
+    }
+    if n_inc.len() != 1 && n_inc.len() != wavelengths.len() {
+        return Err(format!(
+            "reference_rotation: n_inc has length {}, but the grid has {} \
+             wavelengths - supply length 1 (constant medium) or {}",
+            n_inc.len(),
+            wavelengths.len(),
+            wavelengths.len()
+        ));
+    }
     let cos_t = angle_deg.to_radians().cos();
-    wavelengths
+    Ok(wavelengths
         .iter()
-        .map(|w| {
-            let r = passes * 2.0 * PI * n_inc * total_d * cos_t / w;
+        .enumerate()
+        .map(|(i, w)| {
+            let n_at = if n_inc.len() == 1 { n_inc[0] } else { n_inc[i] };
+            let r = passes * 2.0 * PI * n_at * total_d * cos_t / w;
             num_complex::Complex64::new(0.0, -r).exp()
         })
-        .collect()
+        .collect())
 }
 
 /// Apply per-wavelength rotation factors to flat rows in place.
@@ -2800,7 +2821,7 @@ mod tests {
     #[test]
     fn rotation_kernel_values() {
         // λ=1000, θ=0, n=1, d=250, passes=1: ref = 2π·250/1000 = π/2.
-        let rot = super::reference_rotation(&[1000.0], 0.0, 1.0, 250.0, 1.0);
+        let rot = super::reference_rotation(&[1000.0], 0.0, &[1.0], 250.0, 1.0).unwrap();
         assert!((rot[0].re - 0.0).abs() < 1e-15);
         assert!((rot[0].im + 1.0).abs() < 1e-15);
         let mut rows = vec![num_complex::Complex64::new(1.0, 0.0); 3];
@@ -2808,8 +2829,49 @@ mod tests {
         assert!((rows[0].im + 1.0).abs() < 1e-15);
         assert!(super::rotate_rows(&mut rows[..2], &rot).is_ok());
         let mut bad = vec![num_complex::Complex64::new(1.0, 0.0); 2];
-        let rot2 = super::reference_rotation(&[1000.0, 500.0, 250.0], 0.0, 1.0, 0.0, 1.0);
+        let rot2 =
+            super::reference_rotation(&[1000.0, 500.0, 250.0], 0.0, &[1.0], 0.0, 1.0).unwrap();
         assert!(super::rotate_rows(&mut bad, &rot2).is_err());
+    }
+
+    /// PD2: the kernel broadcasts a length-1 index bitwise and refuses a
+    /// length that is neither 1 nor the grid length, naming both numbers.
+    #[test]
+    fn reference_rotation_broadcasts_and_refuses_by_length() {
+        use std::f64::consts::TAU;
+        let wls = [400.0_f64, 500.0, 600.0];
+        let n_col = [1.5_f64, 1.7, 1.9];
+        // Broadcast (length 1) == the pre-PD2 scalar kernel, bitwise:
+        // identical f64 operand, identical order (exp(-i*r) itself).
+        let rot_b = super::reference_rotation(&wls, 0.0, &[1.7], 100.0, 1.0).unwrap();
+        let rot_x = super::reference_rotation(&wls, 0.0, &[1.7, 1.7, 1.7], 100.0, 1.0).unwrap();
+        assert_eq!(rot_b.to_vec(), rot_x);
+        // Hand: arg(exp(-i*r)) = -r (wrapped to (-pi, pi]).
+        let wrapped = |x: f64| x - TAU * (x / TAU + 0.5).floor();
+        let expect = wrapped(-TAU * 1.7 * 100.0 / 400.0);
+        assert!(
+            (rot_b[0].arg() - expect).abs() < 1e-12,
+            "arg={:?}",
+            rot_b[0]
+        );
+        // Dispersive row: per-lambda values.
+        let rot_d = super::reference_rotation(&wls, 0.0, &n_col, 200.0, 1.0).unwrap();
+        let expect_args: Vec<f64> = n_col
+            .iter()
+            .zip(wls)
+            .map(|(n, w)| wrapped(-TAU * n * 200.0 / w))
+            .collect();
+        for (r, e) in rot_d.iter().zip(expect_args.iter()) {
+            assert!((r.arg() - e).abs() < 1e-12, "arg={r:?} expect={e}");
+        }
+        // Refusals: length 2 against a 3-wavelength grid (both named), empty.
+        let err = super::reference_rotation(&wls, 0.0, &[1.5, 1.7], 200.0, 1.0).unwrap_err();
+        assert!(
+            err.contains("length 2") && err.contains("3 wavelengths"),
+            "err={err}"
+        );
+        let err = super::reference_rotation(&wls, 0.0, &[], 200.0, 1.0).unwrap_err();
+        assert!(err.contains("empty"), "err={err}");
     }
 
     #[test]

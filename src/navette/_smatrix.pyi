@@ -322,7 +322,9 @@ class SimCurves:
     """Simulated curves on one (angle, wavelength) grid, keyed by curve id.
 
     `total_d` / `n_front` / `n_back` feed the differential-phase reference;
-    leaving them at their defaults reproduces absolute phase bit-for-bit.
+    the indices take a float (length-1 broadcast) or a per-wavelength array
+    (PD2); leaving them at their defaults reproduces absolute phase
+    bit-for-bit.
     """
 
     def __init__(
@@ -330,8 +332,8 @@ class SimCurves:
         angles: FloatArray,
         wavelengths: FloatArray,
         total_d: float = ...,
-        n_front: float = ...,
-        n_back: float = ...,
+        n_front: float | FloatArray = ...,
+        n_back: float | FloatArray = ...,
     ) -> None: ...
     def set_curve(self, curve_id: str, values: FloatArray) -> None: ...
     def set_complex(self, curve_id: str, values: ComplexArray) -> None: ...
@@ -365,7 +367,7 @@ def compile_merit_spec(request_json: str) -> MeritSpec: ...
 def reference_rotation(
     wavelengths: FloatArray,
     angle_deg: float,
-    n_inc: float = ...,
+    n_inc: float | FloatArray = ...,
     total_d: float = ...,
     passes: float = ...,
 ) -> ComplexArray:
