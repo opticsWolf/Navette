@@ -265,6 +265,46 @@ re-open them:
 
 ## 2. PD1 — the reference index becomes wavelength-dependent (0.6.45)
 
+**DONE:** — done (2026-09-14, feature commit pending). The reference
+indices are per-λ rows (`Arc<[f64]>`, length `wavelengths.len()` or 1,
+broadcast) filled from the whole `n_stack_cache` column; the merit inner
+loop samples the row with the complex rows' own two-pointer machinery,
+the needle op-point and both gain-shift sites interpolate via
+`interp_n_row` at the demand wavelength. The plan's length-1 broadcast,
+length-refusal (`reference_length_issue`, naming both numbers) and
+ licence items 1–4 landed as written.
+
+CORRECTIONS:
+
+1. §7 decision 1 (PD before Phase B) is **resolved by instruction**:
+   implementing the plan adopts its own §0.4 recommendation (0.6.45–
+   0.6.48; Phase B slides to 0.6.49–0.6.53).
+2. §7 decision 2 (`n_inc.unwrap_or(1.0)` reachability): **`None` is
+   unreachable with a differential demand** — both `sample_op_value`
+   call sites match `(Some(sim), Some(rows))` before calling and `n_inc`
+   derives from that same `current_sim`, so the air-reference arm could
+   never fire. Replaced by `expect` with the proof in its message (the
+   first arm of the plan's §1.1 resolution menu).
+3. The broadcast row needs an explicit branch in every reader (the
+   merit loop's aligned path would index `row[offset + i]` out of
+   bounds on a length-1 row): `sample_n` returns `row[0]` for the
+   broadcast shape, and `interp_n_row` does the same before delegating
+   to `interp_clamped`. Not in the plan's site list because the plan's
+   sketch assumed a single shape — the broadcast rule made it two.
+4. The engine fill produces full-length rows even for a constant
+   medium (the plan's fill snippet); length 1 exists only through the
+   ctor/default. The bit-exactness argument covers both (a constant
+   row interpolates to its one value exactly), verified bitwise.
+5. The engine-fill test pinned the NEW shape as well: the
+   non-differential branch now yields `[1.0]` (one element) and the
+   differential branch length-`nw` columns — the pre-PD1 test asserted
+   scalars and was updated with the per-λ expectation.
+
+Gates: fmt, clippy -D warnings, 550 lib tests (564 with `lm`/all
+features), pytest 766 passed, five tools, ten harnesses, both
+fingerprints (per-platform needle digests reproduce; CI evaluates the
+Linux side). Release wheel 0.6.45 built and installed.
+
 ### What the tree has today
 
 Sites 1–8 of §1.1's table. One `f64` per side, picked at `nw / 2`.
@@ -585,8 +625,8 @@ cells, and the last two table edits in this repo joined two rows into one.
 
 | # | Decision | Status |
 |---|---|---|
-| 1 | PD before Phase B (0.6.45–0.6.48) vs after (0.6.50–0.6.53) | **Open — needs the owner.** §0.4 recommends before. |
-| 2 | `n_inc.unwrap_or(1.0)` at `needle_pass.rs:184` — reachable with a differential demand? | **Open — resolve during PD1** (§1.1), record the answer either way. |
+| 1 | PD before Phase B (0.6.45–0.6.48) vs after (0.6.50–0.6.53) | **Resolved — before, adopted by instruction** (implementing this plan takes its §0.4 recommendation). |
+| 2 | `n_inc.unwrap_or(1.0)` at `needle_pass.rs:184` — reachable with a differential demand? | **Resolved during PD1:** `None` is unreachable when a differential demand is live (`sample_op_value` runs only under `(Some(sim), Some(rows))`, and `n_inc` derives from the same sim); now an `expect` with the reason (PD1's CORRECTIONS 2). |
 | 3 | GD/GDD over the corrected Δφ (option 1) | **Decided** — PD3 §Decision. Option 3 deferred until a real case. |
 | 4 | Wrapped principal value for `PDts`/`PDtp` keys | **Decided** — PD4. |
 | 5 | Scalar index at the FFI doors: warn, not refuse | **Decided** — PD2. |

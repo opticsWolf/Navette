@@ -304,17 +304,20 @@ impl SimTransform {
 /// describe the axes. Arc slices make this cheap to share across rayon
 /// workers during Jacobian assembly.
 ///
-/// `total_d` / `n_front_re` / `n_back_re` describe the stack for
-/// differential-phase (`PDts`/`PDtp`) demands: total coating thickness
-/// (same units as `wavelengths`) and the real incidence/exit indices.
-/// Defaults (0/1/1) zero the reference, i.e. differential ≡ absolute.
+/// The indices are **per wavelength** (PD1): length `wavelengths.len()`
+/// or 1 (a non-dispersive medium broadcasts, so `Default`'s `[1.0]` keeps
+/// `total_d = 0` ≡ absolute phase bit-for-bit). Any other length is a
+/// refusal (`reference_length_issue`), naming both numbers.
 #[derive(Clone, Debug)]
 pub struct SimCurves {
     pub angles: Arc<[f64]>,
     pub wavelengths: Arc<[f64]>,
     pub total_d: f64,
-    pub n_front_re: f64,
-    pub n_back_re: f64,
+    /// Real incidence index per wavelength (differential-phase reference).
+    /// Length `wavelengths.len()` or 1 (broadcast). Default `[1.0]`.
+    pub n_front_re: Arc<[f64]>,
+    /// Real exit index per wavelength; same shape rule. Default `[1.0]`.
+    pub n_back_re: Arc<[f64]>,
     /// Order: [Rs, Rp, Ru, Ts, Tp, Tu, As, Ap, Au]. Absorption slots stay
     /// `None`: absorptance is derived from the companion R/T curves.
     pub curves: [Option<Arc<[f64]>>; 9],
@@ -335,8 +338,8 @@ impl Default for SimCurves {
             angles: Arc::from(Vec::new()),
             wavelengths: Arc::from(Vec::new()),
             total_d: 0.0,
-            n_front_re: 1.0,
-            n_back_re: 1.0,
+            n_front_re: Arc::from([1.0_f64]),
+            n_back_re: Arc::from([1.0_f64]),
             curves: Default::default(),
             back: Default::default(),
             cplx: Default::default(),
@@ -359,6 +362,30 @@ impl SimCurves {
     /// Grid points covered by one row (`n_angles × n_wavs`).
     pub fn grid_points(&self) -> usize {
         self.angles.len() * self.wavelengths.len()
+    }
+
+    /// Refusal text for a differential-phase reference row whose length is
+    /// neither 1 (broadcast) nor `wavelengths.len()`, naming both numbers.
+    /// `None` = both rows well-shaped. Cheap (two compares); wired into the
+    /// consumers so a hand-built `SimCurves` fails closed instead of
+    /// mis-sampling (ground rule 7 - ASCII).
+    pub fn reference_length_issue(&self) -> Option<String> {
+        let n_wavs = self.wavelengths.len();
+        for (side, row) in [
+            ("n_front_re", &self.n_front_re),
+            ("n_back_re", &self.n_back_re),
+        ] {
+            if row.len() != 1 && row.len() != n_wavs {
+                return Some(format!(
+                    "{side} has length {}, but the grid has {} wavelengths - \
+                     supply length 1 (constant medium) or {}",
+                    row.len(),
+                    n_wavs,
+                    n_wavs
+                ));
+            }
+        }
+        None
     }
 
     /// Store one float row (absorptance derives from companions —
@@ -734,6 +761,13 @@ impl MeritSpec {
     /// target grids that do not overlap the simulated grid are skipped
     /// silently (zero contribution).
     pub fn merit(&self, sim: &SimCurves, missing_penalty: f64) -> f64 {
+        // Reference-row shape is a construction contract (PD1): a bad length
+        // would mis-sample silently, so fail closed here too. Unreachable
+        // from the engine fill and the FFI doors; a hand-built struct is
+        // the only way in (see `reference_length_issue`).
+        if let Some(msg) = sim.reference_length_issue() {
+            panic!("{msg}");
+        }
         let mut total = 0.0;
         let mut buf: Vec<f64> = Vec::new();
         for k in 0..self.keys.len() {
@@ -753,6 +787,9 @@ impl MeritSpec {
     /// insertion order, points along each target grid — deterministic,
     /// which the thickness optimizer relies on.
     pub fn residuals(&self, sim: &SimCurves, out: &mut Vec<f64>) -> Result<(), CurveId> {
+        if let Some(msg) = sim.reference_length_issue() {
+            panic!("{msg}");
+        }
         out.clear();
         out.reserve(self.n_residuals());
         for k in 0..self.keys.len() {
@@ -894,6 +931,39 @@ impl MeritSpec {
                     row[n_wav - 1]
                 }
             };
+            // Per-wavelength reference index, same bracket as the complex
+            // row (PD1): the shared two-pointer advances once per point and
+            // the second walk finds its bracket already reached. The aligned
+            // path reads directly, so a broadcast (length-1) row and a
+            // constant full row both yield the scalar bit-for-bit - the
+            // non-dispersive case is arithmetic-identical to pre-PD1.
+            let sample_n = |row: &[f64], i: usize, sim_idx: &mut usize| -> f64 {
+                if row.len() == 1 {
+                    return row[0]; // constant medium: broadcast, no state
+                }
+                if aligned {
+                    return row[offset + i];
+                }
+                let target_w = t_wl[i];
+                while *sim_idx + 1 < n_wav && sim_wl[*sim_idx + 1] < target_w {
+                    *sim_idx += 1;
+                }
+                if *sim_idx + 1 < n_wav && sim_wl[*sim_idx] <= target_w {
+                    let w0 = sim_wl[*sim_idx];
+                    let w1 = sim_wl[*sim_idx + 1];
+                    let v0 = row[*sim_idx];
+                    let v1 = row[*sim_idx + 1];
+                    if (w1 - w0).abs() < 1e-14 {
+                        v0
+                    } else {
+                        v0 + (target_w - w0) * (v1 - v0) / (w1 - w0)
+                    }
+                } else if *sim_idx < n_wav {
+                    row[*sim_idx]
+                } else {
+                    row[n_wav - 1]
+                }
+            };
             // Differential-phase reference for this key (front/back medium
             // + total thickness from the sim metadata; None = absolute).
             // `key.angle` is degrees (converter convention); the reference
@@ -917,14 +987,19 @@ impl MeritSpec {
                     TargetInput::Phase(crow) => {
                         let mut a = sample_c(crow, i, &mut sim_idx).arg();
                         if let Some(passes) = diff_passes {
-                            let n_inc = if key.curve.is_back() {
-                                sim.n_back_re
+                            // Per-λ reference index (PD1): sample the row at
+                            // the TARGET wavelength, same bracket/interpolation
+                            // class as the complex row above. The front/back
+                            // pick stays a branch - non-differential keys pay
+                            // nothing (the `if let` guards it).
+                            let n_row: &[f64] = if key.curve.is_back() {
+                                &sim.n_back_re
                             } else {
-                                sim.n_front_re
+                                &sim.n_front_re
                             };
                             a -= crate::smatrix::optics_core::reference_phase(
                                 t_wl[i],
-                                n_inc,
+                                sample_n(n_row, i, &mut sim_idx),
                                 key.angle,
                                 sim.total_d,
                                 passes,
@@ -1553,6 +1628,64 @@ mod tests {
             weight: 1.0,
             count_norm: None,
         }
+    }
+
+    #[test]
+    fn reference_rows_broadcast_and_refuse_by_length() {
+        // PD1: the reference rows are per-λ (length nw) or length-1
+        // (broadcast); anything else is a refusal naming both numbers.
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
+        spec.add_target(entry(
+            k as u32,
+            vec![400.0, 500.0],
+            vec![0.0, 0.0],
+            vec![0.05, 0.05],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        ))
+        .unwrap();
+        // Length-1 broadcast and Default both accept (Default is [1.0]).
+        let mut sim = sim_one_angle(&[0.5, 1.0, 0.9, 0.8, 0.7]);
+        sim.n_front_re = Arc::from([1.33_f64]);
+        sim.n_back_re = Arc::from([1.52_f64]);
+        assert!(sim.reference_length_issue().is_none());
+        let _ = spec.merit(&sim, 1e6); // must not panic
+        // Length 2 against a 5-wavelength grid refuses, naming both.
+        let mut sim = sim_one_angle(&[0.5, 1.0, 0.9, 0.8, 0.7]);
+        sim.n_front_re = Arc::from([1.3_f64, 1.4_f64]);
+        assert_eq!(
+            sim.reference_length_issue().as_deref(),
+            Some(
+                "n_front_re has length 2, but the grid has 5 wavelengths - \
+                 supply length 1 (constant medium) or 5"
+            )
+        );
+        let merit_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = spec.merit(&sim, 1e6);
+        }));
+        assert!(
+            merit_result.is_err(),
+            "bad reference length must fail closed"
+        );
+    }
+
+    #[test]
+    fn reference_rows_default_and_full_length_valid() {
+        // Default ([1.0]) and a full nw-length row (the engine fill shape)
+        // are both valid; total_d = 0 keeps differential ≡ absolute.
+        let sim = SimCurves::default();
+        assert!(sim.reference_length_issue().is_none());
+        assert_eq!(sim.n_front_re.len(), 1);
+        assert_eq!(sim.n_front_re[0], 1.0);
+        assert_eq!(sim.n_back_re[0], 1.0);
+        let mut sim = sim_one_angle(&[0.5, 1.0, 0.9, 0.8, 0.7]);
+        sim.n_front_re = Arc::from(vec![1.0_f64; NW]);
+        assert!(sim.reference_length_issue().is_none());
     }
 
     #[test]
@@ -2272,8 +2405,8 @@ mod tests {
             cplx: [None, None, None, None, None, None],
             cplx_back: [None, None, None, None],
             total_d: 100.0,
-            n_front_re: 1.0,
-            n_back_re: 1.0,
+            n_front_re: Arc::from([1.0_f64]),
+            n_back_re: Arc::from([1.0_f64]),
         };
         sim.cplx[3] = Some(Arc::from(vec![
             Complex64::from_polar(0.7, 0.3),
@@ -2687,8 +2820,8 @@ mod tests {
             angles: Arc::from([0.0]),
             wavelengths: Arc::from([500.0, 600.0]),
             total_d: 0.0,
-            n_front_re: 1.0,
-            n_back_re: 1.0,
+            n_front_re: Arc::from([1.0_f64]),
+            n_back_re: Arc::from([1.0_f64]),
             curves: Default::default(),
             back: Default::default(),
             cplx: Default::default(),
@@ -2895,8 +3028,8 @@ mod tests {
                 angles: vec![0.0, 30.0].into(),
                 wavelengths: wl().into(),
                 total_d: 400.0,
-                n_front_re: 1.0,
-                n_back_re: 1.52,
+                n_front_re: Arc::from([1.0_f64]),
+                n_back_re: Arc::from([1.52_f64]),
                 ..Default::default()
             };
             s.set_curve(CurveId::Rs, Arc::from(rs.to_vec())).unwrap();

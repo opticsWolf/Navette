@@ -1,8 +1,68 @@
 # Changelog
 
 All notable changes to Navette are recorded here. Work items reference
-`docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
-`docs/implementation_plan.md` (Fx.y).
+`docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§),
+`docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
+(PD1–PD4).
+
+## [0.6.45] - PD1: the differential-phase reference index follows the wavelength
+
+The differential-phase reference was a **scalar frozen at the centre
+wavelength** (`SimCurves.n_front_re`/`n_back_re: f64`, picked at
+`nw / 2` from the per-λ stack cache). A dispersive incidence medium
+silently yielded a wrong Δφ by
+`err(λ) = 2π·D·cosθ·[n(λ) − n(λ_centre)]/λ` — up to 145° (N-SF11, 3 µm,
+380–780 nm), and live in a published release (0.6.44 on PyPI,
+2026-09-14). Two comments called dispersive ambients "pathological";
+there was no runtime warning, no refusal, and no test pinning the
+approximation.
+
+### Changed
+
+- **`SimCurves`'s reference indices are per-λ rows** (`Arc<[f64]>`,
+  length `wavelengths.len()` or 1). Length 1 broadcasts — the
+  load-bearing decision: `Default` stays `[1.0]` so `total_d = 0`
+  reproduces absolute phase bit-for-bit, the air case stays cheap, and
+  the scalar FFI door keeps working without a shim. Any other length is
+  a refusal (`SimCurves::reference_length_issue`) naming both numbers,
+  wired into `merit`/`residuals`/the needle fold.
+- **The fill collects the whole column** (`evaluator.rs`): layer 0's
+  real index per wavelength (and the substrate's for the exit
+  reference) instead of the centre-λ element.
+- **The readers sample the row at the demand wavelength** — merit's
+  inner loop (same two-pointer interpolation class as the complex rows,
+  sharing its bracket state), the needle op-point sample, and both
+  gain-shift sites (`interp_n_row`: length-1 broadcasts, longer rows
+  interpolate against `sim.wavelengths`). The demand grid and the sim
+  grid need not coincide; the FD `dM/dD` twin is the gate that pins
+  this.
+- `needle_pass.rs`'s `n_inc.unwrap_or(1.0)` is now an `expect` with the
+  reachability proof in its message: `sample_op_value` runs only under
+  `(Some(sim), Some(rows))` and `n_inc` derives from that same sim, so
+  the `None` arm was unreachable all along (plan §7 decision 2,
+  resolved during PD1 as the plan directs).
+- `synthesis_merit.rs`'s PyO3 ctor wraps the scalar doors into length-1
+  rows (compile-level; the array door is PD2).
+
+### Fixed
+
+- Δφ, merit, residuals, LM trajectories and the needle gain shift for a
+  spec with a differential demand **and** a wavelength-varying incidence
+  (or exit) index — the only licensed numeric change (plan §2); a
+  non-dispersive medium is **bitwise unchanged**, pinned by the new
+  `nondispersive-bitwise` parity check (merit and residuals are the
+  recorded 0.6.44 literals through both doors).
+
+### Added
+
+- Parity checks `dispersive-hand` (dispersive ambient through the engine
+  fill: hand targets embed the per-λ reference — merit ≈ 0 post-fix,
+  ≈ 300 with the frozen index, the check the defect would have failed)
+  and `nondispersive-bitwise`; Rust twins for the gain-shift
+  interpolation at the demand wavelength and for needle-site invariance
+  under a differential demand (the shift is uniform in z, so the argmax
+  never moves); `SimCurves` broadcast/refusal unit tests. 550 lib
+  tests.
 
 ## [0.6.44] - C3: the sweep — message rendering, stale comment, doc note, bookkeeping
 

@@ -161,13 +161,19 @@ and B6 undercounts — and §0.4 records which.
 | ~~C1~~ **DONE (gate repair)** | Needle pin re-specified per-platform + ground rule 5's cross-platform sentence | none | **P0** | S (the probe settles it) | S | status review finding 1 |
 | ~~C2~~ **DONE (0.6.43)** | Interface-span clamp-up: singleton-bulk spans clamp instead of deleting | 0.6.43 | **P0** | S (arithmetic, not a scale) | S | status review finding 2 |
 | ~~C3~~ **DONE (0.6.44)** | The sweep: message literals + scanner, stale comment, doc note, bookkeeping, `uv.lock` | 0.6.44 | P1 | S | M | status review findings 3–7 |
-| F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.45 | P2 | S | M | §4.1–4.2 |
-| F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.46 | P1 | M (driver loop) | L | §4.3, §4.6 |
-| F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.47 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
-| F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.6.48 | P1 | **M** (second schema gate) | **L** | §4.5 |
-| F3.1 | Docs, worked examples, exposure re-audit, release | 0.6.49 | P3 | S | M | §7-S5, §D7 |
+| ~~PD1~~ **DONE (0.6.45)** | The differential-phase reference index follows the wavelength (per-λ columns + broadcast) | 0.6.45 | **P0** | M (merit inner loop + the needle gain shift) | M | PD plan §2 |
+| PD2 | The FFI/Python doors accept a per-λ reference; the scalar door gets the permanent guard | 0.6.46 | P1 | S | S | PD plan §3 |
+| PD3 | GD/GDD over Δφ: the convention PD1 disturbs, decided and pinned | 0.6.47 | P1 | S (a decision + twins) | S | PD plan §4 |
+| PD4 | `PDts`/`PDtp` become first-class `compute()` observables | 0.6.48 | P1 | S | M | PD plan §5 |
+| F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.6.49 | P2 | S | M | §4.1–4.2 |
+| F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.6.50 | P1 | M (driver loop) | L | §4.3, §4.6 |
+| F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.6.51 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
+| F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.6.52 | P1 | **M** (second schema gate) | **L** | §4.5 |
+| F3.1 | Docs, worked examples, exposure re-audit, release | 0.6.53 | P3 | S | M | §7-S5, §D7 |
 
-Fifteen items, `0.6.33 → 0.6.47`. Tag `v0.7.0` at F3.1 if the minor marker is
+Nineteen items, `0.6.33 → 0.6.53` (Phase B
+re-versioned twice: amendment 3 §5, then the PD series per
+`docs/implementation_plan_pd.md` §0.4). Tag `v0.7.0` at F3.1 if the minor marker is
 wanted; the version number itself stays on the `0.0.1` ladder throughout.
 
 **Read the Version column, not the ID.** F1.6 and F1.7 are new and sit
@@ -2251,7 +2257,7 @@ span-keyed afterwards. Built once, after, it is `design_slot → (env, span)`
 and correct for both. That is the whole ordering argument, and it is why
 F0.1 is a shared prerequisite rather than a gradient-only item.
 
-### F2.1 — segment schema and compile (0.6.43)
+### F2.1 — segment schema and compile (0.6.49)
 
 Named design segments, per-environment ordered segment lists, name registry,
 the exact-once rule, flag refusals inside fixed segments, unknown-environment
@@ -2288,7 +2294,7 @@ exists (`validation/benches/smatrix/results/*.json`). Write
 hash and date, so F2.2's gate measures against a file rather than a number
 someone typed into a plan.
 
-### F2.2 — K assemblies, K solves, joint merit (0.6.44)
+### F2.2 — K assemblies, K solves, joint merit (0.6.50)
 
 `residuals_multi(&[SimCurves])` routing each demand to `sims[d.env_idx]`;
 per-`(env, key)` missing-curve penalties; residuals concatenate env-major,
@@ -2348,7 +2354,7 @@ before starting.
   Twin: same stack expressed as a background-pinned flat design → bit-equal
   rows.
 
-### F2.3 — needle and LM joint (0.6.45)
+### F2.3 — needle and LM joint (0.6.51)
 
 The hard item. Scan sites built per environment over the full stack, filtered
 to design films; candidate locus translated back to (segment, intra-segment
@@ -2376,7 +2382,7 @@ Insertion lands in the design segment in every environment assembly:
 positions differ, names match. An interface-carrying design film is still an
 admissible host in every environment (the N1 twin, at K>1).
 
-### F2.4 — Python surface and program sections (0.6.46)
+### F2.4 — Python surface and program sections (0.6.52)
 
 `run_needle(layers | design={...}, ..., environments=[...])` at
 [pipeline.py:188](src/navette/synthesis/pipeline.py:188); old flat-films plus
@@ -2485,7 +2491,7 @@ public signature change and a new refusal class.
 
 ## 5. Phase C — documentation and release
 
-### F3.1 — docs, examples, audit, release (0.6.47)
+### F3.1 — docs, examples, audit, release (0.6.53)
 
 - `docs/spectralweave-target-kinds.md`: environment section, coverage matrix
   row, the ×K cost note.
@@ -2745,8 +2751,9 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | — | C1 | e751852 | status review finding 1 (V5, V6) | done |
 | 0.6.43 | C2 | db3d5e1 | status review finding 2 (V3, V4, V9) | done |
 | 0.6.44 | C3 | a91fc3d | status review findings 3–7 (V1, V2, V7, V8) | done |
-| 0.6.45 | F2.1 | — | A7, R6 | not started |
-| 0.6.46 | F2.2 | — | A4, A8 | not started |
-| 0.6.47 | F2.3 | — | A8, N1 | not started |
-| 0.6.48 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
-| 0.6.47 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |
+| 0.6.45 | PD1 | (pending) | PD plan finding (b) — the frozen reference index | done |
+| 0.6.49 | F2.1 | — | A7, R6 | not started |
+| 0.6.50 | F2.2 | — | A4, A8 | not started |
+| 0.6.51 | F2.3 | — | A8, N1 | not started |
+| 0.6.52 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
+| 0.6.53 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |

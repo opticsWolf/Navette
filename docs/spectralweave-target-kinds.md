@@ -181,8 +181,10 @@ Evaluation points (all in solver convention — see the sign note below):
   `phase=False` or a polarization mismatch raises `ValueError`.
 - `SimCurves` carries `total_d`/`n_front_re`/`n_back_re` (defaults 0/1/1
   zero the reference); the thickness-optimizer evaluator fills them from
-  the stack (ambient index at centre λ — dispersive ambients are
-  pathological, documented approximation) — but only when the spec asks
+  the stack (the incidence/exit indices as per-λ columns — PD1; a
+  dispersive medium now carries its real index at every λ, where the
+  pre-0.6.45 scalar froze the centre λ and erred by
+  `2π·D·cosθ·[n(λ) − n(λ_c)]/λ`) — but only when the spec asks
   (`uses_phase()` gates complex-row assembly, `uses_differential()` the
   metadata; intensity-only LM loops pay zero extra allocations).
   `total_d = 0` reproduces absolute phase bit-for-bit.

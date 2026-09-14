@@ -22,6 +22,15 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
                       differential-without-phase (binding) rejected;
                       bad passes rejected; unknown label still rejected.
 8. ``fold-equiv`` ... fold(native differential) == fold(absolute on rotated).
+9. ``angular`` ...... angular PDts demand (missing from the header before
+     PD1; renumbered so the PD1 additions append cleanly).
+10. ``dispersive-hand`` (PD1) - dispersive incidence medium through the
+     ENGINE fill (per-lambda reference columns): hand targets embed the
+     per-lambda reference, so merit ~ 0 post-PD1 and ~ 300 with the
+     frozen centre-lambda index (the defect this check catches).
+11. ``nondispersive-bitwise`` (PD1) - air ambient, PD spec: merit and
+     residuals are bitwise the 0.6.44 values (literals below), through
+     both the scalar FFI door and the engine fill.
 
 NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
 engine separates polarizations by branch, the fold by channel).
@@ -353,6 +362,101 @@ def test_angular_pd():
           f"got={m:.6f} expect={expect:.6f}")
 
 
+def test_dispersive_hand():
+    """PD1: dispersive incidence medium, ENGINE-filled sim (per-lambda
+    reference columns). Hand targets embed the per-lambda reference, so
+    merit ~ 0 post-PD1; with the frozen centre-lambda index the engine's
+    reference is off by err(lambda) = 2pi·D·cos(theta)·[n(lambda) -
+    n(centre)]/lambda and the merit lands ~ 300. This is the check the
+    frozen-index defect would have failed."""
+    print("--- dispersive-hand (PD1: per-lambda reference via the engine) ---")
+    from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+    wl = np.array([400.0, 500.0, 600.0])
+    th = 10.0
+    d = 200.0
+    n_amb_re = np.array([1.5, 1.7, 1.9])  # dispersive incidence medium
+    n_amb = n_amb_re + 0j
+    n_l = np.full(3, np.sqrt(1.52) + 0j)
+    n_sub = np.full(3, 1.52 + 0j)
+    # oracle t rows (crate convention: conjugated Macleod)
+    t = np.array([[oracle_tf(n_amb_re[i], float(np.sqrt(1.52)), 1.52,
+                             d, wl[i], th, "s").conjugate() for i in range(3)]])
+    ref = 2 * np.pi * n_amb_re * d * np.cos(np.radians(th)) / wl
+    expect = np.angle(t[0]) - ref
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
+                          "PDts", kind="e", phase=True))
+    spec = build_merit_spec(tc)
+    st = DesignStack(LayerSpec("amb", n_amb, 0.0, optimize=False, needle=False),
+                     LayerSpec("sub", n_sub, 0.0, optimize=False, needle=False),
+                     [LayerSpec("L", n_l, d)])
+    sim = SmatrixContext(spec, np.array([th]), wl).simulate(st)
+    m = spec.merit(sim, 1e6)
+    check("dispersive ambient, per-lambda reference: merit ~ 0",
+          m < 1e-20, f"merit={m:.3g}")
+    # Discriminator: with the frozen centre-lambda index the same demand
+    # lands at sum((ref_frozen - ref_per_lambda)/tol)^2 ~ 319.
+    ref_frozen = 2 * np.pi * 1.7 * d * np.cos(np.radians(th)) / wl
+    tc2 = TargetCollection()
+    tc2.add(SpectralTarget(wl, np.angle(t[0]) - ref_frozen, np.full(3, 0.05), th,
+                           "s", "PDts", kind="e", phase=True))
+    spec2 = build_merit_spec(tc2)
+    m2 = spec2.merit(sim, 1e6)
+    frozen_merit = float(np.sum(((ref_frozen - ref) / 0.05) ** 2))
+    check("frozen-index arithmetic is NOT what the engine does",
+          m2 > 100.0 and abs(m2 - frozen_merit) < 1e-6 * frozen_merit,
+          f"merit={m2:.4f} frozen-hand={frozen_merit:.4f}")
+
+
+def test_nondispersive_bitwise():
+    """PD1: air ambient - the whole differential path is bitwise the
+    0.6.44 values (length-1 broadcast and constant full-length rows both
+    reduce to the pre-PD1 scalar arithmetic). Literals recorded at 0.6.44
+    (a095f60..138bdcb tree) via the scalar FFI door and the engine fill."""
+    print("--- nondispersive-bitwise (PD1: air ambient == 0.6.44) ---")
+    from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+    wl = np.array([400.0, 500.0, 600.0])
+    th = 0.0
+    d = 200.0
+    t = np.array([[oracle_tf(1.0, float(np.sqrt(1.52)), 1.52,
+                             d, lam, th, "s").conjugate() for lam in wl]])
+    ref = 2 * np.pi * 1.0 * d * np.cos(np.radians(th)) / wl
+    expect = np.angle(t[0]) - ref
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
+                          "PDts", kind="e", phase=True))
+    spec = build_merit_spec(tc)
+    # Scalar door (length-1 broadcast).
+    sim = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+                                 total_d=d, n_front=1.0)
+    m = spec.merit(sim, 1e6)
+    r = spec.residuals(sim)
+    check("door merit bitwise",
+          m == 7.888609052210118e-29,
+          f"merit={m!r}")
+    check("door residuals bitwise",
+          [float(x) for x in r] == [0.0, 0.0, 8.881784197001252e-15],
+          f"resid={[float(x) for x in r]!r}")
+    # Engine fill (constant full-length row).
+    st = DesignStack(LayerSpec("air", np.full(3, 1.0 + 0j), 0.0,
+                               optimize=False, needle=False),
+                     LayerSpec("sub", np.full(3, 1.52 + 0j), 0.0,
+                               optimize=False, needle=False),
+                     [LayerSpec("L", np.full(3, float(np.sqrt(1.52)) + 0j), d)])
+    ctx = SmatrixContext(spec, np.array([th]), wl)
+    sim2 = ctx.simulate(st)
+    m2 = spec.merit(sim2, 1e6)
+    r2 = spec.residuals(sim2)
+    check("engine merit bitwise",
+          m2 == 7.888609052210118e-29,
+          f"merit={m2!r}")
+    check("engine residuals bitwise",
+          [float(x) for x in r2] == [0.0, -8.881784197001252e-15, 0.0],
+          f"resid={[float(x) for x in r2]!r}")
+    check("evaluate_merit == merit(sim)",
+          ctx.evaluate_merit(st) == m2)
+
+
 if __name__ == "__main__":
     test_hand()
     test_oracle_kinds()
@@ -363,5 +467,7 @@ if __name__ == "__main__":
     test_errors()
     test_fold_equiv()
     test_angular_pd()
+    test_dispersive_hand()
+    test_nondispersive_bitwise()
     print("ALL OK" if not FAILURES else f"MISMATCH {FAILURES}")
     sys.exit(1 if FAILURES else 0)
