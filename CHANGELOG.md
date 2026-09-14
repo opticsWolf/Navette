@@ -5,6 +5,50 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.6.49] - PD review applied: the guard's sides (G1) + one `total_d` (G2)
+
+`docs/implementation_review_pd.md` reviewed the whole PD series against
+the tree and found five issues; the two that touch behaviour land here,
+the three bookkeeping items in the docs commit that follows.
+
+### Fixed
+
+- **G1 (P0): the PD2 scalar guard warned about a side no demand can
+  read.** The guard gated on a spec-wide `uses_differential()` and then
+  reported *every* length-1 reference row — but `n_back_re` is read
+  only under `key.curve.is_back()`, and no differential label maps to
+  a back curve (both `PDts`/`PDtp` are front), so the back half of the
+  warning was unconditionally a false positive: a caller who did
+  exactly what the guard asks (per-λ `n_front`, default `n_back`) was
+  still warned, about an index nothing reads. `MeritSpec` now exposes
+  `demanded_reference_sides()` (walk the targets, collect
+  `key.curve.is_back()` per differential demand); the guard reports
+  only demanded sides. Front-only spec + per-λ front + default back is
+  now **silent**; a scalar front is reported alone. Twin added: the
+  silent case is the one that was wrong, and no check covered it.
+  The engine-fill path is unaffected (full-length rows both sides).
+- **G2 (P1): the synthesis evaluator's coating thickness `D` was the
+  plain sum of all layer thicknesses while the engine's PD keys sum
+  the interior `[1..nl-1]`** — the same quantity only as long as the
+  half-spaces are zero, which `DesignStack`'s direct door does not
+  enforce (`LayerSpec("amb", nk, 100.0)` was accepted). The evaluator
+  now uses the interior sum too, so the merit's differential op point
+  and `compute(PDts)` agree on *any* stack, not just well-formed ones;
+  the comment that claimed the two expressions were one rule is now
+  true. Bitwise identical for every legal stack (zero half-spaces —
+  adding 0.0 terms cannot move a partial sum).
+
+### Twins
+
+- `guard-sides` (in the PD2 door twin): front-only demand + per-λ
+  `n_front` + default `n_back` emits zero warnings; the scalar warning
+  names only the demanded side.
+- Rust: `demanded_reference_sides_tracks_the_labels` (front/back/none
+  from the label table, including the hypothetical back-curve case).
+- Measured: merit op point vs `compute(PDts)` now agree bitwise at
+  ambient/substrate thicknesses 999/777 nm (they would have disagreed
+  before G2).
+
 ## [0.6.48] - PD4: PDts/PDtp as first-class compute() observables
 
 The differential phase was reachable through the synthesis merit and the

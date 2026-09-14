@@ -355,17 +355,25 @@ fn warn_scalar_reference(py: Python<'_>, spec: &MeritSpec, sim: &SimCurves) -> P
     if !spec.uses_differential() {
         return Ok(());
     }
+    let (front_demanded, back_demanded) = spec.demanded_reference_sides();
     let nf = sim.n_front_re.as_ref();
     let nb = sim.n_back_re.as_ref();
-    if nf.len() != 1 && nb.len() != 1 {
+    // Report only the sides a demand can actually read (review PD G1):
+    // no label maps to the back yet, so a default scalar `n_back` on a
+    // front-only spec is correct, not a hazard - warning about it would
+    // cry wolf at callers who did exactly what the guard asked.
+    if !(front_demanded && nf.len() == 1) && !(back_demanded && nb.len() == 1) {
         return Ok(());
     }
-    let sides = [("n_front", nf), ("n_back", nb)]
-        .into_iter()
-        .filter(|(_, row)| row.len() == 1)
-        .map(|(name, row)| format!("{}={}", name, row[0]))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let sides = [
+        ("n_front", front_demanded, nf),
+        ("n_back", back_demanded, nb),
+    ]
+    .into_iter()
+    .filter(|(_, demanded, row)| *demanded && row.len() == 1)
+    .map(|(name, _, row)| format!("{}={}", name, row[0]))
+    .collect::<Vec<_>>()
+    .join(", ");
     let msg = format!(
         "differential-phase demand with a scalar reference index ({}) - \
 if the incidence or exit medium is dispersive, supply the \

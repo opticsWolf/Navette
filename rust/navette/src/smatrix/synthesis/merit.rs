@@ -709,6 +709,28 @@ impl MeritSpec {
         self.targets.iter().any(|t| t.differential_passes.is_some())
     }
 
+    /// Which reference sides the spec's differential demands actually
+    /// read, as `(front, back)`. `n_back_re` is consumed only under
+    /// `key.curve.is_back()` (merit.rs residuals, needle_pass gain
+    /// shifts), and no differential label maps to a back curve yet (PD
+    /// plan §7 decision 6: `differential()` maps only `PDts`/`PDtp`, both
+    /// front) — so the back side can only be wrong once a label maps to
+    /// it, and the scalar guard must not claim otherwise (review PD G1).
+    pub fn demanded_reference_sides(&self) -> (bool, bool) {
+        let mut front = false;
+        let mut back = false;
+        for t in &self.targets {
+            if t.differential_passes.is_some() {
+                if self.keys[t.key_idx as usize].curve.is_back() {
+                    back = true;
+                } else {
+                    front = true;
+                }
+            }
+        }
+        (front, back)
+    }
+
     pub fn keys(&self) -> &[MeritKey] {
         &self.keys
     }
@@ -760,6 +782,13 @@ impl MeritSpec {
     /// a missing curve costs `missing_penalty` ONCE per key group, and
     /// target grids that do not overlap the simulated grid are skipped
     /// silently (zero contribution).
+    ///
+    /// # Panics
+    ///
+    /// Panics on a malformed reference-row length (`n_front_re`/`n_back_re`
+    /// neither 1 nor the grid length) — same contract as `residuals`,
+    /// unreachable from Python (the FFI constructor refuses), fail-closed
+    /// for the hand-built Rust caller (review PD G4).
     pub fn merit(&self, sim: &SimCurves, missing_penalty: f64) -> f64 {
         // Reference-row shape is a construction contract (PD1): a bad length
         // would mis-sample silently, so fail closed here too. Unreachable
@@ -786,6 +815,14 @@ impl MeritSpec {
     /// Component order: keys in registration order, targets per key in
     /// insertion order, points along each target grid — deterministic,
     /// which the thickness optimizer relies on.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a malformed reference-row length (`n_front_re`/`n_back_re`
+    /// neither 1 nor the grid length). The FFI constructor refuses that at
+    /// build time, so this is unreachable from Python; a Rust caller
+    /// hand-building `SimCurves` — the caller this exists for — should
+    /// expect the panic rather than a silent mis-sample (review PD G4).
     pub fn residuals(&self, sim: &SimCurves, out: &mut Vec<f64>) -> Result<(), CurveId> {
         if let Some(msg) = sim.reference_length_issue() {
             panic!("{msg}");
@@ -1270,6 +1307,12 @@ impl MeritSpec {
     /// `sensitivity_is_a_finite_difference_of_residuals`, which differences
     /// `residuals()` itself: any drift between them fails it.
     pub fn curve_sensitivity(&self, sim: &SimCurves) -> Result<MeritSensitivity, CurveId> {
+        // No reference-row-length guard here, unlike `merit`/`residuals`,
+        // and that is deliberate, not an oversight (review PD G4): the
+        // reference is additive and independent of the curve, so it drops
+        // out of d(residual)/d(curve) — `curve_sensitivity_into` never
+        // reads `n_front_re`/`n_back_re`, so a malformed length cannot
+        // hurt this path.
         let mut s = MeritSensitivity {
             rows: Vec::with_capacity(self.n_residuals()),
             uncovered: Vec::new(),
@@ -2872,6 +2915,65 @@ mod tests {
         );
         let err = super::reference_rotation(&wls, 0.0, &[], 200.0, 1.0).unwrap_err();
         assert!(err.contains("empty"), "err={err}");
+    }
+
+    /// PD2 / review PD G1: the scalar guard reports only the sides a
+    /// demand can actually read. `differential()` maps only front curves
+    /// (PDts/PDtp), so a front-only spec with a default scalar `n_back`
+    /// is correct and must be silent; a scalar `n_front` on the same spec
+    /// is still reported, alone.
+    #[test]
+    fn demanded_reference_sides_tracks_the_labels() {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
+        spec.add_target(entry_pd(
+            k as u32,
+            vec![400.0],
+            vec![0.0],
+            vec![0.1],
+            ConstraintKind::Exact,
+            1.0,
+        ))
+        .unwrap();
+        assert_eq!(spec.demanded_reference_sides(), (true, false));
+        // A back curve (hypothetical label, decision 6) flips the side.
+        let mut spec_b = MeritSpec::new();
+        let kb = spec_b.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::TBs,
+        });
+        spec_b
+            .add_target(entry_pd(
+                kb as u32,
+                vec![400.0],
+                vec![0.0],
+                vec![0.1],
+                ConstraintKind::Exact,
+                1.0,
+            ))
+            .unwrap();
+        assert_eq!(spec_b.demanded_reference_sides(), (false, true));
+        // A non-differential spec demands nothing.
+        let mut spec_p = MeritSpec::new();
+        let kp = spec_p.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
+        spec_p
+            .add_target(entry_phase(
+                kp as u32,
+                vec![400.0],
+                vec![0.0],
+                vec![0.1],
+                ConstraintKind::Exact,
+                SimTransform::Phase,
+                1.0,
+            ))
+            .unwrap();
+        assert_eq!(spec_p.demanded_reference_sides(), (false, false));
     }
 
     #[test]

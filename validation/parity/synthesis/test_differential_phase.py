@@ -35,6 +35,10 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
      per-wavelength reference; scalar == length-1 bitwise; the scalar
      guard warns (once, remedy, ASCII); a bad length refuses naming
      both numbers; the dispersive oracle holds at 1e-12.
+15. ``guard-sides`` (PD2, review G1) - the scalar guard reports only
+     the sides a demand can read: a front-only spec with per-lambda
+     n_front and the default scalar n_back is silent; a scalar n_front
+     is reported alone (no spurious n_back half).
 13. ``gd-gdd-convention`` (PD3) - GD/GDD over the corrected Dphi
      include the reference's dispersion (decision: option 1). A
      two-point hand case is bitwise-exact; GDD over Dphi is non-zero
@@ -558,6 +562,12 @@ def test_dispersive_rotation_door():
     check("merit door warns on a scalar reference",
           len(m_texts) >= 1 and m_texts[0].isascii(),
           f"n={len(m_texts)}")
+    # The demand is front-only (both labels are front), so the warning
+    # reports n_front alone - no spurious n_back half (review G1).
+    check("scalar warning names only the demanded side",
+          len(m_texts) >= 1 and "(n_front=" in m_texts[0]
+          and ", n_back" not in m_texts[0],
+          f"msg={m_texts[0][:80] if m_texts else ''!r}")
     with warnings.catch_warnings(record=True) as caught2:
         warnings.simplefilter("always")
         spec.merit(sim, 1e6)  # engine-filled: per-lambda rows, no warning
@@ -565,6 +575,19 @@ def test_dispersive_rotation_door():
                if issubclass(w.category, UserWarning)
                and "scalar reference index" in str(w.message)]
     check("engine fill never warns", len(e_texts) == 0)
+    # G1 twin: the caller who did exactly what the guard asks (per-lambda
+    # front reference) on a front-only spec must be silent - the default
+    # scalar n_back is read by no label, so warning about it cries wolf.
+    with warnings.catch_warnings(record=True) as caught3:
+        warnings.simplefilter("always")
+        spec.merit(sim_curves_from_arrays(
+            np.array([th]), wl, {}, {"Ts": t},
+            total_d=d, n_front=n_amb_re), 1e6)
+    g_texts = [str(w.message) for w in caught3
+               if issubclass(w.category, UserWarning)
+               and "scalar reference index" in str(w.message)]
+    check("per-lambda front + default back on a front-only spec: silent",
+          len(g_texts) == 0, f"n={len(g_texts)}")
 
 
 def test_gd_gdd_convention():

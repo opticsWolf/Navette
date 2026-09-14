@@ -201,15 +201,20 @@ impl SmatrixContext {
             cplx[CurveId::Ts.index()] = Some(pts.iter().map(|p| p.tfs).collect::<Vec<_>>().into());
             cplx[CurveId::Tp.index()] = Some(pts.iter().map(|p| p.tfp).collect::<Vec<_>>().into());
         }
-        // Stack metadata for the PD reference: ambient/substrate thickness
-        // entries are zero, so the plain sum is the coating thickness D;
+        // Stack metadata for the PD reference: the coating thickness D is
+        // the sum of the INTERIOR thicknesses (`[1..nl-1]`) - the same
+        // expression the engine's PD keys use (solver.rs), so the merit
+        // op point and compute(PDts) agree even on the degenerate
+        // direct-DesignStack door that lets a non-zero half-space
+        // thickness through (review PD G2; bitwise-identical whenever
+        // the half-spaces are zero, which every real stack is);
         // incidence/exit indices as PER-WAVELENGTH columns (PD1) - a
         // dispersive medium now carries its real index at every λ instead
         // of the centre-λ scalar, which made Δφ wrong by
         // err(λ) = 2π·D·cosθ·[n(λ) − n(λ_centre)]/λ. Gated the same way
         // (defaults zero the reference anyway).
         let (total_d, n_front_re, n_back_re) = if self.spec.uses_differential() {
-            let total_d: f64 = sa.thicknesses.iter().sum();
+            let total_d: f64 = sa.thicknesses[1..nl - 1].iter().sum();
             // Layer 0's real index per wavelength (front reference)...
             let n_front_re: Arc<[f64]> = (0..nw)
                 .map(|w| sa.n_stack_cache[w * nl * 2])
