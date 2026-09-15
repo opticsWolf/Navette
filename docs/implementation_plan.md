@@ -2768,7 +2768,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.48 | PD4 | fab63d1 | PD plan §5 — PDts/PDtp as compute() observables | done |
 | 0.6.49 | PDR | 32adee2 | review PD §4 — G1 (the guard's sides) + G2 (one total_d) | done |
 | 0.6.49 | PDR round 2 | 9d5cbc3 | review PD §7 — H1 (the G2 twin), H2/H3/H4; no bump | done |
-| **0.7.0** | **release** | — | Phase A + the C series + PD1–PD4 + both review rounds; first release since 0.6.44 | **released** |
+| **0.7.0** | **release** | 1842a1b | Phase A + the C series + PD1–PD4 + both review rounds; first release since 0.6.44 | **released** |
 | 0.7.1 | F2.1 | — | A7, R6 | not started |
 | 0.7.2 | F2.2 | — | A4, A8 | not started |
 | 0.7.3 | F2.3 | — | A8, N1 | not started |
