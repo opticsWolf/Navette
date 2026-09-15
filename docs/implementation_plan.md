@@ -2931,7 +2931,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.49 | PDR round 2 | 9d5cbc3 | review PD §7 — H1 (the G2 twin), H2/H3/H4; no bump | done |
 | **0.7.0** | **release** | 1842a1b | Phase A + the C series + PD1–PD4 + both review rounds; first release since 0.6.44 | **released** |
 | 0.7.1 | F2.1 | 98ae05e | A7, R6 | done |
-| 0.7.2 | F2.2 | PENDING | A4, A8 | done |
+| 0.7.2 | F2.2 | 705b190 | A4, A8 | done |
 | 0.7.3 | F2.3 | — | A8, N1 | not started |
 | 0.7.4 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
 | 0.7.5 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |
