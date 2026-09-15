@@ -168,7 +168,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~PDR~~ **DONE (0.6.49)** | PD review applied: the scalar guard's demanded sides + one `total_d` | 0.6.49 | **P0** | S | S | review PD §4 |
 | ~~F2.1~~ **DONE (0.7.1)** | Environment segment schema + compile/validation + `bench_eval.py` | 0.7.1 | P2 | S | M | §4.1–4.2 |
 | ~~F2.2~~ **DONE (0.7.2)** | K assemblies, K solves, `residuals_multi` — joint merit | 0.7.2 | P1 | M (driver loop) | L | §4.3, §4.6 |
-| F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.7.3 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
+| ~~F2.3~~ **DONE (0.7.3)** | Needle + LM joint: locus translation, name-routed fold sum | 0.7.3 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
 | F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.7.4 | P1 | **M** (second schema gate) | **L** | §4.5 |
 | F3.1 | Docs, worked examples, exposure re-audit, release | 0.7.5 | P3 | S | M | §7-S5, §D7 |
 
@@ -2554,6 +2554,108 @@ Insertion lands in the design segment in every environment assembly:
 positions differ, names match. An interface-carrying design film is still an
 admissible host in every environment (the N1 twin, at K>1).
 
+**DONE (0.7.3).** The joint needle. `needle_pass.rs`:
+`build_needle_targets_env` folds ONE environment's demands against ONE
+environment's simulation, and `build_needle_targets` becomes the K = 1 door
+that refuses a multi-environment spec rather than folding environment 0 and
+dropping the rest. `pipeline.rs`: `SpectralInputs::fold` becomes `folds`,
+one per environment in roster order. `context.rs`: `DesignContext` gains
+`environments()` / `environments_mut()`, defaulted to `None` — the flat path
+answers "no environments" and nothing else changes. `environments.rs`:
+`slot_of_row` and `host_row` (the two halves of the locus translation) and
+`insert_seed` (the shared parameter splits in three, in every environment at
+once). `cycle.rs`: `joint_needle_sweep` and `joint_cycle`, reached through
+one `multi` flag read once outside the cycle loop. `driver.rs`: the F2.2
+needle refusal lifted.
+
+Gates measured: fmt; clippy `-D warnings` on the workspace and each feature
+variant; 585 lib / 22 parity / 15 py / 15 doc; feature variants 590
+(`opt-minpack-lm`), 594 (`opt-argmin`), 599 (all-features); pytest 771
+passed 1 skipped; five tools; ten harnesses; **both fingerprints unmoved**
+(5 passed); release build at 0.7.3; the bench's merit still bit-equal to the
+F2.1 baseline artifact (`44dc154d6946ee40`) and every directly measured
+phase at or below it over three runs at `--repeats 9`.
+
+CORRECTIONS:
+
+1. **Elimination is a structural move, and F2.3 had to deal with it.** The
+   item is written as if insertion were the only span-layout change a
+   needle run makes. It is not: `optimize_thicknesses` ends in
+   `clamp_all_policy`, which under `remove` (the default) and under
+   `clamp_up_final` mid-run *deletes* a span that falls below the floor.
+   Under K > 1 that leaves the compile carrying a parameter the design no
+   longer has, and the next `expand` routes thicknesses into spans that no
+   longer line up — the exact failure the alignment check exists to catch,
+   reached from inside rather than from a caller. F2.3 gave the compile
+   `insert_seed`, not its inverse, so the joint path closes the other
+   direction instead: while K > 1 the floor is a hard LM bound and the
+   sweep clamps up rather than removes (F0.3's `ClampUpAlways` posture, for
+   a different reason), and `run_environments` refuses
+   `thin_layer_policy = 'remove'` because that policy still eliminates on
+   the pipeline's FINAL sweep, downstream of the context. Cost, stated
+   plainly: a seed the optimizer wants to reject parks at the floor instead
+   of disappearing. This was a latent desynchronization in F2.2 as well —
+   thickness-only joint runs could lose a span the same way; they simply
+   never did in the tests.
+
+2. **The fold is per environment, so `SpectralInputs` carries K of them.**
+   A fold activates one-sided and banded kinds *at the operating point*,
+   and environment 1's operating point is not environment 0's. A single
+   shared fold would mask the wrong points in K − 1 environments. `folds`
+   is always `spec.n_envs()` long, so the flat case is a one-element vector
+   and `folds[0]` is the fold that was there before.
+
+3. **Seed materials come from the design, not from the assemblies.** The
+   K = 1 sweep collects distinct contrast materials by walking the whole
+   stack. Under K > 1 that is wrong twice over: a cover material with a
+   contrast entry is not a candidate seed, and sweeping it in the one
+   environment that has it opens a bucket no other environment can fill —
+   which would trip the alignment assert on a design that is perfectly
+   sound. The joint sweep collects them from environment 0's *design rows*
+   and uses that one list everywhere.
+
+4. **The alignment assert is a bucket count, not a set comparison.** §4.4
+   asks for "the same design object produces the same span layout in every
+   environment". Every bucket is `(seed material, slot, step)`, and the
+   scan grid of a design row is fixed by its thickness, which `expand`
+   copies — so every bucket must be filled exactly K times. A short bucket
+   is the drift, named with the locus that showed it. Cheaper than
+   comparing K key sets and it reports the same thing.
+
+5. **The K = 1/K = 2 needle twin is structural, not bitwise, and the test
+   says so.** Identical environments insert the same seed at the same
+   locus, then descend differently: K = 2 differences the Jacobian (F2.2's
+   documented decline, unchanged here — §4.4 says the thickness-LM is
+   untouched) and carries twice the residuals, so the LM that follows the
+   insertion rounds its way to a slightly different point on the same
+   minimum. The gate asserts the material sequence exactly and the
+   thicknesses to 1e-3 relative; a real disagreement about where to put a
+   needle changes the sequence, not the fourth decimal. Same reasoning as
+   F2.2's CORRECTION 8, one insertion further along.
+
+6. **The N1 twin needs the interface film to be buried in EVERY
+   environment.** An interface slice is emitted only where the film has a
+   neighbour above it, so a design film that is topmost in one environment
+   and laminated in another is one row there and two rows here — which
+   F2.1's alignment check refuses, correctly and for its own reasons. That
+   is a property of the *compile*, not of needle admissibility, so the twin
+   gives both environments a cover and asks the N1 question that was
+   actually posed: a slice-carrying design film is still a singleton-*bulk*
+   span, and `host_row` answers the bulk row, so it hosts a needle
+   everywhere.
+
+7. **`DesignSlot::intra` is re-derived after an insertion.** It is the
+   authoring index at compile time, and the moment a needle splits a slot
+   in three that index no longer describes anything. `insert_seed`
+   renumbers it as position-within-segment, which is what §4.4's "(segment,
+   intra-segment position)" means for every reader after the compile.
+
+8. **Removal and inflate stay refused under K > 1, and the refusal now
+   names the policy too.** `enable_cleanup` and `enable_inflate` change the
+   layout in the direction the compile cannot follow; so does
+   `thin_layer_policy = 'remove'`. One message, three names, and the
+   variant that works (`clamp_up_final`) spelled out.
+
 ### F2.4 — Python surface and program sections (0.7.4)
 
 `run_needle(layers | design={...}, ..., environments=[...])` at
@@ -2932,6 +3034,6 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | **0.7.0** | **release** | 1842a1b | Phase A + the C series + PD1–PD4 + both review rounds; first release since 0.6.44 | **released** |
 | 0.7.1 | F2.1 | 98ae05e | A7, R6 | done |
 | 0.7.2 | F2.2 | 705b190 | A4, A8 | done |
-| 0.7.3 | F2.3 | — | A8, N1 | not started |
+| 0.7.3 | F2.3 | 948425f | A8, N1 | done |
 | 0.7.4 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
 | 0.7.5 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |
