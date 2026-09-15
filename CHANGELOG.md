@@ -5,6 +5,56 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.1] - F2.1: environment segment schema and compile
+
+First rung of Phase B (multi-environment optimization,
+`docs/plans/multi_environment_plan.md`). **Compile only**: this release
+adds the schema, the validation and the routing table. It does not
+evaluate anything, and none of it is reachable from Python yet - the
+driver loop is `[0.7.2]`, needle/LM routing `[0.7.3]`, the Python
+surface `[0.7.4]`.
+
+### Added
+
+- **Named design segments and per-environment segment lists** in the
+  native design request. A design segment is defined once and shared:
+  every environment references it, so a thickness step or a needle
+  insertion propagates to all of them by construction. An environment
+  is an ordered list of segments, each either inline fixed layers (its
+  own cover glass, substrate, housing) or a reference to a design
+  segment.
+- **The `design_slot -> (env, span)` routing table.** Parameter
+  identity across environments is the film NAME, not its position:
+  assemblies of different length cannot share positional identity. Span
+  -keyed rather than row-keyed, because after Phase A one design film
+  can be a span of up to 64 rows.
+- **`environment=` on all three demand kinds**, plus the roster on
+  `TargetSet`. An untagged demand is the first environment, which is
+  what keeps every pre-0.7.1 target set meaningful without an edit.
+- **`validation/benches/synthesis/bench_eval.py`** and its recorded
+  `results/eval_baseline.json`: assemble / simulate / merit timed
+  separately on one fixed design. Nothing under `validation/benches`
+  timed the design pipeline's inner eval, and `[0.7.2]`'s "the K=1
+  branch costs nothing" gate needs a baseline that predates the change.
+
+### Refused, each naming what it found
+
+An environment that omits a design segment or references it twice; an
+unknown segment reference; a segment carrying both `layers` and
+`design` or neither; `optimize`/`needle` set true inside fixed
+surroundings (named down to `<env>.fixed[<seg>][<i>]`); one film name
+defined by two design segments; a demand tagging an environment that
+does not exist (named alongside the ones that do); flat films and
+environments in the same request; design segments with no environment
+to reach them, or environments with no design segments to share.
+
+### Unchanged
+
+A request with no `environments` takes the flat path unchanged - it is
+delegated to, not re-implemented, so there is no second assembler to
+drift. Both bit-exactness fingerprints unmoved; the solver, `SimCurves`,
+the merit formulas and the fold arms learn nothing about environments.
+
 ## [0.7.0] — the differential-phase series, released
 
 The minor marker, taken at the close of the PD series rather than at

@@ -556,6 +556,10 @@ pub struct MeritKey {
 pub struct MeritTarget {
     /// Index into `MeritSpec::keys`.
     pub key_idx: u32,
+    /// F2.1: index into the compiled environment list - which of the K
+    /// solves this demand reads. `0` for every single-environment run,
+    /// which is every run until F2.2 wires the driver loop.
+    pub env_idx: u32,
     /// This entry's target wavelength grid (may be any sub/superset of the
     /// solver grid; two-pointer interpolation handles the rest).
     pub wavelengths: Arc<[f64]>,
@@ -595,16 +599,67 @@ pub struct MeritTarget {
 }
 
 /// Flat, immutable, Send+Sync target description.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct MeritSpec {
     keys: Vec<MeritKey>,
     targets: Vec<MeritTarget>,
     color: Vec<ColorDemand>,
+    /// F2.1: how many environments this spec was compiled against - the
+    /// K of "K assemblies, K solves". One unless a segmented request
+    /// said otherwise, and `Default` says one rather than zero because
+    /// every spec built by hand (the tests, the Rust consumers) is a
+    /// single-environment spec.
+    n_envs: usize,
+}
+
+impl Default for MeritSpec {
+    fn default() -> Self {
+        Self {
+            keys: Vec::new(),
+            targets: Vec::new(),
+            color: Vec::new(),
+            n_envs: 1,
+        }
+    }
 }
 
 impl MeritSpec {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Number of environments this spec routes across.
+    pub fn n_envs(&self) -> usize {
+        self.n_envs
+    }
+
+    /// Declare the environment count, before any demand is added.
+    ///
+    /// Refuses zero (there is always at least the default environment)
+    /// and refuses to shrink below a demand already registered - an
+    /// `env_idx` pointing past the end of the solve list is the one way
+    /// this bookkeeping could become a panic in F2.2's driver, so it is
+    /// made unrepresentable here instead.
+    pub fn set_n_envs(&mut self, n: usize) -> Result<(), String> {
+        if n == 0 {
+            return Err("MeritSpec: n_envs must be >= 1".to_string());
+        }
+        let used = self
+            .targets
+            .iter()
+            .map(|t| t.env_idx)
+            .chain(self.color.iter().map(|d| d.env_idx))
+            .max();
+        if let Some(hi) = used
+            && hi as usize >= n
+        {
+            return Err(format!(
+                "MeritSpec: n_envs={n} would orphan a demand already \
+                 registered against environment {hi}"
+            ));
+        }
+        self.n_envs = n;
+        Ok(())
     }
 
     /// Register a key group; returns its index.
@@ -618,6 +673,12 @@ impl MeritSpec {
     /// Wavelengths/targets/tolerances must have equal length; `band` must
     /// either be empty (all-zero = unused) or match that length.
     pub fn add_target(&mut self, target: MeritTarget) -> Result<(), String> {
+        if target.env_idx as usize >= self.n_envs {
+            return Err(format!(
+                "MeritTarget env_idx={} but the spec has {} environment(s)",
+                target.env_idx, self.n_envs
+            ));
+        }
         let n = target.wavelengths.len();
         if target.normalized_targets.len() != n || target.tolerances.len() != n {
             return Err(format!(
@@ -743,6 +804,12 @@ impl MeritSpec {
     /// checked like `add_target` — the demand groups with its key for
     /// missing-penalty + residual ordering.
     pub fn add_color_demand(&mut self, demand: ColorDemand) -> Result<(), String> {
+        if demand.env_idx as usize >= self.n_envs {
+            return Err(format!(
+                "ColorDemand env_idx={} but the spec has {} environment(s)",
+                demand.env_idx, self.n_envs
+            ));
+        }
         if demand.key_idx as usize >= self.keys.len() {
             return Err(format!(
                 "key_idx {} out of range ({} keys registered)",
@@ -1653,6 +1720,7 @@ mod tests {
     ) -> MeritTarget {
         MeritTarget {
             key_idx,
+            env_idx: 0,
             wavelengths: wl.into(),
             kind,
             transform,
@@ -1679,6 +1747,7 @@ mod tests {
     ) -> MeritTarget {
         MeritTarget {
             key_idx,
+            env_idx: 0,
             wavelengths: wl.into(),
             kind,
             transform,
@@ -3222,6 +3291,7 @@ mod tests {
             let n = grid.len();
             MeritTarget {
                 key_idx,
+                env_idx: 0,
                 wavelengths: grid.into(),
                 kind,
                 transform,

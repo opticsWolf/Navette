@@ -50,6 +50,14 @@ pub struct SpectralTarget {
     pub normalize_count: bool,
     #[serde(default)]
     pub integral: bool,
+    /// F2.1: which environment this demand is evaluated against, by
+    /// name. `None` = the first environment, which is what keeps every
+    /// pre-F2.1 target set meaningful without an edit. An unknown name
+    /// refuses at compile naming the demand and the known environments -
+    /// a typo here would silently score against the wrong surroundings
+    /// and look like a physics result.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 /// One angular constraint curve (value vs angle at fixed wavelength).
@@ -76,6 +84,14 @@ pub struct AngularTarget {
     pub normalize_count: bool,
     #[serde(default)]
     pub integral: bool,
+    /// F2.1: which environment this demand is evaluated against, by
+    /// name. `None` = the first environment, which is what keeps every
+    /// pre-F2.1 target set meaningful without an edit. An unknown name
+    /// refuses at compile naming the demand and the known environments -
+    /// a typo here would silently score against the wrong surroundings
+    /// and look like a physics result.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 /// Scalar (broadcast) or per-point band half-widths.
@@ -179,6 +195,14 @@ pub struct ColorTargetJson {
     pub phase: bool,
     #[serde(default)]
     pub band: Option<Band>,
+    /// F2.1: which environment this demand is evaluated against, by
+    /// name. `None` = the first environment, which is what keeps every
+    /// pre-F2.1 target set meaningful without an edit. An unknown name
+    /// refuses at compile naming the demand and the known environments -
+    /// a typo here would silently score against the wrong surroundings
+    /// and look like a physics result.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 fn d_color_kind() -> String {
@@ -203,6 +227,16 @@ pub struct TargetSet {
     pub cache_size: usize,
     #[serde(default = "d_floor")]
     pub tolerance_floor: f64,
+    /// F2.1: the environment names a demand's `environment` tag may
+    /// name, in evaluation order. Empty = single-environment, and then
+    /// only an absent tag or `"default"` resolves.
+    ///
+    /// The roster lives here as well as on the design request (§8
+    /// question 2, answered: both) because this compiler never sees the
+    /// design request - and a tag that cannot be checked where it is
+    /// read is a tag that is not checked at all.
+    #[serde(default)]
+    pub environments: Vec<String>,
 }
 
 fn d_cache() -> usize {
@@ -586,6 +620,25 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
 
 /// Compile a [`TargetSet`] into a native `MeritSpec`.
 pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
+    // F2.1: the roster first, so every demand's tag resolves against a
+    // known list and `add_target`'s guard has something to check.
+    // Duplicates would make `resolve_env` pick the first silently, which
+    // is exactly the class of quiet wrong-surroundings result the tag
+    // refusal exists to prevent.
+    let mut seen_env: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for name in &set.environments {
+        if name.is_empty() {
+            return Err("environments: names must be non-empty".to_string());
+        }
+        if !seen_env.insert(name.as_str()) {
+            return Err(format!("environments: duplicate name {name:?}"));
+        }
+    }
+    let roster: Vec<String> = if set.environments.is_empty() {
+        vec![super::environments::DEFAULT_ENV.to_string()]
+    } else {
+        set.environments.clone()
+    };
     let weaver = TargetWeaver::new(set.cache_size, set.tolerance_floor);
     for t in &set.spectral {
         ingest_spectral(&weaver, t)?;
@@ -594,6 +647,9 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         ingest_angular(&weaver, t)?;
     }
     let entries = export_all(&weaver);
+    let env_of = |tag: Option<&String>, demand: &str| -> Result<u32, String> {
+        super::environments::resolve_env(tag.map(String::as_str), &roster, demand)
+    };
     let mut by_uid: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, e) in entries.iter().enumerate() {
         by_uid.entry(e.uid).or_default().push(i);
@@ -673,6 +729,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     }
 
     let mut spec = MeritSpec::new();
+    spec.set_n_envs(roster.len())?;
     let mut keys: BTreeMap<(u64, String), u32> = BTreeMap::new();
     let mut get_key = |spec: &mut MeritSpec, angle: f64, curve: &str| -> u32 {
         let k = (angle.to_bits(), curve.to_string());
@@ -696,16 +753,26 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     }
     for (ei, ti) in jobs {
         let e = &entries[ei];
-        let t = if ti & 0x8000_0000 == 0 {
+        let (t, env_idx) = if ti & 0x8000_0000 == 0 {
             (
-                &set.spectral[ti].spectral,
-                &set.spectral[ti].polarization,
-                set.spectral[ti].phase,
-                set.spectral[ti].weight,
+                (
+                    &set.spectral[ti].spectral,
+                    &set.spectral[ti].polarization,
+                    set.spectral[ti].phase,
+                    set.spectral[ti].weight,
+                ),
+                env_of(
+                    set.spectral[ti].environment.as_ref(),
+                    &format!("spectral[{ti}]"),
+                )?,
             )
         } else {
-            let a = &set.angular[ti & 0x7fff_ffff];
-            (&a.spectral, &a.polarization, a.phase, a.weight)
+            let ai = ti & 0x7fff_ffff;
+            let a = &set.angular[ai];
+            (
+                (&a.spectral, &a.polarization, a.phase, a.weight),
+                env_of(a.environment.as_ref(), &format!("angular[{ai}]"))?,
+            )
         };
         let curve = curve_id(t.0, t.1)?;
         let ki = get_key(&mut spec, e.angle, &curve);
@@ -734,6 +801,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             SimTransform::from_str(&mode).ok_or_else(|| format!("Invalid transform {mode:?}"))?;
         spec.add_target(MeritTarget {
             key_idx: ki,
+            env_idx,
             wavelengths: Arc::from(e.wavelengths.as_slice()),
             kind,
             transform,
@@ -753,10 +821,11 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     // demand on a shared (angle, curve) group dedupes by content).
     // Full validation first (curve vocabulary included): the get_key expect
     // below is provably safe afterwards.
-    for t in &set.color {
+    for (ci, t) in set.color.iter().enumerate() {
         let mut demand = check_color_demand(t)?;
         let ki = get_key(&mut spec, t.angle, &t.curve);
         demand.key_idx = ki;
+        demand.env_idx = env_of(t.environment.as_ref(), &format!("color[{ci}]"))?;
         spec.add_color_demand(demand)
             .map_err(|e| format!("compile_merit_spec: {e}"))?;
     }
@@ -771,8 +840,22 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
 mod tests {
     use super::*;
 
+    /// Empty target set - the tests above spread it and state only the
+    /// fields they actually vary.
+    fn base_set() -> TargetSet {
+        TargetSet {
+            environments: vec![],
+            spectral: vec![],
+            angular: vec![],
+            color: vec![],
+            cache_size: 128,
+            tolerance_floor: 1e-12,
+        }
+    }
+
     fn spec_target() -> SpectralTarget {
         SpectralTarget {
+            environment: None,
             wavelengths: vec![500.0, 600.0],
             values: vec![0.05, 0.05],
             tolerances: vec![0.01, 0.01],
@@ -789,9 +872,138 @@ mod tests {
         }
     }
 
+    /// F2.1: an untagged demand is environment 0, a tagged one is the
+    /// environment it names, and a typo refuses instead of scoring
+    /// against the wrong surroundings.
+    #[test]
+    fn demand_environment_tags_resolve_and_refuse() {
+        let tagged = |env: Option<&str>, angle: f64| SpectralTarget {
+            environment: env.map(str::to_string),
+            angle,
+            ..spec_target()
+        };
+
+        // No roster: untagged and "default" both land on 0; anything
+        // else refuses naming the demand and what does exist.
+        let set = TargetSet {
+            spectral: vec![tagged(None, 0.0), tagged(Some("default"), 10.0)],
+            ..base_set()
+        };
+        let spec = compile_merit_spec(&set).unwrap();
+        assert_eq!(spec.n_envs(), 1);
+        assert!(spec.targets().iter().all(|t| t.env_idx == 0));
+
+        let set = TargetSet {
+            spectral: vec![tagged(Some("bare"), 0.0)],
+            ..base_set()
+        };
+        let e = compile_merit_spec(&set).unwrap_err();
+        assert!(e.contains("spectral[0]"), "{e}");
+        assert!(e.contains("\"bare\""), "{e}");
+        assert!(e.contains("\"default\""), "{e}");
+
+        // With a roster the tag routes, and the untagged demand still
+        // means the first environment - which is what keeps every
+        // pre-F2.1 target set meaningful without an edit.
+        let set = TargetSet {
+            environments: vec!["bare".to_string(), "laminated".to_string()],
+            spectral: vec![
+                tagged(Some("laminated"), 0.0),
+                tagged(None, 10.0),
+                tagged(Some("bare"), 20.0),
+            ],
+            ..base_set()
+        };
+        let spec = compile_merit_spec(&set).unwrap();
+        assert_eq!(spec.n_envs(), 2);
+        let by_angle: Vec<(f64, u32)> = spec
+            .targets()
+            .iter()
+            .map(|t| (spec.keys()[t.key_idx as usize].angle, t.env_idx))
+            .collect();
+        assert!(by_angle.contains(&(0.0, 1)), "{by_angle:?}");
+        assert!(by_angle.contains(&(10.0, 0)), "{by_angle:?}");
+        assert!(by_angle.contains(&(20.0, 0)), "{by_angle:?}");
+
+        let set = TargetSet {
+            environments: vec!["bare".to_string(), "laminated".to_string()],
+            spectral: vec![tagged(Some("laminate"), 0.0)],
+            ..base_set()
+        };
+        let e = compile_merit_spec(&set).unwrap_err();
+        assert!(e.contains("\"laminate\""), "{e}");
+        assert!(e.contains("\"bare\", \"laminated\""), "{e}");
+    }
+
+    /// A duplicate roster entry would make `resolve_env` silently pick
+    /// the first - the same quiet wrong-surroundings result the unknown
+    /// tag refusal exists to prevent.
+    #[test]
+    fn roster_refuses_duplicate_and_empty_names() {
+        let dup = TargetSet {
+            environments: vec!["a".to_string(), "a".to_string()],
+            spectral: vec![spec_target()],
+            ..base_set()
+        };
+        let e = compile_merit_spec(&dup).unwrap_err();
+        assert!(e.contains("duplicate name") && e.contains("\"a\""), "{e}");
+
+        let empty = TargetSet {
+            environments: vec![String::new()],
+            spectral: vec![spec_target()],
+            ..base_set()
+        };
+        let e = compile_merit_spec(&empty).unwrap_err();
+        assert!(e.contains("non-empty"), "{e}");
+    }
+
+    /// The bookkeeping is made unrepresentable rather than merely
+    /// correct: a demand cannot name an environment the spec does not
+    /// have, in either order of operations.
+    #[test]
+    fn a_demand_cannot_outlive_its_environment() {
+        let mut spec = MeritSpec::new();
+        let ki = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        let mut t = MeritTarget {
+            key_idx: ki,
+            env_idx: 1,
+            wavelengths: Arc::from([500.0].as_slice()),
+            kind: ConstraintKind::Exact,
+            transform: SimTransform::Linear,
+            norm_factor: 1.0,
+            normalized_targets: Arc::from([0.0].as_slice()),
+            tolerances: Arc::from([0.01].as_slice()),
+            band: Arc::from([].as_slice()),
+            phase: false,
+            differential_passes: None,
+            weight: 1.0,
+            count_norm: None,
+            integral: false,
+        };
+        let e = spec.add_target(t.clone()).unwrap_err();
+        assert!(
+            e.contains("env_idx=1") && e.contains("1 environment"),
+            "{e}"
+        );
+
+        spec.set_n_envs(2).unwrap();
+        spec.add_target(t.clone()).unwrap();
+        let e = spec.set_n_envs(1).unwrap_err();
+        assert!(e.contains("orphan"), "{e}");
+        assert!(spec.set_n_envs(0).unwrap_err().contains(">= 1"));
+
+        t.env_idx = 0;
+        spec.add_target(t).unwrap();
+        assert_eq!(spec.n_envs(), 2);
+    }
+
     #[test]
     fn compiles_flat_spec() {
         let set = TargetSet {
+            environments: vec![],
             spectral: vec![spec_target()],
             angular: vec![],
             color: vec![],
@@ -806,6 +1018,7 @@ mod tests {
     #[test]
     fn refuses_bad_targets() {
         let mut set = TargetSet {
+            environments: vec![],
             spectral: vec![spec_target()],
             angular: vec![],
             color: vec![],
@@ -834,6 +1047,7 @@ mod tests {
 
     fn color_target() -> ColorTargetJson {
         ColorTargetJson {
+            environment: None,
             curve: "Ru".to_string(),
             angle: 0.0,
             illuminant: IllumJson::Table(IllumTable {
@@ -862,6 +1076,7 @@ mod tests {
 
     fn color_set() -> TargetSet {
         TargetSet {
+            environments: vec![],
             spectral: vec![],
             angular: vec![],
             color: vec![color_target()],
@@ -1165,6 +1380,7 @@ mod tests {
         t.illuminant = IllumJson::Name("D65".to_string());
         t.observer = CmfJson::Name("1931_2deg".to_string());
         let set = TargetSet {
+            environments: vec![],
             spectral: vec![],
             angular: vec![],
             color: vec![t],

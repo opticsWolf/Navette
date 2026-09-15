@@ -166,7 +166,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~PD3~~ **DONE (0.6.47)** | GD/GDD over Δφ: the convention PD1 disturbs, decided and pinned | 0.6.47 | P1 | S (a decision + twins) | S | PD plan §4 |
 | ~~PD4~~ **DONE (0.6.48)** | `PDts`/`PDtp` become first-class `compute()` observables | 0.6.48 | P1 | S | M | PD plan §5 |
 | ~~PDR~~ **DONE (0.6.49)** | PD review applied: the scalar guard's demanded sides + one `total_d` | 0.6.49 | **P0** | S | S | review PD §4 |
-| F2.1 | Environment segment schema + compile/validation + `bench_eval.py` | 0.7.1 | P2 | S | M | §4.1–4.2 |
+| ~~F2.1~~ **DONE (0.7.1)** | Environment segment schema + compile/validation + `bench_eval.py` | 0.7.1 | P2 | S | M | §4.1–4.2 |
 | F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.7.2 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.7.3 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
 | F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.7.4 | P1 | **M** (second schema gate) | **L** | §4.5 |
@@ -2299,6 +2299,76 @@ plan's own logic ("a baseline taken after the change is not a baseline")
 applied one step earlier: the baseline's *harness* must exist before the
 baseline.
 
+**DONE (0.7.1).** `smatrix/synthesis/environments.rs`: the segment schema
+(`DesignSegmentCfg`, `EnvSegmentCfg`, `EnvironmentCfg`, `FixedLayerRow`),
+`compile_slots` + `compile_env_rows` + `build_environments`, the
+`design_slot → (env, span)` routing table, and `resolve_env`.
+`DesignRequest` gains `design` + `environments`; `TargetSet` gains
+`environments`; all three demand kinds gain `environment`; `MeritTarget`
+and `ColorDemand` gain `env_idx`; `MeritSpec` gains `n_envs`.
+`validation/benches/synthesis/bench_eval.py` +
+`results/eval_baseline.json` record the pre-segment baseline (A7, R6).
+
+Gates measured: fmt; clippy `-D warnings` on the workspace and each
+feature variant; 564 lib / 22 parity / 15 py; feature variants 569
+(`opt-minpack-lm`), 573 (`opt-argmin`), 578 (all-features); pytest 771
+passed 1 skipped; five tools; ten harnesses; **both fingerprints
+unmoved** (`test_differential.py`, `test_needle_pin.py`, 5 passed).
+Nothing in the eval path was touched — this item compiles, it does not
+evaluate.
+
+CORRECTIONS:
+
+1. **The flat path is not re-assembled, it is delegated to.**
+   `build_environments` on a request with no `environments` calls
+   `build_design` and wraps the result in one environment named
+   `"default"`. The plan's gate ("old flat calls assemble
+   bitwise-identical stacks") is therefore *structural*: there is no
+   second assembler for a flat request to drift away from. The twin
+   still exists and still compares `assert_eq` on films **and** spans —
+   what it actually pins is that a K=1 *segmented* request (empty fixed
+   segments either side of one design segment) lands on the same
+   assembly as the flat one, which is the claim with content.
+2. **`EnvSegmentCfg` is not an untagged union.** §4.1 writes the segment
+   as `{layers: […]} | {design: "id"}`. Implemented as two `Option`
+   fields plus an exactly-one check, because `#[serde(untagged)]`
+   reports only "data did not match any variant" — it discards which
+   shape was wrong, and every refusal in this item is required to name
+   its environment and segment.
+3. **Fixed rows are their own type.** §3.1 says surroundings are
+   assembled with `optimize/needle` **forced false**; §4.2 says an
+   explicit `true` there **refuses**. Both are true only if the compile
+   can tell silence from an explicit `true` — and `LayerRow` defaults
+   both to `true`, so through that type every well-formed request would
+   refuse. `FixedLayerRow` mirrors `LayerRow` with those two defaults
+   flipped to false; the other eleven defaults are the shared helpers,
+   not re-spelled.
+4. **Routing is span-keyed, not row-keyed** — as §4's ordering argument
+   requires. `routing[slot][env]` indexes `spans()`, and `Span::logical`
+   is the authoring film index the compile recorded per slot.
+5. **Three refusals the design did not name**, each closing a way to
+   write a request that means nothing: `structure.layers` non-empty
+   together with `environments` (which films are the design?);
+   `design` segments with no `environments` (unreachable definitions);
+   `environments` with no `design` segments (no shared parameters, so
+   nothing joint about the run).
+6. **§8 question 3 is not answered here.** Per-environment
+   `missing_penalty` scale belongs with the per-`(env, key)` penalty
+   groups, which are F2.2's. Questions 1, 2, 4 and 5 are answered as
+   recommended: named default environment (`"default"`), the roster on
+   both `TargetSet` and the design request, exact-once refused in v1,
+   surroundings auto-named only.
+7. **`build_environments` and `resolve_env` are allowlisted in
+   `check_exposure.py`, not bound.** Binding a compile whose evaluator
+   does not exist yet would publish a reachable-but-meaningless surface.
+   Both entries name F2.4 as the commit that removes them.
+8. **The bench's `eval` phase is not the sum of its parts** (≈292 µs
+   against ≈126 + 39 + 4). Assembling a stack and immediately solving it
+   in a loop that frees it again is a different memory pattern from
+   solving a stack built before the loop; both numbers reproduce, and
+   the harness and the JSON both say so. F2.2 compares each phase
+   against the same phase, never a phase against a sum.
+
 **R6 — record it as an artifact, not as prose.** The convention already
 exists (`validation/benches/smatrix/results/*.json`). Write
 `validation/benches/synthesis/results/eval_baseline.json` with the commit
@@ -2769,7 +2839,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.49 | PDR | 32adee2 | review PD §4 — G1 (the guard's sides) + G2 (one total_d) | done |
 | 0.6.49 | PDR round 2 | 9d5cbc3 | review PD §7 — H1 (the G2 twin), H2/H3/H4; no bump | done |
 | **0.7.0** | **release** | 1842a1b | Phase A + the C series + PD1–PD4 + both review rounds; first release since 0.6.44 | **released** |
-| 0.7.1 | F2.1 | — | A7, R6 | not started |
+| 0.7.1 | F2.1 | PENDING | A7, R6 | done |
 | 0.7.2 | F2.2 | — | A4, A8 | not started |
 | 0.7.3 | F2.3 | — | A8, N1 | not started |
 | 0.7.4 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |

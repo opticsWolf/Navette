@@ -1,0 +1,32 @@
+{
+  "problem": {
+    "n_films": 12,
+    "n_wavelengths": 61,
+    "n_angles": 2,
+    "n_demands": 4,
+    "n_residuals": 244,
+    "n_contrast_seeds": 12
+  },
+  "merit": 62003.29065983792,
+  "seconds": {
+    "assemble": 0.00012623599963262677,
+    "simulate": 3.887599916197359e-05,
+    "merit_only": 3.6000018008053335e-06,
+    "simulate_merit": 4.247600096277893e-05,
+    "eval": 0.00029203600017353894
+  },
+  "timing": {
+    "repeats": 5,
+    "inner": 50,
+    "reduction": "best-of"
+  },
+  "provenance": {
+    "build_profile": "release",
+    "navette_version": "0.7.1",
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "commit": "2bb57e2370524315c97450f6d702d78646f05d1c",
+    "recorded_utc": "2026-09-15T06:33:23+00:00"
+  },
+  "note": "Pre-segment eval baseline (F2.1). F2.2's gate: K=1 segmented within 1% of these numbers on the same machine and build profile (multi_environment_plan.md 4.6 (b)). Cross-machine comparison is meaningless -- re-record rather than compare. NOTE: 'eval' is measured whole and is not the sum of the other phases (see the module docstring); compare each phase against the same phase."
+}

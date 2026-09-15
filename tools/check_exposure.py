@@ -61,6 +61,15 @@ ALLOWLIST = {
     # `refresh_profiles`); the plan forbids a fourth, user-called refresh
     # point, so these stay unbound on purpose.
     "expand_with_recipe_inputs", "emit_standalone",
+    # multi-environment compile (F2.1): the segmented door and its demand
+    # tag resolver. Unbound ON PURPOSE and only until F2.4 -- F2.1 lands
+    # the schema, the validation and the routing table; F2.2 wires the
+    # driver loop and F2.4 opens `design=` / `environments=` on
+    # `run_needle`. Binding them now would publish a surface whose
+    # evaluation half does not exist yet, which is exactly the "reachable
+    # but meaningless" state this lint is meant to prevent. Remove both
+    # entries when F2.4 binds them.
+    "build_environments", "resolve_env",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",

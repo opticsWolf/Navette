@@ -93,6 +93,9 @@ pub struct ColorDemand {
     /// Index into `MeritSpec::keys` (set at compile; groups the demand for
     /// missing-penalty + residual ordering, exactly like pointwise targets).
     pub key_idx: u32,
+    /// F2.1: index into the compiled environment list, set at compile
+    /// beside `key_idx`. See `MeritTarget::env_idx`.
+    pub env_idx: u32,
     pub cmf: Vec<[f64; 3]>,
     pub cmf_wl: Vec<f64>,
     pub illuminant: Vec<f64>,
@@ -302,6 +305,7 @@ impl ColorDemand {
         }
         Ok(ColorDemand {
             key_idx,
+            env_idx: 0,
             locus,
             yi_cx,
             yi_cz,

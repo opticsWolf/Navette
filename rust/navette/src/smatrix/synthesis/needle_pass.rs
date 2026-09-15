@@ -1392,6 +1392,7 @@ mod tests {
         let k = spec.add_key(MeritKey { angle, curve });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: wl.to_vec().into(),
             kind,
             transform: SimTransform::Phase,
@@ -1412,6 +1413,7 @@ mod tests {
     fn entry_for_phase(key_idx: u32) -> MeritTarget {
         MeritTarget {
             key_idx,
+            env_idx: 0,
             wavelengths: vec![400.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Phase,
@@ -1441,6 +1443,7 @@ mod tests {
         let k = spec.add_key(MeritKey { angle, curve });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: wl.to_vec().into(),
             kind,
             transform: SimTransform::Linear,
@@ -1491,6 +1494,7 @@ mod tests {
             .collect();
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![400.0, 500.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Phase,
@@ -1585,6 +1589,7 @@ mod tests {
             .collect();
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![450.0, 550.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Phase,
@@ -1663,6 +1668,7 @@ mod tests {
                 .collect();
             spec.add_target(MeritTarget {
                 key_idx: k as u32,
+                env_idx: 0,
                 wavelengths: wls.to_vec().into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Phase,
@@ -1810,6 +1816,7 @@ mod tests {
         });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![400.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Linear,
@@ -1840,6 +1847,7 @@ mod tests {
         pspec
             .add_target(MeritTarget {
                 key_idx: pk as u32,
+                env_idx: 0,
                 wavelengths: vec![400.0].into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Phase,
@@ -1885,6 +1893,7 @@ mod tests {
         });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![400.0, 500.0, 600.0].into(),
             kind,
             transform: SimTransform::Linear,
@@ -2009,6 +2018,7 @@ mod tests {
         });
         let mk = |norm_t: f64, tol: f64, nf: f64| MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![500.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Linear,
@@ -2259,6 +2269,7 @@ mod tests {
         spec_log
             .add_target(MeritTarget {
                 key_idx: k as u32,
+                env_idx: 0,
                 wavelengths: vec![400.0].into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Log,
@@ -2637,6 +2648,7 @@ mod tests {
         });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: TEST_WAVLS.to_vec().into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Linear,

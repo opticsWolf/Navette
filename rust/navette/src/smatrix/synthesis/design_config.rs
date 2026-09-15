@@ -25,16 +25,16 @@ use crate::structure::{
 // Request schema (JSON mirror of the pydantic configs)
 // ---------------------------------------------------------------------------
 
-fn d_true() -> bool {
+pub(crate) fn d_true() -> bool {
     true
 }
-fn d_inh_delta() -> f64 {
+pub(crate) fn d_inh_delta() -> f64 {
     0.1
 }
 fn d_one() -> f64 {
     1.0
 }
-fn d_layer_type() -> i32 {
+pub(crate) fn d_layer_type() -> i32 {
     1
 }
 fn d_air() -> String {
@@ -256,6 +256,15 @@ pub struct DesignRequest {
     pub ambient_name: String,
     #[serde(default = "d_sub")]
     pub substrate_name: String,
+    /// F2.1: named design segments, each defined exactly once and shared
+    /// by every environment. Absent = the flat `structure.layers` path,
+    /// unchanged and bit-identical.
+    #[serde(default)]
+    pub design: BTreeMap<String, super::environments::DesignSegmentCfg>,
+    /// F2.1: ordered environment list. Absent = one implicit environment
+    /// named `"default"` holding the flat films.
+    #[serde(default)]
+    pub environments: Vec<super::environments::EnvironmentCfg>,
 }
 
 // ---------------------------------------------------------------------------
@@ -453,22 +462,76 @@ fn fixed_spec(name: &str, nk: Vec<Complex64>) -> LayerSpec {
     }
 }
 
-/// Assemble a design: evaluate the library, build films + groups, expand
-/// once via [`DesignStack::from_design`]. Returns `(stack, contrast,
-/// warnings)` — warnings (homogenized graded films) are for the caller
-/// to re-emit; nothing is ever refused or silent.
-pub fn build_design(
-    req: &DesignRequest,
-    wavelengths: &[f64],
-) -> Result<(DesignStack, ContrastMap, Vec<String>), String> {
-    // Library → nk on the grid, keyed by code (else name).
-    let mut nk_table: HashMap<Arc<str>, Vec<Complex64>> = HashMap::new();
-    for def in &req.library {
-        let key = def.code.as_deref().unwrap_or(&def.name);
-        nk_table.insert(Arc::from(key), eval_material(def, wavelengths)?);
+/// Build the needle contrast map: one zero-thickness, coherent,
+/// optimizable seed per host film.
+///
+/// Shared by both doors so the seed's flags cannot drift between them
+/// (a seed that is not `optimize + needle` is not a seed - it is a film
+/// the scan will never touch).
+pub(crate) fn build_contrast(
+    contrast: &BTreeMap<String, String>,
+    nk: &HashMap<Arc<str>, Vec<Complex64>>,
+) -> Result<ContrastMap, String> {
+    let mut cmap = ContrastMap::new();
+    for (host, seed) in contrast {
+        let spectrum = nk
+            .get(seed.as_str())
+            .cloned()
+            .ok_or_else(|| format!("material code {seed:?} not found in library"))?;
+        cmap.insert(
+            Arc::from(host.as_str()),
+            LayerSpec {
+                material: Arc::from(format!("{host}_seed")),
+                nk: Arc::from(spectrum),
+                d_nm: 0.0,
+                coherent: true,
+                rough_type: 0,
+                rough_val: 0.0,
+                optimize: true,
+                needle: true,
+            },
+        );
     }
+    Ok(cmap)
+}
+
+/// Everything [`split_and_build_films`] needs besides the rows themselves.
+///
+/// A struct rather than eight positional arguments: clippy's
+/// `too_many_arguments` is a `-D warnings` error here, and the fields
+/// read better at the two call sites than a positional tail would.
+pub(crate) struct RowAssembly<'a> {
+    /// nk on the simulation grid, keyed by FILM NAME. The flat door
+    /// keys by material code (name == code); the segmented door adds
+    /// one alias entry per auto-named surrounding film.
+    pub nk: &'a HashMap<Arc<str>, Vec<Complex64>>,
+    pub film_flags: &'a BTreeMap<String, Value>,
+    /// Per-film overrides stay keyed by MATERIAL CODE, not by name: the
+    /// caller addresses a material, and an auto-generated surrounding
+    /// name is not something a request can have written down.
+    pub per_film_flags: &'a BTreeMap<String, BTreeMap<String, Value>>,
+    pub ambient_name: &'a str,
+    pub substrate_name: &'a str,
+    pub wavelengths: &'a [f64],
+    /// Names the door in gradient-validation refusals.
+    pub gate_label: &'a str,
+}
+
+/// Split `(name, row)` pairs by layer type and build the film layers.
+///
+/// Shared by the flat door ([`build_design`]) and the segmented door
+/// ([`super::environments::build_environments`]). Films are named by the
+/// pair's first element; the nk table is keyed by that same name, which
+/// is why the segmented door aliases its auto-named surroundings in
+/// before calling. Everything else - the half-space defaults, the flag
+/// precedence (global -> row -> per-film), the duplicate refusal, the
+/// F1.5 gradient gate - is the flat door's behaviour, unmoved.
+pub(crate) fn split_and_build_films(
+    rows: &[(String, &LayerRow)],
+    ctx: &RowAssembly,
+) -> Result<(LayerSpec, LayerSpec, Vec<Layer>), String> {
     let resolve = |code: &str| -> Result<Vec<Complex64>, String> {
-        nk_table
+        ctx.nk
             .get(code)
             .cloned()
             .ok_or_else(|| format!("material code {code:?} not found in library"))
@@ -478,11 +541,11 @@ pub fn build_design(
     let mut ambient_rows = vec![];
     let mut substrate_rows = vec![];
     let mut film_rows = vec![];
-    for row in &req.structure.layers {
+    for (name, row) in rows {
         match row.layer_type {
-            0 => ambient_rows.push(row),
-            2 => substrate_rows.push(row),
-            1 => film_rows.push(row),
+            0 => ambient_rows.push(*row),
+            2 => substrate_rows.push(*row),
+            1 => film_rows.push((name, *row)),
             t => return Err(format!("layer_type must be 0, 1 or 2 (got {t})")),
         }
     }
@@ -497,29 +560,28 @@ pub fn build_design(
             Some(row) => Ok(fixed_spec(name, resolve(&row.material_code)?)),
             None => Ok(fixed_spec(
                 name,
-                vec![Complex64::new(n, 0.0); wavelengths.len()],
+                vec![Complex64::new(n, 0.0); ctx.wavelengths.len()],
             )),
         }
     };
-    let amb = half_space(&ambient_rows, &req.ambient_name, 1.0)?;
-    let sub = half_space(&substrate_rows, &req.substrate_name, 1.52)?;
+    let amb = half_space(&ambient_rows, ctx.ambient_name, 1.0)?;
+    let sub = half_space(&substrate_rows, ctx.substrate_name, 1.52)?;
 
-    // Films: global flags → row → per-film override. Codes key the table.
+    // Films: global flags -> row -> per-film override. Names key the table.
     let mut films: Vec<Layer> = Vec::with_capacity(film_rows.len());
     let mut seen: HashSet<&str> = HashSet::new();
-    for row in film_rows {
-        if !seen.insert(row.material_code.as_str()) {
+    for (name, row) in film_rows {
+        if !seen.insert(name.as_str()) {
             return Err(format!(
-                "duplicate film material code {:?} (film names key the nk table)",
-                row.material_code
+                "duplicate film material code {name:?} (film names key the nk table)"
             ));
         }
-        resolve(&row.material_code)?; // fail fast with the code in the message
-        let mut layer = Layer::film(row.thickness_nm, &row.material_code);
+        resolve(name)?; // fail fast with the code in the message
+        let mut layer = Layer::film(row.thickness_nm, name);
         layer.layer_type = LayerType::Film;
-        apply_flag_map(&mut layer, &req.film_flags)?;
+        apply_flag_map(&mut layer, ctx.film_flags)?;
         apply_row(&mut layer, row)?;
-        if let Some(over) = req.per_film_flags.get(&row.material_code) {
+        if let Some(over) = ctx.per_film_flags.get(&row.material_code) {
             apply_flag_map(&mut layer, over)?;
         }
         // F1.5: a gradient row's spec is gated here (the same rule
@@ -528,28 +590,64 @@ pub fn build_design(
         // easier to act on before a stack exists.
         if row.gradient.is_some() {
             let issues = layer.property_issues(&format!("film {:?}", row.material_code));
-            crate::structure::validation::ValidationIssue::gate(&issues, "build_design")?;
+            crate::structure::validation::ValidationIssue::gate(&issues, ctx.gate_label)?;
         }
         films.push(layer);
     }
+    Ok((amb, sub, films))
+}
+
+/// Evaluate a material library onto the grid, keyed by code (else name).
+pub(crate) fn eval_library(
+    library: &[MaterialDef],
+    wavelengths: &[f64],
+) -> Result<HashMap<Arc<str>, Vec<Complex64>>, String> {
+    let mut nk_table: HashMap<Arc<str>, Vec<Complex64>> = HashMap::new();
+    for def in library {
+        let key = def.code.as_deref().unwrap_or(&def.name);
+        nk_table.insert(Arc::from(key), eval_material(def, wavelengths)?);
+    }
+    Ok(nk_table)
+}
+
+/// Assemble a design: evaluate the library, build films + groups, expand
+/// once via [`DesignStack::from_design`]. Returns `(stack, contrast,
+/// warnings)` — warnings (homogenized graded films) are for the caller
+/// to re-emit; nothing is ever refused or silent.
+pub fn build_design(
+    req: &DesignRequest,
+    wavelengths: &[f64],
+) -> Result<(DesignStack, ContrastMap, Vec<String>), String> {
+    // Library → nk on the grid, keyed by code (else name).
+    let nk_table = eval_library(&req.library, wavelengths)?;
+    // Split + build through the shared assembler. The flat door names
+    // every film by its material code - which is what has keyed the nk
+    // table since F1.5 - so `named` is the identity mapping here and
+    // this path is operation-for-operation what it was. F2.1 lifted the
+    // body out so the segmented door can pass its OWN names
+    // (auto-named surroundings, §4.1) through the same code instead of
+    // growing a second assembler that would drift.
+    let named: Vec<(String, &LayerRow)> = req
+        .structure
+        .layers
+        .iter()
+        .map(|row| (row.material_code.clone(), row))
+        .collect();
+    let (amb, sub, films) = split_and_build_films(
+        &named,
+        &RowAssembly {
+            nk: &nk_table,
+            film_flags: &req.film_flags,
+            per_film_flags: &req.per_film_flags,
+            ambient_name: &req.ambient_name,
+            substrate_name: &req.substrate_name,
+            wavelengths,
+            gate_label: "build_design",
+        },
+    )?;
 
     // Contrast seeds: zero-thickness, coherent, optimizable carriers.
-    let mut cmap = ContrastMap::new();
-    for (host, seed) in &req.contrast {
-        cmap.insert(
-            Arc::from(host.as_str()),
-            LayerSpec {
-                material: Arc::from(format!("{host}_seed")),
-                nk: Arc::from(resolve(seed)?),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
-    }
+    let cmap = build_contrast(&req.contrast, &nk_table)?;
 
     let mut groups = HashMap::new();
     for row in &req.structure.groups {
@@ -625,6 +723,8 @@ mod tests {
 
     fn req(films: Vec<LayerRow>) -> DesignRequest {
         DesignRequest {
+            design: BTreeMap::new(),
+            environments: vec![],
             structure: StructureCfg {
                 label: "t".to_string(),
                 layers: films,

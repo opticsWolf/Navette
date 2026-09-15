@@ -239,6 +239,11 @@ impl PyMeritSpec {
         self.inner
             .add_target(MeritTarget {
                 key_idx,
+                // F2.1: the Python door is single-environment until
+                // F2.4 opens `environments=`. Stated, not defaulted -
+                // the field has no `Default`, so a later widening of
+                // this door cannot forget to route.
+                env_idx: 0,
                 wavelengths: Arc::from(wl),
                 kind: parse_kind(&kind)?,
                 transform: parse_transform(&transform)?,

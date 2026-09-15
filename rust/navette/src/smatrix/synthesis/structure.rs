@@ -38,7 +38,11 @@ use crate::structure::Span;
 /// simulation wavelength grid (one entry per wavelength), mirroring
 /// `ArrayMaterialProvider` semantics from needle_synthesis.py where nk
 /// arrays are pre-interpolated onto the grid.
-#[derive(Clone, Debug)]
+/// F2.1: `PartialEq` is derived so the multi-environment gate can
+/// `assert_eq` a segmented assembly against a flat one field for field.
+/// Float equality is the POINT here - the gate is bitwise, and a
+/// tolerance would let exactly the drift it exists to catch through.
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayerSpec {
     pub material: Arc<str>,
     /// Complex nk per simulation wavelength, len == num_wavs.

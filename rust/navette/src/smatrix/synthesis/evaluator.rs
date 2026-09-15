@@ -568,6 +568,7 @@ mod tests {
         });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![wl].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Linear,
@@ -626,6 +627,7 @@ mod tests {
         });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![1000.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Phase,
@@ -753,6 +755,7 @@ mod tests {
         pd_spec
             .add_target(MeritTarget {
                 key_idx: pk as u32,
+                env_idx: 0,
                 wavelengths: vec![400.0].into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Phase,
@@ -866,6 +869,7 @@ mod tests {
             .collect();
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: wl.into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Phase,
@@ -903,6 +907,7 @@ mod tests {
         });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
+            env_idx: 0,
             wavelengths: vec![1000.0].into(),
             kind: ConstraintKind::Exact,
             transform: SimTransform::Phase,
@@ -982,6 +987,7 @@ mod tests {
             let k = spec.add_key(MeritKey { angle, curve });
             spec.add_target(MeritTarget {
                 key_idx: k as u32,
+                env_idx: 0,
                 wavelengths: WLS.to_vec().into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Linear,
@@ -1193,6 +1199,7 @@ mod tests {
             });
             spec.add_target(MeritTarget {
                 key_idx: k as u32,
+                env_idx: 0,
                 wavelengths: vec![900.0].into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Linear,
@@ -1288,6 +1295,7 @@ mod tests {
             });
             spec.add_target(MeritTarget {
                 key_idx: k as u32,
+                env_idx: 0,
                 wavelengths: vec![900.0].into(),
                 kind: ConstraintKind::Exact,
                 transform: SimTransform::Linear,

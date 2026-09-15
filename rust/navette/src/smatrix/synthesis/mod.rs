@@ -28,6 +28,7 @@ pub mod context;
 pub mod cycle;
 pub mod design_config;
 pub mod driver;
+pub mod environments;
 pub mod evaluator;
 pub mod inflate;
 pub mod jacobian;
