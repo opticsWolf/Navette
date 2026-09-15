@@ -170,7 +170,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F2.2~~ **DONE (0.7.2)** | K assemblies, K solves, `residuals_multi` — joint merit | 0.7.2 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | ~~F2.3~~ **DONE (0.7.3)** | Needle + LM joint: locus translation, name-routed fold sum | 0.7.3 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
 | ~~F2.4~~ **DONE (0.7.4)** | Python `environments=` / `design=` surface + program sections + program schema range | 0.7.4 | P1 | **M** (second schema gate) | **L** | §4.5 |
-| F3.1 | Docs, worked examples, exposure re-audit, release | 0.7.5 | P3 | S | M | §7-S5, §D7 |
+| ~~F3.1~~ **DONE (0.7.5)** | Docs, worked examples, exposure re-audit, release | 0.7.5 | P3 | S | M | §7-S5, §D7 |
 
 Twenty-three items, `0.6.33 → 0.7.5`.
 
@@ -2794,10 +2794,16 @@ and an unrecognised name used to be dropped in silence.
 
 Gates measured: fmt; clippy `-D warnings` on the workspace and each feature
 variant; 585 lib / 22 parity / 15 py / 15 doc; feature variants 590
-(`opt-minpack-lm`), 594 (`opt-argmin`), 599 (all-features); pytest 790
+(`opt-minpack-lm`), 594 (`opt-argmin`), 599 (all-features); pytest 792
 passed 1 skipped (19 new); five tools; ten harnesses; **both fingerprints
 unmoved** (5 passed); release build at 0.7.4; the bench's merit still
 bit-equal to the F2.1 baseline artifact (`44dc154d6946ee40`).
+
+*(The pytest figure here read "790 passed 1 skipped" when F2.4 shipped and
+was corrected at F3.1. `validation/` is byte-identical between the two
+commits and collects 793 items, so the original reading was two low; the
+cause was not identified, which is itself worth recording — a gate number
+copied out of a scrolling log is a gate number that can be wrong.)*
 
 CORRECTIONS:
 
@@ -2880,6 +2886,87 @@ public signature change and a new refusal class.
 - `tools/check_exposure.py` re-audit: new public functions either exported or
   allowlisted with a reason.
 - Full battery, CI green, `main` fast-forward, tag.
+
+**DONE (0.7.5).** Docs, two worked examples, the exposure re-audit, the
+release.
+
+`docs/spectralweave-target-kinds.md` gains an **Environments** section (the
+tag and where it resolves, absent-means-first, one merit over all K,
+parameter identity by film name, the needle seeing all K at once, the ×K
+cost including the graded case and the S-matrix-embedding follow-up, and
+what a joint run gives up at the thin-layer floor) and a **coverage-matrix
+row** for the per-environment fold.
+
+`docs/graded-media.md` is new, and is where two things that were only true
+in the code got written down: **spans are authored, rows are solved** (with
+the measured 16 spans → 80 rows), and the **Névot-Croce validity caveat** —
+rtype 5 applies at every sublayer boundary, the model needs σ ≪ λ *and*
+σ ≪ thickness, and a sublayer is thin by construction, so set interface
+roughness on the spans you meant rather than on the expansion. The
+**thin-gradient floor** is stated with its number: a 3 nm gradient is three
+1 nm rows, they are exempt from the thin-layer sweep (the span is the
+parameter, not its sublayers) and they are *not* deleted — and three steps
+still do not resolve a profile, so below ~6 nm the honest description is a
+mixed layer.
+
+`examples/multi_environment_ar.py` (U1): one AR stack bare and laminated,
+optimized jointly. It measures the trade instead of asserting it — each
+finished design is scored *alone* in each surrounding, because the two
+runs' own merits carry different residual counts and are not comparable.
+Bare-only reaches 3.39 bare / 60836 laminated; the joint design 5007 /
+6873. It then rebuilds the same design as a program document and shows the
+two spellings landing on identical merit bits.
+
+`examples/rugate_gradient_vs_discrete.py`: the rugate as alternating
+`FixedSpan` spans against the discrete quarter-wave equivalent, same
+optical thickness per period. 16 spans → 80 rows vs 16 rows; merit
+26762 graded vs 91891 stepped; peak R 0.9889 vs 0.9987. The stepped stack
+reflects harder per period and loses on the sidebands the demand cares
+about, which is the trade a rugate is bought for — at 5× the rows.
+
+`tools/check_exposure.py`: re-audited, 229 pub fns / 110 allowlisted, clean.
+
+Gates measured: fmt; clippy `-D warnings` on the workspace and each feature
+variant; 585 lib / 22 parity / 15 py / 15 doc; features 590 / 594 / 599;
+pytest 792 passed 1 skipped; five tools; ten harnesses; **both fingerprints
+unmoved** (5 passed); all three examples run; release build at 0.7.5; bench
+merit bit-equal to the F2.1 baseline artifact (`44dc154d6946ee40`).
+
+CORRECTIONS:
+
+1. **The rugate is triangular, not sinusoidal, and the example says so.**
+   The item asks for "a rugate filter as a `FixedSpan` gradient".
+   `FixedSpan` is linear across a span, so alternating spans give a
+   triangular index modulation — the right shape family, one Fourier
+   component off. The example states this in its own docstring and tells
+   the reader to read the comparison as "graded versus stepped" rather
+   than as "rugate versus stack". Building a real sinusoid would mean a
+   new profile mode, which is a feature, not a docs item.
+
+2. **`SimCurves` is write-only, so the example solves the expansion
+   itself.** Nothing reads a spectrum back out of `ctx.simulate` — the
+   merit arm's sink has `set_curve`/`set_complex` and nothing else. The
+   example therefore takes `DesignStack.to_dict()["films"]` (which *is*
+   the expansion, one entry per row with its own nk) and runs a plain
+   `ScatterMatrix` over it. That turns out to be the better measurement:
+   it demonstrates that what is being compared is the expansion the
+   solver saw, not the spans the author wrote.
+
+3. **There was no gradient doc to cross-reference the Névot-Croce caveat
+   *from*.** The item says "cross-referenced from the gradient docs";
+   gradients had a README feature paragraph and nothing else. F3.1 writes
+   `docs/graded-media.md` to be that home, and the README paragraph now
+   points at it with the two facts worth knowing before reading further.
+
+4. **A scoring pass has to rename the rows a needle insertion produced.**
+   An insertion splits one film into three and the outer pieces keep the
+   host's material name — correct for a design, where they are one
+   parameter's material, and refused by `stack_from_layers`, where a film
+   name keys the nk table. The AR example numbers them for the scoring
+   pass only. Worth writing down because it is the same fact from the
+   other side: on the design surface a name is an identity, and on the
+   flat surface a name is a key.
+
 
 ---
 
@@ -3133,4 +3220,4 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.7.2 | F2.2 | 705b190 | A4, A8 | done |
 | 0.7.3 | F2.3 | 948425f | A8, N1 | done |
 | 0.7.4 | F2.4 | PENDING | A1 (corrected), A3, N8, N9 | done |
-| 0.7.5 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |
+| 0.7.5 | F3.1 | PENDING | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | done |

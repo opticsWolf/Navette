@@ -139,6 +139,7 @@ recomputed every iteration):
 | `c` | inside | centre, **reduced** $nf^2/bw^2$ |
 | `c` | outside | nearest band edge, $nf^2/tol^2$ |
 | `r` / `c` | no sim yet (first iteration) | centre, $nf^2/tol^2$ (conservative) |
+| any | multi-environment (K > 1) | folded **per environment**, against that environment's own simulation; K folds, one per roster entry |
 
 Folding is per quantity: front R/T/A demands → `(targets_r, weights_r)` /
 `(targets_t, weights_t)` / `(targets_a, weights_a)`; back demands → the
@@ -159,6 +160,80 @@ Spectral-label mapping for the converter (`TargetCollection` → `MeritSpec`):
 `phase=True` targets become phase demands on the mapped curve's element
 (R → r_front, T → t_fwd, RB → r_back, TB → t_back). Anything else raises
 `ValueError`. Angular targets expand to one single-point demand per angle.
+
+## Environments (multi-environment designs)
+
+One coating, several surroundings. The same films sit under a bare
+surface, under a laminate, behind a cover glass; each of those is an
+**environment**, and the demands that describe it are tagged with its
+name:
+
+```python
+tc.add(SpectralTarget(wl, R_bare,  tol, 0.0, "s", "R", environment="bare"))
+tc.add(SpectralTarget(wl, R_lam,   tol, 0.0, "s", "R", environment="laminated"))
+spec = build_merit_spec(tc, environments=["bare", "laminated"])
+```
+
+**The tag is a name, resolved once.** `environment=` takes a name from
+the roster passed to `build_merit_spec`, and the resolution happens there
+— the one place a demand and the roster are both in scope. An unknown
+name refuses, quoting the demand and the known environments, because a
+typo has no shape error of its own: it would silently resolve to some
+other environment and the run would report a merit for a coating nobody
+described.
+
+**Absent means the first environment.** Every target set written before
+environments existed is therefore still meaningful and its JSON is
+unchanged — the key is emitted only when the tag is set. On a
+single-environment run the roster is still a roster and its one entry is
+called `"default"`, so a tagged demand on a flat run gets a refusal that
+can say what the name *could* have been.
+
+**The merit is one number over all environments.** Residuals are ordered
+environment-major: every demand of environment 0, then every demand of
+environment 1. There is no per-environment merit to trade off — a joint
+design is one optimization whose residual vector happens to span several
+coatings, and weights are the only instrument for saying one surface
+matters more than another.
+
+**Parameter identity is the film NAME, not the position.** A design
+segment shared by K environments is one set of thicknesses, and what ties
+a row in one assembly to the same parameter in another is the film's name.
+Two films of the same physical material are therefore two names carrying
+identical tables — a repeated name is one parameter spelled twice and is
+refused. This is also why a `material_code` in a program document's
+`design:` section is both the material and the identity: a `LayerRow` has
+no second field for a name.
+
+**The needle sees all K at once.** Each environment scans its own
+assembly with its own fold (the coverage row above); a site that lands in
+the shared design is routed by design parameter into a shared bucket and
+summed. The candidate the sweep inserts is the one that helps the joint
+merit, not the one that helps environment 0 — and the insertion edits the
+shared design and every environment's template at the same time, at each
+environment's own row.
+
+**Cost is ×K, in solves and in folds.** One evaluation assembles K stacks
+and solves K of them; the needle sweep folds K times per cycle. The
+scaling is linear in the number of environments and it is *not* amortized
+— there is no shared factorization between environments, because a
+different surrounding is a different stack, not a perturbation of one.
+Two environments cost about twice one; six cost about six times one.
+
+The cost is worse when a surrounding is *graded*, because a gradient span
+expands to many rows and those rows are solved in every environment that
+carries them. A 64-sublayer cover on three environments is 192 extra rows
+per evaluation. Where the surroundings are thick and passive, an S-matrix
+embedding (solve the surroundings once, reuse the result) would remove
+most of that — it is a known follow-up, not part of v1.
+
+**What a joint run gives up.** While K > 1 the thin-layer floor is a hard
+bound on the optimizer rather than a post-hoc sweep, and the sweep clamps
+up instead of removing. The reason is structural: eliminating a sub-floor
+span would leave the compile carrying a parameter the design no longer
+has. The visible consequence is that a rejected needle seed parks at the
+floor instead of disappearing, so `thin_layer_policy="remove"` is refused
+at the door on a multi-environment run rather than silently reinterpreted.
 
 ## Differential phase (`PDts`/`PDtp`)
 

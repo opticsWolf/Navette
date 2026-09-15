@@ -5,6 +5,35 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.5] - F3.1: docs, worked examples, release
+
+### Added
+- `docs/graded-media.md`: spans versus solver rows (16 authored spans
+  reach the solver as 80), the Nevot-Croce validity caveat for rtype 5 on
+  a graded span (the factor applies at every sublayer boundary, and the
+  model's sigma << thickness condition fails first because a sublayer is
+  thin by construction), and the thin-gradient floor (a 3 nm gradient is
+  three 1 nm rows; exempt from the thin-layer sweep, still below what a
+  staircase approximation means).
+- `docs/spectralweave-target-kinds.md`: an **Environments** section --
+  the `environment=` tag and where it resolves, absent-means-first, one
+  merit over all K, parameter identity by film name, the joint needle,
+  the xK cost (worse when a surrounding is graded), and what a joint run
+  gives up at the thin-layer floor. Plus a coverage-matrix row for the
+  per-environment fold.
+- `examples/multi_environment_ar.py`: one AR coating bare and laminated,
+  optimized jointly, with each finished design scored alone in each
+  surrounding (the two runs' own merits carry different residual counts
+  and are not comparable), and the same design rebuilt as a program
+  document to show identical merit bits.
+- `examples/rugate_gradient_vs_discrete.py`: a triangular `FixedSpan`
+  rugate against the discrete quarter-wave equivalent -- row count,
+  merit and peak R, with the Nevot-Croce and thin-gradient notes inline.
+
+### Changed
+- README: a **One Design, Several Surroundings** feature entry, and the
+  graded-media entry now points at `docs/graded-media.md`.
+
 ## [0.7.4] - F2.4: the Python surface and the program sections
 
 ### Added
