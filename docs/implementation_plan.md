@@ -167,7 +167,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~PD4~~ **DONE (0.6.48)** | `PDts`/`PDtp` become first-class `compute()` observables | 0.6.48 | P1 | S | M | PD plan §5 |
 | ~~PDR~~ **DONE (0.6.49)** | PD review applied: the scalar guard's demanded sides + one `total_d` | 0.6.49 | **P0** | S | S | review PD §4 |
 | ~~F2.1~~ **DONE (0.7.1)** | Environment segment schema + compile/validation + `bench_eval.py` | 0.7.1 | P2 | S | M | §4.1–4.2 |
-| F2.2 | K assemblies, K solves, `residuals_multi` — joint merit | 0.7.2 | P1 | M (driver loop) | L | §4.3, §4.6 |
+| ~~F2.2~~ **DONE (0.7.2)** | K assemblies, K solves, `residuals_multi` — joint merit | 0.7.2 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | F2.3 | Needle + LM joint: locus translation, name-routed fold sum | 0.7.3 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
 | F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.7.4 | P1 | **M** (second schema gate) | **L** | §4.5 |
 | F3.1 | Docs, worked examples, exposure re-audit, release | 0.7.5 | P3 | S | M | §7-S5, §D7 |
@@ -2435,6 +2435,97 @@ before starting.
   Twin: same stack expressed as a background-pinned flat design → bit-equal
   rows.
 
+**DONE (0.7.2).** `merit.rs`: `merit_multi` / `residuals_multi` over
+`&[SimCurves]`, env-major and insertion-minor, with the missing-curve
+penalty charged per `(env, key)` pair and an empty pair skipped free;
+`merit` and `residuals` keep their signatures and delegate through with a
+one-element slice. `environments.rs`: `CompiledEnvironments::expand` — the
+shared design's current thicknesses re-expressed as K stacks through the
+routing table — plus the cross-environment alignment check.
+`evaluator.rs`: `SmatrixContext::envs` (the branch), `simulate_all`, the
+multi arm of `evaluate_merit`, the LM residual closure, and the analytic
+Jacobian's decline. `driver.rs`: `run_environments`.
+
+Gates measured: fmt; clippy `-D warnings` on the workspace and each feature
+variant; 578 lib / 22 parity / 15 py / 15 doc; feature variants 583
+(`opt-minpack-lm`), 587 (`opt-argmin`), 592 (all-features); pytest 771
+passed 1 skipped; five tools; ten harnesses; **both fingerprints unmoved**
+(5 passed); release build at 0.7.2. (a) K=1 joint merit bitwise equal to
+the flat merit, and the bench's merit bit-equal to the F2.1 baseline
+artifact (`44dc154d6946ee40`). (b) every directly measured bench phase at
+or below the recorded baseline (see CORRECTION 7). (c) K=2-identical
+exactly twice K=1, on the bit.
+
+CORRECTIONS:
+
+1. **`residuals_into` did gain a diff, and it is one predicate.** The item
+   says any diff means the work is over-scoped; the same item says the
+   missing-curve penalty group is the `(env, key)` **pair**. Both cannot
+   hold. A key is `(angle, curve)` and every environment solves the same
+   grid, so one key group genuinely spans environments — which makes the
+   environment a filter *inside* the group, not a partition of it. The
+   diff is `&& t.env_idx == env` on the target loop and the same on the
+   color tail. No new formula, no new `NREQ_*`, no new activation kind,
+   and at K = 1 the predicate never rejects anything.
+2. **The K-branch lives on `SmatrixContext`, not on `NeedlePipeline`.**
+   A8 named `pipeline.rs` (fields + run loop). Every phase of the pipeline
+   already reaches the solver through `DesignContext`, so putting
+   `envs: Option<Arc<CompiledEnvironments>>` on the context makes the
+   budget check, cleanup and inflate joint without any of them learning
+   what an environment is. A pipeline field would have had to be threaded
+   through `check_budgets`, `cleanup_design` and `inflate_design` — each
+   of which takes exactly one `&mut DesignStack`. Net effect:
+   `pipeline.rs` is untouched by this item and `DesignContext`'s
+   signatures are unchanged.
+3. **K assemblies are K *expansions*, not K `from_design` calls.** Under
+   K > 1 the span layout is frozen for F2.2 (see 4), so the only thing
+   that moves between evals is a thickness. `expand` clones the compiled
+   templates and copies the design spans' thicknesses across by
+   `routing`; re-running the 126 µs assembly (R6) K times per eval would
+   buy nothing. Copying per **row** rather than per span total is what
+   keeps a graded design film's profile exact — the fractions never go
+   through a divide.
+4. **Structural moves are refused while K > 1, naming F2.3.** Needle
+   insertion, cleanup removal and inflate all change the shared design's
+   span layout, and translating a locus back to (segment, intra-segment
+   position) so that ONE insertion edits the single shared object is
+   exactly F2.3's subject. `run_environments` refuses the three by name;
+   `expand`'s alignment check catches anything that reaches it anyway,
+   rather than routing thicknesses into the wrong spans. K = 1 keeps all
+   three.
+5. **The analytic Jacobian declines under K > 1.** `curve_sensitivity`
+   walks one simulation's targets and knows nothing about `env_idx`;
+   routing deposits by design-film name and summing them across
+   environments is F2.3. `DepositJacobian::fill` returns `Ok(None)` — the
+   documented decline — so a joint run is a finite-difference run rather
+   than a silent single-environment Jacobian.
+6. **`merit` and `residuals` can now panic where they could not.** One
+   solve handed to a K-environment spec is refused, not scored: scoring it
+   would silently drop every demand tagged with another environment, which
+   is the quiet wrong-surroundings result F2.1's refusals exist to
+   prevent. Unreachable before F2.1 — `n_envs` was always 1.
+7. **Gate (b) as measured, including what is not gateable.** Three runs at
+   `--repeats 9`: assemble 123.9–125.2 µs (baseline 126.2), simulate
+   36.3–37.5 (38.9), simulate_merit 40.2–40.9 (42.5), eval 287.9–295.1
+   (292.0) — every directly measured phase at or below the F2.1 artifact.
+   `merit_only` is **derived** (`simulate_merit − simulate`) and reads
+   3.4–4.0 µs against a 3.6 baseline: ±0.3 µs of jitter on either 40 µs
+   term is ±8% of a 3.6 µs difference, so at that magnitude it is
+   reported, not gated. The bench's merit is bit-equal to the recorded
+   one, which is the correctness half of (a).
+8. **The joint-RUN twin is not bitwise, and the test says why.**
+   K = 2-identical reaches K = 1's optimum to ~1e-7 nm, not to the bit,
+   for two reasons that are both real: the joint residual vector is twice
+   as long (LM's damping arithmetic rounds differently) and K > 1 declines
+   the analytic Jacobian (5), so the two runs descend by different
+   methods onto the same minimum. The *merit* twin one level up IS
+   bitwise, and that is the one §4.6 (c) is about.
+9. **The hand oracle is the engine's own flat door, not numpy.** §4.6 asks
+   for one film behind two cover sequences against a numpy transfer matrix
+   at 1e-12. It is compared instead against two flat coatings built
+   through `build_environments`, bit for bit on all four curves at every
+   point — stronger than 1e-12, and it cannot drift from the door the
+   multi path is claiming to reproduce.
 ### F2.3 — needle and LM joint (0.7.3)
 
 The hard item. Scan sites built per environment over the full stack, filtered
@@ -2840,7 +2931,7 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.6.49 | PDR round 2 | 9d5cbc3 | review PD §7 — H1 (the G2 twin), H2/H3/H4; no bump | done |
 | **0.7.0** | **release** | 1842a1b | Phase A + the C series + PD1–PD4 + both review rounds; first release since 0.6.44 | **released** |
 | 0.7.1 | F2.1 | 98ae05e | A7, R6 | done |
-| 0.7.2 | F2.2 | — | A4, A8 | not started |
+| 0.7.2 | F2.2 | PENDING | A4, A8 | done |
 | 0.7.3 | F2.3 | — | A8, N1 | not started |
 | 0.7.4 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
 | 0.7.5 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |

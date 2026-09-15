@@ -857,20 +857,40 @@ impl MeritSpec {
     /// unreachable from Python (the FFI constructor refuses), fail-closed
     /// for the hand-built Rust caller (review PD G4).
     pub fn merit(&self, sim: &SimCurves, missing_penalty: f64) -> f64 {
-        // Reference-row shape is a construction contract (PD1): a bad length
-        // would mis-sample silently, so fail closed here too. Unreachable
-        // from the engine fill and the FFI doors; a hand-built struct is
-        // the only way in (see `reference_length_issue`).
-        if let Some(msg) = sim.reference_length_issue() {
-            panic!("{msg}");
-        }
+        self.merit_multi(std::slice::from_ref(sim), missing_penalty)
+    }
+
+    /// F2.2: the joint merit over K environments — Σ_env Σ_key residual²,
+    /// with the missing-curve penalty charged per `(env, key)` pair.
+    ///
+    /// `sims[e]` is environment `e`'s solve; a demand is scored against the
+    /// curves of the environment it was tagged with at compile time, and a
+    /// `(env, key)` pair no demand belongs to is skipped without charge —
+    /// it has no curve to miss.
+    ///
+    /// At K = 1 this IS the pre-F2.2 body: one environment, the same key
+    /// loop, the same accumulation order (multi-env plan §4.6's single
+    /// branch, taken here by the slice length).
+    ///
+    /// # Panics
+    ///
+    /// On a malformed reference-row length (as `merit`), and on
+    /// `sims.len() != n_envs()`. The second is the same class of
+    /// construction contract: scoring a two-environment spec against one
+    /// solve would silently drop every demand tagged with the other
+    /// environment, which is exactly the quiet wrong-surroundings result
+    /// the F2.1 compile refusals exist to prevent.
+    pub fn merit_multi(&self, sims: &[SimCurves], missing_penalty: f64) -> f64 {
+        self.check_sims(sims, "merit_multi");
         let mut total = 0.0;
         let mut buf: Vec<f64> = Vec::new();
-        for k in 0..self.keys.len() {
-            buf.clear();
-            match self.residuals_into(sim, k, &mut buf) {
-                Ok(()) => total += buf.iter().map(|r| r * r).sum::<f64>(),
-                Err(_) => total += missing_penalty,
+        for (e, sim) in sims.iter().enumerate() {
+            for k in 0..self.keys.len() {
+                buf.clear();
+                match self.residuals_into(sim, k, e as u32, &mut buf) {
+                    Ok(()) => total += buf.iter().map(|r| r * r).sum::<f64>(),
+                    Err(_) => total += missing_penalty,
+                }
             }
         }
         total
@@ -891,20 +911,63 @@ impl MeritSpec {
     /// hand-building `SimCurves` — the caller this exists for — should
     /// expect the panic rather than a silent mis-sample (review PD G4).
     pub fn residuals(&self, sim: &SimCurves, out: &mut Vec<f64>) -> Result<(), CurveId> {
-        if let Some(msg) = sim.reference_length_issue() {
-            panic!("{msg}");
-        }
+        self.residuals_multi(std::slice::from_ref(sim), out)
+    }
+
+    /// F2.2: the joint residual vector over K environments.
+    ///
+    /// Component order is **environment-major, insertion-minor**: every
+    /// residual of environment 0 in `residuals()` order, then every
+    /// residual of environment 1, and so on. `n_residuals()` is already the
+    /// total across environments (each target carries its own `env_idx`),
+    /// so it is the reservation and the length here too.
+    ///
+    /// A missing curve is a hard error, as in the single-environment door —
+    /// the penalty substitution is `merit_multi`'s, not the LM's.
+    ///
+    /// # Panics
+    ///
+    /// As `merit_multi`: malformed reference rows, or `sims.len()` not
+    /// equal to `n_envs()`.
+    pub fn residuals_multi(&self, sims: &[SimCurves], out: &mut Vec<f64>) -> Result<(), CurveId> {
+        self.check_sims(sims, "residuals_multi");
         out.clear();
         out.reserve(self.n_residuals());
-        for k in 0..self.keys.len() {
-            self.residuals_into(sim, k, out)?;
+        for (e, sim) in sims.iter().enumerate() {
+            for k in 0..self.keys.len() {
+                self.residuals_into(sim, k, e as u32, out)?;
+            }
         }
         Ok(())
     }
 
     // -- internals -----------------------------------------------------------
 
-    /// Residuals for every target belonging to one key group.
+    /// Shared precondition of both multi doors: one solve per registered
+    /// environment, each with well-formed reference rows.
+    fn check_sims(&self, sims: &[SimCurves], who: &str) {
+        if sims.len() != self.n_envs {
+            panic!(
+                "MeritSpec::{who}: {} simulation(s) for {} environment(s) - \
+                 every environment must be solved, or demands tagged with \
+                 the missing one would score against nothing",
+                sims.len(),
+                self.n_envs
+            );
+        }
+        for sim in sims {
+            // Reference-row shape is a construction contract (PD1): a bad
+            // length would mis-sample silently, so fail closed here too.
+            // Unreachable from the engine fill and the FFI doors; a
+            // hand-built struct is the only way in.
+            if let Some(msg) = sim.reference_length_issue() {
+                panic!("{msg}");
+            }
+        }
+    }
+
+    /// Residuals for every target belonging to one `(environment, key)`
+    /// group.
     ///
     /// Inner loop is a verbatim lift of the calculate_merit body:
     /// overlap skip → aligned fast path / two-pointer interpolation →
@@ -915,6 +978,7 @@ impl MeritSpec {
         &self,
         sim: &SimCurves,
         key_idx: usize,
+        env: u32,
         out: &mut Vec<f64>,
     ) -> Result<(), CurveId> {
         let key = &self.keys[key_idx];
@@ -931,10 +995,14 @@ impl MeritSpec {
             arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
                 .ok_or(key.curve)
         };
+        // F2.2: `(env, key)` is the group, not `key`. The environment
+        // predicate is the ONLY change to this body - no new formula, no
+        // new activation kind - and at K = 1 every target carries
+        // `env_idx == 0`, so it never rejects anything.
         for t in self
             .targets
             .iter()
-            .filter(|t| t.key_idx as usize == key_idx)
+            .filter(|t| t.key_idx as usize == key_idx && t.env_idx == env)
         {
             // Resolve this target's simulated input BEFORE pushing anything,
             // so missing rows leave `out` untouched. Phase demands sample
@@ -1152,7 +1220,11 @@ impl MeritSpec {
         }
         // Color demands of this key group, in demand insertion order
         // (deterministic; documented). One residual each (see `n_residuals`).
-        for d in self.color.iter().filter(|d| d.key_idx as usize == key_idx) {
+        for d in self
+            .color
+            .iter()
+            .filter(|d| d.key_idx as usize == key_idx && d.env_idx == env)
+        {
             out.push(self.color_residual_into(sim, d)?);
         }
         Ok(())
@@ -2779,6 +2851,152 @@ mod tests {
             assert!(sx.add_target(tx).is_err(), "w={w} c={c:?}");
         }
         let _ = &mut sim;
+    }
+
+    // --- F2.2: the multi-environment doors -----------------------------
+
+    /// `Rs = 0.5 ± 0.1` on one point, at environment `env`.
+    fn env_entry(key_idx: u32, env: u32) -> MeritTarget {
+        let mut t = entry(
+            key_idx,
+            vec![400.0],
+            vec![0.5],
+            vec![0.1],
+            ConstraintKind::Exact,
+            SimTransform::Linear,
+            1.0,
+        );
+        t.env_idx = env;
+        t
+    }
+
+    /// The residual vector concatenates ENVIRONMENT-MAJOR: every residual
+    /// of environment 0 in `residuals()` order, then environment 1's.
+    /// Insertion order stays minor inside each environment.
+    #[test]
+    fn residuals_concatenate_environment_major() {
+        let mut spec = MeritSpec::new();
+        spec.set_n_envs(2).unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        // Two demands in env 0 (so insertion order is observable), one in
+        // env 1 - a deliberately ragged split: the concatenation must not
+        // assume the environments contribute equally.
+        spec.add_target(env_entry(k, 0)).unwrap();
+        let mut second = env_entry(k, 0);
+        second.tolerances = vec![0.2].into();
+        spec.add_target(second).unwrap();
+        spec.add_target(env_entry(k, 1)).unwrap();
+
+        let a = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]); // diff +0.1
+        let b = sim_one_angle(&[0.9, 0.0, 0.0, 0.0, 0.0]); // diff +0.4
+        let mut out = Vec::new();
+        spec.residuals_multi(&[a, b], &mut out).unwrap();
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!((out[0] - 1.0).abs() < 1e-12, "{out:?}"); // env0, tol 0.1
+        assert!((out[1] - 0.5).abs() < 1e-12, "{out:?}"); // env0, tol 0.2
+        assert!((out[2] - 4.0).abs() < 1e-12, "{out:?}"); // env1, tol 0.1
+        assert_eq!(out.len(), spec.n_residuals());
+    }
+
+    /// The penalty group is the `(environment, key)` PAIR. A curve missing
+    /// in one environment costs one penalty, not one per environment and
+    /// not none.
+    #[test]
+    fn a_missing_curve_costs_one_penalty_per_environment_key_pair() {
+        let mut spec = MeritSpec::new();
+        spec.set_n_envs(2).unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rp, // sim_one_angle fills Rs only
+        }) as u32;
+        spec.add_target(env_entry(k, 0)).unwrap();
+        spec.add_target(env_entry(k, 1)).unwrap();
+        let a = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        let b = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(spec.merit_multi(&[a, b], 7.0), 14.0);
+
+        // Only environment 1 demands the missing curve: one penalty.
+        let mut half = MeritSpec::new();
+        half.set_n_envs(2).unwrap();
+        let ok = half.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        let bad = half.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rp,
+        }) as u32;
+        half.add_target(env_entry(ok, 0)).unwrap();
+        half.add_target(env_entry(bad, 1)).unwrap();
+        let a = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        let b = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        // env0: Rs present, residual 1 → 1.0. env0/Rp: no demand → free.
+        // env1/Rs: no demand → free. env1/Rp: demanded, missing → 7.0.
+        // The residual is 1.0 only to rounding (0.6 − 0.5 is not exact in
+        // binary); the PENALTY half of the sum is what this pins.
+        assert!((half.merit_multi(&[a, b], 7.0) - 8.0).abs() < 1e-12);
+    }
+
+    /// An `(environment, key)` pair no demand belongs to is skipped
+    /// outright. It has no curve to miss, so charging it a penalty would
+    /// make the merit depend on which keys some OTHER environment happens
+    /// to have registered.
+    #[test]
+    fn an_empty_environment_key_pair_is_free() {
+        let mut spec = MeritSpec::new();
+        spec.set_n_envs(3).unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        spec.add_target(env_entry(k, 1)).unwrap();
+        let s = || sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        // 1.0 to rounding: one residual, no penalty from the two empty
+        // pairs. A charged pair would land at 8.0 or 15.0, not near 1.
+        assert!((spec.merit_multi(&[s(), s(), s()], 7.0) - 1.0).abs() < 1e-12);
+        let mut out = Vec::new();
+        spec.residuals_multi(&[s(), s(), s()], &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    /// `merit`/`residuals` are the one-element case, not a separate path.
+    #[test]
+    fn the_single_environment_doors_delegate() {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        spec.add_target(env_entry(k, 0)).unwrap();
+        let sim = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(
+            spec.merit(&sim, 1e6).to_bits(),
+            spec.merit_multi(std::slice::from_ref(&sim), 1e6).to_bits()
+        );
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        spec.residuals(&sim, &mut a).unwrap();
+        spec.residuals_multi(std::slice::from_ref(&sim), &mut b)
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// Scoring a two-environment spec against one solve would silently
+    /// drop every demand tagged with the other environment. Fail closed.
+    #[test]
+    #[should_panic(expected = "1 simulation(s) for 2 environment(s)")]
+    fn one_solve_for_two_environments_panics() {
+        let mut spec = MeritSpec::new();
+        spec.set_n_envs(2).unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        spec.add_target(env_entry(k, 1)).unwrap();
+        let sim = sim_one_angle(&[0.6, 0.0, 0.0, 0.0, 0.0]);
+        spec.merit(&sim, 1e6);
     }
 
     fn entry_integral(key_idx: u32, kind: ConstraintKind) -> MeritTarget {

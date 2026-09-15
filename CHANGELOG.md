@@ -5,6 +5,53 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.2] - F2.2: K assemblies, K solves, joint merit
+
+Second rung of Phase B. `[0.7.1]` compiled environments; this release
+**evaluates** them. A joint run now assembles the shared design once per
+environment, solves each, and scores every demand against the curves of
+the environment it was tagged with. Still not reachable from Python - the
+`environments=` surface is `[0.7.4]`.
+
+### Added
+
+- **`merit_multi` / `residuals_multi`** over one simulation per
+  environment. Residuals concatenate environment-major, insertion-minor;
+  the missing-curve penalty is charged per `(environment, key)` PAIR, and
+  a pair no demand belongs to is skipped free - it has no curve to miss.
+  `merit` and `residuals` keep their signatures and are the one-element
+  case, not a separate path.
+- **The K-expansion.** The shared design's current thicknesses are
+  re-expressed as K stacks through the routing table, per ROW rather than
+  per span total, so a graded design film's profile survives exactly.
+  Surroundings are never touched.
+- **`run_environments`** - the end-to-end joint run.
+
+### Unchanged
+
+A single-environment run takes the pre-0.7.2 call sequence op for op: the
+branch is one `Option` on the solver context, read once per eval, outside
+every loop. Both bit-exactness fingerprints unmoved, and the recorded
+`eval_baseline.json` merit reproduces bit for bit. Every directly measured
+bench phase is at or below the `[0.7.1]` baseline.
+
+### Refused
+
+A merit spec whose environment count disagrees with the design's. One
+simulation handed to a K-environment spec (it would silently drop every
+demand tagged with another environment). Needle insertion, cleanup and
+inflate while K > 1 - a structural move changes the shared design's span
+layout, and translating it back into the shared object so it propagates
+everywhere is `[0.7.3]`. A design stack that no longer matches the span
+layout the compile recorded.
+
+### Known limitation
+
+While K > 1 the analytic Jacobian declines and the thickness optimizer
+runs on finite differences: the sensitivity pass walks one simulation and
+knows nothing about environments. Routing deposits by design-film name is
+`[0.7.3]`. Single-environment runs keep the analytic path.
+
 ## [0.7.1] - F2.1: environment segment schema and compile
 
 First rung of Phase B (multi-environment optimization,

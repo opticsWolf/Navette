@@ -70,6 +70,12 @@ ALLOWLIST = {
     # but meaningless" state this lint is meant to prevent. Remove both
     # entries when F2.4 binds them.
     "build_environments", "resolve_env",
+    # multi-environment run (F2.2): the joint driver door. Same reasoning
+    # and the same expiry -- F2.2 makes K solves and the joint merit real,
+    # but the only way to REACH it is a `CompiledEnvironments`, which is
+    # itself unbound until F2.4 opens `design=` / `environments=`. Remove
+    # this entry with the two above.
+    "run_environments",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",

@@ -245,6 +245,103 @@ impl CompiledEnvironments {
             .iter()
             .position(|per| per.get(env) == Some(&span))
     }
+
+    /// F2.2: the K stacks to solve, given the shared design's CURRENT
+    /// thicknesses.
+    ///
+    /// `design` is environment 0's stack — the object the pipeline carries
+    /// and the thickness optimizer writes into. Every other environment is
+    /// its compiled template with the design spans' row thicknesses copied
+    /// across by [`Self::span_of`]. Copying per ROW rather than per span
+    /// total is what keeps a graded design film's profile intact: the
+    /// fractions never go through a divide.
+    ///
+    /// This is deliberately not a re-assembly. Under K > 1 the structure is
+    /// frozen for F2.2 (needle insertion, cleanup removal and inflate are
+    /// refused by the driver and are F2.3's), so the only thing that moves
+    /// between evals is a thickness, and re-running `from_design` K times
+    /// per eval would pay the 126 µs assembly (R6) for nothing. The
+    /// alignment check below is what makes the assumption fail loudly
+    /// instead of quietly mis-routing if it is ever violated.
+    ///
+    /// Surroundings are never touched: a fixed segment's rows keep the
+    /// template's thicknesses, which is §3.1's "fully fixed" made
+    /// operational rather than promised.
+    pub fn expand(&self, design: &DesignStack) -> Result<Vec<DesignStack>, String> {
+        self.check_alignment(design)?;
+        let mut out = Vec::with_capacity(self.names.len());
+        out.push(design.clone());
+        for e in 1..self.names.len() {
+            let mut st = self.stacks[e].clone();
+            for slot in 0..self.slots.len() {
+                let src = design.spans()[self.routing[slot][0]];
+                let dst = self.stacks[e].spans()[self.routing[slot][e]];
+                for (a, b) in (src.start..src.end).zip(dst.start..dst.end) {
+                    st.set_thickness(b, design.films()[a].d_nm)?;
+                }
+            }
+            out.push(st);
+        }
+        Ok(out)
+    }
+
+    /// The cross-environment alignment assert: the live design stack still
+    /// has the span layout the compile recorded, and every slot still names
+    /// the same film in every environment.
+    ///
+    /// Span layout, not row indices — the same object produces the same
+    /// spans wherever it is embedded, and that is a stronger and cheaper
+    /// statement than comparing positions across assemblies of different
+    /// length. A failure here means a structural move slipped past the
+    /// driver's refusal; it must not be allowed to become a silent
+    /// mis-route.
+    fn check_alignment(&self, design: &DesignStack) -> Result<(), String> {
+        if design.spans().len() != self.stacks[0].spans().len() {
+            return Err(format!(
+                "environment '{}': the design stack now has {} spans, compiled \
+                 with {} - a structural move under K > 1 is F2.3's, not F2.2's",
+                self.names[0],
+                design.spans().len(),
+                self.stacks[0].spans().len()
+            ));
+        }
+        for (slot, ds) in self.slots.iter().enumerate() {
+            let src = design.spans()[self.routing[slot][0]];
+            let n_src = src.end - src.start;
+            for e in 0..self.names.len() {
+                let dst = self.stacks[e].spans()[self.routing[slot][e]];
+                if dst.end - dst.start != n_src {
+                    return Err(format!(
+                        "design film '{}' (segment '{}') is {} row(s) in \
+                         environment '{}' and {} in '{}' - the shared design \
+                         must expand identically everywhere",
+                        ds.name,
+                        ds.segment,
+                        n_src,
+                        self.names[0],
+                        dst.end - dst.start,
+                        self.names[e]
+                    ));
+                }
+                if self.stacks[e].films()[dst.bulk_start].material
+                    != design.films()[src.bulk_start].material
+                {
+                    return Err(format!(
+                        "design film '{}' (segment '{}') routes to material \
+                         '{}' in environment '{}' but '{}' in '{}' - the \
+                         routing table and the stacks have drifted apart",
+                        ds.name,
+                        ds.segment,
+                        design.films()[src.bulk_start].material,
+                        self.names[0],
+                        self.stacks[e].films()[dst.bulk_start].material,
+                        self.names[e]
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -624,10 +721,14 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
+    use super::super::design_config::DesignRequest;
+    use super::super::evaluator::SmatrixContext;
+    use super::super::merit::MeritSpec;
+
     use super::super::design_config::{MaterialDef, StructureCfg};
 
     fn lib() -> Vec<MaterialDef> {
-        [("L", 1.45), ("H", 2.1), ("G", 1.52)]
+        [("L", 1.45), ("H", 2.1), ("G", 1.52), ("M", 1.8)]
             .into_iter()
             .map(|(name, n)| MaterialDef {
                 name: name.to_string(),
@@ -730,6 +831,487 @@ mod tests {
     }
 
     const WL: [f64; 3] = [500.0, 550.0, 600.0];
+
+    // --- F2.2: K solves, joint merit -----------------------------------
+
+    /// One `Rs = 0` demand at normal incidence, replicated across `k`
+    /// environments. `k = 1` is the pre-F2.2 spec exactly.
+    fn env_spec(k: usize) -> MeritSpec {
+        use crate::smatrix::synthesis::merit::{
+            ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimTransform,
+        };
+        let mut spec = MeritSpec::new();
+        spec.set_n_envs(k).unwrap();
+        let key = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Rs,
+        }) as u32;
+        for e in 0..k {
+            spec.add_target(MeritTarget {
+                key_idx: key,
+                env_idx: e as u32,
+                wavelengths: Arc::from(WL.as_slice()),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Linear,
+                norm_factor: 1.0,
+                normalized_targets: Arc::from([0.0, 0.0, 0.0].as_slice()),
+                tolerances: Arc::from([0.01, 0.01, 0.01].as_slice()),
+                band: Arc::from([].as_slice()),
+                phase: false,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+        }
+        spec
+    }
+
+    fn ctx(spec: MeritSpec, envs: Option<Arc<CompiledEnvironments>>) -> SmatrixContext {
+        SmatrixContext {
+            wavls: WL.to_vec(),
+            sin_theta: vec![0.0],
+            spec,
+            clamp_min_nm: 2.0,
+            clamp_max_nm: 1000.0,
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
+            lm: crate::smatrix::synthesis::thick_opt::LmConfig::default(),
+            clamp_accumulator: Default::default(),
+            envs,
+        }
+    }
+
+    /// The §4.6 (a) gate at the merit level: with K = 1 the branch that
+    /// exists for K > 1 must not move a single bit. Compared on the raw
+    /// bit pattern, because a tolerance here would pass exactly the drift
+    /// the gate is for.
+    #[test]
+    fn k1_joint_merit_is_the_flat_merit_bitwise() {
+        use crate::smatrix::synthesis::context::DesignContext;
+        let films = vec![film("L", 100.0), film("H", 80.0)];
+        let (envs, _, _) = build_environments(&flat(films), &WL).unwrap();
+        let stack = envs.stacks()[0].clone();
+
+        let flat_ctx = ctx(env_spec(1), None);
+        let seg_ctx = ctx(env_spec(1), Some(Arc::new(envs)));
+
+        let a = flat_ctx.evaluate_merit(&stack).unwrap();
+        let b = seg_ctx.evaluate_merit(&stack).unwrap();
+        assert_eq!(a.to_bits(), b.to_bits(), "K=1 branch moved: {a} vs {b}");
+        assert!(a > 0.0, "the twin needs a merit with content, got {a}");
+    }
+
+    /// §4.6 (c): two environments with the same surroundings are the same
+    /// physics twice, so the joint merit is exactly twice the single one.
+    /// Exactly, not nearly — `x + x` is exact in binary floating point,
+    /// and any inexactness here would mean the two solves disagree.
+    #[test]
+    fn two_identical_environments_double_the_merit() {
+        use crate::smatrix::synthesis::context::DesignContext;
+        let films = vec![film("L", 100.0), film("H", 80.0)];
+        let (one, _, _) = build_environments(
+            &req(
+                vec![("coat", films.clone())],
+                vec![EnvironmentCfg {
+                    name: "a".to_string(),
+                    stack: vec![design_seg("coat")],
+                }],
+            ),
+            &WL,
+        )
+        .unwrap();
+        let (two, _, _) = build_environments(
+            &req(
+                vec![("coat", films)],
+                vec![
+                    EnvironmentCfg {
+                        name: "a".to_string(),
+                        stack: vec![design_seg("coat")],
+                    },
+                    EnvironmentCfg {
+                        name: "b".to_string(),
+                        stack: vec![design_seg("coat")],
+                    },
+                ],
+            ),
+            &WL,
+        )
+        .unwrap();
+        assert_eq!(two.n_envs(), 2);
+        let stack = one.stacks()[0].clone();
+
+        let m1 = ctx(env_spec(1), Some(Arc::new(one)))
+            .evaluate_merit(&stack)
+            .unwrap();
+        let m2 = ctx(env_spec(2), Some(Arc::new(two)))
+            .evaluate_merit(&stack)
+            .unwrap();
+        assert_eq!((2.0 * m1).to_bits(), m2.to_bits(), "{m1} vs {m2}");
+    }
+
+    /// The hand oracle, made exact: one shared design film behind two
+    /// DIFFERENT cover sequences must solve exactly as two separate flat
+    /// coatings would. Compared curve by curve on the bit pattern rather
+    /// than against a 1e-12 numpy transfer matrix — the reference here is
+    /// the engine's own flat door, which is the thing the multi path is
+    /// claiming to reproduce.
+    #[test]
+    fn a_shared_film_behind_two_covers_solves_as_two_flat_coatings() {
+        use crate::smatrix::synthesis::merit::CurveId;
+        let design = vec![film("L", 120.0), film("H", 70.0)];
+        let (envs, _, _) = build_environments(
+            &req(
+                vec![("coat", design.clone())],
+                vec![
+                    EnvironmentCfg {
+                        name: "bare".to_string(),
+                        stack: vec![fixed_seg(vec![]), design_seg("coat")],
+                    },
+                    EnvironmentCfg {
+                        name: "laminated".to_string(),
+                        stack: vec![
+                            fixed_seg(vec![fixed("G", 300.0, 1), fixed("M", 40.0, 1)]),
+                            design_seg("coat"),
+                        ],
+                    },
+                ],
+            ),
+            &WL,
+        )
+        .unwrap();
+
+        let base = envs.stacks()[0].clone();
+        let solver = ctx(env_spec(2), Some(Arc::new(envs)));
+        let sims = solver.simulate_all(&base).unwrap();
+
+        // The two flat equivalents, built through the ordinary door.
+        let mut cover_g = film("G", 300.0);
+        cover_g.optimize = false;
+        cover_g.needle = false;
+        let mut cover_m = film("M", 40.0);
+        cover_m.optimize = false;
+        cover_m.needle = false;
+        let flats = [
+            design.clone(),
+            vec![cover_g, cover_m, design[0].clone(), design[1].clone()],
+        ];
+        for (e, rows) in flats.into_iter().enumerate() {
+            let (fe, _, _) = build_environments(&flat(rows), &WL).unwrap();
+            let want = ctx(env_spec(1), None).simulate(&fe.stacks()[0]).unwrap();
+            for id in [CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp] {
+                let got = sims[e].curve(id).expect("curve present");
+                let exp = want.curve(id).expect("curve present");
+                assert_eq!(got.len(), exp.len(), "env {e} curve {id:?} length");
+                for (i, (g, x)) in got.iter().zip(exp.iter()).enumerate() {
+                    assert_eq!(
+                        g.to_bits(),
+                        x.to_bits(),
+                        "env {e} curve {id:?} point {i}: {g} vs {x}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `expand` moves the shared thicknesses and nothing else: the
+    /// surroundings are §3.1's "fully fixed", so a design step must not
+    /// disturb one row of them.
+    #[test]
+    fn expand_moves_the_design_and_leaves_the_surroundings_alone() {
+        let (envs, _, _) = build_environments(
+            &req(
+                vec![("coat", vec![film("L", 100.0)])],
+                vec![
+                    EnvironmentCfg {
+                        name: "a".to_string(),
+                        stack: vec![design_seg("coat")],
+                    },
+                    EnvironmentCfg {
+                        name: "b".to_string(),
+                        stack: vec![fixed_seg(vec![fixed("G", 300.0, 1)]), design_seg("coat")],
+                    },
+                ],
+            ),
+            &WL,
+        )
+        .unwrap();
+
+        let mut design = envs.stacks()[0].clone();
+        design.set_thickness(0, 137.0).unwrap();
+        let out = envs.expand(&design).unwrap();
+        assert_eq!(out.len(), 2);
+        // Environment 0 IS the design object.
+        assert_eq!(out[0].films()[0].d_nm, 137.0);
+        // Environment 1: cover untouched, shared film moved.
+        assert_eq!(out[1].films().len(), 2);
+        assert_eq!(out[1].films()[0].d_nm, 300.0, "the cover moved");
+        assert_eq!(out[1].films()[1].d_nm, 137.0, "the shared film did not");
+        // And the template is not mutated by an expansion.
+        assert_eq!(envs.stacks()[1].films()[1].d_nm, 100.0);
+    }
+
+    /// A structural move under K > 1 is F2.3's. If one ever reaches
+    /// `expand`, it must name the drift rather than route thicknesses
+    /// into the wrong spans.
+    #[test]
+    fn expand_refuses_a_stack_that_no_longer_matches_the_compile() {
+        let (envs, _, _) = build_environments(
+            &req(
+                vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+                vec![
+                    EnvironmentCfg {
+                        name: "a".to_string(),
+                        stack: vec![design_seg("coat")],
+                    },
+                    EnvironmentCfg {
+                        name: "b".to_string(),
+                        stack: vec![design_seg("coat")],
+                    },
+                ],
+            ),
+            &WL,
+        )
+        .unwrap();
+        let (other, _, _) = build_environments(&flat(vec![film("L", 100.0)]), &WL).unwrap();
+        let e = envs.expand(&other.stacks()[0]).unwrap_err();
+        assert!(e.contains("spans"), "{e}");
+        assert!(e.contains("F2.3"), "{e}");
+    }
+
+    /// Phase-A interaction (plan §1.4 + amendment A4): a graded film in a
+    /// FIXED environment segment expands with its full profile, pinned.
+    ///
+    /// The background rule is what does the physics, and it is implied
+    /// rather than declared — a profiled film with neither `optimize` nor
+    /// `needle` is background. Surroundings are always both-false, so
+    /// EVERY profiled fixed row is background, and A4's two plumbing lines
+    /// in `build_environments` are what carry that. This twin is their
+    /// regression test: the same film expressed as a background-pinned
+    /// flat design must give bit-equal rows.
+    ///
+    /// Compared on `nk` and thickness rather than on the whole `LayerSpec`
+    /// because the two doors name the film differently on purpose — the
+    /// flat door uses the material code, the environment door auto-names
+    /// `<env>.fixed[<seg>][<i>]` (§8 question 5). The profile is what is
+    /// under test, and the profile is the numbers.
+    #[test]
+    fn a_graded_film_in_a_fixed_segment_keeps_its_profile() {
+        let mut graded = fixed("M", 90.0, 1);
+        graded.inhomogen = true;
+        let (envs, _, _) = build_environments(
+            &req(
+                vec![("coat", vec![film("L", 100.0)])],
+                vec![EnvironmentCfg {
+                    name: "e0".to_string(),
+                    stack: vec![fixed_seg(vec![graded]), design_seg("coat")],
+                }],
+            ),
+            &WL,
+        )
+        .unwrap();
+
+        let mut flat_graded = film("M", 90.0);
+        flat_graded.inhomogen = true;
+        flat_graded.optimize = false;
+        flat_graded.needle = false;
+        let (want, _, _) =
+            build_environments(&flat(vec![flat_graded, film("L", 100.0)]), &WL).unwrap();
+
+        let got = &envs.stacks()[0];
+        let exp = &want.stacks()[0];
+        assert!(
+            got.films().len() > 2,
+            "the profile was homogenized: {} rows",
+            got.films().len()
+        );
+        assert_eq!(got.films().len(), exp.films().len(), "row count");
+        assert_eq!(got.spans().len(), exp.spans().len(), "span count");
+        for (i, (a, b)) in got.films().iter().zip(exp.films()).enumerate() {
+            assert_eq!(a.d_nm.to_bits(), b.d_nm.to_bits(), "row {i} thickness");
+            assert_eq!(a.optimize, b.optimize, "row {i} optimize");
+            assert_eq!(a.needle, b.needle, "row {i} needle");
+            for (w, (x, y)) in a.nk.iter().zip(b.nk.iter()).enumerate() {
+                assert_eq!(x.re.to_bits(), y.re.to_bits(), "row {i} nk[{w}].re");
+                assert_eq!(x.im.to_bits(), y.im.to_bits(), "row {i} nk[{w}].im");
+            }
+        }
+        // And it is still fixed: only the design film is a parameter.
+        assert_eq!(envs.slots().len(), 1);
+        assert_eq!(&*envs.slots()[0].name, "L");
+    }
+
+    // --- F2.2: the joint run -------------------------------------------
+
+    /// Thickness-only pipeline config: no needle, no cleanup, no inflate —
+    /// the three structural moves F2.2 refuses under K > 1.
+    fn thickness_only_cfg() -> crate::smatrix::synthesis::config::PipelineConfig {
+        crate::smatrix::synthesis::config::PipelineConfig {
+            max_macro_cycles: 2,
+            needles_per_cycle: 0,
+            enable_cleanup: false,
+            enable_inflate: false,
+            ..Default::default()
+        }
+    }
+
+    fn two_env_req(k: usize) -> DesignRequest {
+        let envs = (0..k)
+            .map(|i| EnvironmentCfg {
+                name: format!("e{i}"),
+                stack: vec![design_seg("coat")],
+            })
+            .collect();
+        req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            envs,
+        )
+    }
+
+    /// §4.6 (c) at the run level: K = 2 with identical surroundings
+    /// optimizes to the design K = 1 reaches.
+    ///
+    /// The MERIT twin above is bitwise; this one is not, and the reason is
+    /// worth stating rather than hiding behind a tolerance. Two things
+    /// differ along the path even though the surface's minimum is
+    /// identical: the joint run's residual vector is twice as long (so
+    /// LM's damping arithmetic rounds differently), and until F2.3 a
+    /// multi-environment spec declines the analytic Jacobian, so K = 2
+    /// converges by finite differences while K = 1 converges analytically.
+    /// Two different descents onto the same minimum agree to about 1e-7
+    /// nm here — a genuine disagreement about WHERE the minimum is would
+    /// be orders larger.
+    #[test]
+    fn a_joint_run_over_identical_environments_lands_where_one_does() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let run = |k: usize| {
+            let (envs, cmap, _) = build_environments(&two_env_req(k), &WL).unwrap();
+            run_environments(
+                envs,
+                cmap,
+                &WL,
+                &[0.0],
+                &env_spec(k),
+                thickness_only_cfg(),
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(()),
+            )
+            .unwrap()
+        };
+        let (r1, s1, _) = run(1);
+        let (r2, s2, _) = run(2);
+
+        assert_eq!(s1.films().len(), s2.films().len());
+        for (i, (a, b)) in s1.films().iter().zip(s2.films()).enumerate() {
+            assert!(
+                (a.d_nm - b.d_nm).abs() < 1e-5,
+                "film {i}: {} vs {}",
+                a.d_nm,
+                b.d_nm
+            );
+        }
+        // And the joint merit really is the doubled one, at the optimum
+        // the joint run itself found.
+        assert!(
+            (r2.final_mf - 2.0 * r1.final_mf).abs() <= 1e-7 * r2.final_mf.abs(),
+            "{} vs 2 x {}",
+            r2.final_mf,
+            r1.final_mf
+        );
+    }
+
+    /// A spec compiled against a different roster than the design would
+    /// score demands against surroundings nobody asked for.
+    #[test]
+    fn the_run_refuses_a_spec_that_does_not_match_the_roster() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let (envs, cmap, _) = build_environments(&two_env_req(2), &WL).unwrap();
+        let e = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[0.0],
+            &env_spec(1),
+            thickness_only_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(e.contains("1 environment(s)") && e.contains("2 "), "{e}");
+        assert!(e.contains("e0, e1"), "{e}");
+    }
+
+    /// Structural moves under K > 1 are F2.3's, and the refusal says so
+    /// rather than optimizing environment 0 alone.
+    #[test]
+    fn the_run_refuses_structural_moves_while_k_is_greater_than_one() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        for (mutate, needle) in [
+            (
+                Box::new(
+                    |c: &mut crate::smatrix::synthesis::config::PipelineConfig| {
+                        c.needles_per_cycle = 3
+                    },
+                ) as Box<dyn Fn(&mut _)>,
+                "needles_per_cycle > 0",
+            ),
+            (
+                Box::new(
+                    |c: &mut crate::smatrix::synthesis::config::PipelineConfig| {
+                        c.enable_cleanup = true
+                    },
+                ),
+                "enable_cleanup",
+            ),
+            (
+                Box::new(
+                    |c: &mut crate::smatrix::synthesis::config::PipelineConfig| {
+                        c.enable_inflate = true
+                    },
+                ),
+                "enable_inflate",
+            ),
+        ] {
+            let mut cfg = thickness_only_cfg();
+            mutate(&mut cfg);
+            let (envs, cmap, _) = build_environments(&two_env_req(2), &WL).unwrap();
+            let e = run_environments(
+                envs,
+                cmap,
+                &WL,
+                &[0.0],
+                &env_spec(2),
+                cfg,
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+            assert!(e.contains(needle), "{needle}: {e}");
+            assert!(e.contains("F2.3"), "{e}");
+        }
+        // K = 1 keeps every one of them.
+        let (envs, cmap, _) = build_environments(&two_env_req(1), &WL).unwrap();
+        assert!(
+            run_environments(
+                envs,
+                cmap,
+                &WL,
+                &[0.0],
+                &env_spec(1),
+                crate::smatrix::synthesis::config::PipelineConfig {
+                    max_macro_cycles: 1,
+                    ..Default::default()
+                },
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(()),
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn k1_segmented_assembles_bitwise_identically_to_flat() {

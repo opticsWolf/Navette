@@ -24,6 +24,7 @@ use crate::smatrix::needle_operator::{
 };
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
+use crate::smatrix::synthesis::environments::CompiledEnvironments;
 use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::jacobian::assemble_jacobian_mapped;
 use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
@@ -49,6 +50,24 @@ pub struct SmatrixContext {
     /// the accumulator resets; the residual closures' clones carry a
     /// snapshot that is never read back.
     pub clamp_accumulator: ClampReport,
+    /// F2.2: the other environments, or `None` for the flat path.
+    ///
+    /// This field IS multi_environment_plan.md §4.6's single branch. It is
+    /// read once per eval, outside every loop, and `None` takes the
+    /// pre-F2.2 call sequence op for op — same functions, same signatures,
+    /// no slice, no `Vec`.
+    ///
+    /// It lives on the context rather than on `NeedlePipeline` because
+    /// every phase of the pipeline already reaches the solver through
+    /// `DesignContext`: putting K here makes the budget check, cleanup and
+    /// inflate joint without any of them learning what an environment is,
+    /// where a pipeline field would have had to be threaded through all
+    /// three (and through `cleanup_design`/`inflate_design`, which take a
+    /// `&mut DesignStack` and would then need K of them).
+    ///
+    /// `Arc` because the LM residual closure is `Send + Sync` and clones
+    /// the context per call.
+    pub envs: Option<Arc<CompiledEnvironments>>,
 }
 
 impl SmatrixContext {
@@ -303,8 +322,18 @@ fn deposit_row(
 
 impl DesignContext for SmatrixContext {
     fn evaluate_merit(&self, stack: &DesignStack) -> Result<f64, String> {
-        let sim = self.simulate(stack)?;
-        Ok(self.spec.merit(&sim, 1e6))
+        // §4.6's one branch. K = 1 is the pre-F2.2 pair of calls, reached
+        // without allocating a slice to hold one simulation.
+        match &self.envs {
+            None => {
+                let sim = self.simulate(stack)?;
+                Ok(self.spec.merit(&sim, 1e6))
+            }
+            Some(_) => {
+                let sims = self.simulate_all(stack)?;
+                Ok(self.spec.merit_multi(&sims, 1e6))
+            }
+        }
     }
 
     fn simulate(&self, stack: &DesignStack) -> Result<SimCurves, String> {
@@ -324,6 +353,27 @@ impl DesignContext for SmatrixContext {
 }
 
 impl SmatrixContext {
+    /// F2.2: one solve per environment, in roster order.
+    ///
+    /// `stack` is the shared design — environment 0's stack. The other
+    /// environments are re-expanded from it (`CompiledEnvironments::expand`)
+    /// and solved in turn. §6 limitation 6: the ×K cost is inherent, and
+    /// this is where it is paid, once per eval.
+    ///
+    /// On the flat path this is one `simulate` in a one-element `Vec`; the
+    /// callers that care about the extra allocation branch on `envs`
+    /// themselves rather than going through here.
+    pub fn simulate_all(&self, stack: &DesignStack) -> Result<Vec<SimCurves>, String> {
+        match &self.envs {
+            None => Ok(vec![self.simulate(stack)?]),
+            Some(envs) => envs
+                .expand(stack)?
+                .iter()
+                .map(|st| self.simulate(st))
+                .collect(),
+        }
+    }
+
     /// `optimize_thicknesses`, plus the solver's own account of the run.
     ///
     /// The report is `None` when there was nothing to optimize (no
@@ -352,12 +402,25 @@ impl SmatrixContext {
         let ctx_self = self.clone();
         let params_owned = params.clone();
 
+        // F2.2: the same one branch, hoisted OUT of the closure - the
+        // discriminant cannot change between iterations, so the flat path
+        // pays one bool per call and keeps its exact call sequence.
+        let multi = self.envs.is_some();
         let residuals = move |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
             let mut st = base_stack.clone();
             apply_params(&mut st, &params_owned, x)?;
-            let sim = ctx_self.simulate(&st)?;
-            spec.residuals(&sim, out)
-                .map_err(|c| format!("missing curve {c:?}"))
+            if multi {
+                // Every environment sees the same parameter vector: the
+                // design object is shared, and `expand` is what writes one
+                // thickness into K places. Residuals come back env-major.
+                let sims = ctx_self.simulate_all(&st)?;
+                spec.residuals_multi(&sims, out)
+                    .map_err(|c| format!("missing curve {c:?}"))
+            } else {
+                let sim = ctx_self.simulate(&st)?;
+                spec.residuals(&sim, out)
+                    .map_err(|c| format!("missing curve {c:?}"))
+            }
         };
 
         let x0: Vec<f64> = params
@@ -528,6 +591,15 @@ struct DepositJacobian {
 
 impl JacobianSource for DepositJacobian {
     fn fill(&self, x: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
+        // F2.2: a multi-environment spec is an uncovered spec for now.
+        // `curve_sensitivity` walks the targets of ONE simulation and
+        // knows nothing about `env_idx`; routing the deposits by design
+        // -film name and summing them across environments is F2.3. Until
+        // then the joint run is a finite-difference run, which is the
+        // documented decline, not a silent single-environment Jacobian.
+        if self.ctx.envs.is_some() {
+            return Ok(None);
+        }
         let mut st = self.base_stack.clone();
         apply_params(&mut st, &self.params, x)?;
         // The deposits are per FILM ROW (the flat list: each parameter's
@@ -613,6 +685,7 @@ mod tests {
             clamp_max_nm: clamp_max,
             lm: LmConfig::default(),
             clamp_accumulator: ClampReport::default(),
+            envs: None,
             thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         }
     }
@@ -650,6 +723,7 @@ mod tests {
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
             clamp_accumulator: ClampReport::default(),
+            envs: None,
             thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         }
     }
@@ -778,6 +852,7 @@ mod tests {
             clamp_max_nm: 1000.0,
             lm: LmConfig::default(),
             clamp_accumulator: ClampReport::default(),
+            envs: None,
             thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
         let sim = ctx.simulate(&slab).unwrap();
@@ -973,6 +1048,7 @@ mod tests {
                 clamp_max_nm: 1000.0,
                 lm: LmConfig::default(),
                 clamp_accumulator: ClampReport::default(),
+                envs: None,
                 thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
             }
         }
@@ -1227,6 +1303,7 @@ mod tests {
                 thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
                 lm: LmConfig::default(),
                 clamp_accumulator: ClampReport::default(),
+                envs: None,
             };
             // Start THIN: on the thin side of the AR dip the nearest
             // exact-R_bare solution is the film's own disappearance, so
@@ -1263,6 +1340,7 @@ mod tests {
                 thin_layer_policy: ThinLayerPolicy::Remove,
                 lm: LmConfig::default(),
                 clamp_accumulator: ClampReport::default(),
+                envs: None,
             };
             let mut stack = ar_stack(10.0);
             ctx.optimize_thicknesses(&mut stack).unwrap();
@@ -1321,6 +1399,7 @@ mod tests {
                 thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
                 lm: LmConfig::default(),
                 clamp_accumulator: ClampReport::default(),
+                envs: None,
             };
 
             // air | G 20 (pinned lead) | slice 0.5 | bulk L | sub - the
@@ -1412,6 +1491,7 @@ mod tests {
                 thin_layer_policy: ThinLayerPolicy::Remove,
                 lm: LmConfig::default(),
                 clamp_accumulator: ClampReport::default(),
+                envs: None,
             };
             let nw = 3usize;
             let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);

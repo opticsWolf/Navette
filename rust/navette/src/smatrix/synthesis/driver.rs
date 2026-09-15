@@ -258,10 +258,100 @@ pub fn run_design(
         thin_layer_policy: cfg.thin_layer_policy,
         lm,
         clamp_accumulator: ClampReport::default(),
+        envs: None,
     };
     let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, cmap)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
     Ok((report, pipe.stack, warnings))
+}
+
+/// F2.2: an end-to-end JOINT run over K environments.
+///
+/// `envs` is the compile of F2.1 — the shared design assembled once per
+/// environment, plus the `design_slot → (env, span)` routing. The pipeline
+/// carries environment 0's stack, which IS the shared design object; every
+/// other environment is re-expressed from it at each eval
+/// (`CompiledEnvironments::expand`), so a thickness step propagates to all
+/// K by construction rather than by a synchronization step that could be
+/// forgotten.
+///
+/// K = 1 runs the flat path: the context's `envs` is left `None`, so the
+/// call sequence is the pre-F2.2 one op for op (§4.6's single branch, taken
+/// here, once, outside every loop).
+///
+/// **Structural moves are refused while K > 1** and named to F2.3. Needle
+/// insertion, cleanup removal and inflate all change the design's span
+/// layout, and translating a locus back to (segment, intra-segment
+/// position) — so that ONE insertion edits the single shared object — is
+/// exactly F2.3's subject. Running them here would either desynchronize the
+/// environments or silently optimize environment 0 alone; refusing says so.
+#[allow(clippy::too_many_arguments)]
+pub fn run_environments(
+    envs: super::environments::CompiledEnvironments,
+    contrast: ContrastMap,
+    wavelengths: &[f64],
+    angles_deg: &[f64],
+    spec: &MeritSpec,
+    cfg: PipelineConfig,
+    needle_cfg: NeedleCycleConfig,
+    lm: LmConfig,
+    mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
+) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+    let k = envs.n_envs();
+    if spec.n_envs() != k {
+        return Err(format!(
+            "run_environments: the merit spec has {} environment(s) but the \
+             design compiles to {} ({}) - a demand would score against the \
+             wrong surroundings, or against none",
+            spec.n_envs(),
+            k,
+            envs.names().join(", ")
+        ));
+    }
+    if k > 1 {
+        let mut blocked: Vec<&str> = Vec::new();
+        if cfg.needles_per_cycle > 0 {
+            blocked.push("needles_per_cycle > 0");
+        }
+        if cfg.enable_cleanup {
+            blocked.push("enable_cleanup");
+        }
+        if cfg.enable_inflate {
+            blocked.push("enable_inflate");
+        }
+        if !blocked.is_empty() {
+            return Err(format!(
+                "run_environments: {} environments with {} - a structural move \
+                 changes the shared design's span layout, and translating it \
+                 back into the shared object so it propagates to every \
+                 environment is F2.3 (needle and LM joint), not F2.2. Joint \
+                 thickness optimization runs today; set those off, or run one \
+                 environment.",
+                k,
+                blocked.join(" and ")
+            ));
+        }
+    }
+
+    let stack = envs.stacks()[0].clone();
+    let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
+    let cfg = cfg.validated()?;
+    let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();
+    let mut ctx = SmatrixContext {
+        wavls: wavelengths.to_vec(),
+        sin_theta,
+        spec: spec.clone(),
+        clamp_min_nm: cfg.clamp_min_nm,
+        clamp_max_nm: cfg.clamp_max_nm,
+        thin_layer_policy: cfg.thin_layer_policy,
+        lm,
+        clamp_accumulator: ClampReport::default(),
+        // The branch. One environment keeps the flat path exactly.
+        envs: if k == 1 { None } else { Some(Arc::new(envs)) },
+    };
+    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, contrast)?;
+    let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
+    Ok((report, pipe.stack, Vec::new()))
 }
 
 // ---------------------------------------------------------------------------

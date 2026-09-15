@@ -1146,6 +1146,7 @@ impl PySmatrixContext {
                     .map(|l| l.bind(py).borrow().inner.clone())
                     .unwrap_or_default(),
                 clamp_accumulator: ClampReport::default(),
+                envs: None,
                 thin_layer_policy: navette::smatrix::synthesis::config::ThinLayerPolicy::parse(
                     thin_layer_policy,
                 )
@@ -1425,6 +1426,7 @@ impl PyNeedlePipeline {
             clamp_max_nm: self.clamp_max,
             lm: self.lm.clone(),
             clamp_accumulator: ClampReport::default(),
+            envs: None,
             thin_layer_policy: navette::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
         let res = py
