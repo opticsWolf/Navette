@@ -5,6 +5,51 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.3] - F2.3: the joint needle
+
+### Added
+- The needle sweep runs over every environment at once. Each environment
+  scans its own assembly with its own fold; every site that lands in the
+  shared design is routed by design parameter into a shared bucket and
+  summed, so the candidate the sweep picks is the one that helps the
+  joint merit rather than the one that helps environment 0.
+- `CompiledEnvironments::slot_of_row`, `host_row` and `insert_seed`: the
+  two halves of the locus translation, and the split itself. One
+  insertion edits the shared design object and every environment's
+  template at the same time, at each environment's own row.
+- `build_needle_targets_env`: the fold for one environment of a joint
+  spec. `build_needle_targets` keeps its signature, becomes the
+  single-environment door, and refuses a multi-environment spec rather
+  than folding environment 0 and dropping the rest.
+- `DesignContext::environments` / `environments_mut`, defaulted to
+  `None` — the flat path answers "no environments" and nothing else
+  about it changes.
+
+### Changed
+- `SpectralInputs::fold` is now `folds`, one per environment in roster
+  order. A fold activates one-sided and banded kinds at the operating
+  point, and environment 1's operating point is not environment 0's.
+- `run_environments` no longer refuses `needles_per_cycle > 0`.
+
+### Refused
+- `thin_layer_policy = 'remove'` while K > 1. Elimination is the inverse
+  of the insertion F2.3 added, and the compile does not have it: a span
+  deleted from the shared design would leave K templates still carrying
+  it. Joint runs take `clamp_up_final` — the documented default for
+  needle runs anyway — and the context pins the floor as an LM bound for
+  the duration, so the span layout moves only through `insert_seed`.
+- `enable_cleanup` and `enable_inflate` while K > 1, as in 0.7.2.
+
+### Known limitation
+- A seed the optimizer wants to reject parks at the floor instead of
+  disappearing, because nothing is eliminated while K > 1. The needle
+  loop still stops on its convergence test, and `needles_per_cycle` and
+  `max_macro_cycles` still bound the growth, but a joint run can end
+  carrying floor-thickness layers a flat run would have dropped.
+- The thickness LM still differences its Jacobian under K > 1 (0.7.2's
+  decline, unchanged — §4.4 scopes the thickness LM out of this item).
+- Still not reachable from Python; that is F2.4.
+
 ## [0.7.2] - F2.2: K assemblies, K solves, joint merit
 
 Second rung of Phase B. `[0.7.1]` compiled environments; this release

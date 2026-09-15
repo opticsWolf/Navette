@@ -29,7 +29,7 @@ use crate::smatrix::synthesis::cycle::{
 };
 use crate::smatrix::synthesis::inflate::{InflateResult, inflate_design};
 use crate::smatrix::synthesis::merit::MeritSpec;
-use crate::smatrix::synthesis::needle_pass::{NeedleTargets, build_needle_targets};
+use crate::smatrix::synthesis::needle_pass::{NeedleTargets, build_needle_targets_env};
 use crate::smatrix::synthesis::stagnation::StagnationDetector;
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack};
 
@@ -416,7 +416,14 @@ pub struct SpectralInputs {
     /// Conservative fold of `spec` on (`angles_deg`, `wavls`) — the
     /// starting fold; re-folded against the live sim each needle cycle
     /// (see `run_needle_cycles`).
-    pub fold: NeedleTargets,
+    ///
+    /// F2.3: ONE PER ENVIRONMENT, in roster order. A fold activates
+    /// one-sided and banded kinds at the operating point, and environment
+    /// 1's operating point is not environment 0's — a shared fold would
+    /// mask the wrong points. Length is always `spec.n_envs()`, so the
+    /// single-environment case is a one-element vector and `folds[0]` is
+    /// the fold that was here before.
+    pub folds: Vec<NeedleTargets>,
     /// Kept for per-cycle re-folds (spec + degree-convention angles).
     pub spec: MeritSpec,
     pub angles_deg: Vec<f64>,
@@ -426,14 +433,16 @@ impl SpectralInputs {
     /// Build from a merit spec: `angles_deg` matches the spec's key
     /// convention (degrees, as produced by the Python converter).
     pub fn from_spec(spec: &MeritSpec, angles_deg: &[f64], wavls: &[f64]) -> Result<Self, String> {
-        let fold = build_needle_targets(spec, angles_deg, wavls, None)?;
+        let folds = (0..spec.n_envs())
+            .map(|e| build_needle_targets_env(spec, angles_deg, wavls, None, e as u32))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(SpectralInputs {
             wavls: wavls.to_vec(),
             sin_theta: angles_deg
                 .iter()
                 .map(|a| (a * std::f64::consts::PI / 180.0).sin())
                 .collect(),
-            fold,
+            folds,
             spec: spec.clone(),
             angles_deg: angles_deg.to_vec(),
         })
@@ -453,7 +462,7 @@ mod tests {
         SpectralInputs {
             wavls: vec![500.0; NW],
             sin_theta: vec![0.0],
-            fold: NeedleTargets {
+            folds: vec![NeedleTargets {
                 r: (vec![0.0; NW], vec![1.0; NW]),
                 t: zero(),
                 a: zero(),
@@ -464,7 +473,7 @@ mod tests {
                 phi_gain_shift: [0.0; 4],
                 grad_r: vec![0.0f64; NW],
                 grad_t: vec![0.0f64; NW],
-            },
+            }],
             spec: MeritSpec::new(),
             angles_deg: vec![0.0],
         }

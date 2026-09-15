@@ -18,7 +18,9 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
-use crate::smatrix::synthesis::needle_pass::{NeedlePassInput, build_scan_sites, run_needle_pass};
+use crate::smatrix::synthesis::needle_pass::{
+    NeedlePassInput, build_needle_targets_env, build_scan_sites, run_needle_pass,
+};
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{DesignStack, LayerSpec};
 
@@ -89,6 +91,175 @@ pub type ContrastMap = HashMap<Arc<str>, LayerSpec>;
 /// insertion tracks the merit the optimizer actually sees. Any simulate
 /// or fold failure keeps the previous fold (mock contexts without a
 /// solver run the static conservative fold throughout).
+/// F2.3: one candidate locus, agreed on by every environment.
+///
+/// A locus is a *shared design parameter* plus a step into it, never a row
+/// — row 7 of one assembly and row 3 of another are the same physical
+/// place when both answer to the same slot.
+#[derive(Clone, Debug)]
+struct JointCandidate {
+    /// Index into `CompiledEnvironments::slots`.
+    slot: usize,
+    depth_into_layer_nm: f64,
+    /// Seed material: the contrast partner whose sweep won.
+    material: Arc<str>,
+    /// P summed over environments.
+    p: f64,
+}
+
+/// F2.3: the joint analytic sweep — K scans, one candidate.
+///
+/// Each environment scans ITS OWN assembly with ITS OWN fold (an operating
+/// point masks one-sided and banded kinds, and environment 1's operating
+/// point is not environment 0's), then every site that lands in the shared
+/// design is routed **by design parameter** into a shared bucket and summed.
+/// The sum is the right combination because the joint merit is a sum of the
+/// per-environment merits, so dF/dδ at a shared locus is the sum of the
+/// per-environment slopes — the same identity F2.2's residual concatenation
+/// rests on, one derivative up.
+///
+/// Surroundings never deposit: their rows answer `None` to `slot_of_row`,
+/// which is the second lock on the door the `needle` flag already holds.
+///
+/// Returns the winner (most negative ΣP, `None` when nothing improves), the
+/// gain shift summed over the K folds for the convergence test, and the
+/// number of admissible design sites — zero means "stack too thin".
+fn joint_needle_sweep<C: DesignContext + ?Sized>(
+    ctx: &C,
+    stack: &DesignStack,
+    spectral: &SpectralInputs,
+    contrast: &ContrastMap,
+    cfg: &NeedleCycleConfig,
+) -> Result<(Option<JointCandidate>, f64, usize), String> {
+    let envs = ctx
+        .environments()
+        .ok_or_else(|| "joint_needle_sweep: the context has no environments".to_string())?;
+    let k = envs.n_envs();
+    let stacks = envs.expand(stack)?;
+
+    // Seed materials come from the DESIGN, not from the assemblies. A cover
+    // material that happens to carry a contrast entry is not a candidate
+    // seed, and sweeping it in the one environment that has it would open a
+    // bucket no other environment can fill.
+    let mats: Vec<&LayerSpec> = {
+        let mut seen: Vec<Arc<str>> = Vec::new();
+        let mut out = Vec::new();
+        for (row, l) in stacks[0].films().iter().enumerate() {
+            if envs.slot_of_row(0, row).is_some()
+                && contrast.contains_key(&l.material)
+                && !seen.contains(&l.material)
+            {
+                seen.push(l.material.clone());
+                out.push(contrast.get(&l.material).unwrap());
+            }
+        }
+        out
+    };
+
+    let mut gtot = 0.0f64;
+    // (seed material, slot, step into the host) -> (depth, ΣP, environments seen)
+    let mut buckets: HashMap<(Arc<str>, usize, usize), (f64, f64, usize)> = HashMap::new();
+    let mut n_sites = 0usize;
+
+    for (e, st) in stacks.iter().enumerate() {
+        let mut fold = spectral.folds[e].clone();
+        if cfg.refold_per_cycle
+            && let Ok(sim) = ctx.simulate(st)
+            && let Ok(f) = build_needle_targets_env(
+                &spectral.spec,
+                &spectral.angles_deg,
+                &spectral.wavls,
+                Some(&sim),
+                e as u32,
+            )
+        {
+            fold = f;
+        }
+        gtot += fold.phi_gain_shift.iter().sum::<f64>();
+
+        let sa = st.solver_arrays();
+        for mat in &mats {
+            let input = NeedlePassInput {
+                n_stack_cache: &sa.n_stack_cache,
+                thicknesses: &sa.thicknesses,
+                rough_types: &sa.rough_types,
+                rough_vals: &sa.rough_vals,
+                n_layers: sa.n_layers as usize,
+                wavls: spectral.wavls.as_slice(),
+                sin_theta: spectral.sin_theta.as_slice(),
+                fold: &fold,
+                needle_n_per_wav: &mat.nk,
+                start_idx: 0,
+                end_idx: (sa.n_layers - 1) as usize,
+                calc_s: true,
+                calc_p: true,
+            };
+            let res = run_needle_pass(&input, st.films(), st.spans(), cfg.scan_step_nm)?;
+            // `build_scan_sites` walks rows in order and emits steps
+            // 1..n_steps inside each admissible row, so the running count
+            // per row IS the step index — and it is the same index in
+            // every environment, because a design row has the same
+            // thickness everywhere by construction (`expand` copies it).
+            let mut step: HashMap<usize, usize> = HashMap::new();
+            for (site, &p) in res.sites.iter().zip(res.p_profile.iter()) {
+                let n = step.entry(site.film_idx).or_insert(0);
+                let ordinal = *n;
+                *n += 1;
+                let Some(slot) = envs.slot_of_row(e, site.film_idx) else {
+                    continue; // surroundings: inadmissible, and never shared
+                };
+                if e == 0 {
+                    n_sites += 1;
+                }
+                let entry = buckets
+                    .entry((mat.material.clone(), slot, ordinal))
+                    .or_insert((site.depth_into_layer_nm, 0.0, 0));
+                entry.1 += p;
+                entry.2 += 1;
+            }
+        }
+    }
+
+    // §4.4's alignment assert, in its span-aware form: the same design
+    // object must produce the same scan grid in every environment, so every
+    // bucket is filled exactly K times. A short bucket means the assemblies
+    // drifted apart, and summing it would sum over different loci.
+    if let Some(((m, slot, ord), (_, _, n))) = buckets.iter().find(|(_, v)| v.2 != k) {
+        return Err(format!(
+            "joint needle sweep: the locus (slot {slot}, step {ord}, seed {m:?}) \
+             appears in {n} of {k} environments - the assemblies no longer \
+             share the design's scan grid"
+        ));
+    }
+
+    // Deterministic order before the min: a hash map's iteration order is
+    // not stable, and two loci can tie on P exactly (identical
+    // environments, mirrored stacks).
+    let mut items: Vec<((Arc<str>, usize, usize), (f64, f64, usize))> =
+        buckets.into_iter().collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut best: Option<JointCandidate> = None;
+    for ((material, slot, _), (depth, p, _)) in items {
+        if p >= 0.0 {
+            continue; // not an improvement anywhere
+        }
+        let better = match &best {
+            None => true,
+            Some(b) => p < b.p,
+        };
+        if better {
+            best = Some(JointCandidate {
+                slot,
+                depth_into_layer_nm: depth,
+                material,
+                p,
+            });
+        }
+    }
+    Ok((best, gtot, n_sites))
+}
+
 pub fn run_needle_cycles<C: DesignContext + ?Sized>(
     ctx: &mut C,
     stack: &mut DesignStack,
@@ -100,13 +271,24 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 
     let wavls = &spectral.wavls;
     let sin_theta = &spectral.sin_theta;
-    let mut fold = spectral.fold.clone();
+    let mut fold = spectral.folds[0].clone();
     let mut history = Vec::new();
+
+    // F2.3: §4.6's one branch, read once, outside every loop. `stack` is
+    // the shared design object and IS environment 0's assembly; the other
+    // K-1 are re-expressed from it inside the sweep.
+    let multi = ctx.environments().is_some();
 
     // Initial optimization.
     ctx.optimize_thicknesses(stack)?;
 
     for cycle in 0..cfg.max_needles {
+        if multi {
+            if joint_cycle(ctx, stack, spectral, contrast, cfg, cycle, &mut history)? {
+                break;
+            }
+            continue;
+        }
         // Refresh the fold against the live operating point.
         if cfg.refold_per_cycle
             && let Ok(sim) = ctx.simulate(stack)
@@ -265,6 +447,103 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
     Ok(history)
 }
 
+/// F2.3: one cycle of the joint arm. Returns `true` when the pass is over.
+///
+/// Same five steps as the K == 1 body — sweep, convergence test, insert,
+/// re-optimize, record — with two differences and no others. The sweep is
+/// [`joint_needle_sweep`]'s (K scans summed by design parameter), and the
+/// insertion happens TWICE: once on the shared design object and once on
+/// the compile, so every environment's template splits at its own row for
+/// the same parameter. Nothing else about the insertion changes: the same
+/// seed, the same depth, the same `insert_needle_seed`, the same
+/// re-optimization through the context.
+fn joint_cycle<C: DesignContext + ?Sized>(
+    ctx: &mut C,
+    stack: &mut DesignStack,
+    spectral: &SpectralInputs,
+    contrast: &ContrastMap,
+    cfg: &NeedleCycleConfig,
+    cycle: usize,
+    history: &mut Vec<NeedleCycleResult>,
+) -> Result<bool, String> {
+    let (best, gtot, n_sites) = joint_needle_sweep(&*ctx, stack, spectral, contrast, cfg)?;
+    if n_sites == 0 {
+        return Ok(true); // "Stack too thin for needle insertion."
+    }
+    let current_mf = ctx.evaluate_merit(stack)?;
+    let stalled = |history: &mut Vec<NeedleCycleResult>, p, predicted| {
+        history.push(NeedleCycleResult {
+            cycle: cycle + 1,
+            merit_before: current_mf,
+            merit_after: current_mf,
+            best_p: p,
+            predicted_improvement: predicted,
+            layer_count: stack.films().len(),
+            insertion: None,
+        });
+    };
+
+    let Some(cand) = best else {
+        stalled(history, None, None);
+        return Ok(true); // no improving locus in any environment
+    };
+    // The gain shift is summed over the K folds for the same reason P is:
+    // growing the seed grows every environment's equivalent-medium
+    // reference, and the joint merit charges all of them.
+    let predicted = -(cand.p + gtot) * cfg.needle_seed_thickness_nm;
+    if predicted < cfg.convergence_threshold {
+        stalled(history, Some(cand.p), Some(predicted));
+        return Ok(true); // "Convergence reached - stopping."
+    }
+
+    // Locus -> the shared design's own row. `host_row` answers the BULK
+    // row, so an interface-carrying design film is still a legal host (N1).
+    let row0 = ctx
+        .environments()
+        .and_then(|e| e.host_row(0, cand.slot))
+        .ok_or_else(|| {
+            format!(
+                "joint needle: design parameter {} has no host row in \
+                 environment 0",
+                cand.slot
+            )
+        })?;
+    let seed_nk: Arc<[Complex64]> = contrast
+        .get(&stack.films()[row0].material)
+        .map(|m| m.nk.clone())
+        .unwrap_or_else(|| vec![Complex64::new(1.0, 0.0); spectral.wavls.len()].into());
+    let seed = LayerSpec {
+        material: cand.material.clone(),
+        nk: seed_nk,
+        d_nm: cfg.needle_seed_thickness_nm,
+        coherent: true,
+        rough_type: 0,
+        rough_val: 0.0,
+        optimize: true,
+        needle: true,
+    };
+    stack.insert_needle_seed(row0, cand.depth_into_layer_nm, seed.clone())?;
+    ctx.environments_mut()
+        .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
+        .insert_seed(cand.slot, cand.depth_into_layer_nm, &seed)?;
+
+    let new_mf = ctx.optimize_thicknesses(stack)?;
+    history.push(NeedleCycleResult {
+        cycle: cycle + 1,
+        merit_before: current_mf,
+        merit_after: new_mf,
+        best_p: Some(cand.p),
+        predicted_improvement: Some(predicted),
+        layer_count: stack.films().len(),
+        insertion: Some(Insertion {
+            film_idx: row0,
+            depth_into_layer_nm: cand.depth_into_layer_nm,
+            material: cand.material,
+        }),
+    });
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,7 +634,7 @@ mod tests {
         SpectralInputs {
             wavls: vec![1000.0],
             sin_theta: vec![0.0],
-            fold,
+            folds: vec![fold],
             spec: MeritSpec::new(),
             angles_deg: vec![0.0],
         }

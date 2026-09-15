@@ -240,6 +240,39 @@ pub fn build_needle_targets(
     wavelengths: &[f64],
     current_sim: Option<&SimCurves>,
 ) -> Result<NeedleTargets, String> {
+    // F2.3: a fold is per environment. Folding a K-environment spec here
+    // would take environment 0's demands and drop the rest without a
+    // word - the quiet wrong-surroundings result F2.1's refusals exist
+    // to prevent. The caller that has K solves calls the env door K
+    // times; every caller that has one solve keeps this signature.
+    if spec.n_envs() != 1 {
+        return Err(format!(
+            "build_needle_targets: the spec carries {} environments - fold \
+             them one at a time with `build_needle_targets_env(.., env)`, \
+             each against that environment's own simulation",
+            spec.n_envs()
+        ));
+    }
+    build_needle_targets_env(spec, angles, wavelengths, current_sim, 0)
+}
+
+/// F2.3: [`build_needle_targets`] for ONE environment of a joint spec.
+///
+/// `current_sim` must be that environment's own solve: the fold activates
+/// one-sided and banded kinds at the operating point, and environment 1's
+/// operating point is not environment 0's. Demands tagged with any other
+/// environment are skipped — the same `env_idx` predicate `residuals_into`
+/// uses (F2.2), applied to the needle side.
+///
+/// The deposits this fold drives are summed across environments by design
+/// -film name; the sum is `run_needle_cycles`'s, not this function's.
+pub fn build_needle_targets_env(
+    spec: &MeritSpec,
+    angles: &[f64],
+    wavelengths: &[f64],
+    current_sim: Option<&SimCurves>,
+    env: u32,
+) -> Result<NeedleTargets, String> {
     let na = angles.len();
     let nw = wavelengths.len();
     if let Some(msg) = current_sim.and_then(SimCurves::reference_length_issue) {
@@ -250,7 +283,7 @@ pub fn build_needle_targets(
     let mut phi: [(Vec<f64>, Vec<f64>); 4] = [zero(), zero(), zero(), zero()];
     let mut phi_gain_shift = [0.0f64; 4];
 
-    for t in spec.targets() {
+    for t in spec.targets().iter().filter(|t| t.env_idx == env) {
         let key = &spec.keys()[t.key_idx as usize];
         // (index-based so the loop holds no &mut across iterations)
         let bucket = if t.phase {
@@ -516,7 +549,7 @@ pub fn build_needle_targets(
     // carries the CURRENT residual by construction.
     let mut grad_r = vec![0.0f64; na * nw];
     let mut grad_t = vec![0.0f64; na * nw];
-    for d in spec.color_demands() {
+    for d in spec.color_demands().iter().filter(|d| d.env_idx == env) {
         let key = &spec.keys()[d.key_idx as usize];
         let is_r = match key.curve {
             CurveId::Rs | CurveId::Rp | CurveId::Ru => true,

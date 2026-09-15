@@ -279,12 +279,25 @@ pub fn run_design(
 /// call sequence is the pre-F2.2 one op for op (§4.6's single branch, taken
 /// here, once, outside every loop).
 ///
-/// **Structural moves are refused while K > 1** and named to F2.3. Needle
-/// insertion, cleanup removal and inflate all change the design's span
-/// layout, and translating a locus back to (segment, intra-segment
-/// position) — so that ONE insertion edits the single shared object — is
-/// exactly F2.3's subject. Running them here would either desynchronize the
+/// **Needles run jointly (F2.3).** The sweep scans every environment's own
+/// assembly, sums P into shared buckets by design parameter, and inserts
+/// once — into the shared design object and into every environment's
+/// template at the same time, so the assemblies split together rather than
+/// drifting apart.
+///
+/// **Removal and inflate are still refused while K > 1.** Both change the
+/// design's span layout the other way — a slot disappears, or a new one
+/// appears between two others — and the compile has no inverse of
+/// `insert_seed` yet. Running them here would desynchronize the
 /// environments or silently optimize environment 0 alone; refusing says so.
+///
+/// The same rule reaches the thin-layer policy, which is where it actually
+/// bites: `remove` eliminates a sub-floor film on the pipeline's FINAL
+/// sweep, and an elimination is a removal whoever ordered it. Joint runs
+/// take `clamp_up_final` — the documented default for needle runs anyway —
+/// and the context pins the floor as an LM bound for the duration
+/// ([`SmatrixContext::optimize_thicknesses`]), so the span layout moves
+/// only through `insert_seed`.
 #[allow(clippy::too_many_arguments)]
 pub fn run_environments(
     envs: super::environments::CompiledEnvironments,
@@ -310,23 +323,24 @@ pub fn run_environments(
     }
     if k > 1 {
         let mut blocked: Vec<&str> = Vec::new();
-        if cfg.needles_per_cycle > 0 {
-            blocked.push("needles_per_cycle > 0");
-        }
         if cfg.enable_cleanup {
             blocked.push("enable_cleanup");
         }
         if cfg.enable_inflate {
             blocked.push("enable_inflate");
         }
+        if cfg.thin_layer_policy == crate::smatrix::synthesis::config::ThinLayerPolicy::Remove {
+            blocked.push("thin_layer_policy 'remove'");
+        }
         if !blocked.is_empty() {
             return Err(format!(
-                "run_environments: {} environments with {} - a structural move \
-                 changes the shared design's span layout, and translating it \
-                 back into the shared object so it propagates to every \
-                 environment is F2.3 (needle and LM joint), not F2.2. Joint \
-                 thickness optimization runs today; set those off, or run one \
-                 environment.",
+                "run_environments: {} environments with {} - removing a \
+                 design parameter, or inserting one outside the needle path, \
+                 changes the shared design's span layout in a direction the \
+                 compile cannot yet follow (F2.3 gave it `insert_seed`, not \
+                 its inverse). Joint thickness optimization and joint needles \
+                 run today: use thin_layer_policy 'clamp_up_final' and leave \
+                 cleanup and inflate off, or run one environment.",
                 k,
                 blocked.join(" and ")
             ));

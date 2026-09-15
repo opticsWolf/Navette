@@ -246,6 +246,123 @@ impl CompiledEnvironments {
             .position(|per| per.get(env) == Some(&span))
     }
 
+    /// F2.3: which shared parameter owns solver row `row` of environment
+    /// `env`, if any.
+    ///
+    /// The needle scan produces sites as (row, depth-into-that-row); this
+    /// is the first half of §4.4's "candidate locus translated back to
+    /// (segment, intra-segment position)". Rows in fixed segments answer
+    /// `None` — surroundings never deposit, and they are inadmissible
+    /// hosts anyway, so this is a second lock on the same door.
+    pub fn slot_of_row(&self, env: usize, row: usize) -> Option<usize> {
+        let span = self.stacks[env]
+            .spans()
+            .iter()
+            .position(|sp| row >= sp.start && row < sp.end)?;
+        self.slot_of_span(env, span)
+    }
+
+    /// F2.3: the host row of shared parameter `slot` inside environment
+    /// `env` — the second half of the locus translation.
+    ///
+    /// The bulk row, not the span start: an interface-carrying design film
+    /// is a legal needle host (N1 — singleton-*bulk*), and its slice row is
+    /// derived, never a host.
+    pub fn host_row(&self, env: usize, slot: usize) -> Option<usize> {
+        let span = *self.routing.get(slot)?.get(env)?;
+        Some(self.stacks[env].spans()[span].bulk_start)
+    }
+
+    /// F2.3: split shared parameter `slot` in every environment at once.
+    ///
+    /// This is what makes "one insertion edits the single shared design
+    /// object" true of the assemblies as well as of the model. Every
+    /// environment's template is split at ITS OWN row for that slot, with
+    /// the same depth and the same seed, so the K assemblies stay the same
+    /// design in different surroundings rather than drifting apart after
+    /// the first needle.
+    ///
+    /// The host becomes three parameters — top, seed, bottom — exactly as
+    /// `insert_needle_seed` splits one span into three, so the slot list
+    /// grows by two at `slot + 1` and every later slot's span index shifts
+    /// by two. The caller splits the pipeline's design stack itself with
+    /// the same `(row, depth, seed)`; `expand`'s alignment check is what
+    /// catches it if the two ever disagree.
+    pub fn insert_seed(
+        &mut self,
+        slot: usize,
+        depth_into_layer_nm: f64,
+        seed: &crate::smatrix::synthesis::structure::LayerSpec,
+    ) -> Result<(), String> {
+        if slot >= self.slots.len() {
+            return Err(format!(
+                "insert_seed: slot {slot} of {} does not exist",
+                self.slots.len()
+            ));
+        }
+        let hosts: Vec<usize> = (0..self.names.len())
+            .map(|e| {
+                self.host_row(e, slot).ok_or_else(|| {
+                    format!(
+                        "insert_seed: slot {slot} has no host in environment {:?}",
+                        self.names[e]
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let host_spans: Vec<usize> = (0..self.names.len())
+            .map(|e| self.routing[slot][e])
+            .collect();
+
+        for (e, &row) in hosts.iter().enumerate() {
+            self.stacks[e]
+                .insert_needle_seed(row, depth_into_layer_nm, seed.clone())
+                .map_err(|msg| format!("environment {:?}: {msg}", self.names[e]))?;
+        }
+
+        // Spans after the host shifted by two in every environment.
+        for per in self.routing.iter_mut() {
+            for (e, s) in per.iter_mut().enumerate() {
+                if *s > host_spans[e] {
+                    *s += 2;
+                }
+            }
+        }
+        // The host's own entry stays put: the top portion keeps the span.
+        let segment = self.slots[slot].segment.clone();
+        let host_name = self.slots[slot].name.clone();
+        self.slots.insert(
+            slot + 1,
+            DesignSlot {
+                name: seed.material.clone(),
+                segment: segment.clone(),
+                intra: 0,
+            },
+        );
+        self.slots.insert(
+            slot + 2,
+            DesignSlot {
+                name: host_name,
+                segment,
+                intra: 0,
+            },
+        );
+        self.routing
+            .insert(slot + 1, host_spans.iter().map(|s| s + 1).collect());
+        self.routing
+            .insert(slot + 2, host_spans.iter().map(|s| s + 2).collect());
+        // `intra` stops being the AUTHORING index the moment a needle
+        // lands, so it is re-derived as the position within the segment -
+        // which is what every reader after the compile actually wants.
+        let mut next: HashMap<Arc<str>, usize> = HashMap::new();
+        for sl in self.slots.iter_mut() {
+            let n = next.entry(sl.segment.clone()).or_insert(0);
+            sl.intra = *n;
+            *n += 1;
+        }
+        Ok(())
+    }
+
     /// F2.2: the K stacks to solve, given the shared design's CURRENT
     /// thicknesses.
     ///
@@ -1151,6 +1268,11 @@ mod tests {
             needles_per_cycle: 0,
             enable_cleanup: false,
             enable_inflate: false,
+            // F2.3: `remove` (the default) eliminates a sub-floor film on
+            // the final sweep, and an elimination is the one structural
+            // move the compile cannot follow. Joint runs take the policy
+            // needle runs were already documented to take.
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::ClampUpFinal,
             ..Default::default()
         }
     }
@@ -1243,8 +1365,530 @@ mod tests {
         assert!(e.contains("e0, e1"), "{e}");
     }
 
-    /// Structural moves under K > 1 are F2.3's, and the refusal says so
-    /// rather than optimizing environment 0 alone.
+    // --- F2.3: the joint needle ----------------------------------------
+
+    fn with_contrast(mut r: DesignRequest) -> DesignRequest {
+        r.contrast = [
+            ("L".to_string(), "H".to_string()),
+            ("H".to_string(), "L".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        r
+    }
+
+    /// `two_env_req` plus the L <-> H contrast map the needle sweep needs.
+    fn needle_req(k: usize) -> DesignRequest {
+        with_contrast(two_env_req(k))
+    }
+
+    /// Two environments that genuinely DIFFER: the same coat bare, and
+    /// behind a laminate. The design rows sit at different depths, so a
+    /// locus is only shared through the routing table.
+    fn two_cover_req() -> DesignRequest {
+        with_contrast(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![
+                EnvironmentCfg {
+                    name: "bare".to_string(),
+                    stack: vec![fixed_seg(vec![]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "laminated".to_string(),
+                    stack: vec![
+                        fixed_seg(vec![fixed("G", 300.0, 1), fixed("M", 40.0, 1)]),
+                        design_seg("coat"),
+                    ],
+                },
+            ],
+        ))
+    }
+
+    /// One macro cycle, one needle: enough to test the insertion without
+    /// letting two descents diverge over repeated re-optimizations.
+    fn one_needle_cfg() -> crate::smatrix::synthesis::config::PipelineConfig {
+        crate::smatrix::synthesis::config::PipelineConfig {
+            max_macro_cycles: 1,
+            needles_per_cycle: 1,
+            enable_cleanup: false,
+            enable_inflate: false,
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::ClampUpFinal,
+            ..Default::default()
+        }
+    }
+
+    /// Each environment's own merit — the same single-environment door the
+    /// flat path uses, applied to that environment's assembly.
+    fn env_merits(envs: &CompiledEnvironments, stack: &DesignStack) -> Vec<f64> {
+        let flat = ctx(env_spec(1), None);
+        envs.expand(stack)
+            .unwrap()
+            .iter()
+            .map(|st| flat.spec.merit(&flat.simulate(st).unwrap(), 1e6))
+            .collect()
+    }
+
+    /// §4.6 (c) for the needle: K = 2 with identical surroundings inserts
+    /// the seed K = 1 inserts, in the same place, at the same thickness.
+    ///
+    /// Bit-equality is not claimed and would be wrong to claim — the joint
+    /// residual vector is twice as long, so the thickness LM that follows
+    /// the insertion rounds differently (the same reason F2.2's run twin is
+    /// not bitwise). What must be identical is the STRUCTURE: same rows,
+    /// same materials, same order.
+    #[test]
+    fn a_joint_needle_over_identical_environments_lands_where_one_does() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let run = |k: usize| {
+            let (envs, cmap, _) = build_environments(&needle_req(k), &WL).unwrap();
+            run_environments(
+                envs,
+                cmap,
+                &WL,
+                &[0.0],
+                &env_spec(k),
+                one_needle_cfg(),
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(()),
+            )
+            .unwrap()
+        };
+        let (_, s1, _) = run(1);
+        let (_, s2, _) = run(2);
+
+        assert!(
+            s1.films().len() > 2,
+            "no needle was inserted at all - the gate tests nothing"
+        );
+        assert_eq!(
+            s1.films().len(),
+            s2.films().len(),
+            "K = 2 inserted a different number of seeds than K = 1"
+        );
+        for (i, (a, b)) in s1.films().iter().zip(s2.films()).enumerate() {
+            assert_eq!(a.material, b.material, "row {i}");
+            // Relative, and loose on purpose. The two runs insert the same
+            // seed at the same place and then descend differently - K = 2
+            // differences the Jacobian and carries twice the residuals, so
+            // the LM that follows the insertion rounds its way to a
+            // slightly different point on the same minimum (F2.2's
+            // CORRECTION 8, one insertion further along). A real
+            // disagreement about WHERE to put the needle shows up in the
+            // material sequence above, not in the fourth decimal.
+            assert!(
+                (a.d_nm - b.d_nm).abs() <= 1e-3 * a.d_nm.max(1.0),
+                "row {i}: {} vs {} nm",
+                a.d_nm,
+                b.d_nm
+            );
+        }
+    }
+
+    /// §4.4's promise, made operational: ONE insertion edits the single
+    /// shared design object and reaches every environment. The seed lands
+    /// in the design segment everywhere — at DIFFERENT rows, because the
+    /// laminate sits above it, under the SAME name, because a design
+    /// parameter is identified by name and not by position.
+    #[test]
+    fn the_joint_needle_lands_in_the_design_of_every_environment() {
+        use crate::smatrix::synthesis::cycle::{NeedleCycleConfig, run_needle_cycles};
+        use crate::smatrix::synthesis::pipeline::SpectralInputs;
+
+        let (envs, cmap, _) = build_environments(&two_cover_req(), &WL).unwrap();
+        let before: Vec<usize> = envs.stacks().iter().map(|s| s.films().len()).collect();
+        let mut stack = envs.stacks()[0].clone();
+        let mut solver = ctx(env_spec(2), Some(Arc::new(envs)));
+        let spectral = SpectralInputs::from_spec(&env_spec(2), &[0.0], &WL).unwrap();
+        let hist = run_needle_cycles(
+            &mut solver,
+            &mut stack,
+            &spectral,
+            &cmap,
+            &NeedleCycleConfig {
+                max_needles: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let ins = hist
+            .iter()
+            .find_map(|h| h.insertion.as_ref())
+            .expect("the joint sweep found no site to insert at");
+        let envs = solver.envs.as_ref().unwrap();
+
+        // The split reached every template, not just the one the pipeline
+        // carries: one host row became three, K times.
+        for (e, st) in envs.stacks().iter().enumerate() {
+            assert_eq!(
+                st.films().len(),
+                before[e] + 2,
+                "environment {:?} did not split",
+                envs.names()[e]
+            );
+        }
+
+        // The shared design object and environment 0's template are the
+        // same rows - that is what makes "the pipeline carries environment
+        // 0's stack" true after a structural move, not just before one.
+        assert_eq!(stack.films().len(), envs.stacks()[0].films().len());
+        for (i, (a, b)) in stack
+            .films()
+            .iter()
+            .zip(envs.stacks()[0].films())
+            .enumerate()
+        {
+            assert_eq!(a.material, b.material, "row {i}");
+        }
+
+        // Positions differ, names match.
+        let host_slot = envs
+            .slot_of_row(0, ins.film_idx)
+            .expect("host is a design row");
+        let seed_slot = host_slot + 1;
+        let mut seed_rows = Vec::new();
+        for e in 0..envs.n_envs() {
+            let row = envs
+                .host_row(e, seed_slot)
+                .expect("the seed is a parameter");
+            assert_eq!(
+                envs.stacks()[e].films()[row].material,
+                ins.material,
+                "environment {:?} seed material",
+                envs.names()[e]
+            );
+            assert!(
+                envs.stacks()[e].films()[row].needle,
+                "environment {:?}: the seed is not a host for the next needle",
+                envs.names()[e]
+            );
+            seed_rows.push(row);
+        }
+        assert_ne!(
+            seed_rows[0], seed_rows[1],
+            "the laminate adds two rows, so the shared seed cannot sit at the \
+             same row in both environments"
+        );
+
+        // And the routing still routes: a design step reaches every
+        // environment through the table that the insertion just rewrote.
+        envs.expand(&stack)
+            .expect("alignment survived the insertion");
+    }
+
+    /// The gradient gate. The joint slope at a shared locus is the SUM of
+    /// the per-environment analytic slopes (that is what the sweep adds
+    /// up), and that sum is the real derivative of the joint merit — not
+    /// environment 0's derivative wearing a joint label.
+    ///
+    /// The reference is built from the public single-environment doors:
+    /// `build_needle_targets_env` and `run_needle_pass`, one environment at
+    /// a time. The measurement is a forward difference of the joint merit
+    /// across an actual insertion, so it also proves the two halves of
+    /// F2.3 agree — the sweep's arithmetic and `insert_seed`'s bookkeeping.
+    #[test]
+    fn the_joint_slope_is_the_sum_of_the_environments_slopes() {
+        use crate::smatrix::synthesis::needle_pass::{
+            NeedlePassInput, build_needle_targets_env, run_needle_pass,
+        };
+
+        let (envs, cmap, _) = build_environments(&two_cover_req(), &WL).unwrap();
+        let base = envs.stacks()[0].clone();
+        let spec = env_spec(2);
+        let solver = ctx(spec.clone(), Some(Arc::new(envs)));
+        let envs = solver.envs.as_ref().unwrap();
+
+        // The locus: 40 nm into the first design film, seeded with L's
+        // contrast partner.
+        const SLOT: usize = 0;
+        const DEPTH: f64 = 40.0;
+        let partner = cmap
+            .get(&base.films()[envs.host_row(0, SLOT).unwrap()].material)
+            .expect("L has a contrast partner")
+            .clone();
+
+        // Reference: per environment, analytically, through the flat doors.
+        let stacks = envs.expand(&base).unwrap();
+        let mut analytic = 0.0f64;
+        for (e, st) in stacks.iter().enumerate() {
+            let sim = solver.simulate(st).unwrap();
+            let fold = build_needle_targets_env(&spec, &[0.0], &WL, Some(&sim), e as u32).unwrap();
+            let sa = st.solver_arrays();
+            let res = run_needle_pass(
+                &NeedlePassInput {
+                    n_stack_cache: &sa.n_stack_cache,
+                    thicknesses: &sa.thicknesses,
+                    rough_types: &sa.rough_types,
+                    rough_vals: &sa.rough_vals,
+                    n_layers: sa.n_layers as usize,
+                    wavls: &WL,
+                    sin_theta: &[0.0],
+                    fold: &fold,
+                    needle_n_per_wav: &partner.nk,
+                    start_idx: 0,
+                    end_idx: (sa.n_layers - 1) as usize,
+                    calc_s: true,
+                    calc_p: true,
+                },
+                st.films(),
+                st.spans(),
+                2.0,
+            )
+            .unwrap();
+            let host = envs.host_row(e, SLOT).unwrap();
+            let (i, _) = res
+                .sites
+                .iter()
+                .enumerate()
+                .find(|(_, s)| s.film_idx == host && (s.depth_into_layer_nm - DEPTH).abs() < 1e-9)
+                .expect("the locus is on this environment's scan grid");
+            analytic += res.p_profile[i];
+            analytic += fold.phi_gain_shift.iter().sum::<f64>();
+        }
+
+        // Measurement: insert a thin seed there, everywhere at once, and
+        // read the joint merit on both sides.
+        let delta = 1e-4;
+        let seed = crate::smatrix::synthesis::structure::LayerSpec {
+            material: partner.material.clone(),
+            nk: partner.nk.clone(),
+            d_nm: delta,
+            coherent: true,
+            rough_type: 0,
+            rough_val: 0.0,
+            optimize: true,
+            needle: true,
+        };
+        let mut grown = envs.as_ref().clone();
+        let mut stack = base.clone();
+        stack
+            .insert_needle_seed(envs.host_row(0, SLOT).unwrap(), DEPTH, seed.clone())
+            .unwrap();
+        grown.insert_seed(SLOT, DEPTH, &seed).unwrap();
+
+        let f0 = solver
+            .spec
+            .merit_multi(&solver.simulate_all(&base).unwrap(), 1e6);
+        let after = ctx(spec, Some(Arc::new(grown)));
+        let f1 = after
+            .spec
+            .merit_multi(&after.simulate_all(&stack).unwrap(), 1e6);
+        let measured = (f1 - f0) / delta;
+
+        assert!(
+            (measured - analytic).abs() <= 1e-4 * analytic.abs().max(1e-12),
+            "joint slope: measured {measured}, analytic sum {analytic}"
+        );
+    }
+
+    /// The N1 twin at K > 1: "singleton-**bulk**", so a design film that
+    /// carries an interface slice is still a legal needle host — in every
+    /// environment, not only in the one the scan happens to start from.
+    #[test]
+    fn an_interface_carrying_design_film_hosts_a_needle_in_every_environment() {
+        use crate::smatrix::synthesis::needle_pass::build_scan_sites;
+
+        let mut iface = film("L", 100.0);
+        iface.interface = true;
+        iface.interface_thickness_nm = 2.0;
+        let r = with_contrast(req(
+            vec![("coat", vec![iface, film("H", 80.0)])],
+            vec![
+                // Both covers are non-empty: an interface slice is
+                // emitted only where the film HAS a neighbour above it, so
+                // a design film that is topmost in one environment and
+                // buried in another is not the same number of rows - which
+                // F2.1's alignment check refuses, correctly and for its own
+                // reasons. The N1 question is whether the slice-carrying
+                // film hosts a needle, so both environments give it one.
+                EnvironmentCfg {
+                    name: "thin cover".to_string(),
+                    stack: vec![fixed_seg(vec![fixed("M", 20.0, 1)]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "laminated".to_string(),
+                    stack: vec![
+                        fixed_seg(vec![fixed("G", 300.0, 1), fixed("M", 40.0, 1)]),
+                        design_seg("coat"),
+                    ],
+                },
+            ],
+        ));
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let stacks = envs.expand(&envs.stacks()[0].clone()).unwrap();
+        for (e, st) in stacks.iter().enumerate() {
+            let host = envs.host_row(e, 0).expect("slot 0 has a host row");
+            assert_eq!(
+                envs.slot_of_row(e, host),
+                Some(0),
+                "environment {:?}: the bulk row lost its parameter",
+                envs.names()[e]
+            );
+            let sites = build_scan_sites(st.films(), st.spans(), 2.0);
+            assert!(
+                sites.iter().any(|s| s.film_idx == host),
+                "environment {:?}: the interface-carrying film hosts no site",
+                envs.names()[e]
+            );
+        }
+    }
+
+    /// The anti-§3.2a gate. A joint run improves BOTH environments, and it
+    /// does not reach environment 1's number by accident: optimizing
+    /// environment 0 alone — the sequential recipe §3.2a warns about —
+    /// leaves environment 1 worse off than the joint run does.
+    #[test]
+    fn a_two_environment_run_improves_both_environments() {
+        use crate::smatrix::synthesis::driver::run_environments;
+
+        let (envs, cmap, _) = build_environments(&two_cover_req(), &WL).unwrap();
+        let base = envs.stacks()[0].clone();
+        let start = env_merits(&envs, &base);
+        let (_, joint, _) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[0.0],
+            &env_spec(2),
+            thickness_only_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+
+        // The sequential recipe: environment 0, on its own.
+        let (solo_envs, solo_cmap, _) = build_environments(&needle_req(1), &WL).unwrap();
+        let (_, solo, _) = run_environments(
+            solo_envs,
+            solo_cmap,
+            &WL,
+            &[0.0],
+            &env_spec(1),
+            thickness_only_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+
+        let (envs, _, _) = build_environments(&two_cover_req(), &WL).unwrap();
+        let joint_m = env_merits(&envs, &joint);
+        let solo_m = env_merits(&envs, &solo);
+        for e in 0..2 {
+            assert!(
+                joint_m[e] < start[e],
+                "environment {e}: {} did not improve on {}",
+                joint_m[e],
+                start[e]
+            );
+        }
+        assert!(
+            joint_m[1] < solo_m[1],
+            "the joint run left environment 1 at {} while optimizing \
+             environment 0 alone reaches {} - the joint run is not joint",
+            joint_m[1],
+            solo_m[1]
+        );
+    }
+
+    /// Elimination is a removal whoever ordered it. `remove` deletes a
+    /// sub-floor film on the pipeline's final sweep, so a joint run would
+    /// end with K templates carrying a span the design no longer has — the
+    /// refusal names the policy and the one that works.
+    #[test]
+    fn a_joint_run_refuses_the_removing_thin_layer_policy() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let cfg = crate::smatrix::synthesis::config::PipelineConfig {
+            max_macro_cycles: 1,
+            needles_per_cycle: 0,
+            enable_cleanup: false,
+            enable_inflate: false,
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
+            ..Default::default()
+        };
+        let (envs, cmap, _) = build_environments(&two_env_req(2), &WL).unwrap();
+        let e = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[0.0],
+            &env_spec(2),
+            cfg,
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(e.contains("thin_layer_policy 'remove'"), "{e}");
+        assert!(e.contains("clamp_up_final"), "{e}");
+    }
+
+    /// The other half of the same rule: mid-run, the context pins the floor
+    /// as an LM bound rather than letting a film fall through it. A joint
+    /// run therefore never loses a span, whatever the optimizer wants.
+    #[test]
+    fn a_joint_optimization_never_loses_a_span() {
+        use crate::smatrix::synthesis::context::DesignContext;
+        let mut thin = film("H", 2.5);
+        thin.needle = false;
+        let r = req(
+            vec![("coat", vec![film("L", 100.0), thin])],
+            (0..2)
+                .map(|i| EnvironmentCfg {
+                    name: format!("e{i}"),
+                    stack: vec![design_seg("coat")],
+                })
+                .collect(),
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let spans_before = envs.stacks()[0].spans().len();
+
+        // The hazard, demonstrated rather than assumed: let that film fall
+        // below the floor and the removing sweep deletes the span outright.
+        // Under K > 1 the compile would still be carrying it.
+        let mut fallen = envs.stacks()[0].clone();
+        fallen.set_thickness(1, 0.5).unwrap();
+        fallen
+            .clamp_all_policy(
+                2.0,
+                1000.0,
+                crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            fallen.spans().len(),
+            spans_before - 1,
+            "the removing sweep no longer removes - this test has gone stale"
+        );
+
+        // The joint context does not let it get there: the floor is the
+        // LM's lower bound, and the sweep clamps up.
+        let mut stack = envs.stacks()[0].clone();
+        let mut solver = ctx(env_spec(2), Some(Arc::new(envs)));
+        solver.optimize_thicknesses(&mut stack).unwrap();
+        assert_eq!(
+            stack.spans().len(),
+            spans_before,
+            "the joint clamp eliminated a shared design parameter"
+        );
+        for l in stack.films() {
+            assert!(l.d_nm >= 2.0 - 1e-12, "{} fell through the floor", l.d_nm);
+        }
+        // And the compile still routes into it.
+        solver
+            .envs
+            .as_ref()
+            .unwrap()
+            .expand(&stack)
+            .expect("the compile still matches the design");
+    }
+
+    /// F2.3 gave the compile `insert_seed`, not its inverse: needles run
+    /// jointly now, and the two moves that REMOVE or RESHUFFLE parameters
+    /// are still refused rather than optimizing environment 0 alone.
     #[test]
     fn the_run_refuses_structural_moves_while_k_is_greater_than_one() {
         use crate::smatrix::synthesis::driver::run_environments;
@@ -1252,17 +1896,9 @@ mod tests {
             (
                 Box::new(
                     |c: &mut crate::smatrix::synthesis::config::PipelineConfig| {
-                        c.needles_per_cycle = 3
-                    },
-                ) as Box<dyn Fn(&mut _)>,
-                "needles_per_cycle > 0",
-            ),
-            (
-                Box::new(
-                    |c: &mut crate::smatrix::synthesis::config::PipelineConfig| {
                         c.enable_cleanup = true
                     },
-                ),
+                ) as Box<dyn Fn(&mut _)>,
                 "enable_cleanup",
             ),
             (
@@ -1290,7 +1926,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(e.contains(needle), "{needle}: {e}");
-            assert!(e.contains("F2.3"), "{e}");
+            assert!(e.contains("insert_seed"), "{e}");
         }
         // K = 1 keeps every one of them.
         let (envs, cmap, _) = build_environments(&two_env_req(1), &WL).unwrap();

@@ -350,6 +350,17 @@ impl DesignContext for SmatrixContext {
         }
         Some(std::mem::take(&mut self.clamp_accumulator))
     }
+
+    fn environments(&self) -> Option<&CompiledEnvironments> {
+        self.envs.as_deref()
+    }
+
+    fn environments_mut(&mut self) -> Option<&mut CompiledEnvironments> {
+        // `make_mut` clones only when a residual closure is holding the
+        // other end of the `Arc`, and insertions are rare - once per
+        // needle cycle against dozens of LM iterations.
+        self.envs.as_mut().map(Arc::make_mut)
+    }
 }
 
 impl SmatrixContext {
@@ -435,7 +446,18 @@ impl SmatrixContext {
         // optimum wants a 0.5 nm film converges to the floor in ONE
         // optimization. `Remove`/`ClampUpFinal` keep today's `0.0` - the
         // search runs exactly as before, elimination and all.
-        let lb_floor = if self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
+        //
+        // F2.3: a joint run takes the same posture, for a different
+        // reason. Elimination is the INVERSE of `insert_seed`, and the
+        // compile has only the forward direction: a span that vanishes
+        // from the shared design here would leave K templates still
+        // carrying it, and the next `expand` would route thicknesses into
+        // spans that no longer line up. So while K > 1 the floor is a hard
+        // bound and the sweep below clamps up instead of removing. The
+        // cost is F0.3's: a seed the optimizer wants to reject parks at
+        // the floor instead of disappearing.
+        let joint = self.envs.is_some();
+        let lb_floor = if joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
             self.clamp_min_nm
         } else {
             0.0
@@ -478,7 +500,11 @@ impl SmatrixContext {
         let rep = stack.clamp_all_policy(
             self.clamp_min_nm,
             self.clamp_max_nm,
-            self.thin_layer_policy,
+            if joint {
+                ThinLayerPolicy::ClampUpAlways
+            } else {
+                self.thin_layer_policy
+            },
             false,
         )?;
         self.clamp_accumulator.merge(rep);

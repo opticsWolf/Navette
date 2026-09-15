@@ -76,6 +76,13 @@ ALLOWLIST = {
     # itself unbound until F2.4 opens `design=` / `environments=`. Remove
     # this entry with the two above.
     "run_environments",
+    # per-environment needle fold (F2.3): the K == 1 door
+    # `build_needle_targets` is the one a flat caller uses and is itself
+    # internal; this is the same function with the environment named.
+    # Reachable only from the joint needle sweep, which needs a
+    # `CompiledEnvironments` - unbound until F2.4. Remove with the three
+    # above.
+    "build_needle_targets_env",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",

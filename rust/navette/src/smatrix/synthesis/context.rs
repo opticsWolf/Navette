@@ -11,6 +11,7 @@
 //! tomorrow without touching their decision logic (which must stay
 //! byte-comparable to needle_synthesis.py).
 
+use crate::smatrix::synthesis::environments::CompiledEnvironments;
 use crate::smatrix::synthesis::merit::SimCurves;
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack};
 
@@ -40,6 +41,26 @@ pub trait DesignContext {
     /// reports accumulate rather than announce per call). Contexts that
     /// do not clamp return `None`.
     fn take_clamp_report(&mut self) -> Option<ClampReport> {
+        let _ = self;
+        None
+    }
+
+    /// F2.3: the compiled environments, when this context has any.
+    ///
+    /// `None` is the flat path and is the whole of the K == 1 branch for
+    /// the needle pass, read once per cycle outside every loop. The needle
+    /// pass needs more than a merit number — it scans each environment's
+    /// own stack and maps the sites back through the routing table — so it
+    /// reaches for the compile rather than going through `evaluate_merit`
+    /// the way every other phase does.
+    fn environments(&self) -> Option<&CompiledEnvironments> {
+        None
+    }
+
+    /// F2.3: the same, for the one operation that WRITES — an insertion
+    /// has to reach every environment's assembly, or the next expansion
+    /// routes thicknesses into spans that no longer line up.
+    fn environments_mut(&mut self) -> Option<&mut CompiledEnvironments> {
         let _ = self;
         None
     }
