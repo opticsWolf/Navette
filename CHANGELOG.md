@@ -5,6 +5,76 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.0] — the differential-phase series, released
+
+The minor marker, taken at the close of the PD series rather than at
+F3.1 (main plan §0.3). **This is the first release since `0.6.44`** —
+`0.6.45` through `0.6.49` were development rungs that never reached
+PyPI or crates.io — so upgrading from `0.6.44` picks up all of the
+following at once. Per-item detail is in the sections below; this entry
+is the orientation.
+
+### Fixed — the one that matters if you use Δφ
+
+- **The differential-phase reference index now follows the
+  wavelength.** Through `0.6.44`, Δφ's reference was one scalar index
+  applied at every λ: a dispersive incidence medium was frozen at its
+  centre-λ value, which made Δφ wrong by
+  `err(λ) = 2π·D·cosθ·[n(λ) − n(λ_centre)]/λ`. Measured on a mildly
+  dispersive ambient, that is **0.226 rad** — a silent, systematic
+  error in a published release, which is why the series ran before
+  Phase B rather than after. A non-dispersive medium is unaffected,
+  bit for bit. See `[0.6.45]`.
+
+### Added
+
+- **`PDts`/`PDtp` as first-class `compute()` observables** (`PD_TS =
+  1<<49`, `PD_TP = 1<<50`), plus a `differential_phase(*, s_pol=True,
+  p_pol=True)` view. Δφ was reachable through the synthesis merit and
+  the numpy rotation recipe but not from the simulation surface
+  itself. The merit op point and the compute key agree **bitwise**.
+  Coherent stacks only, as with the dispersion keys. See `[0.6.48]`.
+- **Per-λ reference arrays at the FFI and Python doors**, with a
+  permanent guard on the scalar door: a differential demand with a
+  scalar reference index warns once, naming the remedy. See `[0.6.46]`
+  and `[0.6.49]` for the guard's final shape.
+- **A decided, pinned GD/GDD convention over Δφ**: group delay taken
+  over the corrected Δφ carries the reference's own dispersion. The
+  absolute `GD`/`GDD` keys are unchanged and carry no reference term.
+  See `[0.6.47]`.
+
+### Changed
+
+- `MeritSpec::merit` and `::residuals` now **panic** on a malformed
+  reference-row length rather than mis-sampling silently. Unreachable
+  from Python — the FFI constructor refuses it at build time — and
+  documented under `# Panics` for the hand-built Rust caller.
+  `curve_sensitivity` deliberately has no such guard: the reference is
+  additive and independent of the curve, so it drops out of
+  `d(residual)/d(curve)` and that path never reads the reference rows.
+
+### Reviewed
+
+The series was reviewed twice against `docs/implementation_plan_pd.md`,
+and both rounds are recorded in `docs/implementation_review_pd.md`
+rather than summarized away:
+
+- **Round 1** (§1–§6) found five issues. G1 — the scalar guard warned
+  about `n_back`, a side no label can read, so a caller who supplied
+  exactly the per-λ front array the guard asked for was still warned —
+  was fixed before release, along with G2 (two `total_d` derivations,
+  one claiming to be the other).
+- **Round 2** (§7) reviewed the fixes against a fresh build and found
+  H1: the G2 fix was pinned by nothing. Reverting it left the entire
+  battery green, because every test stack sets both half-spaces to
+  zero — exactly where the two expressions agree. The twin now exists
+  and was watched fail (5.03 rad, exit 1) before being kept.
+
+One verification gap is recorded and still open: the
+`nondispersive-bitwise` literals have not been reproduced from outside
+the repo (review §5). The claim they carry is held independently by
+§1.3's route.
+
 ## [0.6.49] - PD review applied: the guard's sides (G1) + one `total_d` (G2)
 
 `docs/implementation_review_pd.md` reviewed the whole PD series against

@@ -63,11 +63,13 @@ compatible with. Fix the quantity, then publish it.
 
 ### 0.4 Version ladder, and the Phase B interaction
 
-Phase B currently holds 0.6.50–0.6.54. Amendment 3 §5 assigned it
+Phase B currently holds 0.7.1–0.7.5. Amendment 3 §5 assigned it
 0.6.45–0.6.49; this plan took 0.6.45–0.6.48 for PD1–PD4 and pushed Phase B
 down by four; the PD review's G1 bump pushed it down one more
-(review §4, disposition). The Was column is amendment 3's assignment;
-the Becomes column is today's:
+(review §4, disposition); then `0.7.0` was taken as the release marker at
+the close of this series (main plan §0.3), moving Phase B onto the 0.7.x
+rungs. The Was column is amendment 3's assignment; the Becomes column is
+today's:
 
 | Item | Was | Becomes |
 |---|---|---|
@@ -75,11 +77,11 @@ the Becomes column is today's:
 | PD2 array surface + scalar guard | — | **0.6.46** |
 | PD3 GD/GDD convention | — | **0.6.47** |
 | PD4 `compute()` observable | — | **0.6.48** |
-| F2.1 environment segment schema | 0.6.45 | **0.6.50** |
-| F2.2 K assemblies, `residuals_multi` | 0.6.46 | **0.6.51** |
-| F2.3 needle + LM joint | 0.6.47 | **0.6.52** |
-| F2.4 Python `environments=` surface | 0.6.48 | **0.6.53** |
-| F3.1 docs, examples, release | 0.6.49 | **0.6.54** |
+| F2.1 environment segment schema | 0.6.45 | **0.7.1** |
+| F2.2 K assemblies, `residuals_multi` | 0.6.46 | **0.7.2** |
+| F2.3 needle + LM joint | 0.6.47 | **0.7.3** |
+| F2.4 Python `environments=` surface | 0.6.48 | **0.7.4** |
+| F3.1 docs, examples, release | 0.6.49 | **0.7.5** |
 
 **Why before Phase B and not after.** (b) is a wrong answer, not a missing
 feature, and it is live in a **published** release — 0.6.44 went to PyPI
@@ -698,8 +700,9 @@ green CI → next item.
 2. **PD2** (0.6.46) — the doors and the surviving guard.
 3. **PD3** (0.6.47) — the GD/GDD convention PD1 disturbed.
 4. **PD4** (0.6.48) — the simulation surface, last by design.
-5. Phase B resumes at **0.6.50** (F2.1), per §0.4's ladder (the PD
-   review's G1 bump pushed it down one more).
+5. Phase B resumes at **0.7.1** (F2.1), per §0.4's ladder (the PD
+   review's G1 bump pushed it down one more, then the `0.7.0` release
+   marker moved it onto the 0.7.x rungs).
 
 The master-item table of `implementation_plan.md` §0.3 gains four rows and
 the Phase B rows are re-versioned; both edits ride PD1's docs commit. Per
