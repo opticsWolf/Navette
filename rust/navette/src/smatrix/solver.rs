@@ -128,6 +128,24 @@ pub fn dispersion_request(
     Ok(req)
 }
 
+/// Request builder for the differential-phase view (PD4): one bit per
+/// polarization. Transmission only — no reflection differential label
+/// exists (the machinery carries `passes = 2` for a round trip, but no
+/// label maps to it).
+pub fn differential_phase_request(s_pol: bool, p_pol: bool) -> Result<u64, String> {
+    let mut req = 0;
+    if s_pol {
+        req |= REQ_PD_TS;
+    }
+    if p_pol {
+        req |= REQ_PD_TP;
+    }
+    if req == 0 {
+        return Err("select at least one polarization for differential phase".to_string());
+    }
+    Ok(req)
+}
+
 /// `max(|1-Rs-Ts|, |1-Rp-Tp|)` per grid point (energy-conservation residual).
 /// Slices must share length; empty input is refused.
 pub fn energy_conservation(
@@ -594,8 +612,8 @@ impl Solver {
 
         cbuf!(b_rs_c, REQ_RS_C);
         cbuf!(b_rp_c, REQ_RP_C);
-        cbuf!(b_ts_c, REQ_TS_C);
-        cbuf!(b_tp_c, REQ_TP_C);
+        cbuf!(b_ts_c, REQ_TS_C | REQ_PD_TS);
+        cbuf!(b_tp_c, REQ_TP_C | REQ_PD_TP);
         cbuf!(b_rbs_c, REQ_RBS_C);
         cbuf!(b_rbp_c, REQ_RBP_C);
         cbuf!(b_tbs_c, REQ_TBS_C);
@@ -689,6 +707,56 @@ impl Solver {
             None
         };
 
+        // Differential phase (PD4): arg(t_fwd) minus the equivalent
+        // incidence-medium layer, wrapped to the principal value — the
+        // same wrap the merit's Phase arm applies to residuals, so the
+        // emitted key and the merit's op point agree bit for bit. Layer
+        // 0's real index is the per-wavelength front reference (PD1); D
+        // is the sum of the interior thicknesses (ambient and substrate
+        // carry zero — the same rule the synthesis evaluator relies on).
+        let pd_ts = if requested & REQ_PD_TS != 0 {
+            let rows = b_ts_c
+                .as_ref()
+                .expect("ts_c buffer exists whenever REQ_PD_TS is requested");
+            let n0_re: Vec<f64> = (0..num_wavs)
+                .map(|w| self.n_cache[w * self.n_layers].re)
+                .collect();
+            let total_d: f64 = self.thicknesses[1..self.n_layers.saturating_sub(1)]
+                .iter()
+                .sum();
+            Some(differential_phase_rows(
+                rows,
+                &self.wavls,
+                &self.sin_theta,
+                total_d,
+                &n0_re,
+                num_wavs,
+            ))
+        } else {
+            None
+        };
+        let pd_tp = if requested & REQ_PD_TP != 0 {
+            let rows = b_tp_c
+                .as_ref()
+                .expect("tp_c buffer exists whenever REQ_PD_TP is requested");
+            let n0_re: Vec<f64> = (0..num_wavs)
+                .map(|w| self.n_cache[w * self.n_layers].re)
+                .collect();
+            let total_d: f64 = self.thicknesses[1..self.n_layers.saturating_sub(1)]
+                .iter()
+                .sum();
+            Some(differential_phase_rows(
+                rows,
+                &self.wavls,
+                &self.sin_theta,
+                total_d,
+                &n0_re,
+                num_wavs,
+            ))
+        } else {
+            None
+        };
+
         let mut f64maps: Vec<(String, Vec<f64>)> = Vec::new();
         macro_rules! keep_f64 {
             ($name:expr, $buf:expr) => {
@@ -750,6 +818,8 @@ impl Solver {
         if requested & REQ_PHI_TBP != 0 {
             keep_f64!("phi_tbp", b_phi_tbp);
         }
+        keep_f64!("PDts", pd_ts);
+        keep_f64!("PDtp", pd_tp);
 
         let mut c64maps: Vec<(String, Vec<Complex64>)> = Vec::new();
         macro_rules! keep_c {
@@ -761,8 +831,15 @@ impl Solver {
         }
         keep_c!("rs_c", b_rs_c);
         keep_c!("rp_c", b_rp_c);
-        keep_c!("ts_c", b_ts_c);
-        keep_c!("tp_c", b_tp_c);
+        // ts_c/tp_c are also the differential phase's input rows (PD4), so
+        // their buffers exist under REQ_PD_* — surface them only when the
+        // caller asked for the amplitudes themselves.
+        if requested & REQ_TS_C != 0 {
+            keep_c!("ts_c", b_ts_c);
+        }
+        if requested & REQ_TP_C != 0 {
+            keep_c!("tp_c", b_tp_c);
+        }
         keep_c!("rbs_c", b_rbs_c);
         keep_c!("rbp_c", b_rbp_c);
         keep_c!("tbs_c", b_tbs_c);

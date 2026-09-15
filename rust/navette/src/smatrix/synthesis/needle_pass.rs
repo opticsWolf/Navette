@@ -163,13 +163,20 @@ enum OpRows<'a> {
 
 /// Operating-point sample in demand space (Δφ with the reference subtracted
 /// for PD demands). Shared by the pointwise and integral folds.
+///
+/// `n_inc` carries the per-λ reference row (PD1) picked once per demand
+/// (front or back by `key.curve.is_back()`). The `None` arm is UNREACHABLE
+/// with a live differential demand: both call sites match on
+/// `(Some(sim), Some(rows))` before calling, and `n_inc` is derived from
+/// that same `current_sim` - so a call implies `Some` (decision PD1/2,
+/// recorded in the plan's CORRECTIONS). `expect` keeps that contract loud.
 fn sample_op_value(
     rows: &OpRows,
     sim: &SimCurves,
     twl_i: f64,
     t: &MeritTarget,
     key: &MeritKey,
-    n_inc: Option<f64>,
+    n_inc: Option<&Arc<[f64]>>,
 ) -> f64 {
     match rows {
         OpRows::Intensity(r) => interp_clamped(&sim.wavelengths, r, twl_i),
@@ -180,9 +187,21 @@ fn sample_op_value(
         OpRows::Phase(c) => {
             let mut a = cinterp_clamped(&sim.wavelengths, c, twl_i).arg();
             if let Some(passes) = t.differential_passes {
+                // Per-λ index at the DEMAND wavelength (PD1): the demand
+                // grid and the sim grid need not coincide, so the row is
+                // interpolated, not indexed - the same `interp_clamped` the
+                // rows use, against `sim.wavelengths`. A length-1 row
+                // broadcasts (interp of a single-point grid is its one
+                // value), so non-dispersive media are bit-identical to the
+                // pre-PD1 scalar path.
+                let n_row = n_inc.expect(
+                    "n_inc is Some whenever a sim is live (call sites \
+                    match (Some(sim), Some(rows)) and n_inc derives from the same sim)",
+                );
+                let n = interp_n_row(&sim.wavelengths, n_row, twl_i);
                 a -= crate::smatrix::optics_core::reference_phase(
                     twl_i,
-                    n_inc.unwrap_or(1.0),
+                    n,
                     key.angle,
                     sim.total_d,
                     passes,
@@ -223,6 +242,9 @@ pub fn build_needle_targets(
 ) -> Result<NeedleTargets, String> {
     let na = angles.len();
     let nw = wavelengths.len();
+    if let Some(msg) = current_sim.and_then(SimCurves::reference_length_issue) {
+        return Err(msg);
+    }
     let zero = || (vec![0.0f64; na * nw], vec![0.0f64; na * nw]);
     let mut buckets: [(Vec<f64>, Vec<f64>); 6] = [zero(), zero(), zero(), zero(), zero(), zero()];
     let mut phi: [(Vec<f64>, Vec<f64>); 4] = [zero(), zero(), zero(), zero()];
@@ -324,14 +346,14 @@ pub fn build_needle_targets(
         };
 
         let twl: &[f64] = &t.wavelengths;
-        // Loop-invariant: the demand's incidence medium (None without sim).
-        // Hoisted — the per-point loop below must stay lean for
-        // intensity-only demand sets.
-        let n_inc = current_sim.map(|sim| {
+        // Loop-invariant: the demand's per-λ reference row (None without
+        // sim). Hoisted - the per-point loop below interpolates it per
+        // demand wavelength; the pick itself is one branch per demand.
+        let n_inc: Option<&Arc<[f64]>> = current_sim.map(|sim| {
             if key.curve.is_back() {
-                sim.n_back_re
+                &sim.n_back_re
             } else {
-                sim.n_front_re
+                &sim.n_front_re
             }
         });
         // Integral demands fold the MEAN (own two-pass block below): the
@@ -453,7 +475,13 @@ pub fn build_needle_targets(
                     // pair (holds for every kind arm — verified per-arm in
                     // the `phi_gain_shift_matches_fd` test). Skipped points
                     // (folded None) and the no-sim arm (s unknown) add 0.
-                    if let (Some(passes), Some(s), Some(n)) = (t.differential_passes, s_op, n_inc) {
+                    if let (Some(passes), Some(s), Some(sim), Some(n_row)) =
+                        (t.differential_passes, s_op, current_sim, n_inc)
+                    {
+                        // Index at the DEMAND wavelength (PD1), interpolated
+                        // against the sim grid - the demand grid need not
+                        // coincide, same rule as the op-point rows.
+                        let n = interp_n_row(&sim.wavelengths, n_row, twl_i);
                         let kz = passes
                             * crate::smatrix::optics_core::reference_wavenumber(
                                 twl_i, n, key.angle,
@@ -581,7 +609,7 @@ fn fold_integral_demand(
     twl: &[f64],
     current_sim: Option<&SimCurves>,
     op: &Option<OpRows>,
-    n_inc: Option<f64>,
+    n_inc: Option<&Arc<[f64]>>,
     row: usize,
     wavelengths: &[f64],
     nw: usize,
@@ -707,11 +735,12 @@ fn fold_integral_demand(
                 // point — the uniform-gradient construction makes the
                 // per-emission formula land on −2·W·(m−T)·mean(kz)).
                 // No-sim arm has no op value → contributes 0.
-                if let (Some(passes), Some(nn), Some(&s)) =
-                    (t.differential_passes, n_inc, s_vals.get(j))
+                if let (Some(passes), Some(sim), Some(n_row), Some(&s)) =
+                    (t.differential_passes, current_sim, n_inc, s_vals.get(j))
                 {
+                    let n = interp_n_row(&sim.wavelengths, n_row, twl_i);
                     let kz = passes
-                        * crate::smatrix::optics_core::reference_wavenumber(twl_i, nn, key.angle);
+                        * crate::smatrix::optics_core::reference_wavenumber(twl_i, n, key.angle);
                     phi_gain_shift[ch] += -2.0 * kz * w_j * (s - rt_j);
                 }
             }
@@ -757,6 +786,16 @@ fn solver_wav_index(wavelengths: &[f64], x: f64) -> usize {
         }
     }
     best
+}
+
+/// Per-λ reference-index sample (PD1): a length-1 row broadcasts (the
+/// scalar case, bit-identical to pre-PD1); anything else interpolates the
+/// row against the sim grid at the demand wavelength `x`.
+fn interp_n_row(wls: &[f64], row: &[f64], x: f64) -> f64 {
+    if row.len() == 1 {
+        return row[0];
+    }
+    interp_clamped(wls, row, x)
 }
 
 fn interp_clamped(xs: &[f64], ys: &[f64], x: f64) -> f64 {
@@ -1475,8 +1514,8 @@ mod tests {
                 cplx: [None, None, None, None, None, None],
                 cplx_back: [None, None, None, None],
                 total_d: d,
-                n_front_re: 1.0,
-                n_back_re: 1.0,
+                n_front_re: Arc::from([1.0_f64]),
+                n_back_re: Arc::from([1.0_f64]),
             };
             sim.cplx[3] = Some(
                 vec![
@@ -1514,6 +1553,250 @@ mod tests {
         // ref(400) = π/2 exactly.
         assert!((spec.merit(&mk_sim(100.0), 1e6) - 0.08).abs() < 1e-12);
         assert!((ref_of(400.0) - PI / 2.0).abs() < 1e-15);
+    }
+
+    /// PD1 twin: the gain shift interpolates the reference index at the
+    /// DEMAND wavelength (off-grid 450/550 on a 400/500/600 sim grid),
+    /// not the sim-index value and not the frozen centre value. The FD
+    /// slope of merit over D is the gate that matters - merit and fold
+    /// must agree through the same interpolation.
+    #[test]
+    fn phi_gain_shift_interpolates_index_at_demand_wavelength() {
+        use std::f64::consts::TAU;
+        let wls = [400.0_f64, 500.0, 600.0];
+        let n_col = [1.5_f64, 1.7, 1.9]; // dispersive incidence medium
+        // interp_clamped form (the same arithmetic the fold uses):
+        let n = |x: f64| -> f64 {
+            let hi = wls.partition_point(|&v| v < x).max(1);
+            let lo = hi - 1;
+            let t = (x - wls[lo]) / (wls[hi] - wls[lo]);
+            n_col[lo] + t * (n_col[hi] - n_col[lo])
+        };
+        let d = 100.0_f64;
+        let ref_of = |wl: f64| TAU * n(wl) * d / wl; // passes=1, theta=0
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: 0.0,
+            curve: CurveId::Ts,
+        });
+        let tgt: Vec<f64> = [450.0, 550.0]
+            .iter()
+            .map(|&w| 0.3 - ref_of(w) + 0.01)
+            .collect();
+        spec.add_target(MeritTarget {
+            key_idx: k as u32,
+            wavelengths: vec![450.0, 550.0].into(),
+            kind: ConstraintKind::Exact,
+            transform: SimTransform::Phase,
+            norm_factor: 1.0,
+            normalized_targets: tgt.into(),
+            tolerances: vec![0.05, 0.05].into(),
+            band: vec![].into(),
+            phase: true,
+            differential_passes: Some(1.0),
+            integral: false,
+            weight: 1.0,
+            count_norm: None,
+        })
+        .unwrap();
+        let mk_sim = |total_d: f64| {
+            let mut sim = SimCurves {
+                angles: vec![0.0].into(),
+                wavelengths: wls.to_vec().into(),
+                curves: [None, None, None, None, None, None, None, None, None],
+                back: [None, None, None, None, None, None],
+                cplx: [None, None, None, None, None, None],
+                cplx_back: [None, None, None, None],
+                total_d,
+                n_front_re: n_col.to_vec().into(),
+                n_back_re: Arc::from([1.52_f64]),
+            };
+            // Flat complex phase: interpolation is exact, so the op-point
+            // arg is 0.3 at every demand wavelength.
+            sim.cplx[3] = Some(vec![Complex64::from_polar(0.7, 0.3); 3].into());
+            sim
+        };
+        let nt = build_needle_targets(&spec, &[0.0], &wls, Some(&mk_sim(100.0))).unwrap();
+        // Hand: r = -0.2/point, w = 1/0.05^2 = 400, s - rt = -0.01:
+        // shift = sum(-2 * kz(wl) * 400 * (-0.01)) = 8 * (kz(450) + kz(550)).
+        let kz = |wl: f64| TAU * n(wl) / wl;
+        let expect = 8.0 * (kz(450.0) + kz(550.0));
+        assert!(
+            (nt.phi_gain_shift[2] - expect).abs() < 1e-9,
+            "shift={} expect={}",
+            nt.phi_gain_shift[2],
+            expect
+        );
+        // The discriminators: a frozen centre-λ index (1.7) moves the shift
+        // by 8·2π·0.1·(1/450 − 1/550) ≈ 2.5e-3, the nearest sim-grid value
+        // by ≈ 1e-2 - both far outside the 1e-6 gates below, on a ~0.35
+        // quantity.
+        let frozen = 8.0 * (TAU * 1.7 / 450.0 + TAU * 1.7 / 550.0);
+        assert!((nt.phi_gain_shift[2] - frozen).abs() > 1e-3);
+        // FD of merit over D: d(ref)/dD = kz at the demand wavelength.
+        let h = 1e-3;
+        let fd =
+            (spec.merit(&mk_sim(100.0 + h), 1e6) - spec.merit(&mk_sim(100.0 - h), 1e6)) / (2.0 * h);
+        assert!((fd - expect).abs() < 1e-6, "fd={fd} expect={expect}");
+        assert!((nt.phi_gain_shift[2] - fd).abs() < 1e-6);
+    }
+
+    /// PD1 twin: the needle site (argmax over P) is invariant under the
+    /// differential demand - the reference enters the fold only as the
+    /// uniform-in-z gain shift, never as a bucket value (licence item 3).
+    #[test]
+    fn needle_site_invariant_under_differential_demand() {
+        use std::f64::consts::TAU;
+        let wls = [400.0_f64, 500.0, 600.0];
+        let n_col = [1.5_f64, 1.7, 1.9];
+        let d = 100.0_f64;
+        let ref_of = |wl: f64| TAU * 1.7 * d / wl; // centre-λ targets: any values work
+        let mk_spec = |differential: bool| {
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: 0.0,
+                curve: CurveId::Ts,
+            });
+            let tgt: Vec<f64> = [400.0, 500.0, 600.0]
+                .iter()
+                .map(|&w| 0.3 - ref_of(w) + 0.01)
+                .collect();
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                wavelengths: wls.to_vec().into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: tgt.into(),
+                tolerances: vec![0.05; 3].into(),
+                band: vec![].into(),
+                phase: true,
+                differential_passes: if differential { Some(1.0) } else { None },
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+            spec
+        };
+        let mk_sim = || {
+            let mut sim = SimCurves {
+                angles: vec![0.0].into(),
+                wavelengths: wls.to_vec().into(),
+                curves: [None, None, None, None, None, None, None, None, None],
+                back: [None, None, None, None, None, None],
+                cplx: [None, None, None, None, None, None],
+                cplx_back: [None, None, None, None],
+                total_d: d,
+                n_front_re: n_col.to_vec().into(),
+                n_back_re: Arc::from([1.52_f64]),
+            };
+            sim.cplx[3] = Some(
+                vec![
+                    Complex64::from_polar(0.7, 0.3),
+                    Complex64::from_polar(0.7, 0.3),
+                    Complex64::from_polar(0.7, 0.3),
+                ]
+                .into(),
+            );
+            sim
+        };
+        let sim = mk_sim();
+        let fold_pd = build_needle_targets(&mk_spec(true), &[0.0], &wls, Some(&sim)).unwrap();
+        let fold_abs = build_needle_targets(&mk_spec(false), &[0.0], &wls, Some(&sim)).unwrap();
+        // The buckets themselves are reference-free: bitwise identical.
+        assert_eq!(fold_pd.phi[2].0, fold_abs.phi[2].0, "fold targets");
+        assert_eq!(fold_pd.phi[2].1, fold_abs.phi[2].1, "fold weights");
+        assert!(fold_pd.phi_gain_shift[2] != 0.0, "dispersive shift present");
+        assert_eq!(fold_abs.phi_gain_shift[2], 0.0, "absolute has no shift");
+        // P over the scan sites: bitwise identical with and without the
+        // differential demand - the argmax site cannot move.
+        let (cache, thicknesses, rt, rv) = dispersive_stack_arrays(&wls, &n_col);
+        let needle_n: Arc<[Complex64]> = vec![cplx(1.46, 0.0); 3].into();
+        let films = vec![
+            LayerSpec::constant("H", 2.35, 0.0, 40.0, 3),
+            LayerSpec::constant("L", 1.46, 0.0, 30.0, 3),
+            LayerSpec::constant("H", 2.35, 0.0, 50.0, 3),
+        ];
+        let sites = build_scan_sites(&films, &[], 3.0);
+        let p_pd = needle_pass_scan(
+            &NeedlePassInput {
+                n_stack_cache: &cache,
+                thicknesses: &thicknesses,
+                rough_types: &rt,
+                rough_vals: &rv,
+                n_layers: 5,
+                wavls: &wls,
+                sin_theta: &[0.0],
+                fold: &fold_pd,
+                needle_n_per_wav: &needle_n,
+                start_idx: 0,
+                end_idx: 4,
+                calc_s: true,
+                calc_p: true,
+            },
+            &sites,
+        )
+        .unwrap()
+        .p_profile;
+        let p_abs = needle_pass_scan(
+            &NeedlePassInput {
+                n_stack_cache: &cache,
+                thicknesses: &thicknesses,
+                rough_types: &rt,
+                rough_vals: &rv,
+                n_layers: 5,
+                wavls: &wls,
+                sin_theta: &[0.0],
+                fold: &fold_abs,
+                needle_n_per_wav: &needle_n,
+                start_idx: 0,
+                end_idx: 4,
+                calc_s: true,
+                calc_p: true,
+            },
+            &sites,
+        )
+        .unwrap()
+        .p_profile;
+        assert_eq!(p_pd, p_abs, "P must not see the differential reference");
+        let site_pd = p_pd
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        let site_abs = p_abs
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        assert_eq!(site_pd, site_abs);
+    }
+
+    /// Dispersive ambient (layer 0 varies per wavelength) over the
+    /// air-film-film-film-substrate layout the scan tests use.
+    fn dispersive_stack_arrays(
+        wls: &[f64],
+        n_front: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<i32>, Vec<f64>) {
+        let films_d = [40.0, 30.0, 50.0];
+        let mut thicknesses = vec![0.0f64];
+        thicknesses.extend_from_slice(&films_d);
+        thicknesses.push(0.0);
+        let mut cache = Vec::with_capacity(wls.len() * 5 * 2);
+        for w in 0..wls.len() {
+            cache.push(n_front[w]);
+            cache.push(0.0); // ambient: dispersive, real
+            for &n in [2.35_f64, 1.46, 2.35].iter() {
+                cache.push(n);
+                cache.push(0.0);
+            }
+            cache.push(1.52);
+            cache.push(0.0); // substrate
+        }
+        (cache, thicknesses, vec![0; 5], vec![0.0; 5])
     }
 
     #[test]
@@ -1579,8 +1862,8 @@ mod tests {
             cplx: [None, None, None, None, None, None],
             cplx_back: [None, None, None, None],
             total_d: 100.0,
-            n_front_re: 1.0,
-            n_back_re: 1.0,
+            n_front_re: Arc::from([1.0_f64]),
+            n_back_re: Arc::from([1.0_f64]),
         };
         sim.cplx[3] = Some(vec![Complex64::from_polar(0.7, 0.3)].into());
         let pnt = build_needle_targets(&pspec, &[0.0], &[400.0], Some(&sim)).unwrap();

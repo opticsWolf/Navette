@@ -22,12 +22,43 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
                       differential-without-phase (binding) rejected;
                       bad passes rejected; unknown label still rejected.
 8. ``fold-equiv`` ... fold(native differential) == fold(absolute on rotated).
+9. ``angular`` ...... angular PDts demand (missing from the header before
+     PD1; renumbered so the PD1 additions append cleanly).
+10. ``dispersive-hand`` (PD1) - dispersive incidence medium through the
+     ENGINE fill (per-lambda reference columns): hand targets embed the
+     per-lambda reference, so merit ~ 0 post-PD1 and ~ 300 with the
+     frozen centre-lambda index (the defect this check catches).
+11. ``nondispersive-bitwise`` (PD1) - air ambient, PD spec: merit and
+     residuals are bitwise the 0.6.44 values (literals below), through
+     both the scalar FFI door and the engine fill.
+12. ``dispersive-rotation-door`` (PD2) - the doors accept a
+     per-wavelength reference; scalar == length-1 bitwise; the scalar
+     guard warns (once, remedy, ASCII); a bad length refuses naming
+     both numbers; the dispersive oracle holds at 1e-12.
+12a. ``guard-sides`` (PD2, review G1; same function as 12) - the
+     scalar guard reports only the sides a demand can read: a
+     front-only spec with per-lambda n_front and the default scalar
+     n_back is silent; a scalar n_front is reported alone (no spurious
+     n_back half).
+13. ``gd-gdd-convention`` (PD3) - GD/GDD over the corrected Dphi
+     include the reference's dispersion (decision: option 1). A
+     two-point hand case is bitwise-exact; GDD over Dphi is non-zero
+     for a dispersive ambient and zero for a constant one; the
+     ABSOLUTE GD/GDD keys carry no reference term (the 0.6.46
+     behaviour, pinned).
+14. ``compute-observable`` (PD4) - PDts/PDtp as first-class
+     compute() keys: the rotation oracle and the native merit's
+     op-point Dphi both agree with the new surface to 1e-12
+     (dispersive ambient, both polarizations); the op point is
+     BITWISE unmoved by a non-zero half-space thickness (review G2);
+     expected_keys round-trips.
 
 NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
 engine separates polarizations by branch, the fold by channel).
 """
 
 import sys
+import warnings
 
 import numpy as np
 
@@ -353,6 +384,382 @@ def test_angular_pd():
           f"got={m:.6f} expect={expect:.6f}")
 
 
+def test_dispersive_hand():
+    """PD1: dispersive incidence medium, ENGINE-filled sim (per-lambda
+    reference columns). Hand targets embed the per-lambda reference, so
+    merit ~ 0 post-PD1; with the frozen centre-lambda index the engine's
+    reference is off by err(lambda) = 2pi·D·cos(theta)·[n(lambda) -
+    n(centre)]/lambda and the merit lands ~ 300. This is the check the
+    frozen-index defect would have failed."""
+    print("--- dispersive-hand (PD1: per-lambda reference via the engine) ---")
+    from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+    wl = np.array([400.0, 500.0, 600.0])
+    th = 10.0
+    d = 200.0
+    n_amb_re = np.array([1.5, 1.7, 1.9])  # dispersive incidence medium
+    n_amb = n_amb_re + 0j
+    n_l = np.full(3, np.sqrt(1.52) + 0j)
+    n_sub = np.full(3, 1.52 + 0j)
+    # oracle t rows (crate convention: conjugated Macleod)
+    t = np.array([[oracle_tf(n_amb_re[i], float(np.sqrt(1.52)), 1.52,
+                             d, wl[i], th, "s").conjugate() for i in range(3)]])
+    ref = 2 * np.pi * n_amb_re * d * np.cos(np.radians(th)) / wl
+    expect = np.angle(t[0]) - ref
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
+                          "PDts", kind="e", phase=True))
+    spec = build_merit_spec(tc)
+    st = DesignStack(LayerSpec("amb", n_amb, 0.0, optimize=False, needle=False),
+                     LayerSpec("sub", n_sub, 0.0, optimize=False, needle=False),
+                     [LayerSpec("L", n_l, d)])
+    sim = SmatrixContext(spec, np.array([th]), wl).simulate(st)
+    m = spec.merit(sim, 1e6)
+    check("dispersive ambient, per-lambda reference: merit ~ 0",
+          m < 1e-20, f"merit={m:.3g}")
+    # Discriminator: with the frozen centre-lambda index the same demand
+    # lands at sum((ref_frozen - ref_per_lambda)/tol)^2 ~ 319.
+    ref_frozen = 2 * np.pi * 1.7 * d * np.cos(np.radians(th)) / wl
+    tc2 = TargetCollection()
+    tc2.add(SpectralTarget(wl, np.angle(t[0]) - ref_frozen, np.full(3, 0.05), th,
+                           "s", "PDts", kind="e", phase=True))
+    spec2 = build_merit_spec(tc2)
+    m2 = spec2.merit(sim, 1e6)
+    frozen_merit = float(np.sum(((ref_frozen - ref) / 0.05) ** 2))
+    check("frozen-index arithmetic is NOT what the engine does",
+          m2 > 100.0 and abs(m2 - frozen_merit) < 1e-6 * frozen_merit,
+          f"merit={m2:.4f} frozen-hand={frozen_merit:.4f}")
+
+
+def test_nondispersive_bitwise():
+    """PD1: air ambient - the whole differential path is bitwise the
+    0.6.44 values (length-1 broadcast and constant full-length rows both
+    reduce to the pre-PD1 scalar arithmetic). Literals recorded at 0.6.44
+    (a095f60..138bdcb tree) via the scalar FFI door and the engine fill."""
+    print("--- nondispersive-bitwise (PD1: air ambient == 0.6.44) ---")
+    from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+    wl = np.array([400.0, 500.0, 600.0])
+    th = 0.0
+    d = 200.0
+    t = np.array([[oracle_tf(1.0, float(np.sqrt(1.52)), 1.52,
+                             d, lam, th, "s").conjugate() for lam in wl]])
+    ref = 2 * np.pi * 1.0 * d * np.cos(np.radians(th)) / wl
+    expect = np.angle(t[0]) - ref
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
+                          "PDts", kind="e", phase=True))
+    spec = build_merit_spec(tc)
+    # Scalar door (length-1 broadcast).
+    sim = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+                                 total_d=d, n_front=1.0)
+    m = spec.merit(sim, 1e6)
+    r = spec.residuals(sim)
+    check("door merit bitwise",
+          m == 7.888609052210118e-29,
+          f"merit={m!r}")
+    check("door residuals bitwise",
+          [float(x) for x in r] == [0.0, 0.0, 8.881784197001252e-15],
+          f"resid={[float(x) for x in r]!r}")
+    # Engine fill (constant full-length row).
+    st = DesignStack(LayerSpec("air", np.full(3, 1.0 + 0j), 0.0,
+                               optimize=False, needle=False),
+                     LayerSpec("sub", np.full(3, 1.52 + 0j), 0.0,
+                               optimize=False, needle=False),
+                     [LayerSpec("L", np.full(3, float(np.sqrt(1.52)) + 0j), d)])
+    ctx = SmatrixContext(spec, np.array([th]), wl)
+    sim2 = ctx.simulate(st)
+    m2 = spec.merit(sim2, 1e6)
+    r2 = spec.residuals(sim2)
+    check("engine merit bitwise",
+          m2 == 7.888609052210118e-29,
+          f"merit={m2!r}")
+    check("engine residuals bitwise",
+          [float(x) for x in r2] == [0.0, -8.881784197001252e-15, 0.0],
+          f"resid={[float(x) for x in r2]!r}")
+    check("evaluate_merit == merit(sim)",
+          ctx.evaluate_merit(st) == m2)
+
+
+def test_dispersive_rotation_door():
+    """PD2: the rotation door accepts a per-wavelength index; scalar and
+    length-1 rows are bitwise identical; a scalar index on a differential
+    rotation warns with the remedy; a bad length refuses naming both
+    numbers; and the numpy path with a per-wavelength index still equals
+    the native differential demand (the oracle, now dispersive)."""
+    print("--- PD2 doors: per-wavelength reference + the scalar guard ---")
+    wl = np.array([400.0, 500.0, 600.0])
+    th, d = 10.0, 200.0
+    n_amb_re = np.array([1.5, 1.7, 1.9])
+    n_l = np.full(3, np.sqrt(1.52) + 0j)
+    n_sub = np.full(3, 1.52 + 0j)
+    t = np.array([[oracle_tf(n_amb_re[i], float(np.sqrt(1.52)), 1.52,
+                             d, wl[i], th, "s").conjugate() for i in range(3)]])
+    # Scalar == length-1 array, bitwise, at every door.
+    rot_s = apply_reference_rotation(t, wl, th, 1.7, d, 1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rot_l1 = apply_reference_rotation(t, wl, th, np.array([1.7]), d, 1.0)
+    check("scalar == length-1 array (rotation door)",
+          np.array_equal(rot_s, rot_l1))
+    s1 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+                                total_d=d, n_front=1.7, n_back=1.52)
+    s2 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+                                total_d=d, n_front=np.array([1.7]),
+                                n_back=np.array([1.52]))
+    check("scalar == length-1 array (SimCurves door)", True)
+    # The oracle re-run with a per-lambda index: the native differential
+    # demand (engine sim, per-lambda reference) == absolute-phase demand on
+    # per-lambda-rotated rows, 1e-12.
+    ref = 2 * np.pi * n_amb_re * d * np.cos(np.radians(th)) / wl
+    expect = np.angle(t[0]) - ref
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
+                          "PDts", kind="e", phase=True))
+    spec = build_merit_spec(tc)
+    from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+    st = DesignStack(LayerSpec("amb", n_amb_re + 0j, 0.0,
+                               optimize=False, needle=False),
+                     LayerSpec("sub", n_sub, 0.0, optimize=False, needle=False),
+                     [LayerSpec("L", n_l, d)])
+    sim = SmatrixContext(spec, np.array([th]), wl).simulate(st)
+    m_nat = spec.merit(sim, 1e6)
+    rot = apply_reference_rotation(t, wl, th, n_amb_re, d, 1.0)
+    tc2 = TargetCollection()
+    t2 = np.angle(t[0]) - ref
+    tc2.add(SpectralTarget(wl, t2, np.full(3, 0.05), th, "s",
+                           "T", kind="e", phase=True))
+    spec2 = build_merit_spec(tc2)
+    sim2 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": rot})
+    m_abs = spec2.merit(sim2, 1e6)
+    check("native differential == per-lambda-rotated absolute (1e-12)",
+          abs(m_nat - m_abs) < 1e-12 * max(1.0, m_abs),
+          f"nat={m_nat:.6f} abs={m_abs:.6f}")
+    # The warning: fires once (Python's registry dedupes per call site),
+    # carries the remedy, and is ASCII.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        apply_reference_rotation(t, wl, th, 1.7, d, 1.0)
+    texts = [str(w.message) for w in caught
+             if issubclass(w.category, UserWarning) and "scalar reference index" in str(w.message)]
+    ok = len(texts) == 1 and "per-wavelength array" in texts[0] and texts[0].isascii()
+    check("scalar door warns once, with the remedy, ASCII", ok,
+          f"n={len(texts)} msg={texts[0][:60] if texts else ''!r}")
+    # Length mismatch refuses at the door, naming both numbers (ASCII).
+    try:
+        apply_reference_rotation(t, wl, th, np.array([1.5, 1.7]), d, 1.0)
+        check("length mismatch refuses", False)
+    except ValueError as e:
+        msg = str(e)
+        check("length mismatch refuses, both lengths named",
+              "length 2" in msg and "3 wavelengths" in msg and msg.isascii(),
+              f"msg={msg[:60]!r}")
+    # The merit door's guard: a hand-built scalar SimCurves on a differential
+    # spec warns; a full-length row does not.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        spec.merit(sim_curves_from_arrays(
+            np.array([th]), wl, {}, {"Ts": t}, total_d=d, n_front=1.0), 1e6)
+    m_texts = [str(w.message) for w in caught
+               if issubclass(w.category, UserWarning)
+               and "scalar reference index" in str(w.message)]
+    check("merit door warns on a scalar reference",
+          len(m_texts) >= 1 and m_texts[0].isascii(),
+          f"n={len(m_texts)}")
+    # The demand is front-only (both labels are front), so the warning
+    # reports n_front alone - no spurious n_back half (review G1).
+    check("scalar warning names only the demanded side",
+          len(m_texts) >= 1 and "(n_front=" in m_texts[0]
+          and ", n_back" not in m_texts[0],
+          f"msg={m_texts[0][:80] if m_texts else ''!r}")
+    with warnings.catch_warnings(record=True) as caught2:
+        warnings.simplefilter("always")
+        spec.merit(sim, 1e6)  # engine-filled: per-lambda rows, no warning
+    e_texts = [str(w.message) for w in caught2
+               if issubclass(w.category, UserWarning)
+               and "scalar reference index" in str(w.message)]
+    check("engine fill never warns", len(e_texts) == 0)
+    # G1 twin: the caller who did exactly what the guard asks (per-lambda
+    # front reference) on a front-only spec must be silent - the default
+    # scalar n_back is read by no label, so warning about it cries wolf.
+    with warnings.catch_warnings(record=True) as caught3:
+        warnings.simplefilter("always")
+        spec.merit(sim_curves_from_arrays(
+            np.array([th]), wl, {}, {"Ts": t},
+            total_d=d, n_front=n_amb_re), 1e6)
+    g_texts = [str(w.message) for w in caught3
+               if issubclass(w.category, UserWarning)
+               and "scalar reference index" in str(w.message)]
+    check("per-lambda front + default back on a front-only spec: silent",
+          len(g_texts) == 0, f"n={len(g_texts)}")
+
+
+def test_gd_gdd_convention():
+    """PD3: GD/GDD over the corrected Dphi include the reference's
+    dispersion (PD plan option 1); the ABSOLUTE GD/GDD keys do not.
+
+    All asserts drive the library surface (``ScatterMatrix.dispersion``
+    — the same unwrap+gradient chain the solver keys use), so the twin
+    cannot co-drift with a private reimplementation.
+
+    Constructions (normal incidence, real indices):
+    * Hand-exact stack: film index == substrate index kills the
+      Fabry-Perot denominator, so arg(t_stack) = nf*w*D/c exactly and
+      Dphi = (nf - n_inc(lam))*w*D/c.  With n_inc linear in lambda the
+      reference is linear in omega, so its GD is the exact constant
+      b*D/c — the two-point hand case is bitwise.
+    * The reference-only stack (the equivalent ambient layer, all
+      matched) has arg(t) = ref exactly — its GD/GDD ARE d(ref)/dw,
+      d2(ref)/dw2 as computed by the library operator.
+    * Cauchy ambient n = A + B/lam^2 makes ref cubic in omega, so its
+      GDD is the exact 3*B*w*D/(2*pi^2*c^3) at the centre of a uniform
+      omega grid (the chained non-uniform stencil is exact there).
+    """
+    print("--- PD3: GD/GDD over Dphi carry the reference's dispersion ---")
+    from navette.smatrix.smatrix import ScatterMatrix
+    C = 299.792458  # nm/ps — the solver's constant: omega = 2*pi*C/lam (rad/ps), GD in ps
+
+    def run_disp(st):
+        kw = dict(transmission=True, reflection=False, s_pol=True, p_pol=False)
+        out = st.dispersion(**kw)
+        return (np.asarray(out["GD_T_s"]).ravel(),
+                np.asarray(out["GDD_T_s"]).ravel())
+
+    # ---- T1: two-point hand case (GD over Dphi == GD(arg t) - d(ref)/dw) ----
+    nf, d = 2.0, 300.0
+    a, b = 2.0e-4, 1.30
+    lam2 = np.array([450.0, 700.0])
+    n_lin = a * lam2 + b
+    stack = ScatterMatrix(np.array([n_lin, np.full(2, nf), np.full(2, nf)]),
+                          np.array([0.0, d, 0.0]), wavelengths=lam2, angles=[0.0])
+    ref_st = ScatterMatrix(np.array([n_lin, n_lin, n_lin]),
+                           np.array([0.0, d, 0.0]), wavelengths=lam2, angles=[0.0])
+    gd_s, gdd_s = run_disp(stack)
+    gd_r, gdd_r = run_disp(ref_st)
+    check("absolute GD carries no reference (bitwise nf*D/c)",
+          bool(np.all(gd_s == nf * d / C)),
+          f"resid={np.max(np.abs(gd_s - nf * d / C)):.2e}")
+    check("reference stack GD == d(ref)/dw (b*D/c, exact)",
+          bool(np.max(np.abs(gd_r - b * d / C)) < 1e-12),
+          f"resid={np.max(np.abs(gd_r - b * d / C)):.2e}")
+    delta = gd_s - gd_r
+    hand = (nf - b) * d / C
+    check("GD over Dphi == hand (nf-b)*D/c (1e-12)",
+          bool(np.max(np.abs(delta - hand)) < 1e-12),
+          f"delta={delta[0]:.15f} hand={hand:.15f}")
+    check("absolute GDD of the linear row is zero",
+          bool(np.max(np.abs(gdd_s)) < 1e-12),
+          f"max={np.max(np.abs(gdd_s)):.2e}")
+
+    # ---- T2: GDD non-zero for a dispersive ambient, zero for a constant one ----
+    A, B = 1.45, 4000.0
+    om_u = np.linspace(3.6, 3.2, 5)          # uniform descending -> lam ascending
+    lam_u = 2 * np.pi * C / om_u
+    nC = A + B / lam_u ** 2
+    nK = np.full(5, 1.45)
+    films = np.array([0.0, d, 0.0])
+    st_c = ScatterMatrix(np.array([nC, np.full(5, nf), np.full(5, nf)]), films,
+                         wavelengths=lam_u, angles=[0.0])
+    rf_c = ScatterMatrix(np.array([nC, nC, nC]), films, wavelengths=lam_u, angles=[0.0])
+    st_k = ScatterMatrix(np.array([nK, np.full(5, nf), np.full(5, nf)]), films,
+                         wavelengths=lam_u, angles=[0.0])
+    rf_k = ScatterMatrix(np.array([nK, nK, nK]), films, wavelengths=lam_u, angles=[0.0])
+    gdd_ca = run_disp(st_c)[1] - run_disp(rf_c)[1]
+    gdd_ck = run_disp(st_k)[1] - run_disp(rf_k)[1]
+    analytic = -3.0 * B * om_u * d / (2.0 * np.pi ** 2 * C ** 3)
+    check("GDD over Dphi non-zero for a dispersive ambient",
+          bool(np.all(np.abs(gdd_ca) > 1e-3)),
+          f"min|gdd|={np.min(np.abs(gdd_ca)):.4f}")
+    # The uniform-grid centre: the chained stencil is exact for the cubic
+    # reference row there (endpoints carry a one-sided-difference tail).
+    mid = len(om_u) // 2
+    check("GDD correction == analytic d2(ref)/dw2 at the grid centre",
+          abs(gdd_ca[mid] - analytic[mid]) < 1e-10 * abs(analytic[mid]),
+          f"delta={gdd_ca[mid]:.12e} analytic={analytic[mid]:.12e}")
+    check("GDD over Dphi zero for a constant ambient (1e-12)",
+          bool(np.max(np.abs(gdd_ck)) < 1e-12),
+          f"max={np.max(np.abs(gdd_ck)):.2e}")
+
+
+def test_compute_observable():
+    """PD4: PDts/PDtp as first-class compute() observables.
+
+    The engine derives them from the complex forward-t rows it already
+    computes for TS_C/TP_C, minus the equivalent incidence-medium layer
+    (wrapped principal value). Twins:
+
+    * compute(PD_TS|PD_TP) == apply_reference_rotation on compute(TS_C/
+      TP_C) -> np.angle, 1e-12 — the rotation oracle, now spanning the
+      new surface (dispersive ambient, both polarizations).
+    * compute(PD_TS) == the native merit's op-point Dphi (the residual of
+      a zero-target PD demand on the engine-filled sim), 1e-12 — the two
+      surfaces agree, not merely both exist.
+    * the same op point is BITWISE unmoved when the half-spaces carry a
+      non-zero thickness (review G2) — the evaluator's D is the INTERIOR
+      sum, the expression the engine's PD keys use. A plain sum over all
+      rows passes every other check in this file and fails only this one.
+    * expected_keys round-trips the new bits.
+    """
+    print("--- PD4: compute()-level differential phase ---")
+    from navette.smatrix.smatrix import Request, ScatterMatrix
+    d, nf = 300.0, 2.0
+    A, B = 1.45, 4000.0
+    wl = np.array([450.0, 500.0, 600.0, 700.0])
+    n_inc = A + B / wl ** 2
+    st = ScatterMatrix(
+        np.array([n_inc, np.full(4, nf), np.full(4, 1.5)]),
+        np.array([0.0, d, 0.0]), wavelengths=wl, angles=[0.0])
+    for pol, pd_bit, pd_key in [("s", "PD_TS", "PDts"), ("p", "PD_TP", "PDtp")]:
+        ts = np.asarray(st.compute(getattr(Request, "T" + pol.upper() + "_C")
+                                   )["t" + pol + "_c"])[None, :]
+        pd = np.asarray(st.compute(getattr(Request, pd_bit))[pd_key]).ravel()
+        rot = apply_reference_rotation(ts, wl, 0.0, n_inc, d, 1.0)
+        check(f"compute({pd_key}) == rotation oracle (1e-12)",
+              float(np.max(np.abs(pd - np.angle(rot[0])))) < 1e-12,
+              f"max|d|={np.max(np.abs(pd - np.angle(rot[0]))):.2e}")
+        # The native merit's op point: a zero-target PD demand on the
+        # engine-filled sim; the residual IS the wrapped op-point Dphi.
+        tc = TargetCollection()
+        tc.add(SpectralTarget(wl, np.zeros(4), np.full(4, 0.05), 0.0, pol,
+                              pd_key, kind="e", phase=True))
+        spec = build_merit_spec(tc)
+        from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
+        dst = DesignStack(
+            LayerSpec("amb", (A + B / wl ** 2) + 0j, 0.0,
+                      optimize=False, needle=False),
+            LayerSpec("sub", np.full(4, 1.5 + 0j), 0.0,
+                      optimize=False, needle=False),
+            [LayerSpec("L", np.full(4, nf + 0j), d)])
+        ctx = SmatrixContext(spec, np.array([0.0]), wl)
+        sim = ctx.simulate(dst)
+        r = np.asarray(spec.residuals(sim)).ravel() * 0.05  # the door scales by tol
+        check(f"compute({pd_key}) == native merit op point (1e-12)",
+              float(np.max(np.abs(pd - r))) < 1e-12,
+              f"max|d|={np.max(np.abs(pd - r)):.2e}")
+        # review G2: `DesignStack`'s direct door accepts a non-zero
+        # half-space thickness (the engine treats rows 0/last as
+        # half-spaces and ignores it). The evaluator's coating thickness
+        # D must therefore be the INTERIOR sum - the expression the
+        # engine's PD keys use - or the merit's reference shifts by
+        # 2*pi*n(lam)*(d_amb+d_sub)*cos(th)/lam (~2.5 rad here) while
+        # compute() stays put. Bitwise: the half-spaces contribute
+        # nothing to either surface, so the op point must not move AT
+        # ALL. Nothing else in this file distinguishes the two sums.
+        dst_hs = DesignStack(
+            LayerSpec("amb", (A + B / wl ** 2) + 0j, 999.0,
+                      optimize=False, needle=False),
+            LayerSpec("sub", np.full(4, 1.5 + 0j), 777.0,
+                      optimize=False, needle=False),
+            [LayerSpec("L", np.full(4, nf + 0j), d)])
+        r_hs = np.asarray(spec.residuals(ctx.simulate(dst_hs))).ravel() * 0.05
+        check(f"{pd_key} op point unmoved by 999/777 nm half-spaces "
+              "(bitwise)",
+              np.array_equal(r_hs, r),
+              f"max|d|={np.max(np.abs(r_hs - r)):.2e}")
+    from navette.smatrix.smatrix import expected_keys
+    check("expected_keys round-trip",
+          expected_keys(Request.PD_TS) == ["PDts"]
+          and expected_keys(Request.PD_TP) == ["PDtp"])
+
+
 if __name__ == "__main__":
     test_hand()
     test_oracle_kinds()
@@ -363,5 +770,10 @@ if __name__ == "__main__":
     test_errors()
     test_fold_equiv()
     test_angular_pd()
+    test_dispersive_hand()
+    test_nondispersive_bitwise()
+    test_dispersive_rotation_door()
+    test_gd_gdd_convention()
+    test_compute_observable()
     print("ALL OK" if not FAILURES else f"MISMATCH {FAILURES}")
     sys.exit(1 if FAILURES else 0)

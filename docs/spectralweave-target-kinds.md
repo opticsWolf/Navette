@@ -169,10 +169,19 @@ $$\Delta\varphi(\lambda) = \arg t(\lambda) - passes\cdot\frac{2\pi\,n_{inc}\,D\c
 
 with `passes = 1` (single traversal; `passes = 2` covers a reflection
 round trip if reflection labels are ever added), `D` the total coating
-thickness and `n_inc` the real incidence index. Group delay / GDD over
-$\Delta\varphi$ come for free (finite differences kill the reference
-anyway); the differential form matters for absolute-phase targets and
-for correct needle-gain bookkeeping.
+thickness and `n_inc` the real incidence index. GD/GDD (and TOD/FOD)
+over $\Delta\varphi$ carry the reference's dispersion (PD3, decision:
+option 1) — with $n_{inc}(\omega)$ dispersive, $\mathrm{GD}_{ref} =
+(n_{inc} + \omega\,dn_{inc}/d\omega)\,D\cos\theta_{inc}/c$ is $\lambda$-dependent
+and the reference's GDD contribution $2\,dn/d\omega + \omega\,d^2n/d\omega^2$
+is non-zero, so finite differences of the corrected $\Delta\varphi$ (or
+GD/GDD of the reference-only stack subtracted from the absolute keys)
+are the right recipe. Before 0.6.45 a frozen scalar index contributed a
+constant GD and exactly zero GDD, which is what made the old "finite
+differences kill the reference anyway" remark true. The differential
+form matters for absolute-phase targets and for correct needle-gain
+bookkeeping; the absolute GD/GDD keys (`GD_T_s`, …) stay reference-free
+— pinned by the PD3 parity twin.
 
 Evaluation points (all in solver convention — see the sign note below):
 
@@ -181,8 +190,10 @@ Evaluation points (all in solver convention — see the sign note below):
   `phase=False` or a polarization mismatch raises `ValueError`.
 - `SimCurves` carries `total_d`/`n_front_re`/`n_back_re` (defaults 0/1/1
   zero the reference); the thickness-optimizer evaluator fills them from
-  the stack (ambient index at centre λ — dispersive ambients are
-  pathological, documented approximation) — but only when the spec asks
+  the stack (the incidence/exit indices as per-λ columns — PD1; a
+  dispersive medium now carries its real index at every λ, where the
+  pre-0.6.45 scalar froze the centre λ and erred by
+  `2π·D·cosθ·[n(λ) − n(λ_c)]/λ`) — but only when the spec asks
   (`uses_phase()` gates complex-row assembly, `uses_differential()` the
   metadata; intensity-only LM loops pay zero extra allocations).
   `total_d = 0` reproduces absolute phase bit-for-bit.

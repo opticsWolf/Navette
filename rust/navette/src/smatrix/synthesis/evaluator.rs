@@ -201,19 +201,33 @@ impl SmatrixContext {
             cplx[CurveId::Ts.index()] = Some(pts.iter().map(|p| p.tfs).collect::<Vec<_>>().into());
             cplx[CurveId::Tp.index()] = Some(pts.iter().map(|p| p.tfp).collect::<Vec<_>>().into());
         }
-        // Stack metadata for the PD reference: ambient/substrate thickness
-        // entries are zero, so the plain sum is the coating thickness D;
-        // ambient index at the centre wavelength (dispersive ambients are
-        // pathological — the scalar is a documented approximation).
-        // Gated the same way (defaults zero the reference anyway).
+        // Stack metadata for the PD reference: the coating thickness D is
+        // the sum of the INTERIOR thicknesses (`[1..nl-1]`) - the same
+        // expression the engine's PD keys use (solver.rs), so the merit
+        // op point and compute(PDts) agree even on the degenerate
+        // direct-DesignStack door that lets a non-zero half-space
+        // thickness through (review PD G2; bitwise-identical whenever
+        // the half-spaces are zero, which every real stack is);
+        // incidence/exit indices as PER-WAVELENGTH columns (PD1) - a
+        // dispersive medium now carries its real index at every λ instead
+        // of the centre-λ scalar, which made Δφ wrong by
+        // err(λ) = 2π·D·cosθ·[n(λ) − n(λ_centre)]/λ. Gated the same way
+        // (defaults zero the reference anyway).
         let (total_d, n_front_re, n_back_re) = if self.spec.uses_differential() {
-            let total_d: f64 = sa.thicknesses.iter().sum();
-            let n_front_re = sa.n_stack_cache[(nw / 2) * nl * 2];
-            // Substrate exit index (back-phase reference; unused front-only).
-            let n_back_re = sa.n_stack_cache[(nw / 2) * nl * 2 + (nl - 1) * 2];
+            let total_d: f64 = sa.thicknesses[1..nl - 1].iter().sum();
+            // Layer 0's real index per wavelength (front reference)...
+            let n_front_re: Arc<[f64]> = (0..nw)
+                .map(|w| sa.n_stack_cache[w * nl * 2])
+                .collect::<Vec<f64>>()
+                .into();
+            // ...and the substrate's (exit reference; unused front-only).
+            let n_back_re: Arc<[f64]> = (0..nw)
+                .map(|w| sa.n_stack_cache[w * nl * 2 + (nl - 1) * 2])
+                .collect::<Vec<f64>>()
+                .into();
             (total_d, n_front_re, n_back_re)
         } else {
-            (0.0, 1.0, 1.0)
+            (0.0, Arc::from([1.0_f64]), Arc::from([1.0_f64]))
         };
 
         Ok((
@@ -787,7 +801,8 @@ mod tests {
         let sim = ctx.simulate(&ar_stack(200.0)).unwrap();
         assert!(sim.cplx.iter().all(|c| c.is_none()));
         assert_eq!(sim.total_d, 0.0);
-        assert_eq!((sim.n_front_re, sim.n_back_re), (1.0, 1.0));
+        assert_eq!(sim.n_front_re.as_ref(), &[1.0_f64]);
+        assert_eq!(sim.n_back_re.as_ref(), &[1.0_f64]);
         // Phase-demanding spec flips both gates.
         let ctx_pd = ar_ctx_pd();
         assert!(ctx_pd.spec.uses_phase());
@@ -803,8 +818,10 @@ mod tests {
         let sim = ctx.simulate(&stack).unwrap();
         // Metadata: coating thickness + media.
         assert!((sim.total_d - d).abs() < 1e-12, "total_d={}", sim.total_d);
-        assert!((sim.n_front_re - 1.0).abs() < 1e-12);
-        assert!((sim.n_back_re - 1.52).abs() < 1e-12);
+        // PD1: per-λ columns, one entry per wavelength (air / 1.52 are
+        // constant here, so every entry repeats).
+        assert_eq!(sim.n_front_re.as_ref(), &[1.0_f64, 1.0, 1.0]);
+        assert_eq!(sim.n_back_re.as_ref(), &[1.52_f64, 1.52, 1.52]);
         // Complex-t rows present for Ts/Tp, consistent with intensities:
         // |tf|² × flux (n_s/n_0 at normal incidence) == Ts row.
         let ts = sim.curve(CurveId::Ts).unwrap();

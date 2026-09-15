@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use num_complex::Complex64;
 use numpy::{PyArray, PyArray1, PyReadonlyArray1};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyAny, PyDict};
 
 use navette::smatrix::synthesis::merit::{
     ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves, SimTransform,
@@ -45,6 +45,44 @@ fn parse_transform(s: &str) -> PyResult<SimTransform> {
     })
 }
 
+/// Extract the scalar-or-array reference index (PD2): a float becomes a
+/// length-1 broadcast row, an array passes through for the native length
+/// validation (length 1 or `wavelengths.len()`; anything else refuses via
+/// `SimCurves::reference_length_issue`). `value` is the raw Python
+/// argument (`None` when defaulted).
+fn reference_row(value: Option<&Bound<'_, PyAny>>, default: f64) -> PyResult<Arc<[f64]>> {
+    match value {
+        None => Ok(Arc::from([default])),
+        Some(v) => {
+            if let Ok(f) = v.extract::<f64>() {
+                return Ok(Arc::from([f]));
+            }
+            let arr: PyReadonlyArray1<f64> = v.extract().map_err(|_| {
+                PyTypeError::new_err("reference indices accept a float or a 1-D float array")
+            })?;
+            Ok(Arc::from(Vec::from(arr.as_slice()?)))
+        }
+    }
+}
+
+/// The scalar-or-array differential index plus its SHAPE: `Some(len)` is 1
+/// for a scalar/length-1 row (the warning case), `None` means the caller
+/// supplied a full per-wavelength row (trusted - the engine's own shape).
+fn reference_row_len(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usize>> {
+    match value {
+        None => Ok(Some(1)),
+        Some(v) => {
+            if v.extract::<f64>().is_ok() {
+                return Ok(Some(1));
+            }
+            let arr: PyReadonlyArray1<f64> = v.extract().map_err(|_| {
+                PyTypeError::new_err("reference indices accept a float or a 1-D float array")
+            })?;
+            Ok(Some(arr.as_slice()?.len()))
+        }
+    }
+}
+
 #[pyclass(name = "SimCurves")]
 /// Simulated rows on the solver grid (see `SimCurves` in the core).
 pub struct PySimCurves {
@@ -60,33 +98,39 @@ impl PySimCurves {
 #[pymethods]
 impl PySimCurves {
     #[new]
-    #[pyo3(signature = (angles, wavelengths, total_d=0.0, n_front=1.0, n_back=1.0))]
+    #[pyo3(signature = (angles, wavelengths, total_d=0.0, n_front=None, n_back=None))]
     /// Empty rows on the given axes; fill with `set_curve`/`set_complex`.
     /// `total_d`/`n_front`/`n_back` are the stack metadata for
     /// differential-phase (`PDts`/`PDtp`) demands (defaults zero the
-    /// reference, i.e. differential ≡ absolute).
+    /// reference, i.e. differential ≡ absolute). `n_front`/`n_back` take a
+    /// float (length-1 broadcast row) or a per-wavelength float array
+    /// (PD2) - length 1 or `len(wavelengths)`, anything else refuses.
     fn new(
         angles: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
         total_d: f64,
-        n_front: f64,
-        n_back: f64,
+        n_front: Option<&Bound<'_, PyAny>>,
+        n_back: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let a = angles.as_slice()?;
         let w = wavelengths.as_slice()?;
-        Ok(PySimCurves {
-            inner: SimCurves {
-                angles: Arc::from(a),
-                wavelengths: Arc::from(w),
-                total_d,
-                n_front_re: n_front,
-                n_back_re: n_back,
-                curves: Default::default(),
-                back: Default::default(),
-                cplx: Default::default(),
-                cplx_back: Default::default(),
-            },
-        })
+        let nf = reference_row(n_front, 1.0)?;
+        let nb = reference_row(n_back, 1.0)?;
+        let sim = SimCurves {
+            angles: Arc::from(a),
+            wavelengths: Arc::from(w),
+            total_d,
+            n_front_re: nf,
+            n_back_re: nb,
+            curves: Default::default(),
+            back: Default::default(),
+            cplx: Default::default(),
+            cplx_back: Default::default(),
+        };
+        if let Some(msg) = sim.reference_length_issue() {
+            return Err(PyValueError::new_err(msg));
+        }
+        Ok(PySimCurves { inner: sim })
     }
 
     /// Store one intensity row (`Rs/…/ABu`; absorption ids rejected —
@@ -212,10 +256,11 @@ impl PyMeritSpec {
     }
 
     /// Scalar merit: Σ residual² + `missing_penalty` per missing key group.
-    fn merit(&self, py: Python<'_>, sim: &PySimCurves, missing_penalty: f64) -> f64 {
+    fn merit(&self, py: Python<'_>, sim: &PySimCurves, missing_penalty: f64) -> PyResult<f64> {
+        warn_scalar_reference(py, &self.inner, &sim.inner)?;
         let inner = &self.inner;
         let sim_inner = &sim.inner;
-        py.detach(move || inner.merit(sim_inner, missing_penalty))
+        Ok(py.detach(move || inner.merit(sim_inner, missing_penalty)))
     }
 
     /// Fixed-length residual vector (zeros where inactive).
@@ -224,6 +269,7 @@ impl PyMeritSpec {
         py: Python<'_>,
         sim: &PySimCurves,
     ) -> PyResult<Py<PyArray<f64, numpy::Ix1>>> {
+        warn_scalar_reference(py, &self.inner, &sim.inner)?;
         let mut out = Vec::new();
         self.inner
             .residuals(&sim.inner, &mut out)
@@ -238,19 +284,51 @@ impl PyMeritSpec {
 }
 
 /// Reference-rotation factors for differential-phase demands (thin over
-/// the core kernel): `exp(-i·ref)` per wavelength.
+/// the core kernel): `exp(-i·ref)` per wavelength. `n_inc` takes a float
+/// (length-1 broadcast) or a per-wavelength float array (PD2); a scalar
+/// index on a differential rotation warns (ground rule 6 - announced,
+/// never silent; the engine cannot know the medium it was not given),
+/// once per call site via Python's warning dedup.
 #[pyfunction]
-#[pyo3(signature = (wavelengths, angle_deg, n_inc=1.0, total_d=0.0, passes=1.0))]
+#[pyo3(signature = (wavelengths, angle_deg, n_inc=None, total_d=0.0, passes=1.0))]
 pub fn reference_rotation(
     py: Python<'_>,
     wavelengths: PyReadonlyArray1<'_, f64>,
     angle_deg: f64,
-    n_inc: f64,
+    n_inc: Option<&Bound<'_, PyAny>>,
     total_d: f64,
     passes: f64,
 ) -> PyResult<Py<PyArray1<Complex64>>> {
     use navette::smatrix::synthesis::merit::reference_rotation as core_rot;
-    let rot = core_rot(wavelengths.as_slice()?, angle_deg, n_inc, total_d, passes);
+    let row = reference_row(n_inc, 1.0)?;
+    let n_wl = wavelengths.as_slice()?.len();
+    if passes != 0.0 {
+        if let Some(row_len) = reference_row_len(n_inc)? {
+            if row_len == 1 && row_len != n_wl {
+                let n_val = match n_inc {
+                    Some(v) if v.extract::<f64>().is_ok() => {
+                        format!("{}", v.extract::<f64>().unwrap())
+                    }
+                    _ => format!("{}", row.as_ref()[0]),
+                };
+                let msg = format!(
+                    "reference_rotation: scalar reference index n_inc={} for a \
+differential rotation (passes={}) - if the incidence medium is \
+dispersive, pass the per-wavelength array (length {})",
+                    n_val, passes, n_wl
+                );
+                let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+                PyErr::warn(
+                    py,
+                    &user_warning,
+                    std::ffi::CString::new(msg.clone())?.as_c_str(),
+                    1,
+                )?;
+            }
+        }
+    }
+    let rot = core_rot(wavelengths.as_slice()?, angle_deg, &row, total_d, passes)
+        .map_err(PyValueError::new_err)?;
     Ok(PyArray::from_vec(py, rot).into())
 }
 
@@ -262,6 +340,54 @@ pub(crate) fn rotate_rows(rows: Vec<Complex64>, rot: Vec<Complex64>) -> PyResult
     let mut out = rows;
     core_rotate(&mut out, &rot).map_err(PyValueError::new_err)?;
     Ok(out)
+}
+
+/// The permanent guard (PD2, the part that outlives PD1): a scalar
+/// (length-1) reference row on a spec with a differential demand warns.
+/// After PD1 the native path is correct by construction (it reads the
+/// stack); the remaining way to hand a frozen index to a dispersive
+/// medium is a hand-built `SimCurves` with a scalar row. The door cannot
+/// know the stack it was not given - whether a constant medium is really
+/// air - so this is a warning, never silent and never a refusal (ground
+/// rule 6; air stays a legitimate scalar). Python's warning registry
+/// dedupes per call site, so an LM loop sees it once.
+fn warn_scalar_reference(py: Python<'_>, spec: &MeritSpec, sim: &SimCurves) -> PyResult<()> {
+    if !spec.uses_differential() {
+        return Ok(());
+    }
+    let (front_demanded, back_demanded) = spec.demanded_reference_sides();
+    let nf = sim.n_front_re.as_ref();
+    let nb = sim.n_back_re.as_ref();
+    // Report only the sides a demand can actually read (review PD G1):
+    // no label maps to the back yet, so a default scalar `n_back` on a
+    // front-only spec is correct, not a hazard - warning about it would
+    // cry wolf at callers who did exactly what the guard asked.
+    if !(front_demanded && nf.len() == 1) && !(back_demanded && nb.len() == 1) {
+        return Ok(());
+    }
+    let sides = [
+        ("n_front", front_demanded, nf),
+        ("n_back", back_demanded, nb),
+    ]
+    .into_iter()
+    .filter(|(_, demanded, row)| *demanded && row.len() == 1)
+    .map(|(name, _, row)| format!("{}={}", name, row[0]))
+    .collect::<Vec<_>>()
+    .join(", ");
+    let msg = format!(
+        "differential-phase demand with a scalar reference index ({}) - \
+if the incidence or exit medium is dispersive, supply the \
+per-wavelength array (SimCurves n_front/n_back or \
+apply_reference_rotation)",
+        sides
+    );
+    let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+    PyErr::warn(
+        py,
+        &user_warning,
+        std::ffi::CString::new(msg)?.as_c_str(),
+        1,
+    )
 }
 
 /// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major).
@@ -285,6 +411,9 @@ pub fn build_needle_targets(
 ) -> PyResult<Py<PyDict>> {
     let a = angles.as_slice()?.to_vec();
     let w = wavelengths.as_slice()?.to_vec();
+    if let Some(s) = sim {
+        warn_scalar_reference(py, &spec.inner, &s.inner)?;
+    }
     let nt = py
         .detach({
             let spec_inner = &spec.inner;

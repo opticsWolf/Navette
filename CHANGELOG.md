@@ -1,8 +1,310 @@
 # Changelog
 
 All notable changes to Navette are recorded here. Work items reference
-`docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§), and
-`docs/implementation_plan.md` (Fx.y).
+`docs/remediation_plan.md` (Rx.y), `docs/code_review.md` (§),
+`docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
+(PD1–PD4).
+
+## [0.7.0] — the differential-phase series, released
+
+The minor marker, taken at the close of the PD series rather than at
+F3.1 (main plan §0.3). **This is the first release since `0.6.44`** —
+`0.6.45` through `0.6.49` were development rungs that never reached
+PyPI or crates.io — so upgrading from `0.6.44` picks up all of the
+following at once. Per-item detail is in the sections below; this entry
+is the orientation.
+
+### Fixed — the one that matters if you use Δφ
+
+- **The differential-phase reference index now follows the
+  wavelength.** Through `0.6.44`, Δφ's reference was one scalar index
+  applied at every λ: a dispersive incidence medium was frozen at its
+  centre-λ value, which made Δφ wrong by
+  `err(λ) = 2π·D·cosθ·[n(λ) − n(λ_centre)]/λ`. Measured on a mildly
+  dispersive ambient, that is **0.226 rad** — a silent, systematic
+  error in a published release, which is why the series ran before
+  Phase B rather than after. A non-dispersive medium is unaffected,
+  bit for bit. See `[0.6.45]`.
+
+### Added
+
+- **`PDts`/`PDtp` as first-class `compute()` observables** (`PD_TS =
+  1<<49`, `PD_TP = 1<<50`), plus a `differential_phase(*, s_pol=True,
+  p_pol=True)` view. Δφ was reachable through the synthesis merit and
+  the numpy rotation recipe but not from the simulation surface
+  itself. The merit op point and the compute key agree **bitwise**.
+  Coherent stacks only, as with the dispersion keys. See `[0.6.48]`.
+- **Per-λ reference arrays at the FFI and Python doors**, with a
+  permanent guard on the scalar door: a differential demand with a
+  scalar reference index warns once, naming the remedy. See `[0.6.46]`
+  and `[0.6.49]` for the guard's final shape.
+- **A decided, pinned GD/GDD convention over Δφ**: group delay taken
+  over the corrected Δφ carries the reference's own dispersion. The
+  absolute `GD`/`GDD` keys are unchanged and carry no reference term.
+  See `[0.6.47]`.
+
+### Changed
+
+- `MeritSpec::merit` and `::residuals` now **panic** on a malformed
+  reference-row length rather than mis-sampling silently. Unreachable
+  from Python — the FFI constructor refuses it at build time — and
+  documented under `# Panics` for the hand-built Rust caller.
+  `curve_sensitivity` deliberately has no such guard: the reference is
+  additive and independent of the curve, so it drops out of
+  `d(residual)/d(curve)` and that path never reads the reference rows.
+
+### Reviewed
+
+The series was reviewed twice against `docs/implementation_plan_pd.md`,
+and both rounds are recorded in `docs/implementation_review_pd.md`
+rather than summarized away:
+
+- **Round 1** (§1–§6) found five issues. G1 — the scalar guard warned
+  about `n_back`, a side no label can read, so a caller who supplied
+  exactly the per-λ front array the guard asked for was still warned —
+  was fixed before release, along with G2 (two `total_d` derivations,
+  one claiming to be the other).
+- **Round 2** (§7) reviewed the fixes against a fresh build and found
+  H1: the G2 fix was pinned by nothing. Reverting it left the entire
+  battery green, because every test stack sets both half-spaces to
+  zero — exactly where the two expressions agree. The twin now exists
+  and was watched fail (5.03 rad, exit 1) before being kept.
+
+One verification gap is recorded and still open: the
+`nondispersive-bitwise` literals have not been reproduced from outside
+the repo (review §5). The claim they carry is held independently by
+§1.3's route.
+
+## [0.6.49] - PD review applied: the guard's sides (G1) + one `total_d` (G2)
+
+`docs/implementation_review_pd.md` reviewed the whole PD series against
+the tree and found five issues; the two that touch behaviour land here,
+the three bookkeeping items in the docs commit that follows.
+
+### Fixed
+
+- **G1 (P0): the PD2 scalar guard warned about a side no demand can
+  read.** The guard gated on a spec-wide `uses_differential()` and then
+  reported *every* length-1 reference row — but `n_back_re` is read
+  only under `key.curve.is_back()`, and no differential label maps to
+  a back curve (both `PDts`/`PDtp` are front), so the back half of the
+  warning was unconditionally a false positive: a caller who did
+  exactly what the guard asks (per-λ `n_front`, default `n_back`) was
+  still warned, about an index nothing reads. `MeritSpec` now exposes
+  `demanded_reference_sides()` (walk the targets, collect
+  `key.curve.is_back()` per differential demand); the guard reports
+  only demanded sides. Front-only spec + per-λ front + default back is
+  now **silent**; a scalar front is reported alone. Twin added: the
+  silent case is the one that was wrong, and no check covered it.
+  The engine-fill path is unaffected (full-length rows both sides).
+- **G2 (P1): the synthesis evaluator's coating thickness `D` was the
+  plain sum of all layer thicknesses while the engine's PD keys sum
+  the interior `[1..nl-1]`** — the same quantity only as long as the
+  half-spaces are zero, which `DesignStack`'s direct door does not
+  enforce (`LayerSpec("amb", nk, 100.0)` was accepted). The evaluator
+  now uses the interior sum too, so the merit's differential op point
+  and `compute(PDts)` agree on *any* stack, not just well-formed ones;
+  the comment that claimed the two expressions were one rule is now
+  true. Bitwise identical for every legal stack (zero half-spaces —
+  adding 0.0 terms cannot move a partial sum).
+
+### Twins
+
+- `guard-sides` (in the PD2 door twin): front-only demand + per-λ
+  `n_front` + default `n_back` emits zero warnings; the scalar warning
+  names only the demanded side.
+- Rust: `demanded_reference_sides_tracks_the_labels` (front/back/none
+  from the label table, including the hypothetical back-curve case).
+- `compute-observable` (the PD4 twin) gains the half-space case: the
+  `PDts`/`PDtp` merit op point is **bitwise** unmoved at ambient/
+  substrate thicknesses 999/777 nm. Added in the review's second round,
+  which found the G2 fix unpinned — reverting the interior sum left the
+  whole battery green; it now fails this check by 5.03 rad.
+
+## [0.6.48] - PD4: PDts/PDtp as first-class compute() observables
+
+The differential phase was reachable through the synthesis merit and the
+numpy rotation recipe, but not from the simulation surface itself:
+`ScatterMatrix.compute()` had no way to ask for it.
+
+### Added
+
+- **Two request bits**: `PD_TS = 1 << 49`, `PD_TP = 1 << 50`
+  (`REQ_PD_TS`/`REQ_PD_TP` in `core_engine.rs`, the `Request` IntFlag in
+  `smatrix.py`), emitting keys `PDts` / `PDtp`, wired into
+  `expected_keys`. The request-bit smoke test sweeps them end to end.
+- **The derivation**: the complex forward-t rows the engine already
+  computes for `TS_C`/`TP_C`, minus `reference_phase(λ, n_front_re[λ],
+  θ, D, 1)` — `D` the sum of the interior thicknesses (ambient and
+  substrate carry zero, the same rule the synthesis evaluator relies
+  on) and `n_front_re` layer 0's real index per wavelength (PD1's
+  column, at a second call site). No new user plumbing.
+- **A convenience view**: `differential_phase(*, s_pol=True,
+  p_pol=True)` alongside `complex_amplitudes()` and `dispersion()`.
+- **Decisions stated** (per the plan, not discovered): the keys emit
+  the **wrapped principal value** in `(−π, π]`, consistent with
+  `phi_ts`/`phi_tp` — unwrapping across the grid is the caller's job;
+  and Δφ inherits `dispersion()`'s coherent-stacks caveat verbatim.
+- `.pyi` stubs for the new request builder (`check_pyi_sync.py`
+  blocking); `check_exposure.py` allowlists the row-derivation helper
+  with its rationale (the Python surface is the view and the keys, not
+  the kernel).
+
+### Twins
+
+- `compute(PD_TS|PD_TP)` equals `apply_reference_rotation` on
+  `compute(TS_C|TP_C)` followed by `np.angle`, to 1e-12 (dispersive
+  ambient, both polarizations) — the rotation oracle, now spanning the
+  new surface.
+- `compute(PD_TS)` equals the native merit's op-point Δφ for the same
+  stack and grid (bitwise, 0.0e+00) — the two surfaces agree rather
+  than merely both existing.
+- `expected_keys` round-trips the new bits.
+
+## [0.6.47] - PD3: GD/GDD over Δφ carry the reference's dispersion (decision pinned)
+
+PD1 made the differential reference per-λ. That silently changed what
+"GD/GDD over Δφ" means: a frozen scalar index contributed a constant
+group delay and exactly zero GDD (which is what made the old doc remark
+"finite differences kill the reference anyway" true); a per-λ index
+contributes a λ-dependent GD shift and a genuine GDD term.
+
+### Decided
+
+**Option 1 — report GD/GDD over the corrected Δφ.** The series exists to
+make the reference correct; carving the dispersion orders out would
+reintroduce, one level up, exactly the inconsistency being removed.
+Option 3 (both sets of keys) is deferred, not refused: additive keys can
+be added later without revisiting the decision.
+
+### Changed
+
+- `docs/spectralweave-target-kinds.md`: the stale "finite differences
+  kill the reference anyway" sentence replaced with the corrected
+  recipe and the analytic corrections (`GD_ref = (n + ω·dn/dω)·D·cosθ/c`,
+  the reference's GDD term `2·dn/dω + ω·d²n/dω²`).
+
+### Numeric consequence (dispersive ambients)
+
+For a dispersive incidence index the GD over Δφ acquires the
+λ-dependent shift `−(n_inc + ω·dn_inc/dω)·D·cosθ_inc/c` and the GDD over
+Δφ acquires `−(2·dn_inc/dω + ω·d²n_inc/dω²)·D·cosθ_inc/c` relative to
+the pre-0.6.45 numbers. For a constant ambient index: **no change at
+all** — GD shifts by the constant `−n_inc·D·cosθ/c` only in the
+differential keys (as always) and GDD is untouched.
+
+### Added
+
+- Parity check `gd-gdd-convention` (13th check in the PD file): a
+  two-point hand case through the library `dispersion()` is
+  bitwise-exact (film index = substrate index kills the Fabry-Perot
+  denominator, so `arg(t) = n·ω·D/c` exactly); GDD over Δφ is non-zero
+  for a dispersive ambient and matches the analytic
+  `−3·B·ω·D/(2π²c³)` at the uniform-grid centre to 1e-12, and is zero
+  (1e-12) for a constant ambient; the absolute GD/GDD keys carry no
+  reference term (the 0.6.46 behaviour, pinned bitwise for the linear
+  row).
+
+## [0.6.46] - PD2: the doors accept a per-λ reference; the scalar door gets its permanent guard
+
+After PD1 the native path is correct by construction (it reads the
+stack). The remaining way to hand a frozen scalar index to a dispersive
+medium is a hand-assembled `SimCurves` — and every door that takes a
+reference index still took a scalar.
+
+### Changed
+
+- **`SimCurves.__init__`** (`n_front`/`n_back`): accept `float | FloatArray`
+  — a float becomes a length-1 broadcast row, an array passes through for
+  the native length rule (length 1 or `len(wavelengths)`; anything else
+  refuses via `reference_length_issue`, naming both numbers).
+- **`reference_rotation`**: `n_inc` accepts `float | FloatArray`, length 1
+  or `len(wavelengths)`; a wrong length refuses naming both numbers. The
+  core kernel is per-λ (`n_inc: &[f64]`, broadcast) — the per-λ arithmetic
+  is bitwise the pre-PD2 scalar kernel when the row is constant.
+- **`apply_reference_rotation` / `sim_curves_from_arrays`**: pass-through
+  (thin, as before — the validation stays native).
+- `.pyi` stubs updated (`check_pyi_sync.py` green).
+
+### Added
+
+- **The permanent guard (the part that outlives PD1):** when a scalar
+  (length-1) index meets an active differential demand, the door emits a
+  `UserWarning` naming the quantity, the supplied value, and the remedy
+  — pass the per-λ array (ground rule 6: announced, never silent;
+  ground rule 7: ASCII). A warning, not a refusal: air is a legitimate
+  scalar and by far the common case, and the door cannot know the stack
+  it was not given. Python's warning registry dedupes per call site, so
+  an LM loop sees it once. Wired at `reference_rotation` (covering
+  `apply_reference_rotation`'s numpy path) and at the merit/residuals/
+  `build_needle_targets` FFI doors (a hand-built sim + a differential
+  spec). The engine fill (per-λ rows) never warns.
+- Parity check `dispersive-rotation-door`: scalar == length-1 array
+  bitwise at both doors; the dispersive oracle (native differential ==
+  per-λ-rotated absolute) holds at 1e-12 — what keeps the numpy path a
+  real oracle instead of a co-drifting copy; the guard warns once with
+  the remedy and is ASCII; the length mismatch refuses naming both
+  numbers. Rust unit tests for the kernel's broadcast rule and refusals
+  (551 lib tests).
+
+## [0.6.45] - PD1: the differential-phase reference index follows the wavelength
+
+The differential-phase reference was a **scalar frozen at the centre
+wavelength** (`SimCurves.n_front_re`/`n_back_re: f64`, picked at
+`nw / 2` from the per-λ stack cache). A dispersive incidence medium
+silently yielded a wrong Δφ by
+`err(λ) = 2π·D·cosθ·[n(λ) − n(λ_centre)]/λ` — up to 145° (N-SF11, 3 µm,
+380–780 nm), and live in a published release (0.6.44 on PyPI,
+2026-09-14). Two comments called dispersive ambients "pathological";
+there was no runtime warning, no refusal, and no test pinning the
+approximation.
+
+### Changed
+
+- **`SimCurves`'s reference indices are per-λ rows** (`Arc<[f64]>`,
+  length `wavelengths.len()` or 1). Length 1 broadcasts — the
+  load-bearing decision: `Default` stays `[1.0]` so `total_d = 0`
+  reproduces absolute phase bit-for-bit, the air case stays cheap, and
+  the scalar FFI door keeps working without a shim. Any other length is
+  a refusal (`SimCurves::reference_length_issue`) naming both numbers,
+  wired into `merit`/`residuals`/the needle fold.
+- **The fill collects the whole column** (`evaluator.rs`): layer 0's
+  real index per wavelength (and the substrate's for the exit
+  reference) instead of the centre-λ element.
+- **The readers sample the row at the demand wavelength** — merit's
+  inner loop (same two-pointer interpolation class as the complex rows,
+  sharing its bracket state), the needle op-point sample, and both
+  gain-shift sites (`interp_n_row`: length-1 broadcasts, longer rows
+  interpolate against `sim.wavelengths`). The demand grid and the sim
+  grid need not coincide; the FD `dM/dD` twin is the gate that pins
+  this.
+- `needle_pass.rs`'s `n_inc.unwrap_or(1.0)` is now an `expect` with the
+  reachability proof in its message: `sample_op_value` runs only under
+  `(Some(sim), Some(rows))` and `n_inc` derives from that same sim, so
+  the `None` arm was unreachable all along (plan §7 decision 2,
+  resolved during PD1 as the plan directs).
+- `synthesis_merit.rs`'s PyO3 ctor wraps the scalar doors into length-1
+  rows (compile-level; the array door is PD2).
+
+### Fixed
+
+- Δφ, merit, residuals, LM trajectories and the needle gain shift for a
+  spec with a differential demand **and** a wavelength-varying incidence
+  (or exit) index — the only licensed numeric change (plan §2); a
+  non-dispersive medium is **bitwise unchanged**, pinned by the new
+  `nondispersive-bitwise` parity check (merit and residuals are the
+  recorded 0.6.44 literals through both doors).
+
+### Added
+
+- Parity checks `dispersive-hand` (dispersive ambient through the engine
+  fill: hand targets embed the per-λ reference — merit ≈ 0 post-fix,
+  ≈ 300 with the frozen index, the check the defect would have failed)
+  and `nondispersive-bitwise`; Rust twins for the gain-shift
+  interpolation at the demand wavelength and for needle-site invariance
+  under a differential demand (the shift is uniform in z, so the argmax
+  never moves); `SimCurves` broadcast/refusal unit tests. 550 lib
+  tests.
 
 ## [0.6.44] - C3: the sweep — message rendering, stale comment, doc note, bookkeeping
 
@@ -2745,7 +3047,7 @@ asked for are errors; the message names the offending index and value.
 | negative thickness | same numbers as **deleting the layer** |
 | NaN / inf thickness | same numbers as **deleting the layer** |
 | NaN or inf refractive index | every output NaN, nothing naming the layer |
-| refractive index with `|n|` past `sqrt(DBL_MAX)` | `n**2` overflowed inside the solve; NaN out |
+| refractive index with `\|n\|` past `sqrt(DBL_MAX)` | `n**2` overflowed inside the solve; NaN out |
 | NaN wavelength | NaN output |
 | wavelength <= 0 | `k = 2*pi/lambda` divides by zero |
 | duplicated wavelength | NaN `GD`/`GDD`/`TOD`/`FOD` (the kernels divide by the grid spacing) |

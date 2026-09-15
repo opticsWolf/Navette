@@ -64,6 +64,11 @@ ALLOWLIST = {
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",
     "dispersion_channel",
+    # differential-phase row derivation (PD4, via Solver::solve): the
+    # per-point arg-minus-reference kernel behind the REQ_PD_TS/REQ_PD_TP
+    # keys; the Python surface is the `differential_phase` view and the
+    # `PDts`/`PDtp` compute keys, not this helper.
+    "differential_phase_rows",
     # NOTE: until 0.5.5 this one counted as "exposed" only because
     # navette-py/src/smatrix.rs carried an UNUSED `use` of it. Deleting the
     # dead import surfaced it. A bare `use` satisfies this lint, so an

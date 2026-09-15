@@ -63,6 +63,8 @@ Navette goes beyond simple Fresnel equations to provide research-grade accuracy:
     
 - **Ellipsometric Rigor**: Outputs (Ψ,Δ) parameters that strictly follow the **Azzam & Bashara** convention, ensuring direct compatibility with commercial ellipsometers (e.g., Woollam, Horiba).
 
+- **Differential Phase Observables**: `PDts`/`PDtp` are first-class `compute()` keys — the transmitted phase with the equivalent incidence-medium layer subtracted (`arg(t) − 2π·n(λ)·D·cosθ/λ`), so a target on Δφ constrains what the *coating* adds, not the ambient's round trip. The reference index follows the wavelength (per-λ columns), keys emit the wrapped principal value in `(−π, π]`, and a `differential_phase(*, s_pol=True, p_pol=True)` view returns both. Group delay over Δφ (`GD`/`GDD` with a differential target) carries the reference's own dispersion, and the synthesis merit's phase demands share the same derivation — the merit op point and the compute key agree bit for bit. Coherent stacks only, as with the dispersion keys.
+
 ### 5. Automated Coating Design
 
 Navette doesn't just simulate — it synthesizes, with the classic **needle method** running natively on the same engine:
@@ -198,7 +200,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.6.44-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.7.0-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends

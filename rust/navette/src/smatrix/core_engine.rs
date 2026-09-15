@@ -144,6 +144,13 @@ pub const REQ_TBS_C: u64 = 1 << 47;
 
 pub const REQ_TBP_C: u64 = 1 << 48;
 
+/// Differential transmitted phase, s (PD4): `arg(ts_c)` minus the
+/// equivalent incidence-medium layer's phase, wrapped to the principal
+/// value. Emitted as `PDts`.
+pub const REQ_PD_TS: u64 = 1 << 49;
+/// Differential transmitted phase, p (PD4). Emitted as `PDtp`.
+pub const REQ_PD_TP: u64 = 1 << 50;
+
 // ─── Dependency resolution (request mask → what must run) ────────────────────
 //
 // Two orthogonal axes are resolved from the request, each by a single OR-reduce:
@@ -172,7 +179,8 @@ pub const USES_S: u64 = REQ_RS
     | REQ_PHI_RBS
     | REQ_PHI_TBS
     | REQ_RBS_C
-    | REQ_TBS_C;
+    | REQ_TBS_C
+    | REQ_PD_TS;
 pub const USES_P: u64 = REQ_RP
     | REQ_TP
     | REQ_A_P
@@ -185,7 +193,8 @@ pub const USES_P: u64 = REQ_RP
     | REQ_PHI_RBP
     | REQ_PHI_TBP
     | REQ_RBP_C
-    | REQ_TBP_C;
+    | REQ_TBP_C
+    | REQ_PD_TP;
 pub const USES_BOTH: u64 = REQ_R_AVG
     | REQ_T_AVG
     | REQ_A_AVG
@@ -220,7 +229,9 @@ pub const NEEDS_COMPLEX: u64 = REQ_PHI_RS
     | REQ_RBS_C
     | REQ_RBP_C
     | REQ_TBS_C
-    | REQ_TBP_C;
+    | REQ_TBP_C
+    | REQ_PD_TS
+    | REQ_PD_TP;
 pub const NEEDS_CROSS: u64 = REQ_DELTA_R
     | REQ_DELTA_T
     | REQ_DOP_R
@@ -737,6 +748,98 @@ pub fn dispersion_channel(
         fod[lo..hi].copy_from_slice(&d4);
     }
     (gd, gdd, tod, fod)
+}
+
+#[cfg(test)]
+mod pd_tests {
+    use super::*;
+
+    #[test]
+    fn differential_phase_rows_hand_and_zero_d() {
+        // Hand: lambda = 500, n = 1, theta = 0, D = 100, 1 pass ->
+        // reference = 2*pi/5 (the reference_phase hand test's case); a row
+        // with arg = 0 gives PD = wrap(-2*pi/5) = -2*pi/5.
+        let rows = [Complex64::new(1.0, 0.0), Complex64::new(1.0, 0.0)];
+        let wavls = [500.0, 600.0];
+        let out = differential_phase_rows(&rows, &wavls, &[0.0], 100.0, &[1.0, 1.0], 2);
+        let expect = -2.0 * std::f64::consts::PI / 5.0;
+        assert!((out[0] - expect).abs() < 1e-12, "out={:?}", out[0]);
+        // theta = 60 deg halves the axial projection: a 2-angle grid reads
+        // sin_theta angle-major (k = a*num_wavs + w), so the third entry is
+        // (angle 1, lambda 500) -> PD = -2*pi/5*cos(60 deg) = -pi/5.
+        let rows4 = [Complex64::new(1.0, 0.0); 4];
+        let out2 = differential_phase_rows(
+            &rows4,
+            &wavls,
+            &[0.0, 0.8660254037844386],
+            100.0,
+            &[1.0, 1.0],
+            2,
+        );
+        assert_eq!(out2.len(), 4);
+        assert!((out2[0] - expect).abs() < 1e-12, "out2[0]={:?}", out2[0]);
+        assert!(
+            (out2[2] + std::f64::consts::PI / 5.0).abs() < 1e-12,
+            "out2[2]={:?}",
+            out2[2]
+        );
+        // Zero thickness kills the reference: PD == arg(row) bitwise.
+        let arg_rows = [Complex64::from_polar(2.0, 0.7), Complex64::new(0.5, -0.5)];
+        let out3 = differential_phase_rows(&arg_rows, &wavls, &[0.0, 0.0], 0.0, &[1.0, 1.0], 2);
+        assert_eq!(out3[0], arg_rows[0].arg());
+        assert_eq!(out3[1], arg_rows[1].arg());
+        // The wrap lands in (-pi, pi]: a large negative reference cannot
+        // leak outside.
+        let big = differential_phase_rows(&rows, &wavls, &[0.0, 0.0], 4000.0, &[1.0, 1.0], 2);
+        for v in &big {
+            assert!(
+                *v > -std::f64::consts::PI && *v <= std::f64::consts::PI,
+                "v={v}"
+            );
+        }
+    }
+}
+
+/// Differential transmitted phase (PD4): the wrapped principal value of
+/// `arg(t_fwd) − reference_phase(λ, n_front_re[λ], θ, D, 1)` per point
+/// (angle-major, matching the engine's flat layout).
+///
+/// * `t_rows`: the forward-t complex amplitudes the engine already derives
+///   for `TS_C`/`TP_C` (one row per (angle, wavelength) point).
+/// * `n_front_re[w]`: layer 0's real index at wavelength `w` — the front
+///   reference, per wavelength (PD1: a dispersive ambient carries its
+///   index at every λ).
+/// * `total_d`: the coating thickness (the caller sums the interior
+///   thicknesses; ambient and substrate carry zero, the same rule the
+///   synthesis evaluator relies on).
+/// * `sin_theta[a]`: the sine of the incidence angle for angle row `a`.
+/// * The wrap is the same expression the merit's Phase arm applies to
+///   residuals (`p −= TAU·(p/TAU).round()`), so the emitted value and the
+///   merit's op point agree bit for bit.
+pub fn differential_phase_rows(
+    t_rows: &[Complex64],
+    wavls: &[f64],
+    sin_theta: &[f64],
+    total_d: f64,
+    n_front_re: &[f64],
+    num_wavs: usize,
+) -> Vec<f64> {
+    let mut out = Vec::with_capacity(t_rows.len());
+    for (k, a) in t_rows.iter().enumerate() {
+        let w = k % num_wavs;
+        let theta = sin_theta[k / num_wavs].asin().to_degrees();
+        let mut p = a.arg()
+            - crate::smatrix::optics_core::reference_phase(
+                wavls[w],
+                n_front_re[w],
+                theta,
+                total_d,
+                1.0,
+            );
+        p -= std::f64::consts::TAU * (p / std::f64::consts::TAU).round();
+        out.push(p);
+    }
+    out
 }
 
 #[cfg(test)]

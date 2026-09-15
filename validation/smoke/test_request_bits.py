@@ -5,7 +5,7 @@
 Three constant tables are written twice, once per language, and nothing tied
 them together:
 
-  * 49 ``REQ_*`` solver bits -- ``core_engine.rs`` vs ``Request`` in
+  * 51 ``REQ_*`` solver bits -- ``core_engine.rs`` vs ``Request`` in
     ``smatrix.py``. Hand-copied, and not exported by the extension.
   * 18 ``NREQ_*`` needle bits -- ``needle_engine.rs``, re-exported by
     ``navette-py``, and bound (not copied) into ``NeedleRequest``.
@@ -167,7 +167,7 @@ def test_convenience_bundles_are_unions_of_their_bits(bundle):
 
 
 def test_all_bits_at_once_returns_every_channel():
-    """The union of all 49 bits emits the union of all declared keys.
+    """The union of all 51 bits emits the union of all declared keys.
 
     Requesting everything at once exercises the shared intermediates the
     single-bit calls skip, so a bit that only works in isolation fails here.
