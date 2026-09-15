@@ -589,3 +589,93 @@ CORRECTIONS:
 2. This round verified the *fixes*, not the PD series a second time.
    §1's measurements were not re-derived from scratch; the gates were
    re-run and the four G-finding sites re-measured.
+
+---
+
+## 8. Closure — the `nondispersive-bitwise` literals reproduce
+
+Measured after the `v0.7.0` tag, at `eb977bf`. This section closes §5's
+first bullet, which §6's CI note and §7's CORRECTIONS 1 both left
+standing as the one open gap in this review.
+
+### 8.1 Why it stayed open, and what changed
+
+The obstacle was never the arithmetic — it was the build. Reproducing
+check 11 needs a running `_smatrix` from the `0.6.44` tree, and
+rebuilding in place would have clobbered the installed extension the
+rest of the battery was being measured against. §1.3 therefore proved
+the same claim structurally (length-1 row ≡ pre-PD1 scalar; length-1 and
+constant-full-length agree bitwise) and the literal route was left
+unwalked.
+
+What changed is that the extension under test is now a *released* one.
+A second worktree at `v0.6.44` (`a095f60`, detached) with its own
+`.venv` builds and installs without touching the live tree at all —
+confirmed clean throughout (`## main...origin/main`, no stale `.pyd` in
+the worktree, so the PD2 shadowing trap is structurally absent).
+
+### 8.2 The recipe
+
+`maturin develop --release` into the worktree's own venv, then a dump
+script that copies check 11's construction **verbatim** — including
+`oracle_tf`. That last part is the whole reason the check was
+unverifiable from outside: an independently written oracle differs at
+ULP level, which moves the embedded *target* by ~1e-15 rad and so moves
+the residual. The recipe must reuse the construction, not re-derive it.
+
+The scalar call site is signature-compatible across the hop: at
+`0.6.44`, `sim_curves_from_arrays` already carried `total_d`,
+`n_front`, `n_back` as `f64` scalars (`#[pyo3(signature = (angles,
+wavelengths, total_d=0.0, n_front=1.0, n_back=1.0))]`); PD2 widened
+them to arrays without changing what a scalar call means. The same call
+runs on both trees.
+
+### 8.3 The comparison
+
+Both recordings were compared separately. They are not the same
+measurement twice: the door is fed the oracle's `t`, the engine its own
+solver's, so the two residual **vectors differ from each other** — they
+agree only on merit. Check 11 pins two independent recordings, and both
+had to be re-derived.
+
+| Recording | Pinned at 0.7.0 | Measured at 0.6.44 | |
+|---|---|---|---|
+| door merit | `7.888609052210118e-29` | `0x1.9000000000000p-94` | `==` |
+| door residuals | `[0.0, 0.0, 8.881784197001252e-15]` | `[0x0.0p+0, 0x0.0p+0, 0x1.4000000000000p-47]` | `==` |
+| engine merit | `7.888609052210118e-29` | `0x1.9000000000000p-94` | `==` |
+| engine residuals | `[0.0, -8.881784197001252e-15, 0.0]` | `[0x0.0p+0, -0x1.4000000000000p-47, 0x0.0p+0]` | `==` |
+
+Hex is shown on the measured side because `repr` round-trips are not
+proof of bit-equality; the comparison itself was machine-made (`==` on
+the floats, not on their strings) and reported four `MATCH` lines and
+`VERDICT: all four literals reproduce from a 0.6.44 build`.
+`ctx.evaluate_merit(st) == m2` also holds at `0.6.44`, as check 11
+asserts.
+
+### 8.4 What this does and does not change
+
+It changes no code and no conclusion. §1.3's structural route was
+already sufficient, and this is a second, independent route to the same
+place — the one the test itself takes. What it removes is the residue:
+the `[0.7.0]` entry's "A non-dispersive medium is unaffected, bit for
+bit" now rests on a proof *and* on a recording that has been re-derived
+from the tree it names, rather than on a proof plus a same-hand
+recording nobody had reproduced.
+
+It also confirms the provenance line in check 11's own docstring —
+*"Literals recorded at 0.6.44 (a095f60..138bdcb tree)"* — which until
+now was an unverified claim about where four magic numbers came from.
+
+**No version bump.** Docs only: this section and one CHANGELOG
+follow-up sentence. The worktree was removed after measurement.
+
+CORRECTIONS:
+
+1. §5's first bullet is **closed**, and with it the "what remains open"
+   clause of §6's CI note and §7's CORRECTIONS 1. Both are left in
+   place — they were true when written, and this document is an
+   append-only record of what was believed at the time.
+2. The closure is retrospective. It was run after `v0.7.0` was tagged
+   and published, so it confirms a release rather than gating one. Had
+   the literals *not* reproduced, this would have been a finding about
+   a shipped release, not a docs commit.

@@ -75,6 +75,11 @@ One verification gap is recorded and still open: the
 the repo (review §5). The claim they carry is held independently by
 §1.3's route.
 
+**Closed after the tag** (docs only, no bump): the literals were
+re-derived from a fresh `v0.6.44` build in an isolated worktree, using
+check 11's own construction, and all four reproduce bit-exactly on both
+the scalar-door and engine paths. Review §8 carries the comparison.
+
 ## [0.6.49] - PD review applied: the guard's sides (G1) + one `total_d` (G2)
 
 `docs/implementation_review_pd.md` reviewed the whole PD series against
