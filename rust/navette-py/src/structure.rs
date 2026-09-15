@@ -1373,6 +1373,32 @@ fn program_to_dict(py: Python<'_>, prog: navette::config::LoadedProgram) -> PyRe
             )?;
         }
     }
+    // F2.4: the design roster crosses as JSON TEXT rather than as built
+    // objects. A design segment is not a structure -- it is a piece of a
+    // `DesignRequest` and only means something next to the environment
+    // list and the material library -- so building it here would mean
+    // building it twice, once for the document path and once for the
+    // `design=` door, with two chances to disagree. `None` when empty
+    // keeps every pre-F2.4 program's dict byte-identical.
+    let dump = |v: &serde_json::Value, what: &str| -> PyResult<Py<PyAny>> {
+        serde_json::to_string(v)
+            .map(|s| s.into_pyobject(py).unwrap().into_any().unbind())
+            .map_err(|e| PyValueError::new_err(format!("program section '{what}': {e}")))
+    };
+    if prog.design.is_empty() {
+        out.set_item("design", py.None())?;
+    } else {
+        let v = serde_json::to_value(&prog.design)
+            .map_err(|e| PyValueError::new_err(format!("program section 'design': {e}")))?;
+        out.set_item("design", dump(&v, "design")?)?;
+    }
+    if prog.environments.is_empty() {
+        out.set_item("environments", py.None())?;
+    } else {
+        let v = serde_json::to_value(&prog.environments)
+            .map_err(|e| PyValueError::new_err(format!("program section 'environments': {e}")))?;
+        out.set_item("environments", dump(&v, "environments")?)?;
+    }
     Ok(out.into())
 }
 
@@ -1534,7 +1560,8 @@ fn load_architect_section(
 /// Load a program document (JSON text) into native objects (thin over
 /// `config::load_program_json_prefixed`). Returns a dict: `name`,
 /// `materials` (SpecProvider), `groups` ({name: Group}), `structures`
-/// ({label: Structure} with materials attached), `architect?`.
+/// ({label: Structure} with materials attached), `architect?`, and
+/// (F2.4) `design` / `environments` as JSON text or `None`.
 #[pyfunction]
 #[pyo3(signature = (text, wavelengths, prefix=None))]
 fn load_program(

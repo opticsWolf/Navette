@@ -95,6 +95,7 @@ class SpectralTarget:
     weight:       float = 1.0
     normalize_count: bool = False
     integral:     bool = False
+    environment:  Union[str, None] = None
 
     def _dump(self) -> dict:
         band = self.band
@@ -103,6 +104,7 @@ class SpectralTarget:
         elif band is not None:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64)).ravel().tolist()
         return {
+            **_dump_environment(self.environment),
             "wavelengths": np.ascontiguousarray(np.asarray(self.wavelengths, dtype=np.float64)).ravel().tolist(),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
@@ -153,6 +155,7 @@ class AngularTarget:
     weight:       float = 1.0
     normalize_count: bool = False
     integral:     bool = False
+    environment:  Union[str, None] = None
 
     def _dump(self) -> dict:
         band = self.band
@@ -161,6 +164,7 @@ class AngularTarget:
         elif band is not None:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64)).ravel().tolist()
         return {
+            **_dump_environment(self.environment),
             "wavelength": float(self.wavelength),
             "angles": np.ascontiguousarray(np.asarray(self.angles, dtype=np.float64)).ravel().tolist(),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
@@ -248,9 +252,11 @@ class ColorTarget:
     wavelength_range: Union[tuple, list, None] = None
     yi_cx:        Union[float, None] = None
     yi_cz:        Union[float, None] = None
+    environment:  Union[str, None] = None
 
     def _dump(self) -> dict:
         return {
+            **_dump_environment(self.environment),
             "curve": str(self.curve), "angle": float(self.angle),
             "illuminant": _dump_table(self.illuminant, "illuminant"),
             "observer": _dump_table(self.observer, "observer"),
@@ -267,6 +273,26 @@ class ColorTarget:
         from navette._structure import validate_targets as _validate
         import json as _json
         _validate(_json.dumps({"spectral": [], "angular": [], "color": [self._dump()]}))
+
+
+def _dump_environment(env):
+    """F2.4: the `environment` tag, emitted only when it is set.
+
+    Absent means "the first environment", which is what keeps every
+    pre-F2.1 target set meaningful without an edit — and emitting the key
+    as ``null`` would change the JSON of documents that never asked for
+    environments, so it is left out entirely.
+
+    The NAME is not checked here. ``__post_init__`` validates one target
+    against no roster at all; the roster is a property of the run, and
+    ``build_merit_spec`` is where both are in the same room. An unknown
+    name refuses there, naming the demand and the known environments.
+    """
+    if env is None:
+        return {}
+    if not isinstance(env, str) or not env:
+        raise ValueError("environment must be a non-empty name, or None.")
+    return {"environment": env}
 
 
 def _dump_table(spec: Union[str, dict], role: str):

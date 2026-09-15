@@ -5,6 +5,55 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.4] - F2.4: the Python surface and the program sections
+
+### Added
+- `run_needle(design={...}, environments=[...])`: named design segments
+  defined once and shared by every environment that references them.
+  `layers` and `design` are exclusive and exactly one is required. The
+  keyword call shapes the same `DesignRequest` a program document is, so
+  a run described in a file and the same run described in Python compile
+  through one compiler and land on the same merit bits.
+- `design_from_program`: a loaded program's `design:` / `environments:`
+  sections as `run_needle` kwargs, each row's `material_code` resolved
+  against the program's own materials. The material SPEC crosses, not the
+  provider's evaluated curve, so it is evaluated once — on the run's grid.
+- `run_design_environments` (native): the multi-environment door,
+  `DesignRequest` JSON in, result dict out.
+- `environment=` on `SpectralTarget`, `AngularTarget` and `ColorTarget`,
+  and `build_merit_spec(environments=[...])` to declare the roster. The
+  tag is emitted only when set; absent means the first environment, so
+  every existing target set keeps its meaning and its JSON.
+- Program documents gain `design:` and `environments:` sections (inside
+  `sections`, like every other payload). `LoadedProgram` carries both,
+  verbatim: the loader checks their shape, the compiler checks their
+  meaning.
+
+### Changed
+- Program envelope schema is now a readable RANGE: `PROGRAM_SCHEMA_VERSION`
+  is 2 and `MIN_READABLE_PROGRAM_SCHEMA_VERSION` is 1, in both homes. A
+  document from a newer build refuses saying so; one below the floor
+  refuses as stale. A v1 program assembles bit-identically under the v2
+  build.
+- `run_needle`'s `layers` parameter is optional (it was a required
+  positional). Passing neither `layers` nor `design`, or both, is a
+  `ValueError` naming which.
+
+### Fixed
+- An unknown program SECTION name now refuses, naming it. Every section
+  lookup is a bare `get`, so an unrecognised name was dropped in silence —
+  which is exactly how a v2 program would have lost its environments on a
+  v1 build, and how the next section added would have been lost again.
+  This is the defect that makes the version bump necessary; the whitelist
+  is what stops it recurring.
+- `program_to_dict` dropped the two new sections on the way into Python,
+  and the `context=` branch of `load_program` never read them. A section
+  that parses and then evaporates is the same failure the bump prevents,
+  one layer up.
+- `_load_program_native` stamped its rebuilt envelope with a literal
+  `schema_version: 1`. Harmless under a point gate; under the range gate
+  it would have read a v2 program's sections under a v1 label.
+
 ## [0.7.3] - F2.3: the joint needle
 
 ### Added

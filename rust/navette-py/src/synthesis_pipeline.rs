@@ -562,6 +562,95 @@ pub(crate) fn run_design(
     result_to_dict(py, &res, PyDesignStack::from_inner(stack))
 }
 
+/// End-to-end design run from a typed request (JSON) — the
+/// multi-environment door (F2.4).
+///
+/// `request_json` is a serialized `DesignRequest`: the same document
+/// `design_from_config` takes, plus its `design` segments and
+/// `environments` roster. The compile (`build_environments`), the K
+/// assemblies and the joint macro-loop all run in the core;
+/// `run_needle(design=..., environments=[...])` is the thin Python
+/// wrapper that shapes this document.
+///
+/// A request with no `environments` compiles to ONE environment named
+/// `"default"` through the ordinary flat door — same stack, same run, and
+/// the reason the flat surface keeps its bitwise path without a second
+/// code path to drift from.
+///
+/// `spec` must carry the same number of environments as the request
+/// compiles to, or the core refuses naming both counts: a demand scored
+/// against the wrong surroundings is exactly the silent-wrong-answer this
+/// whole phase exists to prevent.
+///
+/// Returns the full report dict including the final `stack` (environment
+/// 0's assembly, which IS the shared design object); assembly warnings
+/// re-emit as Python warnings.
+#[pyfunction]
+#[pyo3(signature = (request_json, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_design_environments(
+    py: Python<'_>,
+    request_json: &str,
+    wavelengths: PyReadonlyArray1<'_, f64>,
+    angles_deg: PyReadonlyArray1<'_, f64>,
+    spec: &crate::synthesis_merit::PyMeritSpec,
+    pipeline_config: Option<Py<PyPipelineConfig>>,
+    needle_config: Option<Py<PyNeedleCycleConfig>>,
+    lm: Option<Py<PyLmConfig>>,
+    callback: Option<Py<PyAny>>,
+) -> PyResult<Py<PyDict>> {
+    use navette::smatrix::synthesis::driver::run_environments as core_run;
+    use navette::smatrix::synthesis::environments::build_environments;
+
+    let req: DesignRequest = serde_json::from_str(request_json).map_err(|e| {
+        PyValueError::new_err(format!("run_design_environments: invalid request: {e}"))
+    })?;
+    let w = wavelengths.as_slice()?.to_vec();
+    let a = angles_deg.as_slice()?.to_vec();
+    let cfg = pipeline_config
+        .map(|c| c.bind(py).borrow().inner.clone())
+        .unwrap_or_default();
+    let needle_cfg = needle_config
+        .map(|c| c.bind(py).borrow().inner.clone())
+        .unwrap_or_default();
+    let lm_cfg = lm
+        .map(|l| l.bind(py).borrow().inner.clone())
+        .unwrap_or_default();
+
+    let (envs, cmap, build_warnings) =
+        build_environments(&req, &w).map_err(PyValueError::new_err)?;
+    crate::structure::emit_warnings(py, "run_design_environments", &build_warnings)?;
+
+    let (res, stack, warnings) = py
+        .detach({
+            let spec_inner = spec.inner().clone();
+            move || {
+                core_run(
+                    envs,
+                    cmap,
+                    &w,
+                    &a,
+                    &spec_inner,
+                    cfg,
+                    needle_cfg,
+                    lm_cfg,
+                    |cycle, phase| match &callback {
+                        None => Ok(()),
+                        Some(cb) => Python::attach(|py| {
+                            let d = phase_dict(py, phase).map_err(|e| e.to_string())?;
+                            cb.call1(py, (cycle, d))
+                                .map(|_| ())
+                                .map_err(|e| format!("needle callback failed: {e}"))
+                        }),
+                    },
+                )
+            }
+        })
+        .map_err(PyValueError::new_err)?;
+    crate::structure::emit_warnings(py, "run_design_environments", &warnings)?;
+    result_to_dict(py, &res, PyDesignStack::from_inner(stack))
+}
+
 /// Shared run-result assembly (used by `PyNeedlePipeline.run` + `run_design`).
 fn result_to_dict(
     py: Python<'_>,

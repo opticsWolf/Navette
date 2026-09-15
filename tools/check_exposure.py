@@ -61,27 +61,23 @@ ALLOWLIST = {
     # `refresh_profiles`); the plan forbids a fourth, user-called refresh
     # point, so these stay unbound on purpose.
     "expand_with_recipe_inputs", "emit_standalone",
-    # multi-environment compile (F2.1): the segmented door and its demand
-    # tag resolver. Unbound ON PURPOSE and only until F2.4 -- F2.1 lands
-    # the schema, the validation and the routing table; F2.2 wires the
-    # driver loop and F2.4 opens `design=` / `environments=` on
-    # `run_needle`. Binding them now would publish a surface whose
-    # evaluation half does not exist yet, which is exactly the "reachable
-    # but meaningless" state this lint is meant to prevent. Remove both
-    # entries when F2.4 binds them.
-    "build_environments", "resolve_env",
-    # multi-environment run (F2.2): the joint driver door. Same reasoning
-    # and the same expiry -- F2.2 makes K solves and the joint merit real,
-    # but the only way to REACH it is a `CompiledEnvironments`, which is
-    # itself unbound until F2.4 opens `design=` / `environments=`. Remove
-    # this entry with the two above.
-    "run_environments",
-    # per-environment needle fold (F2.3): the K == 1 door
-    # `build_needle_targets` is the one a flat caller uses and is itself
-    # internal; this is the same function with the environment named.
-    # Reachable only from the joint needle sweep, which needs a
-    # `CompiledEnvironments` - unbound until F2.4. Remove with the three
-    # above.
+    # F2.4: `build_environments` and `run_environments` carried the expiry
+    # "remove when F2.4 binds them" across F2.1-F2.3, and they are gone --
+    # `run_design_environments` names both. The two BELOW rode along on
+    # that expiry and should not have: neither is a door. They are internal
+    # kernels of the two that are now bound, so they get the rationale an
+    # allowlist entry is supposed to carry instead of a lapsed date.
+    #
+    # demand-tag resolver (via build_environments): maps a target's
+    # `environment=` name onto a roster index. The Python surface names
+    # environments as STRINGS and resolves them exactly once, at compile;
+    # a second, caller-driven resolve is how a demand ends up scored
+    # against surroundings the design never had.
+    "resolve_env",
+    # per-environment needle fold (via run_environments' joint sweep):
+    # `build_needle_targets` is the flat twin and is itself internal. The
+    # fold is meaningless without the `CompiledEnvironments` the sweep
+    # holds, so there is nothing for a caller to hand it.
     "build_needle_targets_env",
     # core solver plumbing (via Solver::solve)
     "solve_point", "solve_point_intensity", "resolve_plan",

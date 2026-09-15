@@ -580,3 +580,13 @@ def run_design(
     lm: LmConfig | None = ...,
     callback: Callable[..., Any] | None = ...,
 ) -> dict[str, Any]: ...
+def run_design_environments(
+    request_json: str,
+    wavelengths: FloatArray,
+    angles_deg: FloatArray,
+    spec: MeritSpec,
+    pipeline_config: PipelineConfig | None = ...,
+    needle_config: NeedleCycleConfig | None = ...,
+    lm: LmConfig | None = ...,
+    callback: Callable[..., Any] | None = ...,
+) -> dict[str, Any]: ...

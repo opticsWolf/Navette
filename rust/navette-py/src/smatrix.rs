@@ -867,6 +867,10 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::synthesis_merit::rotate_rows, m)?)?;
     m.add_function(wrap_pyfunction!(crate::synthesis_pipeline::run_design, m)?)?;
     m.add_function(wrap_pyfunction!(
+        crate::synthesis_pipeline::run_design_environments,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         crate::synthesis_pipeline::assemble_design,
         m
     )?)?;

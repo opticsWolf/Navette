@@ -41,6 +41,7 @@ __all__ = [
     "layer_from_material",
     "stack_from_layers",
     "run_needle",
+    "design_from_program",
 ]
 
 # Re-export native classes under friendly names.
@@ -298,12 +299,328 @@ def stack_from_layers(layers: Sequence[Tuple[Any, float]],
         films, _group_map(groups), seeds, wl)
 
 
-def run_needle(layers: Sequence[Tuple[Any, float]],
-               targets: Any,
-               angles_deg, wavelengths,
-               contrast: Mapping[Any, Any],
+
+# --- F2.4: the multi-environment request -----------------------------------
+
+_ROW_KEYS = ("coherent", "roughness_nm", "rough_type", "inhomogen", "inh_delta",
+             "interface", "interface_thickness_nm", "layer_type", "gradient",
+             "optimize", "needle")
+
+
+def _tab(code: str, material: Any, wl: np.ndarray) -> Dict[str, Any]:
+    """One library entry: the material, evaluated onto the run's own grid.
+
+    The design path has no materials library of its own — every nk is
+    caller-supplied — so a material arrives here as a spec, a mapping, an
+    nk array or a constant, and leaves as a `TableMaterial` on exactly the
+    wavelengths the run uses. No resampling happens later because there is
+    nothing left to resample onto.
+    """
+    # `_half_nk`, not `_eval_nk`: a constant index is a legal material on
+    # this surface (and on the flat one), and broadcasting it here is what
+    # makes `(1.52, "sub")` mean the same thing in both.
+    nk = _half_nk(material, wl)
+    wls = [float(x) for x in wl]
+    return {
+        "name": code, "code": code, "model": "TableMaterial", "params": {},
+        "n_data": {"wavelengths": wls, "values": [float(z.real) for z in nk]},
+        "k_data": {"wavelengths": wls, "values": [float(z.imag) for z in nk]},
+    }
+
+
+def _entry_parts(entry, default_name: str):
+    """One layer entry -> (material, thickness, name, row flags).
+
+    Three spellings, in order of how much they say: ``(material, d_nm)``,
+    ``(material, d_nm, name)``, and a mapping for everything else
+    (roughness, interface, ``layer_type`` for an ambient or substrate
+    row, a gradient spec).
+    """
+    if isinstance(entry, Mapping):
+        e = dict(entry)
+        try:
+            material = e.pop("material")
+            thickness = e.pop("thickness_nm")
+        except KeyError as exc:
+            raise ValueError(
+                f"layer entry {default_name!r}: a mapping needs 'material' and "
+                f"'thickness_nm' (missing {exc.args[0]!r})."
+            ) from None
+        name = str(e.pop("name", default_name))
+        unknown = set(e) - set(_ROW_KEYS)
+        if unknown:
+            raise ValueError(
+                f"layer entry {name!r}: unknown row keys {sorted(unknown)} "
+                f"(one of {', '.join(_ROW_KEYS)})."
+            )
+        return material, thickness, name, e
+    seq = tuple(entry)
+    if len(seq) == 2:
+        return seq[0], seq[1], default_name, {}
+    if len(seq) == 3:
+        return seq[0], seq[1], str(seq[2]), {}
+    raise ValueError(
+        f"layer entry {default_name!r}: expected (material, d_nm), "
+        f"(material, d_nm, name) or a mapping - got {len(seq)} items."
+    )
+
+
+def _program_material(materials, code: str, where: str):
+    """One `material_code` -> something `_tab` can evaluate.
+
+    The SPEC is preferred over the provider's evaluated curve, because the
+    provider was built on the grid the program was LOADED with and the run
+    has a grid of its own. Handing the spec through means the material is
+    evaluated once, on the run's grid, exactly as an inline material is —
+    which is what lets a document and a keyword call land on the same bits
+    instead of on the same bits plus a resample.
+    """
+    if materials is None:
+        raise ValueError(
+            f"{where}: material_code {code!r} cannot be resolved - the "
+            "program has no materials section and none was supplied."
+        )
+    shelf = getattr(materials, "_dict", None)
+    if shelf is not None and code in shelf:
+        return shelf[code]
+    if getattr(materials, "contains", lambda _c: False)(code):
+        # A provider without a spec shelf (a weaver, say). Its curve is on
+        # its own grid; `_eval_nk` will refuse a length mismatch, which is
+        # the right failure - silently interpolating here would be the
+        # resample the docstring above exists to avoid.
+        return materials.get_nk(code)
+    raise ValueError(
+        f"{where}: unknown material_code {code!r} - a design row resolves "
+        "against the program's materials section, like a structure's layers do."
+    )
+
+
+def _program_rows(rows, materials, where: str):
+    """`[LayerRow]` from a document -> `[mapping]` for `_entry_parts`.
+
+    `material_code` is the film NAME as well as the material: on this
+    surface a film name is the parameter's identity across environments,
+    and a document has no second field to spell it with. Two rows of the
+    same code in one run are therefore one parameter named twice, which
+    `_environments_request` refuses by name.
+    """
+    out = []
+    for i, row in enumerate(rows or ()):
+        if not isinstance(row, Mapping) or "material_code" not in row:
+            raise ValueError(
+                f"{where}: layer {i} needs a 'material_code' "
+                "(a design document's rows are LayerRows)."
+            )
+        r = dict(row)
+        code = str(r.pop("material_code"))
+        thickness = r.pop("thickness_nm", 0.0)
+        # Keep only the flags this surface carries; a document may spell
+        # defaults the request shape leaves implicit.
+        flags = {k: v for k, v in r.items() if k in _ROW_KEYS}
+        unknown = set(r) - set(_ROW_KEYS)
+        if unknown:
+            raise ValueError(
+                f"{where}: layer {code!r} has unknown row keys "
+                f"{sorted(unknown)} (one of {', '.join(_ROW_KEYS)})."
+            )
+        out.append({"material": _program_material(materials, code, where),
+                    "thickness_nm": float(thickness), "name": code, **flags})
+    return out
+
+
+def design_from_program(program, materials=None):
+    """``(design, environments)`` kwargs from a loaded program document.
+
+    ``run_needle(design=..., environments=...)`` takes materials, because
+    the design path has no library of its own; a program document takes
+    material CODES, because it has one. This is the bridge, and it is the
+    only one — both halves then go through `_environments_request`, so a
+    run described in a file and the same run described in Python are the
+    same request.
+
+    ``materials`` overrides the program's own provider (the ``context=``
+    case, where the library was supplied rather than parsed).
+    """
+    mats = materials if materials is not None else getattr(program, "materials", None)
+    design_doc = getattr(program, "design", None) or {}
+    env_doc = getattr(program, "environments", None) or []
+    if not design_doc:
+        raise ValueError(
+            "this program has no 'design' section - nothing to run as a "
+            "multi-environment design."
+        )
+    design = {
+        str(seg): _program_rows(body.get("layers"), mats,
+                                f"design segment {seg!r}")
+        for seg, body in design_doc.items()
+    }
+    environments = []
+    for env in env_doc:
+        name = str(env.get("name", ""))
+        stack = []
+        for j, part in enumerate(env.get("stack") or ()):
+            # The document spells the union with both keys present and one
+            # of them null (serde `Option`); the run door spells it with
+            # exactly one key. Translate, rather than teaching the door a
+            # second spelling.
+            ref = part.get("design")
+            rows = part.get("layers")
+            if ref is not None:
+                stack.append({"design": str(ref)})
+            elif rows is not None:
+                stack.append({"layers": _program_rows(
+                    rows, mats, f"environment {name!r} segment {j}")})
+            else:
+                raise ValueError(
+                    f"environment {name!r}: stack entry {j} gives neither "
+                    "'design' nor 'layers'."
+                )
+        environments.append({"name": name, "stack": stack})
+    return design, environments
+
+
+def _environments_request(design, environments, contrast, wl,
+                          ambient, substrate, film_flags, per_film_flags,
+                          groups) -> Dict[str, Any]:
+    """The `DesignRequest` a multi-environment run is, as plain JSON data.
+
+    This is the whole of F2.4's surface: `run_needle(design=...,
+    environments=[...])` shapes this document and hands it to the core,
+    which compiles it exactly as it compiles the same document loaded from
+    a program file. One schema, one compiler, one set of refusals — the
+    Python surface cannot drift from the file surface because there is
+    nothing here for it to drift with.
+
+    Film NAMES are the cross-environment parameter identity, and they are
+    the library codes too: two films of the same physical material are two
+    parameters and get two codes carrying identical tables. Unnamed films
+    are named after their segment and position (``coat0``, ``coat1``), so
+    a design that never mentions a name still has stable ones.
+    """
+    library: Dict[str, Dict[str, Any]] = {}
+
+    def register(code: str, material) -> str:
+        if code in library:
+            raise ValueError(
+                f"duplicate film name {code!r} - a film name is a design "
+                "parameter's identity across environments, so it must be "
+                "unique within the run."
+            )
+        library[code] = _tab(code, material, wl)
+        return code
+
+    if not isinstance(design, Mapping) or not design:
+        raise ValueError(
+            "design must be a non-empty mapping of segment id -> layer list."
+        )
+    design_doc: Dict[str, Any] = {}
+    for seg, layers in design.items():
+        rows = []
+        for i, entry in enumerate(layers):
+            material, d, name, flags = _entry_parts(entry, f"{seg}{i}")
+            register(name, material)
+            rows.append({"material_code": name, "thickness_nm": float(d), **flags})
+        design_doc[str(seg)] = {"layers": rows}
+
+    env_doc = []
+    seen_env = set()
+    for env in environments:
+        if not isinstance(env, Mapping):
+            raise ValueError(
+                "each environment must be a mapping with 'name' and 'stack'."
+            )
+        name = str(env.get("name", ""))
+        if not name:
+            raise ValueError("each environment needs a non-empty 'name'.")
+        if name in seen_env:
+            raise ValueError(f"duplicate environment name {name!r}.")
+        seen_env.add(name)
+        unknown = set(env) - {"name", "stack"}
+        if unknown:
+            raise ValueError(
+                f"environment {name!r}: unknown keys {sorted(unknown)} "
+                "(only 'name' and 'stack')."
+            )
+        stack = []
+        for j, part in enumerate(env.get("stack") or ()):
+            if not isinstance(part, Mapping):
+                raise ValueError(
+                    f"environment {name!r}: stack entry {j} must be "
+                    "{'design': id} or {'layers': [...]}."
+                )
+            has_design, has_layers = "design" in part, "layers" in part
+            if has_design == has_layers:
+                raise ValueError(
+                    f"environment {name!r}: stack entry {j} must give exactly "
+                    "one of 'design' or 'layers'."
+                )
+            if has_design:
+                stack.append({"design": str(part["design"])})
+                continue
+            rows = []
+            for i, entry in enumerate(part["layers"]):
+                material, d, fname, flags = _entry_parts(entry, f"{name}~{j}~{i}")
+                register(fname, material)
+                rows.append({"material_code": fname,
+                             "thickness_nm": float(d), **flags})
+            stack.append({"layers": rows})
+        env_doc.append({"name": name, "stack": stack})
+
+    # Ambient and substrate: half-space rows, one per environment, unless
+    # the caller placed their own (`layer_type` 0/2 inside a fixed
+    # segment). Absent entirely, the core's n = 1.0 / 1.52 apply.
+    for slot, value, ltype, default_name in (
+        ("ambient", ambient, 0, "air"), ("substrate", substrate, 2, "sub"),
+    ):
+        if value is None:
+            continue
+        material = value[0] if isinstance(value, (tuple, list)) else value
+        code = str(value[1]) if isinstance(value, (tuple, list)) and len(value) > 1 \
+            else default_name
+        library.setdefault(code, _tab(code, material, wl))
+        row = {"material_code": code, "thickness_nm": 0.0, "layer_type": ltype}
+        for env in env_doc:
+            if slot == "ambient":
+                env["stack"].insert(0, {"layers": [row]})
+            else:
+                env["stack"].append({"layers": [row]})
+
+    # Contrast: host film name -> seed material. The seed becomes a
+    # library entry of its own, the way it does on the flat path.
+    cmap = {}
+    for host, seed in (contrast or {}).items():
+        host = str(host)
+        if host not in library:
+            raise ValueError(
+                f"contrast: {host!r} is not a film in this run "
+                f"(films: {', '.join(sorted(library))})."
+            )
+        code = f"{host}_seed"
+        library.setdefault(code, _tab(code, seed, wl))
+        cmap[host] = code
+
+    return {
+        "structure": {"label": "design", "layers": [], "groups": list(groups or ())},
+        "library": list(library.values()),
+        "contrast": cmap,
+        "film_flags": dict(film_flags or {}),
+        "per_film_flags": {str(k): dict(v) for k, v in (per_film_flags or {}).items()},
+        "ambient_name": "air",
+        "substrate_name": "sub",
+        "design": design_doc,
+        "environments": env_doc,
+    }
+
+
+def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
+               targets: Any = None,
+               angles_deg=None, wavelengths=None,
+               contrast: Optional[Mapping[Any, Any]] = None,
                pipeline_config=None, needle_config=None, lm_config=None,
                callback: Optional[Callable[[int, Dict], None]] = None,
+               *,
+               design: Optional[Mapping[str, Any]] = None,
+               environments: Optional[Sequence[Mapping[str, Any]]] = None,
                **stack_kwargs) -> Dict[str, Any]:
     """Design a coating with the needle pipeline, end to end.
 
@@ -322,9 +639,48 @@ def run_needle(layers: Sequence[Tuple[Any, float]],
     stack_kwargs : ambient, substrate, per-film flags (see
         :func:`stack_from_layers`).
 
+    design : {segment id: [(material, d_nm)]} — named design segments,
+        each defined ONCE and shared by every environment that references
+        it. Mutually exclusive with ``layers``: one of the two, never both
+        and never neither. Entries also accept ``(material, d_nm, name)``
+        or a mapping (``material``, ``thickness_nm``, ``name``, plus row
+        flags including ``layer_type`` for a half-space row).
+    environments : [{"name": ..., "stack": [{"design": id} | {"layers": [...]}]}]
+        Each environment's ordered segment list. The shared design films
+        are the free variables; everything in a ``layers`` segment is
+        fixed surroundings and is never optimized or split. Requires
+        ``design``; the roster must match the one given to
+        ``build_merit_spec(environments=...)``, or the core refuses naming
+        both counts.
+
+    With ``design``/``environments`` the contrast map is keyed by FILM
+    NAME (the design parameter's identity), not by index.
+
     Returns the native result dict (``termination``, ``final_mf``,
-    ``phases``, final ``stack``).
+    ``phases``, final ``stack``). With environments the returned stack is
+    environment 0's assembly, which IS the shared design object.
     """
+    if (layers is None) == (design is None):
+        raise ValueError(
+            "run_needle: give exactly one of `layers` (a flat film list) or "
+            "`design` (named segments shared across `environments`) - "
+            + ("both were given." if layers is not None else "neither was given.")
+        )
+    for name, value in (("targets", targets), ("angles_deg", angles_deg),
+                        ("wavelengths", wavelengths)):
+        if value is None:
+            raise ValueError(f"run_needle: `{name}` is required.")
+    if design is not None:
+        return _run_needle_environments(
+            design, environments, targets, angles_deg, wavelengths, contrast,
+            pipeline_config, needle_config, lm_config, callback, stack_kwargs)
+    if contrast is None:
+        raise ValueError("run_needle: `contrast` is required.")
+    if environments is not None:
+        raise ValueError(
+            "run_needle: `environments` needs `design` - a flat film list has "
+            "no named segments for an environment to reference."
+        )
     # Thin over native run_design: evaluate + key/flag shaping here,
     # assembly + macro-loop in Rust. Contrast-key normalization stays
     # (presentation over the film order).
@@ -367,5 +723,44 @@ def run_needle(layers: Sequence[Tuple[Any, float]],
         amb_nk, str(ambient[1] if len(ambient) > 1 else "air"),
         sub_nk, str(substrate[1] if len(substrate) > 1 else "sub"),
         films, gmap, seeds, wl, angs, spec,
+        pipeline_config=pipeline_config, needle_config=needle_config,
+        lm=lm_config, callback=callback)
+
+
+def _run_needle_environments(design, environments, targets, angles_deg,
+                             wavelengths, contrast, pipeline_config,
+                             needle_config, lm_config, callback,
+                             stack_kwargs) -> Dict[str, Any]:
+    """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
+
+    Shapes the request document and hands it to the core in one call. The
+    flat arm above is untouched by this: it still goes through
+    ``run_design`` with evaluated arrays, which is what keeps old calls on
+    the bitwise path rather than on a re-implementation of it.
+    """
+    import json as _json
+    from navette._smatrix import run_design_environments as _run_envs
+    wl = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64))
+    angs = np.ascontiguousarray(np.asarray(angles_deg, dtype=np.float64))
+    if not environments:
+        raise ValueError(
+            "run_needle: `design` needs `environments` - a design segment is "
+            "only reachable through an environment that references it."
+        )
+    ambient = stack_kwargs.pop("ambient", None)
+    substrate = stack_kwargs.pop("substrate", None)
+    film_flags = stack_kwargs.pop("film_flags", None)
+    groups = stack_kwargs.pop("groups", None)
+    per_film_flags = stack_kwargs.pop("per_film_flags", None)
+    if stack_kwargs:
+        raise TypeError(f"run_needle: unknown stack options {sorted(stack_kwargs)}.")
+    request = _environments_request(
+        design, environments, contrast, wl, ambient, substrate,
+        film_flags, per_film_flags, groups)
+    roster = [e["name"] for e in request["environments"]]
+    spec = (_build_merit_spec(targets, environments=roster)
+            if isinstance(targets, TargetCollection) else targets)
+    return _run_envs(
+        _json.dumps(request), wl, angs, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback)

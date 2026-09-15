@@ -42,7 +42,21 @@ from .models import (
     NamedStructureConfig,
 )
 
-PROGRAM_SCHEMA_VERSION = 1
+PROGRAM_SCHEMA_VERSION = 2
+"""The program envelope version this build WRITES (mirrors ``config.rs``).
+
+F2.4 bumped it to 2 for the ``design:`` / ``environments:`` sections. A v1
+build handed a v2 program does not refuse them — it drops them and
+optimizes a single-environment stack that looks entirely plausible — so the
+bump is what makes an old build fail loudly on a new document.
+"""
+
+MIN_READABLE_PROGRAM_SCHEMA_VERSION = 1
+"""The oldest program envelope this build READS (mirrors ``config.rs``).
+
+A v1 program carries no environments, so nothing about it is ambiguous to a
+v2 reader: it loads unchanged.
+"""
 
 Kind = Literal["materials", "groups", "structure", "architect", "program"]
 KINDS: Tuple[str, ...] = ("materials", "groups", "structure", "architect", "program")
@@ -188,6 +202,14 @@ class LoadedProgram:
     groups: Dict[str, Any] = field(default_factory=dict)
     structures: Dict[str, Any] = field(default_factory=dict)
     architect: Any = None
+    #: F2.4: ``{segment_name: segment}``, shape-checked by the loader and
+    #: otherwise carried verbatim. These are request DATA, not objects:
+    #: what turns them into a stack is ``run_needle(design=..., ...)``,
+    #: which is the same compiler the ``design=`` keyword reaches.
+    design: Dict[str, Any] = field(default_factory=dict)
+    #: F2.4: the environment roster, in evaluation order. Empty is the
+    #: flat case and is what every pre-F2.4 program document is.
+    environments: list = field(default_factory=list)
 
 
 def load_program(
@@ -251,6 +273,23 @@ def load_program(
                                         prog.materials, prefix)
     elif "architect" in context:
         prog.architect = context["architect"]
+    # F2.4: request data, carried verbatim. There is nothing to merge from
+    # `context` -- a design segment is not a live object anyone could hand
+    # in -- and nothing to prefix either: segment names are internal to the
+    # request and never collide across programs the way material codes do.
+    # The deep shape check belongs to the compiler that consumes them
+    # (`run_needle(design=..., environments=...)`); the one invariant
+    # repeated here is the one that makes the section unreachable rather
+    # than merely wrong.
+    if sections.get("design"):
+        prog.design = dict(sections["design"])
+    if sections.get("environments"):
+        prog.environments = list(sections["environments"])
+    if prog.design and not prog.environments:
+        raise ValueError(
+            "program section 'design' is defined but 'environments' is not - "
+            "a design segment is only reachable through an environment that "
+            "references it.")
     return prog
 
 
@@ -261,13 +300,20 @@ def _load_program_native(wavelength, prefix, kind, name, payload):
     from navette.structure import Navette_Architect, Navette_Structure
     from navette.structure.materials import MaterialObjectProvider
     wl = np.ascontiguousarray(np.asarray(wavelength, dtype=np.float64))
+    # F2.4: the envelope is rebuilt here to hand the native loader one
+    # document, and it used to write a literal 1. That literal was the same
+    # trap `config.rs`'s gate had -- a bump would have made this path
+    # re-stamp every document as v1 and the range gate would have accepted
+    # it, so a v2 program's sections would have been read under a v1 label.
+    # The constant is the only version this build writes.
+    _v = PROGRAM_SCHEMA_VERSION
     if kind == "program":
-        doc = {"schema_version": 1, "kind": "program",
+        doc = {"schema_version": _v, "kind": "program",
                "name": name, "sections": payload}
     elif kind in ("materials", "groups"):
-        doc = {"schema_version": 1, "kind": kind, kind: payload}
+        doc = {"schema_version": _v, "kind": kind, kind: payload}
     else:
-        doc = {"schema_version": 1, "kind": kind, **payload}
+        doc = {"schema_version": _v, "kind": kind, **payload}
     parts = _native_load(_json.dumps(doc), wl, prefix)
     prog = LoadedProgram(name=parts["name"])
     raw_sections = payload if kind == "program" else {kind: payload}
@@ -290,4 +336,13 @@ def _load_program_native(wavelength, prefix, kind, name, payload):
     if parts["architect"] is not None:
         prog.architect = Navette_Architect._from_native(
             parts["architect"], prog.materials, list(prog.structures.values()))
+    # F2.4: the two request sections come back as JSON text (the native
+    # side validated their SHAPE; their MEANING is checked by the compiler
+    # that consumes them, which is the same one `run_needle(design=...)`
+    # reaches). Absent stays empty, so a pre-F2.4 program restores to the
+    # same object it always did.
+    if parts.get("design") is not None:
+        prog.design = _json.loads(parts["design"])
+    if parts.get("environments") is not None:
+        prog.environments = _json.loads(parts["environments"])
     return prog

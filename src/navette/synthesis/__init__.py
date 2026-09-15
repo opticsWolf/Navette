@@ -139,13 +139,23 @@ DIFFERENTIAL_PASSES: Dict[str, float] = {
 
 def build_merit_spec(collection: TargetCollection,
                      cache_size: int = 128,
-                     tolerance_floor: float = 1e-12):
+                     tolerance_floor: float = 1e-12,
+                     environments=None):
     """Compile a :class:`TargetCollection` into a native ``MeritSpec``.
 
     Ingestion (normalization, kind/band metadata) is shared verbatim with
     ``calculate_merit``: the collection is built into a ``TargetWeaver``
     and every entry exported, so merit values agree by construction.
     Phase-flagged targets become phase demands (radians, wrapped).
+
+    ``environments`` is the roster a demand's ``environment=`` tag may
+    name, in evaluation order (F2.4). It must match the roster the design
+    compiles to — ``run_needle(environments=[...])`` passes the same list
+    to both, which is the only way the two can agree. Left out (or empty),
+    the spec is single-environment and only an absent tag or ``"default"``
+    resolves; an unknown name refuses here, naming the demand and the
+    roster, because scoring against the wrong surroundings looks like a
+    physics result rather than a mistake.
     """
     # Thin over the native compiler: dump the collection to a TargetSet
     # document, compile in Rust. Validation lives there now.
@@ -157,6 +167,8 @@ def build_merit_spec(collection: TargetCollection,
         "color": [t._dump() for t in collection.color_targets],
         "cache_size": int(cache_size), "tolerance_floor": float(tolerance_floor),
     }
+    if environments:
+        doc["environments"] = [str(n) for n in environments]
     return _compile(_json.dumps(doc))
 
 def apply_reference_rotation(cplx, wavelengths, angle_deg: float,

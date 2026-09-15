@@ -22,8 +22,39 @@ use crate::structure::{
     SharedStructure, SpecProvider, Structure,
 };
 
-/// Program envelope version (single canonical gate).
-pub const PROGRAM_SCHEMA_VERSION: u32 = 1;
+/// Program envelope version (single canonical gate) — what this build
+/// WRITES.
+///
+/// F2.4 bumped it to 2 for `design:` / `environments:`. The bump is not
+/// because a v1 binary would refuse those sections — it would not.
+/// `load_program_parts` reads the `sections` mapping with bare lookups,
+/// so a v1 build handed a v2 program DROPS them and optimizes a
+/// single-environment stack that looks entirely plausible. Silent drop,
+/// not refusal: §1.2's failure class, one gate over. The section
+/// whitelist below closes the hole for every section added after this
+/// one; the bump is what protects the documents written before it.
+pub const PROGRAM_SCHEMA_VERSION: u32 = 2;
+
+/// The oldest program envelope this build READS (F2.4, mirroring F1.4's
+/// state gate). A v1 program has no `design`/`environments` sections, so
+/// nothing about it is ambiguous to a v2 reader — it loads unchanged.
+pub const MIN_READABLE_PROGRAM_SCHEMA_VERSION: u32 = 1;
+
+/// Section names a `kind == "program"` document may carry.
+///
+/// The list exists because the lookups below are `sections.get(..)`: an
+/// unrecognised name used to be dropped in silence, which is exactly how
+/// a v2 document loses its environments on a v1 build. Refusing an
+/// unknown name means the NEXT section added is a loud failure on an old
+/// build instead of a quiet one.
+const PROGRAM_SECTIONS: &[&str] = &[
+    "materials",
+    "groups",
+    "structures",
+    "architect",
+    "design",
+    "environments",
+];
 
 /// One architect block: structure label reference + placement.
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -234,6 +265,17 @@ pub struct LoadedProgram {
     /// [`load_program_parts`] alias these (edits propagate both ways).
     pub structures: HashMap<String, SharedStructure>,
     pub architect: Option<Architect>,
+    /// F2.4: named design segments, defined once and shared by every
+    /// environment that references them.
+    ///
+    /// Carried as the typed request data rather than as built objects:
+    /// a design segment has no meaning on its own — it is a piece of a
+    /// `DesignRequest`, and the thing that gives it one is the
+    /// environment roster below plus the material library above.
+    pub design: BTreeMap<String, crate::smatrix::synthesis::environments::DesignSegmentCfg>,
+    /// F2.4: the environment roster, in evaluation order. Empty is the
+    /// flat case and is what every pre-F2.4 program document is.
+    pub environments: Vec<crate::smatrix::synthesis::environments::EnvironmentCfg>,
 }
 
 fn px(value: &str, prefix: Option<&str>) -> String {
@@ -286,14 +328,26 @@ pub fn gate_document(raw: &Value) -> Result<(String, Option<String>, Value), Str
             kinds.join(", ")
         ));
     }
+    // F2.4: a RANGE, not a point, and each direction refuses with its own
+    // message - below is a document this build has outgrown, above is one
+    // written by a build that knows more, and the remedy differs (F1.4's
+    // contract, repeated here for the second gate).
     match top.get("schema_version").and_then(|v| v.as_u64()) {
-        // Compare against the constant, not a literal: a bump of
-        // PROGRAM_SCHEMA_VERSION that left a hard-coded `Some(1)` here would
-        // reject the very version the error message claims to read.
-        Some(v) if v == PROGRAM_SCHEMA_VERSION as u64 => {}
+        Some(v)
+            if (MIN_READABLE_PROGRAM_SCHEMA_VERSION as u64..=PROGRAM_SCHEMA_VERSION as u64)
+                .contains(&v) => {}
+        Some(v) if v > PROGRAM_SCHEMA_VERSION as u64 => {
+            return Err(format!(
+                "program schema_version {v} unsupported (this code reads \
+                 {MIN_READABLE_PROGRAM_SCHEMA_VERSION}..={PROGRAM_SCHEMA_VERSION}); \
+                 refusing a program written by a newer build - upgrade navette \
+                 to read it."
+            ));
+        }
         other => {
             return Err(format!(
-                "program schema_version {other:?} unsupported (code reads {PROGRAM_SCHEMA_VERSION})."
+                "program schema_version {other:?} unsupported (this code reads \
+                 {MIN_READABLE_PROGRAM_SCHEMA_VERSION}..={PROGRAM_SCHEMA_VERSION})."
             ));
         }
     }
@@ -598,8 +652,52 @@ fn load_program_parts(
         [(kind.to_string(), payload.clone())].into_iter().collect()
     };
 
+    // F2.4: every lookup below is a bare `get`, so an unrecognised name
+    // used to be dropped without a word - the same silence that makes a
+    // v2 program lose its environments on a v1 build. Refuse it here, the
+    // way unknown TOP-LEVEL keys are already refused, so the next section
+    // added fails loudly on an old build.
+    if kind == "program" {
+        let unknown: Vec<&str> = sections
+            .keys()
+            .map(|k| k.as_str())
+            .filter(|k| !PROGRAM_SECTIONS.contains(k))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(format!(
+                "program section(s) {} unknown (expected one of {}) - refusing \
+                 rather than dropping a payload this build does not read.",
+                unknown.join(", "),
+                PROGRAM_SECTIONS.join(", ")
+            ));
+        }
+    }
+
     if let Some(items) = sections.get("materials") {
         prog.materials = Some(load_materials(items, grid, prefix)?);
+    }
+    // F2.4: shape-checked HERE, where the document is, so a typo in a
+    // segment reference or a stray key is reported against the file
+    // rather than surfacing later as a compile error with no filename in
+    // it. The SEMANTIC checks (a reference to a segment that does not
+    // exist, a free variable in the surroundings, a roster that does not
+    // match the demands) stay in `build_environments` - one compiler, one
+    // set of refusals.
+    if let Some(items) = sections.get("design") {
+        prog.design = serde_json::from_value(items.clone())
+            .map_err(|e| format!("program section 'design': {e}"))?;
+    }
+    if let Some(items) = sections.get("environments") {
+        prog.environments = serde_json::from_value(items.clone())
+            .map_err(|e| format!("program section 'environments': {e}"))?;
+    }
+    if !prog.design.is_empty() && prog.environments.is_empty() {
+        return Err(
+            "program section 'design' is defined but 'environments' is not - a \
+             design segment is only reachable through an environment that \
+             references it."
+                .to_string(),
+        );
     }
     if let Some(items) = sections.get("groups") {
         prog.groups = load_groups(items, prefix)?;
@@ -732,12 +830,47 @@ mod tests {
     fn gate_refuses() {
         let grid = grid();
         assert!(load_program_json("{\"kind\": \"program\"}", &grid).is_err()); // no version
+        // F2.4: this assertion used to read "2 refuses"; the bump makes 2
+        // the version this build writes, so BOTH endpoints of the range are
+        // pinned here instead - the whole point of a range gate is that
+        // neither end moves by accident.
+        assert!(
+            load_program_json(
+                "{\"schema_version\": 1, \"kind\": \"program\", \"sections\": {}}",
+                &grid
+            )
+            .is_ok(),
+            "v1 is the oldest readable program and must still load"
+        );
         assert!(
             load_program_json(
                 "{\"schema_version\": 2, \"kind\": \"program\", \"sections\": {}}",
                 &grid
             )
-            .is_err()
+            .is_ok(),
+            "v2 is what this build writes"
+        );
+        let newer = load_program_json(
+            "{\"schema_version\": 3, \"kind\": \"program\", \"sections\": {}}",
+            &grid,
+        )
+        .unwrap_err();
+        assert!(newer.contains("newer build"), "{newer}");
+        let stale = load_program_json(
+            "{\"schema_version\": 0, \"kind\": \"program\", \"sections\": {}}",
+            &grid,
+        )
+        .unwrap_err();
+        assert!(stale.contains("reads 1..=2"), "{stale}");
+        // An unknown SECTION refuses by name rather than being dropped.
+        let bogus = load_program_json(
+            "{\"schema_version\": 2, \"kind\": \"program\", \"sections\": {\"bogus\": []}}",
+            &grid,
+        )
+        .unwrap_err();
+        assert!(
+            bogus.contains("bogus") && bogus.contains("unknown"),
+            "{bogus}"
         );
         assert!(load_program_json("{\"schema_version\": 1, \"kind\": \"nope\"}", &grid).is_err());
         assert!(

@@ -169,7 +169,7 @@ and B6 undercounts — and §0.4 records which.
 | ~~F2.1~~ **DONE (0.7.1)** | Environment segment schema + compile/validation + `bench_eval.py` | 0.7.1 | P2 | S | M | §4.1–4.2 |
 | ~~F2.2~~ **DONE (0.7.2)** | K assemblies, K solves, `residuals_multi` — joint merit | 0.7.2 | P1 | M (driver loop) | L | §4.3, §4.6 |
 | ~~F2.3~~ **DONE (0.7.3)** | Needle + LM joint: locus translation, name-routed fold sum | 0.7.3 | P1 | **L** (the hard one — fold routing) | L | §4.4 |
-| F2.4 | Python `environments=` / `design=` surface + program sections + program schema range | 0.7.4 | P1 | **M** (second schema gate) | **L** | §4.5 |
+| ~~F2.4~~ **DONE (0.7.4)** | Python `environments=` / `design=` surface + program sections + program schema range | 0.7.4 | P1 | **M** (second schema gate) | **L** | §4.5 |
 | F3.1 | Docs, worked examples, exposure re-audit, release | 0.7.5 | P3 | S | M | §7-S5, §D7 |
 
 Twenty-three items, `0.6.33 → 0.7.5`.
@@ -2086,7 +2086,9 @@ symptom showed up. The refresh-count twin is the guard against precisely that.
 - **The old point-probe helper stays.** The program gate is still a
   point until F2.4, so `_accepted_version` remains beside
   `_accepted_range` with a docstring pointing at the successor; F2.4
-  reuses the range helper and retires the point one.
+  reuses the range helper and retires the point one. **(Done at F2.4:
+  the program gate moved to `_accepted_range`, the helper had no callers
+  left, and it was deleted rather than kept warm.)**
 The correction from §1.2 above. **Sequenced before the Python surface**
 because every state file on disk reads through this gate, and getting it
 wrong is a data-loss-shaped bug rather than a feature defect.
@@ -2758,6 +2760,101 @@ build; `schema_version: 0` refuses as stale. Both endpoints asserted in
 `run_needle` refuses both-`layers`-and-`design` and neither.
 `check_pyi_sync.py` and `check_exposure.py` clean.
 
+**DONE (0.7.4).** The Python surface, the program sections, and the
+second schema range.
+
+`run_needle(design={...}, environments=[...])` (`pipeline.py`): `layers`
+becomes optional and exactly one of the two is required, both-and-neither
+refused by name. The keyword surface does not build a stack and hand it
+over — `_environments_request` shapes the same `DesignRequest` a program
+document *is*, materials evaluated onto the run grid and emitted as
+`TableMaterial` rows, and `run_design_environments` (navette-py) carries
+that JSON to `build_environments` + `run_environments`. One schema, one
+compiler, one set of refusals, and the gate that holds it is a hex
+comparison: the same design written as a file and as keywords lands on the
+same merit bits.
+
+`design_from_program` is the bridge the plan's "file-first refs resolved in
+the live context like materials and groups" asks for: a design row's
+`material_code` resolves against the program's own library, and the SPEC is
+what crosses (not the provider's evaluated curve), so the material is
+evaluated once, on the run's grid.
+
+Demands carry `environment=` (`target.py`, all three dataclasses), emitted
+only when set — an absent tag means the first environment, which is what
+keeps every pre-F2.1 target set meaningful and its JSON unmoved.
+`build_merit_spec(environments=[...])` is where the roster and the demand
+are in the same room, and an unknown name refuses there, naming both.
+
+The envelope: `PROGRAM_SCHEMA_VERSION = 2` +
+`MIN_READABLE_PROGRAM_SCHEMA_VERSION = 1` in both homes, a range gate with
+two-sided messages, and — the reason the bump is necessary at all (N9) — a
+`PROGRAM_SECTIONS` whitelist, because every section lookup is a bare `get`
+and an unrecognised name used to be dropped in silence.
+
+Gates measured: fmt; clippy `-D warnings` on the workspace and each feature
+variant; 585 lib / 22 parity / 15 py / 15 doc; feature variants 590
+(`opt-minpack-lm`), 594 (`opt-argmin`), 599 (all-features); pytest 790
+passed 1 skipped (19 new); five tools; ten harnesses; **both fingerprints
+unmoved** (5 passed); release build at 0.7.4; the bench's merit still
+bit-equal to the F2.1 baseline artifact (`44dc154d6946ee40`).
+
+CORRECTIONS:
+
+1. **The section payload had a second silent drop, one layer up.** The item
+   closes the drop in `load_program_parts`. It does not mention
+   `program_to_dict` (navette-py), which builds the dict the Python loader
+   adopts — and which had no `design` / `environments` keys at all. Parsing
+   a section, validating it, and then dropping it on the way out is the same
+   failure the bump exists to prevent, reached from the other end; the
+   schema gate would have protected a payload that never arrived anywhere.
+   Both new sections now cross as JSON text (the shape `run_needle` takes),
+   and `LoadedProgram` carries them on both of `load_program`'s bodies —
+   the native whole-document path *and* the section-wise `context=` merge,
+   which is a second function with a second chance to drop them.
+
+2. **`_load_program_native` re-stamped every document as v1.** It rebuilds
+   the envelope to hand the native loader one document and wrote a literal
+   `"schema_version": 1` — the same trap `config.rs`'s gate had, and the
+   reason the item's own text calls that gate out. Under a point gate the
+   literal was merely redundant; under the range gate it would have read a
+   v2 program's sections under a v1 label and been accepted. It quotes the
+   constant now.
+
+3. **`resolve_env` and `build_needle_targets_env` were not doors, and their
+   allowlist expiry was wrong.** All four multi-environment entries in
+   `check_exposure.py` carried "remove when F2.4 binds them". F2.4 binds
+   two of them (`run_design_environments` names `build_environments` and
+   `run_environments`); the other two are internal kernels of those two and
+   were never going to be bound. They keep their entries with the rationale
+   an allowlist entry is supposed to carry, instead of a lapsed date.
+
+4. **A film name is the parameter identity, so the document has no room for
+   a second one.** On the keyword surface a film carries a `name` distinct
+   from its material; in a `LayerRow` there is only `material_code`. The
+   bridge therefore uses the code as the name, which means two rows of the
+   same code in one run are one parameter spelled twice —
+   `_environments_request` refuses that by name. Worth stating because the
+   alternative reading (same material, two independent layers) is the
+   natural one, and it is wrong here: two films of the same physical
+   material are two codes carrying identical tables.
+
+5. **`environment=""` refuses at construction, not at dump.**
+   `__post_init__` validates a target by serializing it, so the tag is
+   checked at the moment the mistake is made. The gate list says "refusals
+   at construction" and this is the one place the wording is load-bearing
+   rather than descriptive.
+
+6. **The bench's `eval` phase came in ~2% above the F2.1 baseline artifact
+   over three runs at `--repeats 9`** (best 297.5 µs vs 292.0 µs), while
+   `assemble`, `simulate` and `merit_only` were all at or below it. F2.4
+   adds no Rust to the eval path — its changes are the Python request
+   surface, the program loader, the PyO3 door and the stub/allowlist — so
+   the delta is machine state, not the item. Recorded rather than rounded
+   away, because a baseline artifact is only useful if the misses are
+   written down too.
+
+
 **Risk.** M (was S). **Effort.** L (was M). It carries a schema gate, a
 public signature change and a new refusal class.
 
@@ -3035,5 +3132,5 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.7.1 | F2.1 | 98ae05e | A7, R6 | done |
 | 0.7.2 | F2.2 | 705b190 | A4, A8 | done |
 | 0.7.3 | F2.3 | 948425f | A8, N1 | done |
-| 0.7.4 | F2.4 | — | A1 (corrected), A3, N8, N9 | not started |
+| 0.7.4 | F2.4 | PENDING | A1 (corrected), A3, N8, N9 | done |
 | 0.7.5 | F3.1 | — | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | not started |

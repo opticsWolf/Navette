@@ -229,23 +229,10 @@ def test_needle_bits_are_dense_and_unique():
 # 4. Schema versions -- both gates live natively, so probe them
 # --------------------------------------------------------------------------
 
-def _accepted_version(gate, lo=0, hi=8):
-    """The one version a native gate accepts, discovered by probing it.
-
-    Point gates only. F1.4 widens the STATE gate to a readable range,
-    which fails the single-version assertion by construction; use
-    `_accepted_range` for that gate (F2.4's program gate moves over
-    when its bump lands).
-    """
-    ok = []
-    for v in range(lo, hi + 1):
-        try:
-            gate(v)
-        except Exception:
-            continue
-        ok.append(v)
-    assert len(ok) == 1, f"gate accepts {ok}, expected exactly one version"
-    return ok[0]
+# F2.4: `_accepted_version` used to live here for point gates, with the
+# note "F2.4's program gate moves over when its bump lands". It has landed,
+# the program gate reads 1..=2, and the helper had no callers left - so it
+# is gone rather than kept warm for a hypothetical third gate.
 
 
 def _accepted_range(gate, lo=0, hi=8):
@@ -308,6 +295,14 @@ def test_program_schema_version_matches_the_native_gate(tmp_path):
     in its error message, so a bump would have rejected exactly the version it
     claimed to read. It compares against the constant now, and this test is
     what holds that.
+
+    F2.4 bumped the writer to 2 for ``design:`` / ``environments:`` and made
+    the gate a readable RANGE, so what is pinned here is the PAIR - and it is
+    pinned to the literal ``(1, 2)`` as well as to the Python constants. A
+    bump that moved BOTH the constant and the gate together would satisfy the
+    mirror assertion alone while silently dropping v1 documents on the floor;
+    the literal is what makes widening the floor a deliberate edit to this
+    line rather than a side effect.
     """
     import json
 
@@ -321,10 +316,68 @@ def test_program_schema_version_matches_the_native_gate(tmp_path):
             encoding="utf-8")
         return program.load_document(doc)
 
-    native = _accepted_version(gate)
-    assert program.PROGRAM_SCHEMA_VERSION == native, (
-        f"python PROGRAM_SCHEMA_VERSION={program.PROGRAM_SCHEMA_VERSION}, "
-        f"rust accepts {native}")
+    lo, hi = _accepted_range(gate)
+    assert (lo, hi) == (program.MIN_READABLE_PROGRAM_SCHEMA_VERSION,
+                        program.PROGRAM_SCHEMA_VERSION), (
+        f"python range=({program.MIN_READABLE_PROGRAM_SCHEMA_VERSION}, "
+        f"{program.PROGRAM_SCHEMA_VERSION}), rust accepts ({lo}, {hi})")
+    assert (lo, hi) == (1, 2), (
+        f"the program envelope reads 1..=2 as of F2.4; got ({lo}, {hi})")
+
+
+def test_program_schema_gate_names_which_direction_it_refused(tmp_path):
+    """Too new and too old are different problems with different remedies.
+
+    A document from a NEWER build is readable by upgrading navette; a
+    document below the floor is not readable at all and has to be
+    regenerated. One message for both would leave the user guessing which
+    of the two they are holding, so the gate says which.
+    """
+    import json
+
+    from navette.config import program
+
+    doc = tmp_path / "materials.json"
+
+    def load(v):
+        doc.write_text(json.dumps(
+            {"kind": "materials", "schema_version": v, "materials": []}),
+            encoding="utf-8")
+        return program.load_document(doc)
+
+    with pytest.raises(ValueError, match="newer build"):
+        load(program.PROGRAM_SCHEMA_VERSION + 1)
+    with pytest.raises(ValueError, match=r"reads 1..=2"):
+        load(program.MIN_READABLE_PROGRAM_SCHEMA_VERSION - 1)
+
+
+def test_program_refuses_an_unknown_section_by_name(tmp_path):
+    """A section this build does not read is refused, not dropped.
+
+    This is the failure the F2.4 bump exists to prevent, asserted from the
+    other side: every section lookup in ``load_program_parts`` is a bare
+    ``get``, so an unrecognised name used to vanish in silence and the run
+    proceeded on what was left. A v2 program on a v1 build would have
+    optimized a single-environment stack that looked entirely plausible.
+    The name is quoted back so the failure reads as a typo report.
+    """
+    import json
+
+    import numpy as np
+
+    from navette.config import program
+
+    doc = tmp_path / "prog.json"
+    doc.write_text(json.dumps({
+        "kind": "program",
+        "schema_version": program.PROGRAM_SCHEMA_VERSION,
+        "sections": {"materials": [], "enviroments": []},
+    }), encoding="utf-8")
+    # `load_document` reads the ENVELOPE and hands back the payload; the
+    # section names are only meaningful to the loader that consumes them,
+    # so that is where the whitelist lives and where it is asserted.
+    with pytest.raises(ValueError, match="enviroments"):
+        program.load_program(doc, np.array([500.0]))
 
 
 def test_program_schema_gate_refuses_an_untagged_document(tmp_path):
