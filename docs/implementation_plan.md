@@ -3270,3 +3270,4 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.7.4 | F2.4 | 90a09b3 | A1 (corrected), A3, N8, N9 | done |
 | 0.7.5 | F3.1 | e9484ca | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | done |
 | — | PBR | f7d0216 | review PB §3 — M2/M3/M4/M5; M1 and M7 open | done |
+| 0.7.6 | PBR M1 | 10d42dc | review PB §3.1 — a per-film override cannot free a surrounding | done |

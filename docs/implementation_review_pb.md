@@ -31,7 +31,8 @@ Two real defects were found, both demonstrated end-to-end through the
 public door on the installed wheel, and both are the same *class*: a
 request that is accepted without a refusal and then answers a different
 question than the one asked. **M1** — `per_film_flags` re-opens the
-forced-false invariant on surroundings. **M7** — the merit spec and the
+forced-false invariant on surroundings; **fixed at 0.7.6**
+(`10d42dc`), see §3.1. **M7** — the merit spec and the
 design are bound to each other by environment *position*, and position
 is only re-checkable by count, so a roster written in a different order
 in the two places is accepted and scores every demand against the wrong
@@ -45,7 +46,7 @@ entry, forward-looking comments that outlived the item they point at).
 
 | # | Finding | Sev | One line |
 |---|---|---|---|
-| M1 | `per_film_flags` can re-enable `optimize`/`needle` on fixed surroundings; under K > 1 the LM then optimizes environment 0's surroundings against environment-0-only residuals while every other environment keeps the compiled thickness — silently | **P1** (open) | §3.1 |
+| M1 | `per_film_flags` can re-enable `optimize`/`needle` on fixed surroundings; under K > 1 the LM then optimizes environment 0's surroundings against environment-0-only residuals while every other environment keeps the compiled thickness — silently | **P1** → fixed (0.7.6, `10d42dc`) | §3.1 |
 | M2 | F2.3's FD gate is 1e-4 relative in the test but the plan text says 1e-12, and no corrections entry recorded the reinterpretation — **recorded in this pass** | P2 → fixed | §3.2 |
 | M3 | Progress-table rows 0.7.4/0.7.5 say commit `PENDING` (the same ledger/table split H2 fixed for 0.6.49) — **filled in this pass** | P2 → fixed | §3.3 |
 | M4 | Four texts still pointed at F2.3 as future work; two were *false*, not merely stale — **reworded in this pass** | P3 → fixed | §3.4 |
@@ -318,6 +319,31 @@ re-enable, naming all three; (b) the M1 probe request refuses at
 compile instead of running. This is engine-behaviour repair and takes
 its own bump (0.7.6) with the two commit-and-docs pushes.
 
+**Fixed at 0.7.6 (`10d42dc`), as recommended, with one change of shape.**
+The recommendation offered "the fixed-segment material codes (or a
+per-row `from_fixed` bit)"; what shipped is neither, because a material
+code can name several rows and a bit on `LayerRow` would travel further
+than the invariant does. `compile_env_rows` returns the NAMES of the
+rows it built from a fixed segment — films only, since a half-space row
+there never reaches the per-film override — and `RowAssembly` carries
+that set per environment, empty on the flat door. `split_and_build_films`
+refuses before applying the override. Reported by the compile rather
+than inferred downstream from the `{env}.fixed[{seg}][{i}]` naming
+pattern, which would have worked today and is exactly the kind of
+coupling that rots: a name is presentation, a forced flag is a
+contract.
+
+The refusal names the environment, the surrounding row, the flag, the
+material code, and both ways out (put the flag on the design film you
+meant, or move the film into a design segment). `film_flags` is left
+unguarded on purpose — §3.1's own control measured it safe, because the
+global map is applied *before* the row — and that exemption is now a
+twin on both sides rather than a paragraph. Four Rust twins (the
+refusal per flag, a benign override that still lands, a design film
+that stays addressable, the flat door) and three Python ones (the
+keyword door per flag, asserting it names `bare.fixed[0][0]`, and the
+global-map control read off the returned stack). Lib tests 585 → 587.
+
 *One narrowing worth recording.* Through the Python door the hole is
 one row at a time: `_environments_request.register` refuses a duplicate
 film name across the whole run, so every surrounding carries a unique
@@ -538,9 +564,12 @@ refusing with both lists when they differ. Additive: a spec compiled
 without a roster (every pre-F2.4 spec, every K=1 spec) keeps today's
 count check, so nothing existing refuses. Twins: (a) a permuted roster
 refuses, naming both orders; (b) the matching roster still runs and is
-bit-equal to the `TargetCollection` path. Rides M1's bump (0.7.6) — same
-file set, same class of repair, and shipping one refusal hole while
-leaving its twin open would be an odd place to stop.
+bit-equal to the `TargetCollection` path. Same file set and the same
+class of repair as M1, so this review put both in one bump; the
+project's one-item-one-bump ritual wins instead and M7 takes **0.7.7**,
+immediately after M1's 0.7.6 — shipping one refusal hole while leaving
+its twin open would be an odd place to stop, but that is about the order
+of the two bumps, not about merging them.
 
 **Documented in the meantime.** The environments section of
 `spectralweave-target-kinds.md` now states the positional binding and
@@ -622,17 +651,20 @@ shape — nothing computed changes, seven version sites unmoved at
 - **M1 / M7 documentation** — `run_needle`'s docstring and the
   environments section of `spectralweave-target-kinds.md` now state both
   gaps. Doc notes, not fixes.
+- **M1 itself** — fixed at **0.7.6** (`10d42dc`): the assembler-side
+  refuse in `split_and_build_films`, the fixed-row set reported by
+  `compile_env_rows` and carried on `RowAssembly`, seven twins, and the
+  two documentation paragraphs rewritten from "open gap" to "refuses".
+  §3.1 records how the shipped shape differs from the recommendation.
 
-**Open, for 0.7.6** (engine repair, feature commit + docs commit, push
+**Open, for 0.7.7** (engine repair, feature commit + docs commit, push
 per item):
 
-- **M1** — the assembler-side refuse + two twins. Small and local
-  (`split_and_build_films` + `RowAssembly`), and the refusal text
-  already exists in `to_row` to mirror.
 - **M7** — the roster on `MeritSpec` + a name comparison at
   `run_environments`, additive so nothing existing refuses, + two twins.
-  Same file set and the same class of repair as M1; they belong in one
-  bump.
+  Same file set and the same class of repair as M1. The review put both
+  in one bump; the project's one-item-one-bump ritual wins, so M7 takes
+  its own.
 
 **Left recorded, not fixed:**
 
