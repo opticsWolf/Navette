@@ -15,8 +15,10 @@
 //! What this module does (F2.1): schema, validation, K assemblies, and
 //! the routing table. What it deliberately does NOT do: evaluate. The
 //! driver loop, `residuals_multi` and the K solves are F2.2; needle and
-//! LM routing are F2.3; the Python surface is F2.4. Nothing here is
-//! reachable from Python yet.
+//! LM routing are F2.3; the Python surface is F2.4. All of it has
+//! shipped: `run_design_environments` (navette-py) is the door, and
+//! `run_needle(design=..., environments=[...])` the Python spelling of
+//! the same request.
 //!
 //! **The absent-is-today rule.** A request with no `environments` is not
 //! a one-environment request that happens to look flat — it takes the
@@ -374,12 +376,16 @@ impl CompiledEnvironments {
     /// fractions never go through a divide.
     ///
     /// This is deliberately not a re-assembly. Under K > 1 the structure is
-    /// frozen for F2.2 (needle insertion, cleanup removal and inflate are
-    /// refused by the driver and are F2.3's), so the only thing that moves
-    /// between evals is a thickness, and re-running `from_design` K times
-    /// per eval would pay the 126 µs assembly (R6) for nothing. The
-    /// alignment check below is what makes the assumption fail loudly
-    /// instead of quietly mis-routing if it is ever violated.
+    /// frozen BETWEEN evaluations: the only structural move that exists is
+    /// a needle insertion, and it does not happen here — it happens in
+    /// [`Self::insert_seed`], which splits every environment's template at
+    /// the same time, so the templates are correct again before the next
+    /// expansion. Cleanup removal and inflate are refused outright by the
+    /// driver (there is no inverse of `insert_seed`). So the only thing
+    /// that moves between evals is a thickness, and re-running
+    /// `from_design` K times per eval would pay the 126 µs assembly (R6)
+    /// for nothing. The alignment check below is what makes the assumption
+    /// fail loudly instead of quietly mis-routing if it is ever violated.
     ///
     /// Surroundings are never touched: a fixed segment's rows keep the
     /// template's thicknesses, which is §3.1's "fully fixed" made
@@ -416,7 +422,10 @@ impl CompiledEnvironments {
         if design.spans().len() != self.stacks[0].spans().len() {
             return Err(format!(
                 "environment '{}': the design stack now has {} spans, compiled \
-                 with {} - a structural move under K > 1 is F2.3's, not F2.2's",
+                 with {} - under K > 1 the only structural move is \
+                 `insert_seed`, which splits every environment's template \
+                 at once, so a mismatch here is a driver or caller gap, \
+                 not a pending feature",
                 self.names[0],
                 design.spans().len(),
                 self.stacks[0].spans().len()
@@ -1168,9 +1177,10 @@ mod tests {
         assert_eq!(envs.stacks()[1].films()[1].d_nm, 100.0);
     }
 
-    /// A structural move under K > 1 is F2.3's. If one ever reaches
-    /// `expand`, it must name the drift rather than route thicknesses
-    /// into the wrong spans.
+    /// Under K > 1 the only structural move is `insert_seed`, which keeps
+    /// the templates in step. If a drift ever reaches `expand` anyway, it
+    /// must name the drift rather than route thicknesses into the wrong
+    /// spans.
     #[test]
     fn expand_refuses_a_stack_that_no_longer_matches_the_compile() {
         let (envs, _, _) = build_environments(
@@ -1193,7 +1203,7 @@ mod tests {
         let (other, _, _) = build_environments(&flat(vec![film("L", 100.0)]), &WL).unwrap();
         let e = envs.expand(&other.stacks()[0]).unwrap_err();
         assert!(e.contains("spans"), "{e}");
-        assert!(e.contains("F2.3"), "{e}");
+        assert!(e.contains("insert_seed"), "{e}");
     }
 
     /// Phase-A interaction (plan §1.4 + amendment A4): a graded film in a

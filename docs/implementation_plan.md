@@ -2528,6 +2528,33 @@ CORRECTIONS:
    through `build_environments`, bit for bit on all four curves at every
    point — stronger than 1e-12, and it cannot drift from the door the
    multi path is claiming to reproduce.
+
+10. **Gate (c)'s wall-time half, measured at review PB (M5).** The merit
+    half was pinned bitwise at F2.2
+    (`two_identical_environments_double_the_merit`); the wall-time half
+    — "K=2 ≈ 2× single-solve ± concatenation noise" — went into the
+    record unmeasured. It is measured now, and it passes: with the LM
+    pinned to one iteration (12 films, 61 wavelengths, 2 angles,
+    identical surroundings, best of 9 whole runs) K=2 costs **1.99× and
+    2.14× K=1** across two sessions, and the marginal cost of each
+    further environment is 1.31–1.35 ms against a 1.71–1.75 ms K=1 run
+    — about 0.74× a full environment, because the per-run fixed cost
+    (request JSON, compile, spec) amortizes.
+
+    *Why the LM has to be pinned, which is the part worth keeping.* A
+    run left to converge answers a different question: the K=2 residual
+    vector is twice as long, so the LM takes a different number of
+    iterations, and K=1 additionally takes the flat path
+    (`envs: if k == 1 { None }`) rather than the segmented one.
+    Measured that way the same problem reads **11× K=1**, not 2×, and
+    the number says nothing about the branch — it is an iteration count,
+    not a per-eval cost. A whole-run ratio cannot gate (c); pinning the
+    evaluation count is what makes per-eval cost the only variable.
+
+    The proper home for this is a bench rather than a session
+    measurement, and it needs `simulate_all` / `merit_multi` on the
+    Python surface (neither is exposed today) or a Rust-side bench.
+    Recorded as measured and as a follow-up, not as a test.
 ### F2.3 — needle and LM joint (0.7.3)
 
 The hard item. Scan sites built per environment over the full stack, filtered
@@ -2657,6 +2684,27 @@ CORRECTIONS:
    layout in the direction the compile cannot follow; so does
    `thin_layer_policy = 'remove'`. One message, three names, and the
    variant that works (`clamp_up_final`) spelled out.
+
+9. **The FD gate is 1e-4 relative, not the 1e-12 the gate list says
+   (review PB, M2).** The gate above reads "joint gradient == sum of
+   per-environment analytic gradients, 1e-12". The twin
+   (`the_joint_slope_is_the_sum_of_the_environments_slopes`) inserts at
+   delta = 1e-4 and asserts `|measured − analytic| ≤ 1e-4 ·
+   max(|analytic|, 1e-12)`, and that is the defensible number: one side
+   of the comparison is a *finite difference*, whose truncation error is
+   O(delta) by construction, so 1e-12 is not a tolerance a measurement
+   of this shape can reach at any delta — shrink delta and cancellation
+   takes over where truncation left off. The gate text was
+   under-specified, the implementation is right, and the 1e-12 in the
+   gate list stands only as the number the plan asked for.
+
+   What 1e-12 *would* be attainable for is the neighbouring identity:
+   the joint residual derivative against the sum of the per-environment
+   analytic slopes, both computed analytically, no finite difference in
+   sight. That twin does not exist. It is worth having — it would pin
+   the routing rather than the physics — and it is recorded here as a
+   follow-up rather than quietly folded into the existing twin's
+   tolerance.
 
 ### F2.4 — Python surface and program sections (0.7.4)
 
@@ -3219,5 +3267,6 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.7.1 | F2.1 | 98ae05e | A7, R6 | done |
 | 0.7.2 | F2.2 | 705b190 | A4, A8 | done |
 | 0.7.3 | F2.3 | 948425f | A8, N1 | done |
-| 0.7.4 | F2.4 | PENDING | A1 (corrected), A3, N8, N9 | done |
-| 0.7.5 | F3.1 | PENDING | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | done |
+| 0.7.4 | F2.4 | 90a09b3 | A1 (corrected), A3, N8, N9 | done |
+| 0.7.5 | F3.1 | e9484ca | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | done |
+| — | PBR | (this commit) | review PB §3 — M2/M3/M4/M5; M1 and M7 open | done |

@@ -182,6 +182,31 @@ typo has no shape error of its own: it would silently resolve to some
 other environment and the run would report a merit for a coating nobody
 described.
 
+**After resolution the roster is gone, so ORDER is the binding — pass
+the collection, not a pre-built spec.** Resolution turns a name into an
+index and the compiled `MeritSpec` keeps only `n_envs`, not the names.
+The run door can therefore check that the spec and the design agree on
+the *count* of environments, and nothing more. A roster written in a
+different order in the two places passes that check and silently scores
+every demand against the wrong surroundings:
+
+```python
+spec = build_merit_spec(tc, environments=["laminated", "bare"])   # order A
+run_needle(design=..., environments=[bare_env, lam_env], targets=spec)
+#                                    ^ order B — accepted, wrong answer
+```
+
+A *typo* does refuse, and refuses early, at `build_merit_spec`, because
+the tag is not in the roster it was handed. A *permutation* has no such
+shape error: both names exist, just at swapped indices.
+
+The safe spelling is to hand `run_needle` the `TargetCollection` itself
+and let it build the spec — it passes the request's own roster, so the
+two cannot disagree. Reuse a pre-built spec only across runs that pass the same
+`environments=` list in the same order. Making the run door compare
+names rather than counts (a roster on `MeritSpec`) is open work, not a
+property of the current build.
+
 **Absent means the first environment.** Every target set written before
 environments existed is therefore still meaningful and its JSON is
 unchanged — the key is emitted only when the tag is set. On a
@@ -226,6 +251,18 @@ carries them. A 64-sublayer cover on three environments is 192 extra rows
 per evaluation. Where the surroundings are thick and passive, an S-matrix
 embedding (solve the surroundings once, reuse the result) would remove
 most of that — it is a known follow-up, not part of v1.
+
+**Surroundings are fixed — with one open exception.** A `layers`
+segment's rows carry `optimize` and `needle` forced false, and an
+explicit `true` refuses at compile. A `per_film_flags` override does
+not go through that check: it is applied after the row and keyed by
+material code, so naming a surrounding's material there re-enables the
+flag. Under K > 1 the consequence is quiet — the LM moves environment
+0's copy of that surrounding against environment-0-only residuals, and
+every other environment keeps the compiled thickness, so the
+"one design, several surroundings" contract is broken without a
+refusal. Keep surroundings out of `per_film_flags` until the assembler
+refuses them (review PB, M1).
 
 **What a joint run gives up.** While K > 1 the thin-layer floor is a hard
 bound on the optimizer rather than a post-hoc sweep, and the sweep clamps

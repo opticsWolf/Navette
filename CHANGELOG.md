@@ -34,6 +34,35 @@ All notable changes to Navette are recorded here. Work items reference
 - README: a **One Design, Several Surroundings** feature entry, and the
   graded-media entry now points at `docs/graded-media.md`.
 
+### Review PB (no bump; `docs/implementation_review_pb.md`)
+- `docs/spectralweave-target-kinds.md` and `run_needle`'s docstring now
+  state two open gaps instead of promising they cannot happen. (1) A
+  `per_film_flags` entry is applied after the row and keyed by material
+  code, so it can re-enable `optimize`/`needle` on a fixed surrounding;
+  under K > 1 the LM then moves environment 0's copy against
+  environment-0-only residuals while the others keep the compiled
+  thickness (M1). (2) After tag resolution a `MeritSpec` keeps only
+  `n_envs`, so the run door compares environment COUNTS, not names -- a
+  roster written in a different order in the two places is accepted and
+  scores every demand against the wrong surroundings (M7). Passing the
+  `TargetCollection` to `run_needle` instead of a pre-built spec avoids
+  the second entirely. Both are refusal holes and both are open; the
+  fixes take their own bump.
+- `environments.rs`: four texts that pointed at F2.3 as future work
+  reworded, two of which had become false -- `expand`'s docstring listed
+  needle insertion among what the driver refuses under K > 1 (F2.3 gave
+  it `insert_seed`), and the module header said nothing there was
+  reachable from Python (F2.4 made it so). `check_alignment`'s refusal
+  message now names `insert_seed` as the only structural move, and its
+  twin asserts on that word (M4). Message text only; nothing computed
+  changes.
+- Measured, not changed: gate 4.6 (c)'s wall-time half, which had no
+  number anywhere. With the LM pinned to one iteration, K=2 costs 1.99x
+  / 2.14x K=1 across two sessions and each further environment about
+  0.74x of a first one. Left to converge the same problem reads 11x,
+  which is an iteration count rather than a per-eval cost -- recorded in
+  the plan's F2.2 corrections with that caveat (M5).
+
 ## [0.7.4] - F2.4: the Python surface and the program sections
 
 ### Added

@@ -648,10 +648,20 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     environments : [{"name": ..., "stack": [{"design": id} | {"layers": [...]}]}]
         Each environment's ordered segment list. The shared design films
         are the free variables; everything in a ``layers`` segment is
-        fixed surroundings and is never optimized or split. Requires
-        ``design``; the roster must match the one given to
-        ``build_merit_spec(environments=...)``, or the core refuses naming
-        both counts.
+        fixed surroundings, and the row schema forces ``optimize`` and
+        ``needle`` false there (an explicit ``true`` refuses). **Known
+        gap (review PB, M1):** a ``per_film_flags`` entry is applied
+        after the row and is keyed by material code, so it can re-enable
+        either flag on a surrounding — and under K > 1 the LM then moves
+        environment 0's surrounding against environment-0-only residuals
+        while every other environment keeps the compiled thickness. Do
+        not name a surrounding's material in ``per_film_flags`` until the
+        assembler refuses it. Requires ``design``; the roster must match
+        the one given to ``build_merit_spec(environments=...)`` **in the
+        same order** — the core compares counts, not names (M7), so a
+        permuted roster is accepted and scores against the wrong
+        surroundings. Passing the ``TargetCollection`` instead of a
+        pre-built spec avoids that entirely.
 
     With ``design``/``environments`` the contrast map is keyed by FILM
     NAME (the design parameter's identity), not by index.
