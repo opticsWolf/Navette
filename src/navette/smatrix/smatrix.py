@@ -476,7 +476,9 @@ class ScatterMatrix:
         Angle(s) of incidence, degrees unless ``angles_in_radians=True``.
     incoherent_flags : int array, shape (n_layers,), optional
         Non-zero where a layer breaks phase coherence (thick substrate). Default
-        all-zero (fully coherent boundaries).
+        all-zero (fully coherent boundaries). Any non-zero value means the same
+        thing: the array is canonicalized to 0/1 at the door, so a flag of 2 is
+        the flag 1 answer and not a third behaviour.
     roughness_types : int array, shape (n_layers,), optional
         Per-interface roughness model (see :class:`RoughnessType`). Default none.
         **All roughness models are specular-only: they do not account for diffuse

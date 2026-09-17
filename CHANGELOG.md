@@ -5,6 +5,38 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.8] - C8: one coherence flag, one meaning
+
+### Fixed
+- A coherence flag of any non-zero value other than 1 no longer deletes
+  the flagged layer's absorption (physics review round 2, C8). The
+  published contract is "non-zero where a layer breaks phase coherence"
+  and the block sweep agrees — it extends a coherent run only while
+  `flag == 0` — but the attenuation element was gated on `flag == 1`.
+  A flag of 2 therefore partitioned the stack and then skipped `tau`:
+  the layer decohered but never absorbed. Measured on an air / 2 um
+  `n = 1.5 + 0.01i` slab / air stack at 550 nm: `flag = 1` gives
+  `Ts = 0.583945129` with `A = 0.361243521`, while `flag = 2`, `-1` and
+  `7` all gave `Ts = 0.923089546` with `A = -0.000042666` — the exact
+  lossless transmittance, and a negative absorptance from the open
+  energy books.
+- `incoherent_flags` is now canonicalized to 0/1 in `Solver::assemble`,
+  the shared tail every constructor funnels through (`new`,
+  `from_wav_major_flat`, `from_raw`, and so `solve_arrays`, `ScatterMatrix`
+  and `core_engine` with them), and in the free `needle_gradient`, whose
+  flags arrive from the caller rather than from `self`. Both gates now
+  read the same array, and a future gate is honest whichever comparison
+  it picks.
+
+### Unchanged on purpose
+- `coherence_mode` needed no work: `Solver::validate` already refuses
+  anything outside {0, 1, 2} with a named message, every door reaches it
+  through `new`, and `validation_refuses` has pinned it since before this
+  review. Round 2 read the raw FFI door as unvalidated; it is not.
+- Flags of 0 and 1 are bit-for-bit unchanged, so no fingerprint moves.
+  The canonicalization can only alter a stack that was already getting a
+  physically impossible answer.
+
 ## [0.7.7] - M7: the merit spec remembers its roster
 
 ### Fixed

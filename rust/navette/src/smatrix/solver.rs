@@ -352,7 +352,22 @@ impl Solver {
             inv_n_cache,
             flat_cache: OnceLock::new(),
             thicknesses: thicknesses.to_vec(),
-            incoherent_flags: incoherent_flags.to_vec(),
+            // C8: canonicalize the coherence flag to {0, 1} here, at the one
+            // place every constructor funnels through. The published contract
+            // is "non-zero breaks phase coherence" and the block sweep agrees
+            // -- it extends a coherent run only while `flag == 0` -- but the
+            // attenuation element was gated on `flag == 1`. A flag of 2 (or
+            // -1, or any other non-zero) therefore partitioned the stack and
+            // then skipped tau, so the flagged layer's absorption vanished
+            // from the energy books: measured A = 0.361 -> -4.3e-5 on a
+            // k = 0.01, 2 um slab, with Ts landing on the exact lossless
+            // value. Normalizing at the door makes both gates read the same
+            // array and keeps a future gate honest whichever comparison it
+            // happens to pick.
+            incoherent_flags: incoherent_flags
+                .iter()
+                .map(|&f| i32::from(f != 0))
+                .collect(),
             rough_types: rough_types.to_vec(),
             rough_vals: rough_vals.to_vec(),
             coherence_mode,
@@ -1470,7 +1485,11 @@ pub fn needle_gradient(
             if v.len() != nl {
                 return Err(String::from("incoherent_flags must have n_layers entries"));
             }
-            Some(v.to_vec())
+            // Canonicalized for the same reason as in `assemble` (C8): these
+            // flags arrive from the caller, not from `self`, so they have not
+            // been through that door. `partition_blocks` splits on non-zero
+            // while its spacer tau is gated on 1.
+            Some(v.iter().map(|&f| i32::from(f != 0)).collect::<Vec<i32>>())
         }
     };
     let mask = match &host_mask {
@@ -3380,6 +3399,62 @@ mod tests {
             assert_eq!(rs[i], s.rs);
             assert_eq!(cross[i], s.cross_r);
         }
+    }
+
+    /// C8. The published contract is "non-zero breaks phase coherence", and
+    /// the block sweep splits on any non-zero -- but the attenuation element
+    /// used to be gated on exactly 1, so a flag of 2 partitioned the stack
+    /// and then skipped tau, deleting the flagged layer's absorption. Every
+    /// non-zero value must now land on the same answer as 1, bitwise, and
+    /// that answer must differ from the coherent one or the assert would
+    /// pass on a flag that was ignored outright.
+    #[test]
+    fn any_nonzero_coherence_flag_is_the_same_flag() {
+        use super::super::core_engine::{REQ_RS, REQ_TS};
+        let wl = vec![550.0];
+        // air / absorbing 2 um slab / air -- the absorption is what the
+        // skipped tau used to erase.
+        let idx = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.5, 0.01),
+            Complex64::new(1.0, 0.0),
+        ];
+        let solve_with = |flag: i32| -> (Vec<f64>, Vec<f64>) {
+            let s = Solver::new(
+                &wl,
+                &[0.0],
+                &idx,
+                3,
+                &[0.0, 2000.0, 0.0],
+                &[0, flag, 0],
+                &[0, 0, 0],
+                &[0.0, 0.0, 0.0],
+                0,
+            )
+            .unwrap();
+            let sol = s.solve(REQ_RS | REQ_TS).unwrap();
+            let get = |k: &str| {
+                sol.f64maps
+                    .iter()
+                    .find(|(name, _)| name == k)
+                    .unwrap()
+                    .1
+                    .clone()
+            };
+            (get("Rs"), get("Ts"))
+        };
+        let coherent = solve_with(0);
+        let one = solve_with(1);
+        for flag in [2, -1, 7, i32::MIN, i32::MAX] {
+            let other = solve_with(flag);
+            assert_eq!(other.0, one.0, "Rs differs for flag {flag}");
+            assert_eq!(other.1, one.1, "Ts differs for flag {flag}");
+        }
+        // The flag has to do something, or the equality above is vacuous.
+        assert!(one.0[0] != coherent.0[0]);
+        // And tau has to be applied: the lossless slab would transmit far
+        // more than the absorbing one does.
+        assert!(one.1[0] < 0.9);
     }
 
     #[test]
