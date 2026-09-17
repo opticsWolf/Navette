@@ -202,6 +202,30 @@ impl DesignStack {
                     num_wavs
                 ));
             }
+            // C1. The flag is faithfully materialized by `solver_arrays` and
+            // then never read: `simulate_inner` solves [0, nl-1) as ONE
+            // coherent block, and the needle pass builds its stack fields
+            // over the same single block. Every consumer of that funnel --
+            // the design door, the multi-environment door, the LM step, the
+            // FD jacobian, the needle scan -- therefore returns the
+            // fully-coherent answer for a stack the caller marked otherwise,
+            // with nothing said. Measured: merit bit-identical with the flag
+            // on and off, while the engine door moves on the same stack.
+            // Refuse at the one constructor every DesignStack passes through,
+            // and name the door that does honor it.
+            if !f.coherent {
+                return Err(format!(
+                    "film {} ('{}') is marked coherent = false, but synthesis solves the \
+                     whole stack as ONE coherent block. The flag is built into the solver \
+                     arrays and never read, so the merit, the LM step and the needle scan \
+                     would all return the fully-coherent answer for a stack you marked \
+                     otherwise, silently. Refusing rather than answering wrongly. The \
+                     engine doors do honor the flag: use solve_structure (navette.\
+                     structure) or ScatterMatrix (navette.smatrix) to ANALYSE a stack with \
+                     incoherent layers. To synthesize, set coherent = true.",
+                    i, f.material
+                ));
+            }
         }
         if recipes.len() != spans.len() {
             return Err(format!(
@@ -2016,16 +2040,35 @@ mod tests {
     }
 
     #[test]
-    fn incoherent_flag_and_roughness_passthrough() {
+    fn roughness_passthrough() {
         let mut sp = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
-        sp.coherent = false;
         sp.rough_type = 2;
         sp.rough_val = 7.5;
         let s = stack(vec![sp]);
         let sa = s.solver_arrays();
-        assert_eq!(sa.incoherent_flags, vec![0, 1, 0]);
         assert_eq!(sa.rough_types[1], 2);
         assert!((sa.rough_vals[1] - 7.5).abs() < 1e-12);
+        // A synthesis stack is coherent by construction (C1), so the flag
+        // column is all-zero and `solver_arrays` has nothing else to carry.
+        assert_eq!(sa.incoherent_flags, vec![0, 0, 0]);
+    }
+
+    /// C1. The flag used to ride through `solver_arrays` into a solve that
+    /// never read it. It is refused at the one internal constructor now, so
+    /// no route into synthesis can carry it -- and the refusal has to name
+    /// the door that does honor the flag, or it is just a wall.
+    #[test]
+    fn synthesis_refuses_an_incoherent_film() {
+        let mut sp = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
+        sp.coherent = false;
+        let err = DesignStack::with_films(air(0.0), sub(0.0), vec![sp])
+            .expect_err("an incoherent film must not build a synthesis stack");
+        assert!(err.contains("coherent = false"), "{err}");
+        assert!(err.contains("spacer"), "{err}");
+        assert!(err.contains("solve_structure"), "{err}");
+        // And a coherent film of the same shape still builds.
+        let ok = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
+        assert!(DesignStack::with_films(air(0.0), sub(0.0), vec![ok]).is_ok());
     }
 
     // ------------------------------------------------------------------

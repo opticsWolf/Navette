@@ -5,6 +5,38 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.9] - C1: synthesis refuses the flag it cannot honor
+
+### Fixed
+- A film marked `coherent: false` now refuses at the synthesis door
+  instead of being silently ignored (physics review rounds 1 and 2, C1).
+  `DesignStack::solver_arrays` materialized the flag faithfully
+  (`incoherent_flags[slot] = i32::from(!layer.coherent)`) and
+  `simulate_inner` then solved `[0, nl-1)` as ONE coherent block without
+  ever reading it; the needle pass built its stack fields over the same
+  single block. Every consumer of that funnel — the design door, the
+  multi-environment door, the LM step, the FD jacobian, the needle scan —
+  returned the fully-coherent answer for a stack the caller had marked
+  otherwise. Measured: merit bit-identical with the flag on and off,
+  while the engine door moves on the same stack.
+- The refusal sits in `DesignStack::from_parts`, the one internal
+  constructor every `DesignStack` passes through, so no route into
+  synthesis can carry the flag — `with_films`, `from_design`,
+  `insert_needle_seed`, `merge_adjacent` and the rest reach it. It names
+  the film by index and material, and it names the doors that DO honor
+  the flag (`solve_structure`, `ScatterMatrix`) rather than only saying
+  no.
+
+### Unchanged on purpose
+- Ambient and substrate are not checked. They are half-spaces at rows 0
+  and last, where the engine never consults the flag either (C5), so a
+  flag there is the same no-op on every door and refusing it would be a
+  different finding.
+- This is the refusal half of C1 only. `p_function_multiblock` still
+  exists, validated and unwired, and wiring the synthesis funnel to the
+  multiblock path stays available as a later phase — unblocked by this,
+  which only converts a silent wrong answer into a loud one.
+
 ## [0.7.8] - C8: one coherence flag, one meaning
 
 ### Fixed
