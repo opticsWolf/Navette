@@ -37,7 +37,7 @@ is either bypassed or read with the wrong object.
 
 | # | Finding | Sev | § |
 |---|---------|-----|---|
-| C1 | The synthesis pipeline ignores `coherent: false` entirely — it solves every design as one coherent block | **P1** | §3.1 |
+| C1 | The synthesis pipeline ignores `coherent: false` entirely — it solves every design as one coherent block | **P1** | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
 | C2 | Mode A's Stokes vector mixes a front-block cross term with total intensities; Mode A is the default | **P1** | §3.2 |
 | C3 | An incoherent flag carries no thickness sanity check — `d = 0` decoheres | P2 | §3.3 |
 | C4 | Gain media are silently mangled, differently in the coherent and incoherent paths | P2 | §3.4 |

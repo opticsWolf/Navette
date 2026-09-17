@@ -1,7 +1,8 @@
 # Physics review — coherent / incoherent propagation, round 2
 
 STATUS: independent review round 2 of `docs/physics_review_coherence.md`
-(C1-C7). **C8 is applied** (`47b2e18`, 0.7.8); C1-C7 and C9-C10 are not.
+(C1-C7). **Applied so far: C8** (`47b2e18`, 0.7.8) and **C1's refusal
+half** (`f6f959d`, 0.7.9). C2-C7, C9 and C10 are not.
 This round re-verified every round-1 finding
 against the code at 0.7.7 (`dev_phase_physics`, review round 1 committed as
 `903fda7`), extended the scope to every door that reaches a solve, and ran
@@ -27,7 +28,7 @@ Round-1 findings, as verified this round:
 
 | # | Round-1 claim | Verdict | § |
 |---|---------------|---------|---|
-| C1 | synthesis ignores `coherent: false` | **CONFIRMED**, sharpened: the honored path already ships | §3.1 |
+| C1 | synthesis ignores `coherent: false` | **CONFIRMED**, sharpened: the honored path already ships | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
 | C2 | Mode A Stokes mixes objects | **CONFIRMED** + cross_T precision | §3.2 |
 | C3 | no thickness sanity for flagged layers | **CONFIRMED** | §3.3 |
 | C4 | gain mangled differently per path | **CONFIRMED**, coherent path erases the sign entirely | §3.4 |
@@ -74,6 +75,12 @@ the synthesis doors has a named, working alternative to point at.
 ## 3. C1-C7, verified line by line
 
 ### 3.1 C1 — the synthesis pipeline ignores `coherent: false` (P1) — CONFIRMED
+
+> **Refusal half applied** at `f6f959d` (0.7.9): `DesignStack::from_parts`
+> refuses a film with `coherent = false` and names the honored doors. The
+> implementation half — wiring the synthesis funnel to
+> `p_function_multiblock` — is still open. Everything below describes the
+> state before that commit.
 
 The full chain, each link verified in the tree at `ee1488b`:
 
@@ -407,9 +414,16 @@ ordered by silent-wrongness per line of change:
    `Solver::assemble` + the free `needle_gradient` rather than a refusal,
    and the flag only: the mode was already validated (§4.1). Closes the
    absorption erasure.
-2. **C1 (refuse)** — synthesis doors reject `coherent: false` naming
-   `solve_structure` as the honored path. Converts the silent wrong
-   answer into a loud one; the multiblock implementation (round 1
+2. **C1 (refuse)** — **DONE**, `f6f959d` (0.7.9). The refusal sits in
+   `DesignStack::from_parts`, the one internal constructor every stack
+   passes through, rather than in each of the four sites where a false
+   flag can enter (`design_config.rs:299/:318`, `driver.rs:115`,
+   `environments.rs:102`) — one message, and no future route can slip
+   past it. It names the film by index and material and names
+   `solve_structure` / `ScatterMatrix` as the doors that do honor the
+   flag. Ambient and substrate are not checked: they are the half-space
+   rows where the engine ignores the flag too (C5), so a flag there is
+   the same no-op on every door. The multiblock implementation (round 1
    option 2) stays a phase, unblocked by this.
 3. **C2 (refuse/warn)** — NEEDS_CROSS observables under Mode A refuse or
    warn loudly when an interior flag exists; fix the R6.2 clamp comment's
