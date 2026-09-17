@@ -1,9 +1,12 @@
 # Phase B review — the multi-environment series (F2.1–F3.1)
 
-STATUS: review round 1, **refined** — every finding re-verified against
-the tree, one citation corrected, M5 measured and closed, one new finding
-(M7) added, M2/M3/M4 applied. §6 records what the refinement pass
-changed. Scope: the six commits
+STATUS: review round 1, **refined, both P1s closed** — every finding
+re-verified against the tree, one citation corrected, M5 measured and
+closed, one new finding (M7) added, M2/M3/M4 applied, then M1 fixed at
+0.7.6 (`10d42dc`) and M7 at 0.7.7 (`05370e1`), each with its own feature
+and docs commit. §5 carries the dispositions and §6 records what the
+refinement pass changed. Nothing here is open except M6, which is
+pre-existing and belongs to future needle work. Scope: the six commits
 `main..dev_multi` — `98ae05e` (F2.1, 0.7.1), `705b190` (F2.2, 0.7.2),
 `948425f` (F2.3, 0.7.3), `90a09b3` (F2.4, 0.7.4), `e9484ca` (F3.1,
 0.7.5), plus their three done-marking docs commits. The fork point is
@@ -36,8 +39,11 @@ forced-false invariant on surroundings; **fixed at 0.7.6**
 design are bound to each other by environment *position*, and position
 is only re-checkable by count, so a roster written in a different order
 in the two places is accepted and scores every demand against the wrong
-surroundings. Neither is an arithmetic defect; both are refusal holes,
-which is exactly why the twins did not catch them.
+surroundings; **fixed at 0.7.7** (`05370e1`), see §3.7. Neither is an
+arithmetic defect; both are refusal holes, which is exactly why the
+twins did not catch them — and both are now closed, each in its own
+bump, with the measured wrong answer recorded in the twin that prevents
+it.
 
 Everything else is bookkeeping the round-2 review of the PD series
 already taught us to look for (a `PENDING` left in the progress table, a
@@ -52,7 +58,7 @@ entry, forward-looking comments that outlived the item they point at).
 | M4 | Four texts still pointed at F2.3 as future work; two were *false*, not merely stale — **reworded in this pass** | P3 → fixed | §3.4 |
 | M5 | F2.2 gate (c)'s wall-time half (K=2 ≈ 2× single-solve) was pinned nowhere — **measured at this pass, and it passes** (1.99× / 2.14×) | P3 → closed | §3.5 |
 | M6 | Pre-existing, faithfully mirrored: the needle seed's `nk` is looked up from the *host's* material while the seed's *name* is the winning sweep's partner — a cross-material site win pairs one name with another partner's `nk` | P3 (pre-existing) | §3.6 |
-| M7 | `MeritSpec` keeps `n_envs` and discards the roster NAMES, so `run_environments` compares counts; a spec built with the same names in a different order is accepted and scores every demand against the wrong surroundings — silently | **P1** | §3.7 |
+| M7 | `MeritSpec` keeps `n_envs` and discards the roster NAMES, so `run_environments` compares counts; a spec built with the same names in a different order is accepted and scores every demand against the wrong surroundings — silently | **P1** → fixed (0.7.7, `05370e1`) | §3.7 |
 
 ## 1. What was run (battery, this session, tree `e9484ca`)
 
@@ -571,10 +577,36 @@ immediately after M1's 0.7.6 — shipping one refusal hole while leaving
 its twin open would be an odd place to stop, but that is about the order
 of the two bumps, not about merging them.
 
-**Documented in the meantime.** The environments section of
-`spectralweave-target-kinds.md` now states the positional binding and
-names passing the collection as the safe spelling; `run_needle`'s
-docstring says "in the same order" rather than "must match".
+**Fixed at 0.7.7 (`05370e1`), as recommended.** `MeritSpec` carries
+`env_names` with `env_names()` / `set_env_roster()`; `compile_merit_spec`
+records the roster it resolved against; `run_environments` compares the
+names position by position and refuses with both lists and both ways
+out. Two guards the recommendation did not ask for: `set_env_roster`
+refuses an empty roster, an empty name and a duplicate (a name that
+repeats would let a position comparison pass on a roster whose own
+`resolve_env` is ambiguous — refused upstream already, refused here too
+because this is the door a Rust consumer reaches), and `set_n_envs`
+refuses a count that contradicts a recorded roster, so the two cannot be
+made to disagree from either side.
+
+**The one decision inside "additive".** A roster is recorded only when
+the target set NAMED environments. When it named none, the roster in
+scope at the compile is the synthetic `[DEFAULT_ENV]` — recording that
+would compare `"default"` against whatever the design's single
+environment is called and newly refuse most untagged single-environment
+requests. So the guarantee is narrow and stated that way in the docs:
+name your environments in both places and a mismatch refuses; name them
+in neither and nothing changes. Twinned from both ends — `env_names()`
+stays empty for a set that named nothing, and a matching roster is
+bit-identical to the unrostered spec (Rust) and to the
+`TargetCollection` path (Python). Lib tests 587 → 590.
+
+**Documented.** The environments section of
+`spectralweave-target-kinds.md` and `run_needle`'s docstring described
+the positional binding as a live hazard with "pass the collection, not a
+pre-built spec"; both now describe the refusal and how narrow it is.
+Reusing a pre-built spec became a supported thing to do rather than a
+thing to be careful about.
 
 ## 4. Probes and verification notes
 
@@ -636,9 +668,10 @@ docstring says "in the same order" rather than "must match".
 
 ## 5. Disposition
 
-**Done in this pass** (one no-bump commit, the `138bdcb`/`9d5cbc3`
-shape — nothing computed changes, seven version sites unmoved at
-0.7.5):
+**Done.** The documentation and bookkeeping findings landed in one
+no-bump commit at 0.7.5 (the `138bdcb`/`9d5cbc3` shape — nothing
+computed changes, seven version sites unmoved); the two P1s then took one
+bump each, feature commit and docs commit per item:
 
 - **M2** — F2.3 correction 9: the FD gate's real tolerance, why 1e-12 is
   unreachable for a finite difference, and the analytic-sum twin that
@@ -656,29 +689,33 @@ shape — nothing computed changes, seven version sites unmoved at
   `compile_env_rows` and carried on `RowAssembly`, seven twins, and the
   two documentation paragraphs rewritten from "open gap" to "refuses".
   §3.1 records how the shipped shape differs from the recommendation.
+- **M7 itself** — fixed at **0.7.7** (`05370e1`): the roster on
+  `MeritSpec`, the name comparison at `run_environments`, the two
+  contradiction guards, six twins, and the same two documentation
+  paragraphs rewritten from "live hazard" to "refuses". §3.7 records the
+  one decision inside "additive" — a roster is recorded only when the
+  caller wrote one.
 
-**Open, for 0.7.7** (engine repair, feature commit + docs commit, push
-per item):
-
-- **M7** — the roster on `MeritSpec` + a name comparison at
-  `run_environments`, additive so nothing existing refuses, + two twins.
-  Same file set and the same class of repair as M1. The review put both
-  in one bump; the project's one-item-one-bump ritual wins, so M7 takes
-  its own.
-
-**Left recorded, not fixed:**
+**Nothing from this review is left open.** Both P1s shipped in their own
+bumps, M2–M5 were applied in the review pass itself, and what remains is
+recorded as future work rather than as a finding:
 
 - **M6** — pre-existing needle seed name/nk pairing. Fold it into future
   needle work rather than into this phase.
 - `structure.rs:133`'s stale spans note (§3.4), same reasoning.
 
 The battery, the fingerprints and the bit-exactness claims all verify at
-0.7.5, and re-verify after this pass. Both P1s are refusal holes rather
-than arithmetic defects: **nothing computed is wrong for any request the
-compile accepts on the intended spelling** — which is exactly why they
+0.7.5, re-verify after the documentation pass, and re-verify at 0.7.6 and
+0.7.7 — including the bench merit's bit pattern (`44dc154d6946ee40`),
+which is the gate that says a refusal added at a compile door moved
+nothing in the numbers. Both P1s were refusal holes rather than
+arithmetic defects: **nothing computed was wrong for any request the
+compile accepted on the intended spelling** — which is exactly why they
 slipped past every twin. Twins test what the code does with a request it
 was designed for; a refusal hole is a request nobody thought to write
-down.
+down. Both fixes therefore ship as new refusals plus twins for the
+spellings that must keep working, and both of those controls (`film_flags`
+for M1, an unrostered spec for M7) were measured, not assumed.
 
 ## 6. What the refinement pass changed
 
