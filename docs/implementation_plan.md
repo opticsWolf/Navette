@@ -3269,4 +3269,4 @@ which audit IDs the item's CORRECTIONS block adopted (R7).
 | 0.7.3 | F2.3 | 948425f | A8, N1 | done |
 | 0.7.4 | F2.4 | 90a09b3 | A1 (corrected), A3, N8, N9 | done |
 | 0.7.5 | F3.1 | e9484ca | A2 (docs), **U1/U2/U3** (docs), B1 (docs) | done |
-| — | PBR | (this commit) | review PB §3 — M2/M3/M4/M5; M1 and M7 open | done |
+| — | PBR | f7d0216 | review PB §3 — M2/M3/M4/M5; M1 and M7 open | done |
