@@ -275,7 +275,7 @@ def _surrounded(**extra):
     back off the result, and M1's control has to read the flag off the
     very row it is about.
     """
-    return dict(
+    base = dict(
         targets=_targets(), angles_deg=[0.0], wavelengths=WL,
         contrast={"L": H, "H": L},
         design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
@@ -285,7 +285,9 @@ def _surrounded(**extra):
             {"name": "laminated", "stack": [
                 {"layers": [(G, 600.0, "G2")]}, {"design": "coat"}]},
         ],
-        pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"), **extra)
+        pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"))
+    base.update(extra)          # `extra` may REPLACE a default, not only add
+    return base
 
 
 @pytest.mark.parametrize("flag", ["optimize", "needle"])
@@ -329,6 +331,46 @@ def test_the_global_flag_map_still_loses_to_a_fixed_row():
     assert len(surrounding) == 1, [f["thickness"] for f in films]
     assert surrounding[0]["optimize"] is False, surrounding[0]
     assert any(f["optimize"] for f in films), "the map landed on nothing"
+
+
+def test_a_permuted_spec_roster_refuses_at_the_run_door():
+    """M7 (review PB, 0.7.7): the same names in a different order.
+
+    A demand's environment is a POSITION in the roster: the tag is
+    resolved when the spec is compiled and the names are discarded, so
+    for a long time the only thing binding a spec to a design was
+    `n_envs` -- a COUNT. A permuted roster has no shape error at either
+    gate (every name exists, the count matches) and the run completed,
+    scoring each demand against the other environment's surroundings:
+    measured on the 0.7.5 wheel at 8523.676912295265 where the correct
+    pairing gives 19876.13664037235. A typo always refused; a
+    permutation is the case nobody could see.
+    """
+    spec = build_merit_spec(_targets(), environments=["laminated", "bare"])
+    msg = _refuses(lambda: run_needle(**_surrounded(targets=spec)),
+                   "laminated, bare", "bare, laminated", "POSITION")
+    # The way out is named, because writing the list twice is what the
+    # docs used to recommend for reuse.
+    assert "TargetCollection" in msg, msg
+
+
+def test_a_matching_spec_roster_is_the_collection_path_on_the_bit():
+    """M7's other half: the check is additive or it is a regression.
+
+    Recording the roster must not move a single bit of the answer, and
+    the safe spelling -- handing the `TargetCollection` to the run door
+    and letting it build the spec from the request, which makes the two
+    rosters the same object -- must stay exactly equivalent to writing a
+    matching roster out by hand. Compared on the bits for the same reason
+    the document/keyword twin is: a tolerance would hide the drift that
+    matters.
+    """
+    spec = build_merit_spec(_targets(), environments=["bare", "laminated"])
+    by_spec = run_needle(**_surrounded(targets=spec))
+    by_collection = run_needle(**_surrounded())
+    assert _hex(by_spec["final_mf"]) == _hex(by_collection["final_mf"]), (
+        f"spec {_hex(by_spec['final_mf'])} "
+        f"!= collection {_hex(by_collection['final_mf'])}")
 
 
 def test_duplicate_film_names_refuse_because_a_name_is_an_identity():

@@ -5,6 +5,44 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.7] - M7: the merit spec remembers its roster
+
+### Fixed
+- A pre-built `MeritSpec` whose environment roster is in a different
+  order from the design request's now refuses at the run door instead of
+  scoring every demand against the wrong surroundings (review PB, M7).
+  A demand's environment is a POSITION in the roster — `resolve_env`
+  turns each `environment=` tag into an index at compile time and the
+  names were then discarded, leaving `n_envs` (a COUNT) as the only
+  thing binding a spec to a design. A typo always refused, early, at
+  `build_merit_spec`; a permutation has no shape error at either gate,
+  and the run completed: measured on the 0.7.5 wheel at
+  `8523.676912295265` where the correct pairing gives
+  `19876.13664037235`, two environments that differ by two orders of
+  magnitude in cover thickness with asymmetric demands.
+- `MeritSpec` carries `env_names` with `env_names()` / `set_env_roster()`;
+  `compile_merit_spec` records the roster **only when the target set
+  named one**, and `set_n_envs` refuses a count that contradicts a
+  recorded roster. `run_environments` compares names position by
+  position when it has them and refuses with both lists and the way out.
+
+### Unchanged on purpose
+- A spec whose target set named no environments records nothing and
+  keeps the count check alone. The alternative — recording the synthetic
+  `["default"]` roster — would newly refuse every untagged
+  single-environment request whose design environment is called anything
+  else, which is most of them. Twinned: a matching roster is bit-equal
+  to the unrostered spec in Rust and to the `TargetCollection` path in
+  Python, and `env_names()` stays empty for a set that named nothing.
+
+### Changed
+- `run_needle`'s `environments` docstring and
+  `docs/spectralweave-target-kinds.md` described the positional binding
+  as a live hazard with "pass the collection, not a pre-built spec";
+  both now describe the refusal and say exactly how narrow it is (name
+  your environments in both places and a mismatch refuses; name them in
+  neither and nothing changes).
+
 ## [0.7.6] - M1: a per-film override cannot free a surrounding
 
 ### Fixed

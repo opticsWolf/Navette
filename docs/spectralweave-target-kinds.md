@@ -182,30 +182,39 @@ typo has no shape error of its own: it would silently resolve to some
 other environment and the run would report a merit for a coating nobody
 described.
 
-**After resolution the roster is gone, so ORDER is the binding — pass
-the collection, not a pre-built spec.** Resolution turns a name into an
-index and the compiled `MeritSpec` keeps only `n_envs`, not the names.
-The run door can therefore check that the spec and the design agree on
-the *count* of environments, and nothing more. A roster written in a
-different order in the two places passes that check and silently scores
-every demand against the wrong surroundings:
+**ORDER is the binding, and since 0.7.7 the run door checks it.**
+Resolution turns a name into an index, so a demand's environment is a
+*position* in the roster. A compiled spec used to keep only `n_envs`,
+which let the run door check the environment *count* and nothing more —
+and a roster written in a different order in the two places passed that
+check and scored every demand against the wrong surroundings:
 
 ```python
 spec = build_merit_spec(tc, environments=["laminated", "bare"])   # order A
 run_needle(design=..., environments=[bare_env, lam_env], targets=spec)
-#                                    ^ order B — accepted, wrong answer
+#                                    ^ order B — refuses since 0.7.7
 ```
 
-A *typo* does refuse, and refuses early, at `build_merit_spec`, because
-the tag is not in the roster it was handed. A *permutation* has no such
-shape error: both names exist, just at swapped indices.
+A *typo* always refused, and refused early, at `build_merit_spec`,
+because the tag is not in the roster it was handed. A *permutation* has
+no such shape error — both names exist, just at swapped indices — so it
+needed the names themselves: a spec compiled from a roster the caller
+wrote now carries it, and the run door compares it to the design's
+position by position, refusing with both lists.
 
-The safe spelling is to hand `run_needle` the `TargetCollection` itself
-and let it build the spec — it passes the request's own roster, so the
-two cannot disagree. Reuse a pre-built spec only across runs that pass the same
-`environments=` list in the same order. Making the run door compare
-names rather than counts (a roster on `MeritSpec`) is open work, not a
-property of the current build.
+The check is deliberately narrow. A spec whose target set named no
+environments records nothing and keeps the count check alone, because
+the synthetic one-entry roster is called `"default"` while the design's
+single environment is called whatever the request called it — recording
+that would refuse most untagged single-environment runs for no reason.
+So the guarantee is: **name your environments in both places and a
+mismatch refuses; name them in neither and nothing changes.**
+
+The safe spelling is still to hand `run_needle` the `TargetCollection`
+itself and let it build the spec — it passes the request's own roster, so
+the two cannot disagree and there is nothing to keep in step. Reusing a
+pre-built spec is now a supported thing to do rather than a thing to be
+careful about.
 
 **Absent means the first environment.** Every target set written before
 environments existed is therefore still meaningful and its JSON is

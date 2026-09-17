@@ -610,6 +610,24 @@ pub struct MeritSpec {
     /// every spec built by hand (the tests, the Rust consumers) is a
     /// single-environment spec.
     n_envs: usize,
+    /// M7 (review PB): the environment NAMES this spec was compiled
+    /// against, in roster order — when the request named them.
+    ///
+    /// After `compile_merit_spec` resolves every `environment=` tag to
+    /// an index the roster is discarded, so the only thing left binding
+    /// a spec to a design was `n_envs`: a COUNT. Two rosters with the
+    /// same names in a different order therefore matched, and every
+    /// demand scored against the wrong surroundings with no refusal
+    /// anywhere. Keeping the names lets the run door check the binding
+    /// it actually depends on.
+    ///
+    /// Empty means "not recorded", not "no environments": a spec built
+    /// by hand and every spec whose `TargetSet` named nothing leaves it
+    /// empty and keeps the count check alone. Recording names only when
+    /// the caller wrote some is what makes this additive — a K=1 request
+    /// whose demands carry no tag must keep resolving to environment 0
+    /// whatever that environment is called.
+    env_names: Vec<String>,
 }
 
 impl Default for MeritSpec {
@@ -619,6 +637,7 @@ impl Default for MeritSpec {
             targets: Vec::new(),
             color: Vec::new(),
             n_envs: 1,
+            env_names: Vec::new(),
         }
     }
 }
@@ -633,6 +652,43 @@ impl MeritSpec {
         self.n_envs
     }
 
+    /// The roster this spec was compiled against, or empty if the
+    /// request named no environments (M7).
+    ///
+    /// Empty is not an error and not a claim of zero environments: it
+    /// means the binding can only be checked by count, which is what
+    /// every caller before F2.4 got.
+    pub fn env_names(&self) -> &[String] {
+        &self.env_names
+    }
+
+    /// Record the roster, and with it the environment count (M7).
+    ///
+    /// Refuses an empty roster, an empty name and a duplicate: a name
+    /// that repeats would make a position comparison pass on a roster
+    /// whose own `resolve_env` is ambiguous, which is the quiet
+    /// wrong-surroundings result this exists to prevent.
+    /// `compile_merit_spec` already refuses both upstream — refused here
+    /// too because this is the door a Rust consumer reaches.
+    pub fn set_env_roster(&mut self, names: &[String]) -> Result<(), String> {
+        if names.is_empty() {
+            return Err("MeritSpec: the environment roster must be non-empty \
+                        (leave it unset to keep the count check)"
+                .to_string());
+        }
+        for (i, name) in names.iter().enumerate() {
+            if name.is_empty() {
+                return Err(format!("MeritSpec: roster[{i}] is empty"));
+            }
+            if names[..i].contains(name) {
+                return Err(format!("MeritSpec: duplicate roster name {name:?}"));
+            }
+        }
+        self.set_n_envs(names.len())?;
+        self.env_names = names.to_vec();
+        Ok(())
+    }
+
     /// Declare the environment count, before any demand is added.
     ///
     /// Refuses zero (there is always at least the default environment)
@@ -643,6 +699,18 @@ impl MeritSpec {
     pub fn set_n_envs(&mut self, n: usize) -> Result<(), String> {
         if n == 0 {
             return Err("MeritSpec: n_envs must be >= 1".to_string());
+        }
+        // M7: a recorded roster IS the count. Letting the two disagree
+        // would leave the run door checking a name list of one length
+        // against a design of another, and reporting whichever mismatch
+        // it happened to test first.
+        if !self.env_names.is_empty() && self.env_names.len() != n {
+            return Err(format!(
+                "MeritSpec: n_envs={n} contradicts the recorded roster of {} \
+                 ({}) - set the roster instead",
+                self.env_names.len(),
+                self.env_names.join(", ")
+            ));
         }
         let used = self
             .targets

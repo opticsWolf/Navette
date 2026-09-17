@@ -321,6 +321,25 @@ pub fn run_environments(
             envs.names().join(", ")
         ));
     }
+    // M7 (review PB): the count matching proves nothing about WHICH
+    // environment each demand scores against - a demand's `env_idx` is a
+    // POSITION in this list, resolved when the spec was compiled and
+    // unrecoverable afterwards. A spec that remembers its roster gets the
+    // binding checked; one that does not keeps the count check above,
+    // which is every pre-F2.4 caller.
+    let named = spec.env_names();
+    if !named.is_empty() && named != envs.names() {
+        return Err(format!(
+            "run_environments: the merit spec was compiled against \
+             environments ({}) but the design compiles to ({}) - a demand's \
+             environment is a POSITION in that list, so this scores every \
+             demand against the wrong surroundings. Pass the same roster in \
+             the same order, or hand the TargetCollection to the run door \
+             and let it build the spec from the request",
+            named.join(", "),
+            envs.names().join(", ")
+        ));
+    }
     if k > 1 {
         let mut blocked: Vec<&str> = Vec::new();
         if cfg.enable_cleanup {

@@ -729,7 +729,17 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     }
 
     let mut spec = MeritSpec::new();
-    spec.set_n_envs(roster.len())?;
+    // M7 (review PB): record the NAMES when the request named them, so
+    // the run door can compare the binding it depends on instead of
+    // comparing a count. When it named none the roster here is the
+    // synthetic `[DEFAULT_ENV]` -- recording that would newly refuse
+    // every untagged K=1 request whose design environment is called
+    // something else, so only a caller-written roster is recorded.
+    if set.environments.is_empty() {
+        spec.set_n_envs(roster.len())?;
+    } else {
+        spec.set_env_roster(&roster)?;
+    }
     let mut keys: BTreeMap<(u64, String), u32> = BTreeMap::new();
     let mut get_key = |spec: &mut MeritSpec, angle: f64, curve: &str| -> u32 {
         let k = (angle.to_bits(), curve.to_string());
@@ -993,11 +1003,71 @@ mod tests {
         spec.add_target(t.clone()).unwrap();
         let e = spec.set_n_envs(1).unwrap_err();
         assert!(e.contains("orphan"), "{e}");
+
+        // M7: a recorded roster IS the count, so the two cannot be made
+        // to disagree from either side.
+        spec.set_env_roster(&["bare".to_string(), "lam".to_string()])
+            .unwrap();
+        assert_eq!(spec.env_names(), ["bare", "lam"]);
+        let e = spec.set_n_envs(3).unwrap_err();
+        assert!(e.contains("contradicts") && e.contains("bare, lam"), "{e}");
+        // Still 2: a refused declaration changed nothing.
+        assert_eq!(spec.n_envs(), 2);
         assert!(spec.set_n_envs(0).unwrap_err().contains(">= 1"));
 
         t.env_idx = 0;
         spec.add_target(t).unwrap();
         assert_eq!(spec.n_envs(), 2);
+    }
+
+    /// M7: `compile_merit_spec` records the roster it resolved against —
+    /// and records nothing when the caller named nothing.
+    ///
+    /// The second half is what makes the run door's name check additive.
+    /// A `TargetSet` with no roster compiles against the synthetic
+    /// `[DEFAULT_ENV]`; recording that would newly refuse every untagged
+    /// single-environment request whose design environment is called
+    /// something else, which is most of them.
+    #[test]
+    fn the_compile_records_a_written_roster_and_only_a_written_one() {
+        let set = TargetSet {
+            environments: vec!["bare".to_string(), "laminated".to_string()],
+            spectral: vec![SpectralTarget {
+                environment: Some("laminated".to_string()),
+                ..spec_target()
+            }],
+            ..base_set()
+        };
+        let spec = compile_merit_spec(&set).unwrap();
+        assert_eq!(spec.env_names(), ["bare", "laminated"]);
+        assert_eq!(spec.n_envs(), 2);
+
+        let spec = compile_merit_spec(&base_set_with_one_target()).unwrap();
+        assert!(spec.env_names().is_empty(), "{:?}", spec.env_names());
+        assert_eq!(spec.n_envs(), 1);
+
+        // And the accessor refuses by hand what the compile refuses
+        // upstream: an empty roster, an empty name, a duplicate.
+        let mut spec = MeritSpec::new();
+        assert!(spec.set_env_roster(&[]).unwrap_err().contains("non-empty"));
+        assert!(
+            spec.set_env_roster(&["".to_string()])
+                .unwrap_err()
+                .contains("roster[0]")
+        );
+        let e = spec
+            .set_env_roster(&["a".to_string(), "a".to_string()])
+            .unwrap_err();
+        assert!(e.contains("duplicate") && e.contains("\"a\""), "{e}");
+        assert!(spec.env_names().is_empty(), "a refusal recorded a roster");
+    }
+
+    /// One demand, no roster: the shortest set that compiles.
+    fn base_set_with_one_target() -> TargetSet {
+        TargetSet {
+            spectral: vec![spec_target()],
+            ..base_set()
+        }
     }
 
     #[test]

@@ -658,10 +658,15 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         and asking to optimize the design stays the ordinary thing to
         say. Requires ``design``; the roster must match
         the one given to ``build_merit_spec(environments=...)`` **in the
-        same order** — the core compares counts, not names (M7), so a
-        permuted roster is accepted and scores against the wrong
-        surroundings. Passing the ``TargetCollection`` instead of a
-        pre-built spec avoids that entirely.
+        same order**, because a demand's environment is a POSITION in
+        that list. Since 0.7.7 a mismatch refuses, naming both lists
+        (review PB, M7): a spec compiled from a roster the caller wrote
+        carries it, and the run door compares names, not just counts. A
+        spec whose target set named no environments keeps the count check
+        alone, so untagged single-environment runs are unaffected.
+        Passing the ``TargetCollection`` instead of a pre-built spec
+        keeps the two rosters the same object and remains the simplest
+        spelling.
 
     With ``design``/``environments`` the contrast map is keyed by FILM
     NAME (the design parameter's identity), not by index.

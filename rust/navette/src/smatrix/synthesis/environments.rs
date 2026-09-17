@@ -1368,6 +1368,84 @@ mod tests {
         );
     }
 
+    /// `env_spec`, plus the roster a compiled spec would carry (M7).
+    fn env_spec_named(names: &[&str]) -> MeritSpec {
+        let mut spec = env_spec(names.len());
+        let owned: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        spec.set_env_roster(&owned).unwrap();
+        spec
+    }
+
+    /// M7 (review PB): the same names in a different order are a
+    /// different binding, and the count cannot see it.
+    ///
+    /// A demand's `env_idx` is a POSITION in the roster, resolved when
+    /// the spec was compiled and gone afterwards. Before the spec kept
+    /// its names, `["lam", "bare"]` against a design compiling to
+    /// `["bare", "lam"]` matched on count and every demand scored
+    /// against the wrong surroundings — measured on the 0.7.5 wheel as a
+    /// completed run reporting 8523.676912295265 where the correct
+    /// pairing gives 19876.13664037235.
+    #[test]
+    fn the_run_refuses_a_permuted_roster_naming_both_orders() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let (envs, cmap, _) = build_environments(&two_env_req(2), &WL).unwrap();
+        let e = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[0.0],
+            &env_spec_named(&["e1", "e0"]),
+            thickness_only_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        // Both lists, in their own order, because "they differ" without
+        // saying how is a message that sends the reader back to the code.
+        assert!(e.contains("e1, e0"), "{e}");
+        assert!(e.contains("e0, e1"), "{e}");
+        assert!(e.contains("POSITION"), "{e}");
+        assert!(e.is_ascii(), "{e}");
+    }
+
+    /// M7's other half: a matching roster changes NOTHING.
+    ///
+    /// The check is additive or it is a regression — recording names
+    /// must not move a single bit of the answer, and a spec that records
+    /// none must keep running on the count check alone. Both spellings
+    /// of the same request, compared on the bit.
+    #[test]
+    fn a_matching_roster_is_bit_identical_to_an_unrostered_spec() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let run = |spec: &MeritSpec| {
+            let (envs, cmap, _) = build_environments(&two_env_req(2), &WL).unwrap();
+            run_environments(
+                envs,
+                cmap,
+                &WL,
+                &[0.0],
+                spec,
+                thickness_only_cfg(),
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(()),
+            )
+            .unwrap()
+            .0
+        };
+        let named = run(&env_spec_named(&["e0", "e1"]));
+        let plain = run(&env_spec(2));
+        assert_eq!(
+            named.final_mf.to_bits(),
+            plain.final_mf.to_bits(),
+            "{} vs {}",
+            named.final_mf,
+            plain.final_mf
+        );
+    }
+
     /// A spec compiled against a different roster than the design would
     /// score demands against surroundings nobody asked for.
     #[test]
