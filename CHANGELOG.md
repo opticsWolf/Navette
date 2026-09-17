@@ -5,6 +5,43 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.6] - M1: a per-film override cannot free a surrounding
+
+### Fixed
+- `per_film_flags[<surrounding's material code>] = {"optimize": true}`
+  (or `"needle"`) now refuses at compile instead of turning a fixed
+  surrounding into a free variable (review PB, M1). Flag application
+  runs global map -> row -> per-film override, and the override is keyed
+  by MATERIAL CODE, which a surrounding row carries just as a design row
+  does — so it landed after `FixedLayerRow::to_row` had forced both
+  flags false and undid it. Under K > 1 the LM then moved environment
+  0's copy of that surrounding against environment-0-only residuals
+  while every other environment kept the compiled thickness, and the
+  shared design film was driven to its clamp floor: measured on the
+  0.7.5 wheel at 500.0 -> 534.0298 nm, no error. The refusal names the
+  environment, the surrounding row (`{env}.fixed[{seg}][{i}]`), the flag,
+  the material code, and the two ways out.
+- The refusal lives one stage after `to_row`'s because that is the first
+  stage that can see the override: `compile_env_rows` now reports which
+  rows came from a fixed segment (films only — a half-space row in a
+  fixed segment never reaches the override) and `RowAssembly` carries
+  that set. Reported by the compile rather than recovered downstream
+  from the auto-naming pattern: a name is presentation, a forced flag is
+  a contract. The flat door passes an empty set, so it is unchanged —
+  there every row is a `LayerRow` with both flags defaulting true and
+  there is no invariant to protect.
+- `film_flags` (the global map) is deliberately NOT guarded: it is
+  applied before the row, so the forced false already wins. Measured as
+  a control, and twinned on both sides, because refusing it would break
+  every segmented run that asks to optimize its design.
+
+### Changed
+- `run_needle`'s `environments` docstring and
+  `docs/spectralweave-target-kinds.md` documented M1 as an open gap with
+  a "keep surroundings out of `per_film_flags`" instruction; both now
+  document the refusal, and the target-kinds section spells out why the
+  global map is exempt.
+
 ## [0.7.5] - F3.1: docs, worked examples, release
 
 ### Added

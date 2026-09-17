@@ -267,6 +267,70 @@ def test_a_design_section_without_environments_refuses(tmp_path):
              "design", "environments")
 
 
+def _surrounded(**extra):
+    """The file's request with a surrounding in EVERY environment.
+
+    Environment 0 carries one too, because the returned `stack` is
+    environment 0's: a surrounding only environment 1 has cannot be read
+    back off the result, and M1's control has to read the flag off the
+    very row it is about.
+    """
+    return dict(
+        targets=_targets(), angles_deg=[0.0], wavelengths=WL,
+        contrast={"L": H, "H": L},
+        design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
+        environments=[
+            {"name": "bare", "stack": [
+                {"layers": [(G, 300.0, "G")]}, {"design": "coat"}]},
+            {"name": "laminated", "stack": [
+                {"layers": [(G, 600.0, "G2")]}, {"design": "coat"}]},
+        ],
+        pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"), **extra)
+
+
+@pytest.mark.parametrize("flag", ["optimize", "needle"])
+def test_a_per_film_flag_cannot_free_a_fixed_surrounding(flag):
+    """M1 (review PB, 0.7.6): an override cannot undo a forced flag.
+
+    Flag application runs global map -> row -> per-film override, and the
+    override is keyed by MATERIAL CODE, which a surrounding row carries
+    just as a design row does. So the override used to land after the row
+    schema had forced `optimize`/`needle` false and undo it, in silence:
+    measured on 0.7.5, a 500 nm surrounding moved to 534.0298 nm as a
+    free variable that only environment 0's residuals pulled on, while
+    every other environment kept the compiled thickness and the shared
+    design film was driven to its clamp floor. A surrounding is not a
+    design variable, so this refuses instead -- at compile, before any
+    evaluation, the same refusal `to_row` gives for an explicit `true`.
+    """
+    msg = _refuses(
+        lambda: run_needle(**_surrounded(per_film_flags={"G": {flag: True}})),
+        "per_film_flags", flag, "FIXED surrounding row", "design segment")
+    # The row it names is the auto-generated surrounding, not only the
+    # material code the caller wrote: the caller addressed a material and
+    # has to be told which row that reached.
+    assert "bare.fixed[0][0]" in msg, msg
+
+
+def test_the_global_flag_map_still_loses_to_a_fixed_row():
+    """M1's control: `film_flags` was never the hole, and stays open.
+
+    The global map is applied BEFORE the row, so the row schema's forced
+    false wins on its own and no refusal is needed -- which matters,
+    because `film_flags={'optimize': True}` is the ordinary way to say
+    "optimize the design" and refusing it would break every segmented run
+    that asks for that. Measured, not assumed: the surrounding keeps its
+    compiled 300.0 nm and its false, and the design films are free.
+    """
+    out = run_needle(**_surrounded(film_flags={"optimize": True}))
+
+    films = out["stack"].to_dict()["films"]
+    surrounding = [f for f in films if abs(f["thickness"] - 300.0) < 1e-12]
+    assert len(surrounding) == 1, [f["thickness"] for f in films]
+    assert surrounding[0]["optimize"] is False, surrounding[0]
+    assert any(f["optimize"] for f in films), "the map landed on nothing"
+
+
 def test_duplicate_film_names_refuse_because_a_name_is_an_identity():
     """Two rows, one name: one parameter spelled twice.
 

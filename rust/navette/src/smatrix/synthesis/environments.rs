@@ -528,14 +528,23 @@ fn compile_slots(design: &BTreeMap<String, DesignSegmentCfg>) -> Result<Vec<Desi
 
 /// Validate one environment's segment list and flatten it to named rows.
 ///
-/// Returns the rows in assembly order plus, for each design slot that
-/// this environment carries, the authoring index the row landed at.
+/// Returns the rows in assembly order, the authoring index each design
+/// slot this environment carries landed at, and the NAMES of the rows
+/// that came from a fixed segment.
+///
+/// That third value is M1's fix (review PB). `to_row` forces
+/// `optimize`/`needle` false, but the assembler applies per-film
+/// overrides afterwards, so it needs to know which rows those flags were
+/// forced on. Reported from here, where the distinction is a fact of the
+/// compile, rather than recovered downstream from the auto-naming
+/// pattern — a name is presentation and a forced flag is a contract.
 fn compile_env_rows(
     env: &EnvironmentCfg,
     design: &BTreeMap<String, DesignSegmentCfg>,
     slots: &[DesignSlot],
-) -> Result<(Vec<(String, LayerRow)>, Vec<usize>), String> {
+) -> Result<(Vec<(String, LayerRow)>, Vec<usize>, HashSet<String>), String> {
     let mut rows: Vec<(String, LayerRow)> = Vec::new();
+    let mut fixed: HashSet<String> = HashSet::new();
     let mut refs: HashMap<&str, usize> = HashMap::new();
     // Authoring index per slot: films only, in the order the assembler
     // will see them. Half-space rows do not advance it.
@@ -552,11 +561,14 @@ fn compile_env_rows(
                 ));
             }
             (Some(layers), None) => {
-                for (i, fixed) in layers.iter().enumerate() {
+                for (i, layer) in layers.iter().enumerate() {
                     let name = fixed_name(&env.name, s, i);
-                    let row = fixed.to_row(&format!("{name:?}"))?;
+                    let row = layer.to_row(&format!("{name:?}"))?;
                     if row.layer_type == 1 {
+                        // Films only: a half-space row placed in a fixed
+                        // segment never reaches the per-film override.
                         film_idx += 1;
+                        fixed.insert(name.clone());
                     }
                     rows.push((name, row));
                 }
@@ -623,7 +635,7 @@ fn compile_env_rows(
         .into_iter()
         .map(|o| o.expect("exact-once check fills every slot"))
         .collect();
-    Ok((rows, at))
+    Ok((rows, at, fixed))
 }
 
 /// Compile a request into K assemblies plus the routing table.
@@ -714,9 +726,10 @@ pub fn build_environments(
     // copy of the spectra.
     let mut per_env_rows: Vec<Vec<(String, LayerRow)>> = Vec::with_capacity(req.environments.len());
     let mut per_env_slot_at: Vec<Vec<usize>> = Vec::with_capacity(req.environments.len());
+    let mut per_env_fixed: Vec<HashSet<String>> = Vec::with_capacity(req.environments.len());
     let mut nk = nk_base.clone();
     for env in &req.environments {
-        let (rows, at) = compile_env_rows(env, &req.design, &slots)?;
+        let (rows, at, fixed) = compile_env_rows(env, &req.design, &slots)?;
         for (name, row) in &rows {
             if name != &row.material_code {
                 // Auto-named surrounding: alias its name onto the
@@ -729,6 +742,7 @@ pub fn build_environments(
         }
         per_env_rows.push(rows);
         per_env_slot_at.push(at);
+        per_env_fixed.push(fixed);
     }
 
     // A design film whose material code happens to spell an auto-name
@@ -760,6 +774,7 @@ pub fn build_environments(
                 nk: &nk,
                 film_flags: &req.film_flags,
                 per_film_flags: &req.per_film_flags,
+                fixed_films: &per_env_fixed[e],
                 ambient_name: &req.ambient_name,
                 substrate_name: &req.substrate_name,
                 wavelengths,
@@ -2085,6 +2100,114 @@ mod tests {
         assert!(e.contains("bare.fixed[0][0]"), "{e}");
         assert!(e.contains("optimize/needle must be false"), "{e}");
         assert!(e.contains("not design variables"), "{e}");
+    }
+
+    /// M1 (review PB): the per-film override cannot re-open the
+    /// forced-false invariant on a surrounding.
+    ///
+    /// `to_row` refuses an explicit `optimize`/`needle` on a fixed row,
+    /// but flag application runs global map -> row -> per-film override
+    /// and the override is keyed by MATERIAL CODE — which a surrounding
+    /// row carries just as a design row does. Before this refusal the
+    /// override landed after the forced false and undid it, and under
+    /// K > 1 the LM then moved environment 0's copy of the surrounding
+    /// against environment-0-only residuals while every other
+    /// environment kept the compiled thickness. Measured on the 0.7.5
+    /// wheel: 500.0 -> 534.0298 nm, no refusal, and the shared film
+    /// driven to its clamp floor.
+    #[test]
+    fn a_per_film_override_cannot_free_a_fixed_surrounding() {
+        let two = || {
+            req(
+                vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+                vec![
+                    EnvironmentCfg {
+                        name: "bare".to_string(),
+                        stack: vec![fixed_seg(vec![fixed("G", 500.0, 1)]), design_seg("coat")],
+                    },
+                    EnvironmentCfg {
+                        name: "lam".to_string(),
+                        stack: vec![fixed_seg(vec![fixed("G", 1000.0, 1)]), design_seg("coat")],
+                    },
+                ],
+            )
+        };
+
+        for flag in ["optimize", "needle"] {
+            let mut r = two();
+            r.per_film_flags.insert(
+                "G".to_string(),
+                [(flag.to_string(), Value::Bool(true))]
+                    .into_iter()
+                    .collect(),
+            );
+            let e = build_environments(&r, &WL).unwrap_err();
+            // The environment, the row, the flag, the code, and what to
+            // do instead — the same five things `to_row`'s refusal names.
+            assert!(e.contains("bare"), "{flag}: {e}");
+            assert!(e.contains("bare.fixed[0][0]"), "{flag}: {e}");
+            assert!(e.contains(flag), "{flag}: {e}");
+            assert!(e.contains("per_film_flags"), "{flag}: {e}");
+            assert!(e.contains("FIXED surrounding row"), "{flag}: {e}");
+            assert!(e.contains("design segment"), "{flag}: {e}");
+            assert!(e.is_ascii(), "{flag}: {e}");
+        }
+
+        // The invariant is about `true`, not about addressing the
+        // material: `false` is a no-op and every other flag still lands.
+        let mut r = two();
+        r.per_film_flags.insert(
+            "G".to_string(),
+            [
+                ("optimize".to_string(), Value::Bool(false)),
+                ("needle".to_string(), Value::Bool(false)),
+                ("roughness".to_string(), Value::from(1.5)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let cover = &envs.stacks()[0].films()[0];
+        assert_eq!(cover.rough_val, 1.5, "the benign override did not land");
+        assert!(!cover.optimize && !cover.needle);
+
+        // And a DESIGN film stays addressable — its name IS the
+        // parameter's identity, so a flag on it is legitimate.
+        let mut r = two();
+        r.per_film_flags.insert(
+            "L".to_string(),
+            [("needle".to_string(), Value::Bool(false))]
+                .into_iter()
+                .collect(),
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let shared = &envs.stacks()[0].films()[1];
+        assert_eq!(&*shared.material, "L");
+        assert!(shared.optimize && !shared.needle);
+    }
+
+    /// M1's other half: the flat door is untouched by the new field.
+    ///
+    /// There every row is a `LayerRow` with both flags defaulting true,
+    /// so there is no forced-false invariant to protect and a per-film
+    /// override must keep working exactly as it did. This is the twin
+    /// that would fail if `fixed_films` were ever populated by inferring
+    /// from a name instead of being reported by the compile.
+    #[test]
+    fn the_flat_door_still_takes_a_per_film_override() {
+        let mut r = flat(vec![film("L", 100.0), film("H", 80.0)]);
+        r.per_film_flags.insert(
+            "L".to_string(),
+            [
+                ("optimize".to_string(), Value::Bool(true)),
+                ("needle".to_string(), Value::Bool(true)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let f = &envs.stacks()[0].films()[0];
+        assert!(f.optimize && f.needle);
     }
 
     #[test]

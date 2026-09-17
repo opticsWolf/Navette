@@ -252,17 +252,26 @@ per evaluation. Where the surroundings are thick and passive, an S-matrix
 embedding (solve the surroundings once, reuse the result) would remove
 most of that — it is a known follow-up, not part of v1.
 
-**Surroundings are fixed — with one open exception.** A `layers`
-segment's rows carry `optimize` and `needle` forced false, and an
-explicit `true` refuses at compile. A `per_film_flags` override does
-not go through that check: it is applied after the row and keyed by
-material code, so naming a surrounding's material there re-enables the
-flag. Under K > 1 the consequence is quiet — the LM moves environment
-0's copy of that surrounding against environment-0-only residuals, and
-every other environment keeps the compiled thickness, so the
-"one design, several surroundings" contract is broken without a
-refusal. Keep surroundings out of `per_film_flags` until the assembler
-refuses them (review PB, M1).
+**Surroundings are fixed, by two refusals.** A `layers` segment's
+rows carry `optimize` and `needle` forced false, and an explicit `true`
+refuses at compile. A `per_film_flags` override is keyed by material
+code and applied *after* the row, so it could undo that forced false;
+since 0.7.6 the assembler refuses it there instead, naming the
+surrounding row it reached (`{env}.fixed[{seg}][{i}]`) rather than only
+the material code the caller wrote. The refusal is worth its own
+message because the failure it replaces was quiet: under K > 1 the LM
+moved environment 0's copy of the surrounding against
+environment-0-only residuals while every other environment kept the
+compiled thickness — "one design, several surroundings" broken with no
+error (review PB, M1; measured at 500.0 -> 534.0298 nm, with the shared
+design film driven to its clamp floor).
+
+`film_flags`, the global map, was never part of this and is untouched:
+it is applied *before* the row, so the forced false wins on its own.
+`film_flags={"optimize": True}` remains the ordinary way to say
+"optimize the design" on a segmented run. If you meant to free a layer
+that a surrounding currently holds, move it into a design segment —
+then every environment shares it, which is what a design variable is.
 
 **What a joint run gives up.** While K > 1 the thin-layer floor is a hard
 bound on the optimizer rather than a post-hoc sweep, and the sweep clamps

@@ -509,7 +509,19 @@ pub(crate) struct RowAssembly<'a> {
     /// Per-film overrides stay keyed by MATERIAL CODE, not by name: the
     /// caller addresses a material, and an auto-generated surrounding
     /// name is not something a request can have written down.
+    ///
+    /// Which is exactly why `fixed_films` below exists (M1): a material
+    /// code names a surrounding row just as well as a design one.
     pub per_film_flags: &'a BTreeMap<String, BTreeMap<String, Value>>,
+    /// FILM NAMES that came from a fixed environment segment — the rows
+    /// whose `optimize`/`needle` the schema forced false.
+    ///
+    /// Empty on the flat door, which has no surroundings to protect:
+    /// there every row is a `LayerRow` and both flags default true, so
+    /// there is no invariant for an override to re-open. The segmented
+    /// door fills it from the compile, where the distinction is known
+    /// for certain rather than inferred from a name.
+    pub fixed_films: &'a HashSet<String>,
     pub ambient_name: &'a str,
     pub substrate_name: &'a str,
     pub wavelengths: &'a [f64],
@@ -582,6 +594,35 @@ pub(crate) fn split_and_build_films(
         apply_flag_map(&mut layer, ctx.film_flags)?;
         apply_row(&mut layer, row)?;
         if let Some(over) = ctx.per_film_flags.get(&row.material_code) {
+            // M1 (review PB): this override lands AFTER `apply_row`, so
+            // on a fixed surrounding it would undo the forced false that
+            // `FixedLayerRow::to_row` just applied — and under K > 1 the
+            // LM would then move environment 0's copy of that
+            // surrounding against environment-0-only residuals while
+            // every other environment kept the compiled thickness. Same
+            // refusal as `to_row`'s, one stage later, because this is
+            // the stage that can see the override. (`ctx.film_flags`
+            // needs no such guard: it is applied BEFORE the row, so the
+            // row wins there.)
+            if ctx.fixed_films.contains(name.as_str()) {
+                for flag in ["optimize", "needle"] {
+                    if let Some(v) = over.get(flag)
+                        && as_bool(v, flag)?
+                    {
+                        return Err(format!(
+                            "per_film_flags[{:?}][{flag:?}] = true would make \
+                             {name:?} a free variable, and it is a FIXED \
+                             surrounding row - surroundings are not design \
+                             variables, and an override cannot undo the row \
+                             schema that forced both flags false. Put the \
+                             flag on the design film you meant, or move this \
+                             film into a design segment so every environment \
+                             shares it.",
+                            row.material_code
+                        ));
+                    }
+                }
+            }
             apply_flag_map(&mut layer, over)?;
         }
         // F1.5: a gradient row's spec is gated here (the same rule
@@ -636,6 +677,10 @@ pub fn build_design(
     let (amb, sub, films) = split_and_build_films(
         &named,
         &RowAssembly {
+            // The flat door has no fixed segments: every row is a
+            // `LayerRow` whose flags default true, so there is no
+            // forced-false invariant here for M1 to protect.
+            fixed_films: &HashSet::new(),
             nk: &nk_table,
             film_flags: &req.film_flags,
             per_film_flags: &req.per_film_flags,
