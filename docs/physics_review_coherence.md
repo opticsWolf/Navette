@@ -38,7 +38,7 @@ is either bypassed or read with the wrong object.
 | # | Finding | Sev | § |
 |---|---------|-----|---|
 | C1 | The synthesis pipeline ignores `coherent: false` entirely — it solves every design as one coherent block | **P1** | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
-| C2 | Mode A's Stokes vector mixes a front-block cross term with total intensities; Mode A is the default | **P1** | §3.2 |
+| C2 | Mode A's Stokes vector mixes a front-block cross term with total intensities; Mode A is the default | **P1** | §3.2 — **FIXED** `6380ca0` (0.7.10) |
 | C3 | An incoherent flag carries no thickness sanity check — `d = 0` decoheres | P2 | §3.3 |
 | C4 | Gain media are silently mangled, differently in the coherent and incoherent paths | P2 | §3.4 |
 | C5 | Coherence flags on the half-spaces are silently ignored | P3 | §3.5 |
@@ -328,6 +328,20 @@ them. Instead:
 3. Either way, change the Python default to `COHERENCY_MATRIX`, or document
    in `CoherenceMode` that `FRONT_BLOCK`'s ellipsometric outputs are a legacy
    front-surface convention and not the stack's.
+
+**As applied** — `6380ca0`, 0.7.10. Option 1, as a refusal rather than a
+warning, at the two doors (`ScatterMatrix.compute` and
+`solver::solve_arrays`) with the engine untouched; option 2 was rejected as
+the house anti-pattern (silently answering a different question than the one
+asked), and option 3's default flip was rejected because `FRONT_BLOCK`
+matches the legacy port by a remediation-plan decision and flipping it would
+re-litigate that for stored results — with the refusal in place the default
+is no longer dangerous, only loud. Option 3's second half shipped: the
+`CoherenceMode` docstring now says it. What made refusal cheap is that the
+parity port enters through the raw `core_engine` pyfunction, below both
+doors — this section's "the engine already resolves `need_cross` in
+`resolve_plan`" would have put the check inside the engine and killed it.
+See r2 §5 item 3.
 
 ### 3.3 C3 — an incoherent flag carries no thickness sanity check (P2)
 

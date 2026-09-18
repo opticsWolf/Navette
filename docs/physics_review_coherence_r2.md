@@ -1,8 +1,9 @@
 # Physics review — coherent / incoherent propagation, round 2
 
 STATUS: independent review round 2 of `docs/physics_review_coherence.md`
-(C1-C7). **Applied so far: C8** (`47b2e18`, 0.7.8) and **C1's refusal
-half** (`f6f959d`, 0.7.9). C2-C7, C9 and C10 are not.
+(C1-C7). **Applied so far: C8** (`47b2e18`, 0.7.8), **C1's refusal half**
+(`f6f959d`, 0.7.9), and **C2 + C9** (`6380ca0`, 0.7.10). C3-C7 and C10 are
+not.
 This round re-verified every round-1 finding
 against the code at 0.7.7 (`dev_phase_physics`, review round 1 committed as
 `903fda7`), extended the scope to every door that reaches a solve, and ran
@@ -21,7 +22,7 @@ New findings:
 | # | Finding | Sev | § |
 |---|---------|-----|---|
 | C8 | The coherence flag is an unchecked `i32` with an `== 1` gate: any other non-zero value partitions the stack **without** the attenuation element — a flag typo silently erases the flagged layer's absorption | **P2** | §4.1 — **FIXED** `47b2e18` (0.7.8) |
-| C9 | Mode A's `cross_T` is a third, undocumented object (product of per-block `t_p·t_s*` with no bounce series) — C2's disposition must cover it, and the record should state what it is | P3 | §4.2 |
+| C9 | Mode A's `cross_T` is a third, undocumented object (product of per-block `t_p·t_s*` with no bounce series) — C2's disposition must cover it, and the record should state what it is | P3 | §4.2 — **RECORDED** `6380ca0` (0.7.10) |
 | C10 | Guided-mode tooling (`smatrix/optimizer.rs`) is single-block by construction — correct for mode search, but silent; folds into the C6 doc sweep | P3 | §4.3 |
 
 Round-1 findings, as verified this round:
@@ -29,7 +30,7 @@ Round-1 findings, as verified this round:
 | # | Round-1 claim | Verdict | § |
 |---|---------------|---------|---|
 | C1 | synthesis ignores `coherent: false` | **CONFIRMED**, sharpened: the honored path already ships | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
-| C2 | Mode A Stokes mixes objects | **CONFIRMED** + cross_T precision | §3.2 |
+| C2 | Mode A Stokes mixes objects | **CONFIRMED** + cross_T precision | §3.2 — **FIXED** `6380ca0` (0.7.10) |
 | C3 | no thickness sanity for flagged layers | **CONFIRMED** | §3.3 |
 | C4 | gain mangled differently per path | **CONFIRMED**, coherent path erases the sign entirely | §3.4 |
 | C5 | half-space flags silently ignored | **CONFIRMED** (and the docstring invites it) | §3.5 |
@@ -185,6 +186,16 @@ Two scope notes round 1 did not have:
   no DOP/DELTA/STOKES observables), so C2 is engine-door-only today —
   which is exactly why it can be fixed by refusal without touching
   parity.
+
+**As applied** — `6380ca0`, 0.7.10. Refusal at both engine doors, on
+`FRONT_BLOCK ∧ (mask & NEEDS_CROSS) ∧ any INTERIOR flag`. The second scope
+note above is why the Rust half sits in `solver::solve_arrays`: that is
+what `solve_structure` and the raw FFI both reach, so the Structure door is
+covered by the same check. Interior-only keeps C2 from contradicting C5 —
+a stack flagged on its half-spaces alone still answers, because the sweep
+never consults those flags. The engine is untouched, and
+`test_the_engine_still_computes_what_the_doors_refuse` fails first if the
+check ever leaks inward.
 
 ### 3.3 C3 — no thickness sanity on flagged layers (P2) — CONFIRMED
 
@@ -397,6 +408,15 @@ cross-channel observables (refuse/warn) must cover `CROSS_T` as well as
 the R6.2 clamp comment, whose "for a single coherent block" scope
 condition round 1 already flagged.
 
+**As applied** — `6380ca0`, 0.7.10. Recorded, not changed. `CROSS_T` is
+refused with the other eleven bits, and
+`test_mode_a_and_mode_b_cross_terms_are_different_objects` pins the two
+values as distinct objects (alongside the A/B photometric identity, so the
+difference cannot be read as a photometric disagreement). The record
+sentence went where this section said it should, into the R6.2 clamp
+comment, which now states its "for a single coherent block" scope and notes
+that Mode A on a flagged stack produces a DEFICIT `.min(1.0)` cannot see.
+
 ### 4.3 C10 — guided-mode tooling is single-block by construction (P3)
 
 `smatrix/optimizer.rs` (landscape scan, Nelder-Mead minimizer) solves
@@ -425,10 +445,20 @@ ordered by silent-wrongness per line of change:
    rows where the engine ignores the flag too (C5), so a flag there is
    the same no-op on every door. The multiblock implementation (round 1
    option 2) stays a phase, unblocked by this.
-3. **C2 (refuse/warn)** — NEEDS_CROSS observables under Mode A refuse or
-   warn loudly when an interior flag exists; fix the R6.2 clamp comment's
-   scope sentence and the `loom_matrix.py:621` comment in the same
-   commit; record C9's cross_T object there.
+3. **C2 (refuse/warn)** — **DONE**, `6380ca0` (0.7.10). Refuse, not warn.
+   The deciding fact is that the legacy parity port enters through the raw
+   `core_engine` pyfunction (`Solver::solve`), BELOW both doors, so a
+   door-level refusal at `ScatterMatrix.compute` and `solver::solve_arrays`
+   costs it nothing and the engine is untouched — a refusal inside
+   `solve_point`/`resolve_plan` would have killed it. Predicate:
+   `FRONT_BLOCK ∧ (mask & NEEDS_CROSS) ∧ any INTERIOR flag`, all twelve
+   bits as one rule, interior-only so it cannot contradict C5.
+   `NEEDS_CROSS` is exported and bound rather than re-declared Python-side.
+   The R6.2 clamp comment, the `loom_matrix.py:621` comment and C9's
+   cross_T record landed in the same commit, as did the
+   `ellipsometry`/`stokes`/`complex_amplitudes` caveats (the start of C6).
+   The battery passed without touching an existing test — the signal that
+   the refusal is narrow.
 4. **C4** — shared explanation constant + door refusal for `Im(n) < 0`.
 5. **C3 + C5 + C6 + C10** — the doc/warning sweep: thickness warning at
    construction, half-space-flag sentence beside `solver.rs:1130`, four
