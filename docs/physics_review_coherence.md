@@ -40,7 +40,7 @@ is either bypassed or read with the wrong object.
 | C1 | The synthesis pipeline ignores `coherent: false` entirely — it solves every design as one coherent block | **P1** | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
 | C2 | Mode A's Stokes vector mixes a front-block cross term with total intensities; Mode A is the default | **P1** | §3.2 — **FIXED** `6380ca0` (0.7.10) |
 | C3 | An incoherent flag carries no thickness sanity check — `d = 0` decoheres | P2 | §3.3 |
-| C4 | Gain media are silently mangled, differently in the coherent and incoherent paths | P2 | §3.4 |
+| C4 | Gain media are silently mangled, differently in the coherent and incoherent paths | P2 | §3.4 — **FIXED** `5b59aed` (0.7.11) |
 | C5 | Coherence flags on the half-spaces are silently ignored | P3 | §3.5 |
 | C6 | `ellipsometry()` / `stokes()` / `complex_amplitudes()` carry no front-block caveat, while `dispersion()` does | P3 | §3.6 |
 | C7 | The incoherent cascade has no independent validation — parity is against a port of itself | P3 | §3.7 |
@@ -404,6 +404,16 @@ model to copy.
 **Disposition.** Refuse `Im(n) < 0` at the `ScatterMatrix` / `solve_arrays`
 door with a shared explanation constant, exactly as the absorbing-ambient
 rule is handled.
+
+**As applied** — `5b59aed`, 0.7.11. Refused, with the shared constant
+(`GAIN_MEDIUM_EXPLANATION`) this section asked for, but one level deeper
+than "at the door": `Solver::assemble`, which both named doors and the raw
+FFI pass through, so the rule is written once rather than three times. The
+Structure door named here as the guarded one now carries the same text —
+its "check provider data" said nothing about what the other paths would
+have done with the number. The free `needle_gradient` bypasses the
+constructor and carries its own copy, over the needle material as well as
+the host stack. See r2 §5 item 4 for why this could go deeper than C2's.
 
 ### 3.5 C5 — half-space coherence flags are silently ignored (P3)
 

@@ -2,8 +2,8 @@
 
 STATUS: independent review round 2 of `docs/physics_review_coherence.md`
 (C1-C7). **Applied so far: C8** (`47b2e18`, 0.7.8), **C1's refusal half**
-(`f6f959d`, 0.7.9), and **C2 + C9** (`6380ca0`, 0.7.10). C3-C7 and C10 are
-not.
+(`f6f959d`, 0.7.9), **C2 + C9** (`6380ca0`, 0.7.10) and **C4**
+(`5b59aed`, 0.7.11). C3, C5, C6, C7 and C10 are not.
 This round re-verified every round-1 finding
 against the code at 0.7.7 (`dev_phase_physics`, review round 1 committed as
 `903fda7`), extended the scope to every door that reaches a solve, and ran
@@ -32,7 +32,7 @@ Round-1 findings, as verified this round:
 | C1 | synthesis ignores `coherent: false` | **CONFIRMED**, sharpened: the honored path already ships | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
 | C2 | Mode A Stokes mixes objects | **CONFIRMED** + cross_T precision | §3.2 — **FIXED** `6380ca0` (0.7.10) |
 | C3 | no thickness sanity for flagged layers | **CONFIRMED** | §3.3 |
-| C4 | gain mangled differently per path | **CONFIRMED**, coherent path erases the sign entirely | §3.4 |
+| C4 | gain mangled differently per path | **CONFIRMED**, coherent path erases the sign entirely | §3.4 — **FIXED** `5b59aed` (0.7.11) |
 | C5 | half-space flags silently ignored | **CONFIRMED** (and the docstring invites it) | §3.5 |
 | C6 | caveat on the wrong docstrings | **CONFIRMED** | §3.6 |
 | C7 | no independent incoherent validation | **CONFIRMED** | §3.7 |
@@ -249,6 +249,17 @@ pattern (`optics_core.rs:169`, pinned by
 `test_both_doors_explain_it_the_same_way`), extended to cover the
 needle-kernel flip sites by the same door-level refusal.
 
+**As applied** — `5b59aed`, 0.7.11. The needle-kernel flip sites are
+covered, as this section asked, but by a check in the free
+`needle_gradient` rather than by the Solver's: that entry point takes a raw
+flat cache and never builds a `Solver`, the same gap C8's canonicalization
+had to close twice. It checks `needle_n_per_wav` as well as the host stack
+— the needle's own index reaches `needle_operator.rs:248` and its spacer
+tau reaches `:1290`, so a gain needle is mangled exactly like a gain layer.
+The measurement above is what the message quotes: `A = -4.3e-5`, and the
+bit-identical gain/loss pair is why the explanation says the sign is erased
+rather than mis-booked.
+
 ### 3.5 C5 — half-space flags are silently ignored (P3) — CONFIRMED
 
 `core_engine.rs:394/:595` — the block sweep starts at
@@ -459,7 +470,21 @@ ordered by silent-wrongness per line of change:
    `ellipsometry`/`stokes`/`complex_amplitudes` caveats (the start of C6).
    The battery passed without touching an existing test — the signal that
    the refusal is narrow.
-4. **C4** — shared explanation constant + door refusal for `Im(n) < 0`.
+4. **C4** — **DONE**, `5b59aed` (0.7.11). Refused, with one shared
+   explanation (`optics_core::GAIN_MEDIUM_EXPLANATION`) behind three
+   sites. The check went DEEPER than this section asked for, and the
+   contrast with C2 is the reason: C2's had to stay at the doors because
+   the legacy port reaches Mode A from below, whereas nothing below the
+   doors computes anything about gain worth preserving — so it sits at
+   `Solver::assemble`, the C8 choke point, and covers `ScatterMatrix`,
+   `solve_arrays`/`solve_structure` and the raw FFI as one rule.
+   `test_the_engine_refuses_gain_too_unlike_the_cross_channel` pins that
+   difference. The free `needle_gradient` bypasses `assemble` (the C8 gap
+   again) so it carries its own check, over the host cache AND the needle
+   material. The Structure door — the one that was already guarded — now
+   carries the same text instead of "check provider data". No tolerance
+   band: `-0.0` passes because `-0.0 < 0.0` is false, and anything truly
+   negative is a data problem the Structure door has always reported.
 5. **C3 + C5 + C6 + C10** — the doc/warning sweep: thickness warning at
    construction, half-space-flag sentence beside `solver.rs:1130`, four
    Python docstrings, one optimizer docstring line.
