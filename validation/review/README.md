@@ -1,6 +1,7 @@
 # Independent verification harnesses
 
-Reproduction scripts for `docs/code_review.md` (sections 19–23). Every
+Reproduction scripts for `docs/code_review.md` (sections 19–23) and for
+`docs/physics_review_coherence.md` (C7). Every
 check here is deliberately **independent of the parity reference** — the
 oracles are finite differences through the real solver, hand-rolled
 Python reimplementations, analytic closed forms, and first-principles
@@ -16,6 +17,7 @@ quadrature. The `loom` reference is never imported.
 | `tauc_check.py` | §23 | Tauc–Lorentz ε₂ closed form + ε₁ via independent pair-sampled PV Kramers–Kronig |
 | `kk_validate.py` | §23 | the PV-KK quadrature itself, validated against an analytic Lorentz oscillator ε₁ |
 | `kk_conv.py` | §23 | h-refinement study attributing the ~1 % near-resonance residual to the FFT-KK grid, not the quadrature |
+| `incoherent_check.py` | coherence review C7 | the incoherent cascade against three oracles that are not Navette: the lossless-slab closed form `R = 2R₁/(1+R₁)`, bit-exact thickness independence over three decades, and the phase average itself (the flagged answer IS the coherent answer averaged over one round-trip period) — on R/T and on the Stokes vector, where mode A's refused cross channel is measured missing it |
 
 Run from the repo root with the project venv:
 

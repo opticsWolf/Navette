@@ -5,6 +5,71 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.13] - C7: the incoherent cascade, checked against something that is not itself
+
+### Added
+- **C7.** `validation/review/incoherent_check.py`, the eleventh review
+  harness. Everything that pinned the incoherent path before this pinned
+  it against a copy of itself: `parity/smatrix/refs/loom_matrix.py` is a
+  port of the same block sweep citing the same paper,
+  `intensity_path_matches_full_path_bitwise` compares two routes through
+  one algorithm, and `test_physics_mirror.py` translates the Rust tests
+  through the Python API. All useful; none of them evidence that the
+  physics is right. Four checks against oracles that do not know how
+  Navette works:
+  - the lossless-slab closed form `R = 2*R1/(1 + R1)`, `T = (1 - R1)/(1 + R1)`
+    — the geometric sum with the phase discarded — matched to 1e-12 by
+    both `FRONT_BLOCK` and `COHERENCY_MATRIX`;
+  - bit-exact thickness independence from 10 µm to 3.7 mm, asserted on
+    `float.hex()` rather than a tolerance;
+  - the phase average on R and T, at normal and 45° incidence — the
+    *definition* of an incoherent layer, so nothing about the block sweep
+    is assumed — matching to 8e-17 / 1e-15, and to 7e-07 on an absorbing
+    slab with `k*d` held invariant;
+  - the same average on the Stokes vector, which is the check that would
+    have caught C2.
+  Each part carries a control that fails it.
+- `validation/smoke/test_incoherent_physics.py` (17 tests), the regression
+  twins of the harness. They use 64 phase samples rather than the
+  harness's 2048: the coherent answer is analytic and periodic in the
+  round-trip phase, so an equispaced Riemann sum converges geometrically —
+  8 samples land at 1.7e-07, 16 already at 5e-15. The whole file runs in
+  0.18 s, and `test_the_phase_average_converges_geometrically` pins the
+  rate so a future discontinuity in the sweep cannot quietly turn the
+  averages into approximations.
+
+### Fixed
+- Two traps in the measurement itself are now pinned as tests, because
+  both were live mistakes and both look like engine bugs:
+  - **`k*d`.** Sweeping `d` to turn the phase also sweeps
+    `tau = exp(-2*Im(beta))`, so the naive absorbing average is taken over
+    a stack whose absorption moves underneath it — it disagrees at 3.4e-04
+    and is measuring itself. The test asserts both that holding `k*d`
+    fixed works *and* that the naive version fails, so the correction
+    cannot be deleted as redundant.
+  - **DOP.** `S0..S3` are bilinear in the fields, so incoherent
+    superposition averages *them*; `DOP = sqrt(S1^2+S2^2+S3^2)/S0` is a
+    nonlinear function OF them. The first draft of part D averaged DOP and
+    reported a 5.8e-03 "disagreement" that was entirely its own: this
+    stack is non-depolarizing, so every coherent sample has DOP = 1
+    exactly and their mean is 1, while the averaged Stokes vector has
+    DOP = 0.994186. That gap is the physics — partial depolarization is
+    what incoherent superposition produces — and mode B reproduces it to
+    1e-16.
+
+### Measured
+- **C2, from the definition rather than from a disagreement.** Reaching
+  past the 0.7.10 refusal through the raw engine, `FRONT_BLOCK`'s cross
+  channel misses the phase average by 2.26e-02 (`S2_R`) and 3.91e-03
+  (`S3_R`) — *while its `S0_R` and `S1_R` pass the very same average to
+  1e-16*. The intensity half is right and the cross half is wrong, which
+  is exactly what "the cross channel comes from the front block while the
+  intensities are totals" predicts. Every prior C2 evidence was one
+  implementation disagreeing with another.
+- `COHERENCY_MATRIX` reproduces the full averaged Stokes vector to
+  ≤6.7e-16 on all four components. Mode B is now verified against the
+  definition, not against a port.
+
 ## [0.7.12] - C3/C5/C6/C10: what an incoherent flag can and cannot mean
 
 ### Added
