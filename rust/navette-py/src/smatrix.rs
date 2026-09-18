@@ -894,6 +894,9 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solver_dispersion_request, m)?)?;
     m.add_function(wrap_pyfunction!(solver_differential_phase_request, m)?)?;
     m.add_function(wrap_pyfunction!(solver_energy_conservation, m)?)?;
+    // C2: the Python door tests the same 12 bits the engine does, from the
+    // same constant, so the two can never drift (the NREQ_* pattern).
+    m.add("NEEDS_CROSS", navette::smatrix::core_engine::NEEDS_CROSS)?;
     m.add("NREQ_P", NREQ_P)?;
     m.add("NREQ_P_MB", NREQ_P_MB)?;
     m.add("NREQ_P_T", NREQ_P_T)?;

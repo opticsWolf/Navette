@@ -618,7 +618,7 @@ def core_engine_rigorous_ellipsometry(
         S0_R = val_Rp + val_Rs
         S1_R = val_Rp - val_Rs
 
-        # S₂, S₃ from first coherent block only (incoherent echoes lose phase).
+        # S₂, S₃ from first coherent block only (echoes lose phase RELATIVE TO EACH OTHER -- each still carries its own p-s phase, so dropping them is a legacy convention, not a physical necessity; see C2).
         #
         # Convention fix: The admittance-based Fresnel r_p = −r_p(Born & Wolf).
         # To obtain Δ = δp(BW) − δs in the standard convention, we negate the

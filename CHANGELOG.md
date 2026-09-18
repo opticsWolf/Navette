@@ -5,6 +5,61 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.10] - C2/C9: the front-block cross channel is refused, not mixed
+
+### Fixed
+- Cross-channel observables under the default `FRONT_BLOCK` mode on a stack
+  with an interior incoherent layer now refuse instead of returning a
+  vector built from two different stacks (physics review rounds 1 and 2,
+  C2). Mode A takes the p-s cross channel from the FIRST coherent block
+  while its intensities are totals over every incoherent echo, so `DOP_R`
+  came back as `|rs_c|^2/Rs` — measured 0.763904485 where the physical
+  answer for a non-depolarizing stack at normal incidence is exactly 1,
+  and `Delta` up to 22.2 degrees out at 70 degrees.
+- The refusal covers all twelve `NEEDS_CROSS` bits (Delta, DOP, S2/S3,
+  retardance, and the raw `cross_R`/`cross_T`) as one rule. There is no
+  "raw cross is fine" split: the raw channel is the same defective object,
+  and letting it through would let a caller rebuild the broken DOP by hand.
+- The predicate is deliberately narrow — `FRONT_BLOCK` **and** a cross bit
+  **and** a non-zero flag on an INTERIOR row. Rows 0 and last are
+  half-spaces whose flags the engine never consults (C5), so flagging only
+  those does not refuse. With nothing flagged, Modes A and B are
+  bit-identical, so nothing refuses there either. Mode C is one block over
+  the whole stack and its cross channel is correct.
+- Both doors carry one shared explanation, `FRONT_BLOCK_CROSS_EXPLANATION`,
+  in the `AMBIENT_DROP_EXPLANATION` shape:
+  `ScatterMatrix.compute` (Python, where `stacklevel` can point at the
+  caller) and `solver::solve_arrays` (Rust, which is what `solve_structure`
+  and the raw FFI reach). `test_both_doors_explain_the_cross_channel_the_same_way`
+  fails if either is edited without the other.
+- `NEEDS_CROSS` is now exported to Python and imported by the door rather
+  than re-declared there, so the door and the engine cannot test different
+  bits — the `NREQ_*` pattern. `test_needs_cross_is_bound_not_copied` pins
+  the composition against the Rust constants and pins Psi's absence from
+  the mask (it is an amplitude ratio, not one of the mixed objects).
+
+### Unchanged on purpose
+- **The engine is untouched.** `solve_point`, `solve_point_intensity` and
+  `Solver::solve` compute exactly what they computed before. The legacy
+  parity port drives Mode A with interior flags and cross observables
+  through the raw `core_engine` pyfunction, which enters below both doors,
+  so it still runs and still pins its numbers bit-for-bit.
+  `test_the_engine_still_computes_what_the_doors_refuse` fails first if
+  the door check ever leaks inward.
+- Mode A's `cross_T` is recorded rather than changed (C9). It is a third
+  object — a product of per-block `t_p*conj(t_s)` across the joins with no
+  multiple-bounce series — neither the front block nor the Mode B cascade.
+  `test_mode_a_and_mode_b_cross_terms_are_different_objects` pins that,
+  alongside the A/B photometric identity.
+- The Python default stays `FRONT_BLOCK`. It matches the legacy port by a
+  remediation-plan decision, and flipping it would silently re-litigate
+  that for stored results. With the refusal in place the default is no
+  longer dangerous, only loud; a flip would be its own bump.
+- The R6.2 DOP clamp is unchanged. Its comment now states the scope
+  condition it always had — the reflected identity holds "for a single
+  coherent block" — and records that Mode A on a flagged stack produces a
+  DEFICIT the `.min(1.0)` clamp cannot see.
+
 ## [0.7.9] - C1: synthesis refuses the flag it cannot honor
 
 ### Fixed

@@ -154,6 +154,17 @@ class CoherenceMode(IntEnum):
     COHERENCY_MATRIX: additionally tracks the complex p-s coherency
         channel (needed for Delta, DOP, S2/S3).
     FULLY_COHERENT: the whole stack is one coherent block.
+
+    FRONT_BLOCK is the default, and its INTENSITIES (Rs, Rp, Ts, Tp, A) are
+    correct totals over every incoherent echo -- bit-identical to
+    COHERENCY_MATRIX. Its p-s cross channel is not: it comes from the first
+    coherent block alone, so Delta, DOP, S2/S3, the retardance and the raw
+    cross terms would be a ratio of two different stacks. Rather than return
+    that, the doors REFUSE those observables under FRONT_BLOCK when an
+    interior layer is flagged incoherent (C2); pass COHERENCY_MATRIX, which
+    cascades the cross channel with the echoes and is validated against the
+    phase-averaged coherent Stokes vector. With nothing flagged the two modes
+    agree bit-for-bit and nothing is refused.
     """
     FRONT_BLOCK = 0       # incoherent gaps applied at flagged boundaries
     COHERENCY_MATRIX = 1  # tracks the complex p-s coherency channel (Mode B)
@@ -459,6 +470,33 @@ class EigenLandscape:
         )
 
 
+# ─── C2/C9: the front-block cross channel ────────────────────────────────────
+# The observables that need the p-s coherency channel, taken FROM the engine's
+# own `core_engine::NEEDS_CROSS` rather than re-declared here, so the door and
+# the engine can never test different bits (the `NREQ_*` pattern in
+# `needle.py`). Psi is deliberately not among them: it comes from the amplitude
+# ratio |rp|/|rs| and is not one of the mixed objects.
+from navette._smatrix import NEEDS_CROSS as _NEEDS_CROSS  # noqa: E402
+
+# The shared explanation, word for word with
+# `optics_core::FRONT_BLOCK_CROSS_EXPLANATION`. Two doors, one rule, kept
+# apart only so this one can point `stacklevel` at the caller;
+# `test_both_doors_explain_the_cross_channel_the_same_way` pins them together.
+_FRONT_BLOCK_CROSS_EXPLANATION = (
+    "Mode A (front_block) takes the p-s cross channel from the FIRST coherent "
+    "block alone, while the intensities are totals over every incoherent echo: "
+    "those are two different stacks, so Delta, DOP, S2/S3, the retardance and "
+    "the raw cross terms are not the Stokes vector of the stack that was "
+    "solved. DOP_R comes back as |rs_c|^2/Rs instead of 1 for a stack that does "
+    "not depolarize, and Delta can be tens of degrees out at oblique incidence. "
+    "The transmitted cross term is a third object again: a product of per-block "
+    "t_p*conj(t_s) across the joins, with no multiple-bounce series. The "
+    "intensities themselves (Rs, Rp, Ts, Tp, A) are unaffected and correct. "
+    "Pass coherence_mode=1 (coherency_matrix) for a cross channel that cascades "
+    "with the echoes; it agrees with mode 0 bit-for-bit on the intensities."
+)
+
+
 # ─── Main entry point ────────────────────────────────────────────────────────
 class ScatterMatrix:
     """Multilayer optical solver over a (wavelength, angle) grid.
@@ -614,6 +652,40 @@ class ScatterMatrix:
         return arr[0] if self.n_angles == 1 else arr
 
     # ---- core engine --------------------------------------------------------
+    def _refuse_front_block_cross(self, req: int) -> None:
+        """C2/C9. Mode A's cross channel is the front block alone.
+
+        Its intensities are totals over every incoherent echo, so any
+        cross-channel observable on a stack with an INTERIOR incoherent flag
+        mixes two different stacks in one output dict. Rows 0 and last are
+        half-spaces the block sweep never consults (C5), so a flag there is
+        not the hazard and must not refuse.
+
+        The refusal is at the DOOR, not in the engine. Mode A's numbers are a
+        deliberate legacy port -- ``docs/remediation_plan.md`` pins them and
+        the parity suite pins its cross observables on exactly this
+        combination -- and that suite enters through the raw ``core_engine``
+        pyfunction, below this layer, so it still computes. Validation lives
+        at this layer; the native Solver stays permissive for internal
+        callers. The other door carries the same sentences from
+        ``optics_core::FRONT_BLOCK_CROSS_EXPLANATION``;
+        ``test_both_doors_explain_the_cross_channel_the_same_way`` fails if
+        either is edited without the other.
+        """
+        if int(self.coherence_mode) != int(CoherenceMode.FRONT_BLOCK):
+            return
+        if not req & _NEEDS_CROSS:
+            return
+        interior = self.incoherent_flags[1:-1]
+        if interior.size == 0 or not np.any(interior != 0):
+            return
+        rows = ", ".join(str(int(i) + 1) for i in np.flatnonzero(interior != 0))
+        raise ValueError(
+            f"ScatterMatrix: a cross-channel observable was requested under "
+            f"coherence_mode=0 on a stack with incoherent layer(s) at row(s) "
+            f"{rows}. {_FRONT_BLOCK_CROSS_EXPLANATION}"
+        )
+
     def compute(
         self, request: Union[int, Request], *, squeeze: bool = True
     ) -> Dict[str, np.ndarray]:
@@ -624,6 +696,7 @@ class ScatterMatrix:
         when a single angle was supplied and ``squeeze=True``.
         """
         req = int(request)
+        self._refuse_front_block_cross(req)
         out = self._native.solve(req)
         if not squeeze or self.n_angles != 1:
             return dict(out)
@@ -635,7 +708,15 @@ class ScatterMatrix:
         return self.compute(_rt_request(pol))
 
     def ellipsometry(self, *, transmission: bool = False) -> Dict[str, np.ndarray]:
-        """Psi/Delta/DOP plus R (and optionally T) spectra."""
+        """Psi/Delta/DOP plus R (and optionally T) spectra.
+
+        Delta and DOP need the p-s cross channel, which under the default
+        ``FRONT_BLOCK`` mode is the first coherent block alone while R and T
+        are totals over every echo. On a stack with an interior incoherent
+        layer this refuses rather than mixing the two (C2); pass
+        ``coherence_mode=CoherenceMode.COHERENCY_MATRIX``. Psi is an
+        amplitude ratio and is unaffected.
+        """
         return self.compute(_ellipsometry_request(bool(transmission)))
 
     def absorption(self) -> Dict[str, np.ndarray]:
@@ -643,11 +724,28 @@ class ScatterMatrix:
         return self.compute(_absorption_request())
 
     def complex_amplitudes(self) -> Dict[str, np.ndarray]:
-        """Complex r/t coefficients (rs_c, rp_c, ts_c, tp_c)."""
+        """Complex r/t coefficients (rs_c, rp_c, ts_c, tp_c).
+
+        These are the FIRST coherent block's amplitudes in ``FRONT_BLOCK`` and
+        ``COHERENCY_MATRIX``, and the whole stack's in ``FULLY_COHERENT`` --
+        they are not the amplitudes of the intensities this same object
+        returns. On a stack with an incoherent layer, ``|rs_c|**2`` is
+        therefore NOT ``Rs``: measured 0.1517 against 0.1826 on one stack.
+        Phase-bearing quantities have no single value across incoherent
+        echoes; the intensities are the totals.
+        """
         return self.compute(_amplitudes_request())
 
     def stokes(self, *, reflection: bool = True, transmission: bool = False) -> Dict[str, np.ndarray]:
-        """Stokes parameters S0..S3 for reflection and/or transmission."""
+        """Stokes parameters S0..S3 for reflection and/or transmission.
+
+        S0/S1 come from the intensity cascade; S2/S3 need the p-s cross
+        channel, which under the default ``FRONT_BLOCK`` mode is the first
+        coherent block alone. A vector built from both halves is not the
+        Stokes vector of one stack, so on a stack with an interior incoherent
+        layer this refuses rather than returning it (C2); pass
+        ``coherence_mode=CoherenceMode.COHERENCY_MATRIX``.
+        """
         return self.compute(_stokes_request(bool(reflection), bool(transmission)))
 
     def dispersion(

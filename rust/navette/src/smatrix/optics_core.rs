@@ -175,6 +175,25 @@ pub const AMBIENT_DROP_EXPLANATION: &str = "Its absorption has been dropped -- t
      ambient is not included. Put the absorbing medium on the substrate side \
      (fully supported) if you need it carried.";
 
+/// The shared explanation carried by every "Mode A cross channel on a
+/// flagged stack" warning (C2/C9). The Python `ScatterMatrix` door emits the
+/// same sentences from its own copy of the rule, for the same reason as the
+/// ambient rule above -- only a warning raised Python-side can point
+/// `stacklevel` at the caller -- and
+/// `test_both_doors_explain_the_cross_channel_the_same_way` pins the two
+/// together so they cannot drift apart.
+pub const FRONT_BLOCK_CROSS_EXPLANATION: &str = "Mode A (front_block) takes the p-s cross channel from the FIRST coherent \
+     block alone, while the intensities are totals over every incoherent echo: \
+     those are two different stacks, so Delta, DOP, S2/S3, the retardance and \
+     the raw cross terms are not the Stokes vector of the stack that was \
+     solved. DOP_R comes back as |rs_c|^2/Rs instead of 1 for a stack that does \
+     not depolarize, and Delta can be tens of degrees out at oblique incidence. \
+     The transmitted cross term is a third object again: a product of per-block \
+     t_p*conj(t_s) across the joins, with no multiple-bounce series. The \
+     intensities themselves (Rs, Rp, Ts, Tp, A) are unaffected and correct. \
+     Pass coherence_mode=1 (coherency_matrix) for a cross channel that cascades \
+     with the echoes; it agrees with mode 0 bit-for-bit on the intensities.";
+
 /// Strip absorption from an incident-medium index vector.
 ///
 /// Returns `None` when `nk` is already transparent -- one scan, no allocation,

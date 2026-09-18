@@ -1041,6 +1041,16 @@ fn derive_range(states: &[OpticalState], mut sinks: Sinks<'_>) {
         // single coherent block) and the excess is pure round-off, measured at
         // 1.0000000000000004. Either way a degree of polarization above 1 is not a
         // number anyone can use, and the asymmetry was a review finding (R6.2).
+        //
+        // C2: note the scope condition on the reflection half -- "for a SINGLE
+        // COHERENT BLOCK". In Mode A on a stack with an interior incoherent
+        // flag that identity does not hold: s0r is the intensity cascade over
+        // every echo while s2r/s3r are the front block alone, so DOP_R comes
+        // out DEFICIENT, measured at 0.763904485 where the physical answer is
+        // exactly 1 (a 17% shortfall, not round-off). The clamp is `.min(1.0)`
+        // and cannot see a deficit, which is why that combination is refused
+        // at the doors rather than corrected here -- the numbers below are a
+        // deliberate legacy port. See `FRONT_BLOCK_CROSS_EXPLANATION`.
         put!(
             b_dop_r,
             k,
@@ -1151,6 +1161,32 @@ pub fn solve_arrays(
         );
     }
     let inc: Vec<i32> = incoherent.iter().map(|b| i32::from(*b)).collect();
+    // C2/C9. Mode A's cross channel is the front block while its intensities
+    // are stack totals, so any cross observable on a stack with an INTERIOR
+    // flag is a mix of two stacks. Rows 0 and last are half-spaces the sweep
+    // never consults (C5), so a flag there is not the hazard and must not
+    // refuse. This is a DOOR check: Mode A's numbers are a deliberate legacy
+    // port, and the parity suite that pins them enters through the raw
+    // `core_engine` pyfunction (Solver::solve), below this function, so it
+    // still computes. The engine is untouched.
+    if coherence_mode == crate::smatrix::core_engine::MODE_A
+        && requested & crate::smatrix::core_engine::NEEDS_CROSS != 0
+        && n_rows > 2
+        && inc[1..n_rows - 1].iter().any(|&f| f != 0)
+    {
+        let flagged: Vec<String> = inc[1..n_rows - 1]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &f)| f != 0)
+            .map(|(i, _)| (i + 1).to_string())
+            .collect();
+        return Err(format!(
+            "solve_arrays: a cross-channel observable was requested under \
+             coherence_mode=0 on a stack with incoherent layer(s) at row(s) {}. {}",
+            flagged.join(", "),
+            crate::smatrix::optics_core::FRONT_BLOCK_CROSS_EXPLANATION
+        ));
+    }
     let solver = Solver::from_raw(
         wavelengths,
         angles,

@@ -90,6 +90,36 @@ def test_request_bits_match_the_rust_constants():
     assert not mismatched, f"bit value drift (python, rust): {mismatched}"
 
 
+def test_needs_cross_is_bound_not_copied():
+    """C2. The door tests the engine's own mask, from the engine's constant.
+
+    `ScatterMatrix` refuses cross-channel observables under Mode A on a
+    flagged stack, and `solve_arrays` does the same. Both test
+    ``core_engine::NEEDS_CROSS``. If the Python door ever re-declared those
+    twelve bits instead of importing them, a bit added in Rust would be
+    refused by the engine's own accounting and waved through by the door --
+    which is the exact class of drift this file exists to close.
+    """
+    from navette._smatrix import NEEDS_CROSS as native_mask
+
+    rust = _rust_bits(_CORE_ENGINE, "REQ")
+    expected = 0
+    for name in ("DELTA_R", "DELTA_T", "DOP_R", "DOP_T",
+                 "S2_R", "S3_R", "S2_T", "S3_T",
+                 "CROSS_R", "CROSS_T", "RETARD_R", "RETARD_T"):
+        assert name in rust, f"{name} vanished from core_engine.rs"
+        expected |= rust[name]
+    assert int(native_mask) == expected, (
+        f"NEEDS_CROSS drifted: exposed {int(native_mask):#x}, "
+        f"composed {expected:#x}")
+
+    # Psi is NOT in the mask: it is |rp|/|rs|, an amplitude ratio, and is not
+    # one of the objects Mode A mixes. If it is ever added here the refusal
+    # widens silently, so pin its absence.
+    assert not int(native_mask) & rust["PSI_R"], "Psi_R must not need cross"
+    assert not int(native_mask) & rust["PSI_T"], "Psi_T must not need cross"
+
+
 def test_request_bits_are_dense_and_unique():
     """No duplicate and no skipped bit positions.
 
