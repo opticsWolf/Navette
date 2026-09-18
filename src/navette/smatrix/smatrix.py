@@ -251,6 +251,29 @@ def _first_bad(mask: np.ndarray):
     return int(first[0]) if first.size == 1 else tuple(int(i) for i in first)
 
 
+# The shared explanation, word for word with
+# `optics_core::GAIN_MEDIUM_EXPLANATION`. Two doors, one rule, kept apart only
+# so this one can name the `layer_indices` argument the caller actually passed;
+# `test_both_doors_explain_gain_the_same_way` pins them together.
+_GAIN_MEDIUM_EXPLANATION = (
+    "Im(n) < 0 is optical gain, and neither solver path can represent it. The "
+    "coherent path conjugates the propagation phase back to decay (beta.im < 0 "
+    "-> -beta.im), so a gain layer comes back wearing the LOSS layer's answer: "
+    "on a symmetric stack it is bit-identical to +k, and the reported "
+    "absorptance is POSITIVE for a medium that amplifies. The incoherent path "
+    "clamps the same quantity to zero instead, so the layer turns transparent "
+    "and the energy books open by a small negative absorptance (A = -4.3e-5 "
+    "measured on a 2 um slab at |k| = 0.01, with T landing on the exact "
+    "lossless value). Both are fabrications, they disagree with each other, and "
+    "neither is recoverable from the output -- it reads as an ordinary "
+    "absorbing stack. There is no correction to apply, so this is refused "
+    "rather than quietly repaired. If the sign is a provider convention (an "
+    "exp(+i*w*t) time convention writes absorption as k < 0), negate the "
+    "imaginary part before it reaches the solver. Note -0.0 is not gain: it is "
+    "not < 0 and does not trip this."
+)
+
+
 def _validate_indices(idx2d: np.ndarray) -> None:
     """Every refractive index must be finite, real and imaginary part alike.
 
@@ -279,6 +302,22 @@ def _validate_indices(idx2d: np.ndarray) -> None:
             f"wavelength index {col}: {complex(idx2d[layer, col])}. |n|^2 "
             f"overflows double, so the solve returns NaN; keep |n| below "
             f"{np.sqrt(np.finfo(np.float64).max):.3e}."
+        )
+    # C4. Gain belongs in this gate for the same reason the two above do:
+    # there is no correction to apply, and the wrong answer is unrecoverable
+    # from the output. The engine refuses it too (`Solver::assemble`), so this
+    # is not the only guard -- it is the one that can name `layer_indices` and
+    # the row the caller wrote. `-0.0 < 0` is False in IEEE and stays allowed,
+    # matching `forward_branch` and `sanitize_incident_index`.
+    where = _first_bad(idx2d.imag < 0.0)
+    if where is not None:
+        layer, col = where if isinstance(where, tuple) else (where, 0)
+        n_bad = int(np.count_nonzero(idx2d.imag < 0.0))
+        raise ValueError(
+            f"`layer_indices`: layer {layer} has Im(n) = "
+            f"{float(idx2d[layer, col].imag):e} at wavelength index {col} "
+            f"({n_bad} of the index grid's values are negative). "
+            f"{_GAIN_MEDIUM_EXPLANATION}"
         )
 
 

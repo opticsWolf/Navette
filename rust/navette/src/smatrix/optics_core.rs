@@ -194,6 +194,64 @@ pub const FRONT_BLOCK_CROSS_EXPLANATION: &str = "Mode A (front_block) takes the 
      Pass coherence_mode=1 (coherency_matrix) for a cross channel that cascades \
      with the echoes; it agrees with mode 0 bit-for-bit on the intensities.";
 
+/// The shared explanation carried by every "Im(n) < 0" refusal (C4). The
+/// Python `ScatterMatrix` door raises the same sentences from its own copy of
+/// the rule, the `AMBIENT_DROP_EXPLANATION` pattern above, and
+/// `test_both_doors_explain_gain_the_same_way` pins the two together.
+pub const GAIN_MEDIUM_EXPLANATION: &str = "Im(n) < 0 is optical gain, and neither solver path can represent it. The \
+     coherent path conjugates the propagation phase back to decay (beta.im < 0 \
+     -> -beta.im), so a gain layer comes back wearing the LOSS layer's answer: \
+     on a symmetric stack it is bit-identical to +k, and the reported \
+     absorptance is POSITIVE for a medium that amplifies. The incoherent path \
+     clamps the same quantity to zero instead, so the layer turns transparent \
+     and the energy books open by a small negative absorptance (A = -4.3e-5 \
+     measured on a 2 um slab at |k| = 0.01, with T landing on the exact \
+     lossless value). Both are fabrications, they disagree with each other, and \
+     neither is recoverable from the output -- it reads as an ordinary \
+     absorbing stack. There is no correction to apply, so this is refused \
+     rather than quietly repaired. If the sign is a provider convention (an \
+     exp(+i*w*t) time convention writes absorption as k < 0), negate the \
+     imaginary part before it reaches the solver. Note -0.0 is not gain: it is \
+     not < 0 and does not trip this.";
+
+/// Format the C4 refusal, so every door says the same thing about the same
+/// grid position. Crate-private on purpose: it is a formatter for a rule the
+/// crate owns, not a door, and `check_exposure` should not have to carry a
+/// rationale for something the type system can state. `first_bad` indexes a wav-major `[n_wavs][n_layers]` cache,
+/// which is the layout both the `Solver`'s `n_cache` and the needle kernels'
+/// flat `n_stack_cache` arrive in.
+pub(crate) fn gain_medium_message(
+    site: &str,
+    n_layers: usize,
+    first_bad: usize,
+    k: f64,
+    n_bad: usize,
+) -> String {
+    let layer = first_bad % n_layers.max(1);
+    let wav = first_bad / n_layers.max(1);
+    format!(
+        "{site}: layer {layer} has Im(n) = {k:e} at wavelength index {wav} \
+         ({n_bad} of the index grid's values are negative). {GAIN_MEDIUM_EXPLANATION}"
+    )
+}
+
+/// Scan a wav-major complex index cache for gain, returning the first
+/// offending position and how many there are in total. One pass, no
+/// allocation, and `None` on the common path.
+pub(crate) fn scan_for_gain(n_cache: &[Complex64]) -> Option<(usize, f64, usize)> {
+    let mut first: Option<(usize, f64)> = None;
+    let mut n_bad = 0usize;
+    for (i, z) in n_cache.iter().enumerate() {
+        if z.im < 0.0 {
+            n_bad += 1;
+            if first.is_none() {
+                first = Some((i, z.im));
+            }
+        }
+    }
+    first.map(|(i, k)| (i, k, n_bad))
+}
+
 /// Strip absorption from an incident-medium index vector.
 ///
 /// Returns `None` when `nk` is already transparent -- one scan, no allocation,

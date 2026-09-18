@@ -250,7 +250,7 @@ impl Solver {
                 n_cache.push(indices_layer_major[l * n_wavs + w]);
             }
         }
-        Ok(Self::assemble(
+        Self::assemble(
             wavelengths,
             sin_theta,
             n_cache,
@@ -260,7 +260,7 @@ impl Solver {
             rough_types,
             rough_vals,
             coherence_mode,
-        ))
+        )
     }
 
     /// Same solver from the wav-major interleaved `[re, im]` cache the Python
@@ -310,7 +310,7 @@ impl Solver {
             rough_vals,
             coherence_mode,
         )?;
-        Ok(Self::assemble(
+        Self::assemble(
             wavelengths,
             sin_theta,
             n_cache,
@@ -320,11 +320,14 @@ impl Solver {
             rough_types,
             rough_vals,
             coherence_mode,
-        ))
+        )
     }
 
-    /// The shared tail of both constructors: take an already wav-major flat
-    /// index cache, derive the reciprocals, and own the rest.
+    /// The shared tail of every constructor: take an already wav-major flat
+    /// index cache, derive the reciprocals, and own the rest. The one place an
+    /// index cache becomes a `Solver`, whichever door it came in through --
+    /// which is why the C8 flag canonicalization and the C4 gain refusal both
+    /// sit here.
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         wavelengths: &[f64],
@@ -336,7 +339,27 @@ impl Solver {
         rough_types: &[i32],
         rough_vals: &[f64],
         coherence_mode: i32,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        // C4: refuse optical gain here rather than at each door. Unlike C2 --
+        // where Mode A's numbers are a deliberate legacy port and the refusal
+        // had to stay above the engine so the parity suite could still reach
+        // them -- there is nothing below this point worth preserving: a gain
+        // layer's output is not any physical system on either path (the
+        // coherent kernels conjugate beta, the incoherent ones clamp it), the
+        // two paths disagree, and both look like an ordinary absorbing stack
+        // from the outside. So it goes at the choke point every constructor
+        // funnels through, which covers `ScatterMatrix`, `solve_arrays` /
+        // `solve_structure` and the raw `core_engine` FFI in one rule. This
+        // is the same test the Structure door already applies
+        // (`structure/structure.rs:147-151`, "Nominal expansion produced
+        // k < 0"), so the two doors now agree instead of one guarding and one
+        // not. `-0.0 < 0.0` is false, so a signed zero passes, as it does in
+        // `forward_branch` and `sanitize_incident_index`.
+        if let Some((i, k, n_bad)) = crate::smatrix::optics_core::scan_for_gain(&n_cache) {
+            return Err(crate::smatrix::optics_core::gain_medium_message(
+                "Solver", n_layers, i, k, n_bad,
+            ));
+        }
         // Elementwise and pure, so serial and parallel are bit-identical; above the
         // threshold the 120 000 complex divisions a 20 000-point grid needs are a
         // third of what building the solver costs.
@@ -345,7 +368,7 @@ impl Solver {
         } else {
             n_cache.iter().map(|n| n.recip()).collect()
         };
-        Self {
+        Ok(Self {
             wavls: wavelengths.to_vec(),
             sin_theta: sin_theta.to_vec(),
             n_cache,
@@ -372,7 +395,7 @@ impl Solver {
             rough_vals: rough_vals.to_vec(),
             coherence_mode,
             n_layers,
-        }
+        })
     }
 
     /// Layer indices for wavelength `w`.
@@ -1359,6 +1382,33 @@ pub fn needle_gradient(
     }
     if n_stack_cache.len() != num_wavs * nl * 2 {
         return Err(String::from("n_stack_cache layout mismatch"));
+    }
+    // C4. This entry point takes a raw flat cache and never builds a `Solver`,
+    // so the refusal at `Solver::assemble` does not reach it -- the same gap
+    // C8's flag canonicalization had to be repeated for. Both the host stack
+    // and the needle material are checked: the needle's own index goes into
+    // the same conjugating kernels (`needle_operator.rs:248`) and its spacer
+    // tau takes the same clamp (`:1290`), so a gain needle is mangled exactly
+    // like a gain layer, and it would be a strange rule that refused the stack
+    // it is inserted into but not the thing being inserted. The cache is
+    // wav-major interleaved [re, im], so element `j` is grid position `j / 2`.
+    let pairs = n_stack_cache.as_chunks::<2>().0;
+    if let Some(j) = pairs.iter().position(|ri| ri[1] < 0.0) {
+        let n_bad = pairs.iter().filter(|ri| ri[1] < 0.0).count();
+        return Err(crate::smatrix::optics_core::gain_medium_message(
+            "needle_gradient",
+            nl,
+            j,
+            n_stack_cache[j * 2 + 1],
+            n_bad,
+        ));
+    }
+    if let Some((i, k, n_bad)) = crate::smatrix::optics_core::scan_for_gain(needle_n_per_wav) {
+        return Err(format!(
+            "needle_gradient: the needle material has Im(n) = {k:e} at wavelength \
+             index {i} ({n_bad} of {num_wavs} wavelengths). {}",
+            crate::smatrix::optics_core::GAIN_MEDIUM_EXPLANATION
+        ));
     }
     let want_p = requested & NREQ_P != 0;
     let want_pmb = requested & NREQ_P_MB != 0;
@@ -2808,6 +2858,156 @@ mod tests {
         let e = super::energy_conservation(&[0.5], &[0.4], &[0.3], &[0.4]).unwrap();
         assert!((e[0] - 0.2).abs() < 1e-15);
         assert!(super::energy_conservation(&[0.5], &[0.4], &[0.3], &[]).is_err());
+    }
+
+    #[test]
+    fn every_constructor_refuses_optical_gain() {
+        // C4. The check sits in `assemble`, so all three constructors inherit
+        // it -- which is the point: `ScatterMatrix`, `solve_arrays` /
+        // `solve_structure` and the raw `core_engine` FFI reach the engine
+        // through different ones, and a per-door check would have had to be
+        // written three times and kept in step.
+        let wavls = [500.0, 600.0];
+        let sin_theta = [0.0];
+        let d = [0.0, 2000.0, 0.0];
+        let flags = [0, 0, 0];
+        let zeros_i = [0, 0, 0];
+        let zeros_f = [0.0, 0.0, 0.0];
+
+        // layer-major (n_layers, n_wavs), gain on the middle film
+        let lm = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, -0.01),
+            Complex64::new(2.35, -0.01),
+            Complex64::new(1.52, 0.0),
+            Complex64::new(1.52, 0.0),
+        ];
+        let err = match Solver::new(
+            &wavls, &sin_theta, &lm, 3, &d, &flags, &zeros_i, &zeros_f, MODE_A,
+        ) {
+            Ok(_) => panic!("new must refuse gain"),
+            Err(e) => e,
+        };
+        assert!(err.contains("layer 1"), "{err}");
+        assert!(err.contains("optical gain"), "{err}");
+        assert!(err.is_ascii(), "the message must survive a cp1252 console");
+
+        // wav-major interleaved [re, im]
+        let flat: Vec<f64> = vec![
+            1.0, 0.0, 2.35, -0.01, 1.52, 0.0, // wav 0
+            1.0, 0.0, 2.35, -0.01, 1.52, 0.0, // wav 1
+        ];
+        assert!(
+            Solver::from_wav_major_flat(
+                &wavls, &sin_theta, &flat, 3, &d, &flags, &zeros_i, &zeros_f, MODE_A,
+            )
+            .is_err()
+        );
+
+        // per-layer broadcast through from_raw
+        let per_layer = [
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, -0.01),
+            Complex64::new(1.52, 0.0),
+        ];
+        assert!(
+            Solver::from_raw(
+                &wavls,
+                &[0.0],
+                false,
+                &per_layer,
+                3,
+                Some(&d),
+                Some(&flags),
+                None,
+                None,
+                MODE_A,
+            )
+            .is_err()
+        );
+
+        // The control: the same stack with loss builds, and a signed zero is
+        // NOT gain -- `-0.0 < 0.0` is false, exactly as `forward_branch` and
+        // `sanitize_incident_index` already treat it. Pinned because the
+        // obvious "tidy up the sign" edit would start refusing real grids.
+        let loss = [
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, 0.01),
+            Complex64::new(1.52, -0.0),
+        ];
+        assert!(
+            Solver::from_raw(
+                &wavls,
+                &[0.0],
+                false,
+                &loss,
+                3,
+                Some(&d),
+                Some(&flags),
+                None,
+                None,
+                MODE_A,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn needle_gradient_refuses_gain_in_the_stack_and_in_the_needle() {
+        // The free `needle_gradient` takes a raw flat cache and never builds a
+        // Solver, so `assemble`'s refusal does not reach it -- the same gap
+        // C8's flag canonicalization had to be closed separately.
+        let wavls = [550.0];
+        let sin_theta = [0.0];
+        let d = [0.0, 200.0, 300.0, 0.0];
+        let zeros_i = [0, 0, 0, 0];
+        let zeros_f = [0.0, 0.0, 0.0, 0.0];
+        let z_grid = [100.0];
+        let demands = NeedleDemands::default();
+        let good_cache: Vec<f64> = vec![1.0, 0.0, 2.35, 0.0, 1.46, 0.0, 1.52, 0.0];
+        let gain_cache: Vec<f64> = vec![1.0, 0.0, 2.35, -0.02, 1.46, 0.0, 1.52, 0.0];
+
+        let call = |cache: &[f64], needle: Complex64| {
+            needle_gradient(
+                &wavls,
+                &sin_theta,
+                4,
+                cache,
+                &d,
+                &zeros_i,
+                &zeros_f,
+                &[needle],
+                &z_grid,
+                NREQ_P,
+                None,
+                &demands,
+                0,
+                None,
+                0,
+                true,
+                false,
+                None,
+                0.0,
+            )
+        };
+
+        let err = match call(&gain_cache, Complex64::new(2.35, 0.0)) {
+            Ok(_) => panic!("a gain layer in the host stack must refuse"),
+            Err(e) => e,
+        };
+        assert!(err.contains("layer 1"), "{err}");
+        assert!(err.contains("optical gain"), "{err}");
+
+        let err = match call(&good_cache, Complex64::new(2.35, -0.02)) {
+            Ok(_) => panic!("a gain NEEDLE must refuse too"),
+            Err(e) => e,
+        };
+        assert!(err.contains("needle material"), "{err}");
+        assert!(err.contains("optical gain"), "{err}");
+
+        // Control: the same call with no gain anywhere gets past the gate.
+        assert!(call(&good_cache, Complex64::new(2.35, 0.0)).is_ok());
     }
 
     #[test]

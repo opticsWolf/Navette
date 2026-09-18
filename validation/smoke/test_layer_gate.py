@@ -20,11 +20,18 @@ builds a layer uses it: the constructor, the numeric setters,
 assembler (which builds films from flag dicts and never touches the Python
 ``Layer``).
 
-SCOPE, deliberately. The flat-array solver surface is NOT a door.
-``ScatterMatrix(roughness_values=...)`` and the native ``Solver`` take raw
-arrays and stay permissive, as R3.1 promised -- see
+SCOPE, deliberately. The flat-array solver surface is NOT a door for LAYER
+PROPERTIES. ``ScatterMatrix(roughness_values=...)`` and the native ``Solver``
+take raw arrays and stay permissive, as R3.1 promised -- see
 ``test_the_flat_array_surface_is_still_permissive`` at the bottom, which pins
 that as a decision rather than leaving it as an accident.
+
+The INDEX array is a separate matter and always was: ``_validate_indices``
+refuses non-finite values and ``|n|**2`` overflow there, and 0.7.11 added
+optical gain to that list (physics review C4, ``test_gain_refusal.py``). The
+dividing line is not which surface but whether a correction exists -- a
+negative sigma has an obvious one and is still refused at the layer for being
+a sign slip; a NaN or a ``k < 0`` has none anywhere.
 """
 from __future__ import annotations
 

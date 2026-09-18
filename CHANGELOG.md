@@ -5,6 +5,64 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.11] - C4: optical gain is refused at every door
+
+### Fixed
+- `Im(n) < 0` is now refused instead of silently mangled (physics review
+  rounds 1 and 2, C4). Gain has no representation in either solver path,
+  and the two paths destroyed it *differently*: the coherent kernels
+  conjugate the propagation phase back to decay, so a gain layer came back
+  wearing the loss layer's answer — bit-identical to `+k` on a symmetric
+  stack, reporting a **positive** absorptance for a medium that
+  amplifies — while the incoherent cascade clamps the same quantity to
+  zero, turning the layer transparent and opening the energy books by
+  `A = -4.3e-5`. Neither is any physical system, and neither is
+  recoverable from the output: it reads as an ordinary absorbing stack.
+- The check sits at `Solver::assemble`, the one place every constructor
+  funnels through, so `ScatterMatrix`, `solve_arrays` / `solve_structure`
+  and the raw `core_engine` FFI are covered by one rule rather than three
+  copies. This is deliberately **unlike** C2, whose refusal had to stay at
+  the doors because Mode A's numbers are a legacy port reached from below;
+  nothing below the doors computes anything about gain worth preserving.
+- The free `needle_gradient` takes a flat cache and never builds a
+  `Solver`, so it carries the check itself — the same gap C8's flag
+  canonicalization had to close separately. It also checks the needle
+  material, which arrives as its own argument: the needle's index goes
+  into the same conjugating kernels and its spacer `tau` takes the same
+  clamp.
+- The `Structure` door, which was the one door already refusing `k < 0`,
+  now carries the same explanation as the other two. Its message said
+  "check provider data" and nothing about what the solver would otherwise
+  have done with the number.
+
+### Added
+- `optics_core::GAIN_MEDIUM_EXPLANATION`, the shared text behind all three
+  refusals, in the `AMBIENT_DROP_EXPLANATION` shape, plus
+  `gain_medium_message` and `scan_for_gain` so every Rust site reports the
+  same grid position the same way. `test_both_doors_explain_gain_the_same_way`
+  fails if any one door is edited without the others.
+- `validation/smoke/test_gain_refusal.py` (9 tests): each door refuses and
+  names the layer, the wavelength index and how many grid values are
+  negative; the explanation states what each path does, the measured size
+  of the damage and the way out for a time-convention mismatch; and the
+  controls pin what must **not** refuse.
+
+### Unchanged on purpose
+- `-0.0` is not gain. `-0.0 < 0.0` is false in IEEE, `forward_branch` and
+  `sanitize_incident_index` already treat a signed zero as zero, and a
+  provider that writes `-0.0` for a transparent material is not describing
+  an amplifier. Pinned on both sides, because the obvious "tidy up the
+  sign" edit would start refusing real grids.
+- The gate is on the **index** array only. The flat-array roughness
+  surface stays permissive exactly as `test_layer_gate.py` pins it; the
+  dividing line is whether a correction exists, not which surface the
+  value arrived on. Indices were already gated there for non-finite values
+  and for `|n|^2` overflow, and gain is the same kind of problem.
+- The ambient is checked like any other row, and the gain gate runs before
+  the absorbing-ambient drop. That drop counts a negative imaginary part
+  as absorption, so left alone it would have swallowed a sign error and
+  reported dropping absorption that was never there.
+
 ## [0.7.10] - C2/C9: the front-block cross channel is refused, not mixed
 
 ### Fixed
