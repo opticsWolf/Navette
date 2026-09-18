@@ -46,6 +46,39 @@ All notable changes to Navette are recorded here. Work items reference
 - `check_toolchain.py` stays out of CI. It reports what `stable` moved
   to, which is information rather than a gate.
 
+### Documentation
+- **The root README caught up with the engine.** The release ritual has
+  seven version sites and a CHANGELOG, and no step that asks whether the
+  README's feature claims still hold — so they had quietly stopped.
+  - *Partial Coherence Support* was the pre-review text. It now states
+    the block cascade and its sources, that the flag belongs on an
+    **interior** row (a half-space flag is a no-op — the exact mistake
+    its own "1 mm glass slide" framing invited), that thickness is part
+    of what the flag claims (`L_C = lambda^2/delta_lambda`, ~50-100 um in
+    the UV-VIS-NIR), the three coherence modes and which twelve
+    observables the default refuses on a flagged stack, that synthesis
+    refuses a flag it cannot honour, and what C7's oracles measured.
+  - The **Polarization** row promised "comprehensive Jones and Stokes
+    calculus" without qualification, which is not true of the default
+    mode on a flagged stack. It now points at the coherence section.
+  - **Optical gain is refused** (0.7.11) — nowhere in the README until
+    now, though it changes what the engine accepts.
+- **Features the README never carried**, found by auditing the public
+  surface against the prose rather than by reading the prose:
+  - **Multi-environment design** existed only in a section 5 bullet and
+    was missing from the Technical Specifications table, which is where
+    a reader scanning for capabilities looks.
+  - **Sixteen dispersion models and six EMA mixing rules** (counted from
+    `navette.materials.MODELS`, not from memory) with Kramers-Kronig
+    epsilon_1 and the review harnesses that validate the quadrature: not
+    mentioned at all.
+  - **Guided modes and field profiles** — `eigenmode_landscape`,
+    `find_eigenmodes`, `refine_mode`, `field_profile`: not mentioned at
+    all, including the single-block caveat C10 put in their docstrings.
+- **`four blocking lints` -> five.** Stale as of this same version: the
+  CI step for `check_review_docs.py` was added above without updating
+  the sentence that counts them.
+
 ## [0.7.13] - C7: the incoherent cascade, checked against something that is not itself
 
 ### Added

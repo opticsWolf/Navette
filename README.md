@@ -48,12 +48,57 @@ exercise the needle *insertion* path, which is the expensive part of synthesis.
 
 ### 3. Partial Coherence Support
 
-Real-world systems often involve thick substrates (like a 1mm glass slide) where phase information is lost. Navette features a **Hybrid Coherence Engine**:
+Real-world systems involve thick substrates — a 1 mm glass slide — where the
+path-length spread across the layer exceeds the source coherence length and
+the phase relation between its two surfaces is destroyed. Navette cuts the
+stack into maximal coherent runs at the layers you flag, uses the complex
+Redheffer star product inside a block and a real *intensity* star product
+across blocks (Katsidis & Siapkas 2002; Byrnes, arXiv:1603.02720). A flagged
+layer contributes only its attenuation τ = exp(−2·Im β).
 
-- **Coherent Blocks**: Preserves phase for thin-film interference.
-    
-- **Incoherent Interfaces**: Switches to intensity-based propagation for thick layers, preventing the "unphysical ringing" caused by assuming perfect coherence across a macroscopic substrate.
-    
+- **Coherent blocks** preserve phase for thin-film interference; **incoherent
+  joins** switch to intensity propagation, so a macroscopic substrate stops
+  producing the unphysical ringing that assuming perfect coherence gives it.
+
+- **The flag goes on an interior row, and thickness is part of what it
+  claims.** Rows 0 and last are half-spaces — the block sweep never reads
+  their flags, so flagging "the substrate" as the exit medium is a no-op and
+  now says so. A thick substrate is an *interior* layer with a real thickness,
+  flagged, between the films and the exit medium. The flag asserts
+  decoherence, which needs the spread to exceed `L_C = λ²/Δλ`; in the
+  UV–VIS–NIR that is roughly 50–100 µm. Flag something thinner and you get a
+  warning quoting the source bandwidth that layer *would* need — a number you
+  can check against your own source rather than a threshold somebody picked.
+  The flag is still honoured either way: the thin incoherent limit is a
+  legitimate thing to ask for, as long as it is what you meant.
+
+- **Three coherence modes, and one of them refuses rather than guesses.**
+  `FRONT_BLOCK` (the default) is exact for intensities — `Rs`, `Rp`, `Ts`,
+  `Tp`, `A` are correct totals over every incoherent echo — but its p–s cross
+  channel comes from the first coherent block alone. On a flagged stack, the
+  twelve observables that need that channel (Δ, DOP, `S2`/`S3`, the raw cross
+  terms and the retardance, in reflection and transmission) would be a ratio
+  of two different stacks, so the doors **refuse** them and name
+  `COHERENCY_MATRIX`, which cascades the cross channel with the echoes.
+  `FULLY_COHERENT` treats the whole stack as one block. With nothing flagged
+  all modes agree bit for bit and nothing is refused.
+
+- **Synthesis refuses what it cannot honour.** The needle pipeline solves a
+  design as one coherent block, so handing it a `coherent: false` film used to
+  silently produce a coherent answer. It now refuses at `DesignStack`
+  construction, names the film and points at `solve_structure` / `ScatterMatrix`
+  — the doors that do honour the flag. Multiblock synthesis is a phase of its
+  own; refusing is not it, and the message says which is which.
+
+- **Checked against something that is not itself.** The parity suite compares
+  the engine to a port of the same algorithm, which pins the port rather than
+  the physics. `validation/review/incoherent_check.py` uses three oracles that
+  do not know how Navette works: the lossless-slab closed form
+  `R = 2R₁/(1+R₁)` (1e-12), bit-identical reflectance from 10 µm to 3.7 mm,
+  and the definition itself — a flagged answer IS the coherent answer averaged
+  over one round-trip phase period (8e-17). The same average on the Stokes
+  vector is what put numbers on the cross-channel refusal above.
+
 
 ### 4. Advanced Physics Modeling
 
@@ -62,6 +107,34 @@ Navette goes beyond simple Fresnel equations to provide research-grade accuracy:
 - **Interface Roughness**: Implements the **Névot-Croce** model, providing superior accuracy for high-frequency or X-ray reflectometry compared to standard Gaussian approximations.
     
 - **Ellipsometric Rigor**: Outputs (Ψ,Δ) parameters that strictly follow the **Azzam & Bashara** convention, ensuring direct compatibility with commercial ellipsometers (e.g., Woollam, Horiba).
+
+- **Dispersion Models as Data**: A material is a `model` name plus plain
+  params — sixteen of them, from `Konstant` and `Table` (measured nk) through
+  `Cauchy` / `Sellmeier` (each with an Urbach tail), `Lorentz`, `Drude`,
+  `DrudeLorentz`, `CodyLorentz`, four `ForouhiBloomer` variants,
+  `TaucLorentz` and `UBF`. Six EMA mixing rules (Bruggeman, Maxwell-Garnett, Looyenga,
+  Lichtenecker, Mori-Tanaka, power-law) compose them, and EMA specs nest, so a
+  rough oxide on a mixed host is one spec rather than a preprocessing step.
+  Oscillator models derive ε₁ from ε₂ by Kramers-Kronig, validated in
+  `validation/review/` against an analytic Lorentz oscillator and an
+  independent pair-sampled principal-value quadrature — with the residual near
+  resonance attributed, by an h-refinement study, to the FFT-KK grid rather
+  than the quadrature. Optical gain is refused at every door: Im(n) < 0 is
+  not representable on either path — the coherent one conjugates the
+  propagation phase back to decay, so a gain layer returns the loss layer's
+  answer with a *positive* absorptance — and the message says what to do if
+  the sign is a provider convention rather than a mistake.
+
+- **Guided Modes and Field Profiles**: `eigenmode_landscape` scans
+  `|1/r(n_eff)|²` over a complex effective-index box, `find_eigenmodes`
+  locates the minima and Nelder-Mead refines them (a converged surface-plasmon
+  mode reaches 1e-24 on the pinned stack), and `field_profile` returns
+  normalised `|E(z)|` through the stack with per-layer boundaries. These
+  kernels solve the whole stack as one coherent block by construction and do
+  not consult `incoherent_flags` — a guided mode is a coherent-stack concept
+  and there is no eigenmode to find across a partition — which every one of
+  their docstrings now says, because every other method on the same object
+  does honour the flags.
 
 - **Differential Phase Observables**: `PDts`/`PDtp` are first-class `compute()` keys — the transmitted phase with the equivalent incidence-medium layer subtracted (`arg(t) − 2π·n(λ)·D·cosθ/λ`), so a target on Δφ constrains what the *coating* adds, not the ambient's round trip. The reference index follows the wavelength (per-λ columns), keys emit the wrapped principal value in `(−π, π]`, and a `differential_phase(*, s_pol=True, p_pol=True)` view returns both. Group delay over Δφ (`GD`/`GDD` with a differential target) carries the reference's own dispersion, and the synthesis merit's phase demands share the same derivation — the merit op point and the compute key agree bit for bit. Coherent stacks only, as with the dispersion keys.
 
@@ -93,9 +166,13 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 |**Propagation Logic**|**Hybrid Mixed Coherence**: Sophisticated dual-stage engine supporting phase-accurate (coherent) and intensity-only (incoherent) layers within a single pass.|
 |**Coherent Blocks**|**$2 \times 2$ Complex Field Matrices**: Maintains full phase and amplitude information, ensuring rigorous calculation of thin-film interference and ellipsometric parameters.|
 |**Incoherent Blocks**|**Stokes-Mueller / Intensity Redheffer**: Prevents unphysical interference artifacts in macroscopic substrates by utilizing intensity-based propagation.|
+|**Coherence Modes**|**Three, with a refusal instead of a guess**: `FRONT_BLOCK` (default, exact intensities), `COHERENCY_MATRIX` (adds the cascaded p–s coherency channel), `FULLY_COHERENT`. The twelve cross-channel observables are refused under the default on a flagged stack rather than answered from the front block alone.|
+|**Multi-Environment Design**|**One set of films, K surroundings**: a named design segment is defined once and optimized against every environment's demands at the same time, so a coating measured bare and then laminated cannot drift into two designs. K environments means K assemblies and K solves per evaluation — honest and linear.|
+|**Material Models**|**Sixteen dispersion models + six EMA mixing rules**, composable and nestable, with Kramers-Kronig ε₁ for the oscillator families and independently validated quadrature.|
+|**Guided Modes**|**Complex eigenmode search**: landscape scan → coarse minima → Nelder-Mead refinement over complex `n_eff`, plus normalised `\|E(z)\|` field profiles. Solves the stack as one coherent block by construction.|
 |**Roughness Model**|**Névot-Croce (Exact Wavevector)**: Achieves research-grade accuracy for X-ray and UV interfaces by modeling exact wavevector correlations across boundaries.|
 |**Optimization**|**Rust / rayon + PyO3**: Native multi-threaded kernels (GIL released) with a thin Python API, optimized for high-concurrency simulation and real-time GUI responsiveness.|
-|**Polarization**|**Full $s$ and $p$ Support**: Comprehensive Jones and Stokes calculus integration, following standard commercial ellipsometry conventions (Azzam & Bashara).|
+|**Polarization**|**Full $s$ and $p$ Support**: Comprehensive Jones and Stokes calculus integration, following standard commercial ellipsometry conventions (Azzam & Bashara). The cross-polarization observables (Δ, DOP, `S2`/`S3`, retardance) need `COHERENCY_MATRIX` on a stack with an incoherent flag; see *Partial Coherence Support*.|
 |**Complexity**|**$O(N)$ Scaling**: Optimized linear time complexity relative to the number of layers, ensuring stable performance for complex multi-stack architectures.|
 
 ### Project layout
@@ -176,11 +253,14 @@ docs/plans/exposure_audit.md).
 `.github/workflows/ci.yml` runs on every push and pull request:
 `cargo test --workspace`, a zero-compiler-warnings check (`-D warnings`),
 `pytest validation` on Windows and Linux (pinned runner images, so the
-recorded fingerprints stay platform-stable), four blocking lints — exposure,
-CIE sync, `.pyi` surface sync, and message hygiene
+recorded fingerprints stay platform-stable), five blocking lints — exposure,
+CIE sync, `.pyi` surface sync, message hygiene
 (`tools/check_message_whitespace.py`: space runs and console-unencodable
-characters inside message literals) — and an assertion that the installed
-extension is a release build.
+characters inside message literals) and review-harness documentation
+(`tools/check_review_docs.py`: every harness in `validation/review/` is listed
+in that directory's README with the section or plan item that asked for it,
+and none imports the parity reference they exist to be independent of) — and
+an assertion that the installed extension is a release build.
 `cargo clippy -D warnings` (since 0.6.6) and `cargo fmt --all --check`
 (since 0.6.32) are blocking; nothing in the workflow is advisory any more.
 
