@@ -43,7 +43,7 @@ is either bypassed or read with the wrong object.
 | C4 | Gain media are silently mangled, differently in the coherent and incoherent paths | P2 | §3.4 — **FIXED** `5b59aed` (0.7.11) |
 | C5 | Coherence flags on the half-spaces are silently ignored | P3 | §3.5 — **FIXED** `e982e50` (0.7.12) |
 | C6 | `ellipsometry()` / `stokes()` / `complex_amplitudes()` carry no front-block caveat, while `dispersion()` does | P3 | §3.6 — **FIXED** `6380ca0` + `e982e50` (0.7.12) |
-| C7 | The incoherent cascade has no independent validation — parity is against a port of itself | P3 | §3.7 |
+| C7 | The incoherent cascade has no independent validation — parity is against a port of itself | P3 | §3.7 — **FIXED** `84513dd` (0.7.13) |
 
 ## 1. Where phase is kept, and where it is destroyed
 
@@ -481,6 +481,44 @@ The three probes in this review are cheap and are the missing twins:
 * the phase-average identity of §1 — the only one that tests the *definition*
   rather than an agreement, and the one that would have caught C2 had it been
   written for the Stokes vector as well as for R/T.
+
+**As applied** — `84513dd` (0.7.13). All three landed as
+`validation/review/incoherent_check.py` (the eleventh review harness) with
+the Stokes-vector variant as a fourth part, plus
+`validation/smoke/test_incoherent_physics.py` (17 tests) as the regression
+twins. Measured: the closed form to 1e-12 in both modes; bit-identical `Rs`
+from 10 µm to 3.7 mm; the phase average to 8.3e-17 (`Rs`, 0°), 1.0e-15
+(`Tp`, 0°), 4.4e-16 / 3.3e-16 at 45°, and 7.4e-07 / 9.0e-08 on an absorbing
+slab with `k*d` held invariant. Each part carries a control that fails it.
+
+The Stokes part did what round 1 predicted it would. `COHERENCY_MATRIX`
+reproduces the averaged vector to ≤6.7e-16 on all four components — mode B
+verified against the definition rather than against a port — while
+`FRONT_BLOCK`, reached past its 0.7.10 refusal through the raw engine,
+misses it by 2.26e-02 (`S2_R`) and 3.91e-03 (`S3_R`) *while its `S0_R` and
+`S1_R` pass the same average to 1e-16*. That split is C2 measured from the
+definition; every earlier piece of C2 evidence was one implementation
+disagreeing with another.
+
+Two traps in the identity itself are now pinned as tests, because both were
+live mistakes while writing it and both look like engine bugs. Sweeping `d`
+to turn the phase also sweeps `tau = exp(-2*Im(beta))`, so the naive
+absorbing average is taken over a stack whose absorption moves underneath it
+(3.4e-04, measuring itself); the test asserts both that holding `k*d` fixed
+works and that the naive version fails. And `S0..S3` are bilinear in the
+fields while `DOP` is a nonlinear function of them: the first draft averaged
+`DOP` and reported a 5.8e-03 "disagreement" that was entirely its own, since
+this stack is non-depolarizing and every coherent sample has `DOP = 1`
+exactly, while the averaged Stokes vector has `DOP = 0.994186`. That gap is
+the physics — partial depolarization is what incoherent superposition
+produces — and mode B reproduces it to 1e-16.
+
+The twins average over 64 phase samples rather than the harness's 2048: the
+coherent answer is analytic and periodic in the round-trip phase, so an
+equispaced Riemann sum converges geometrically (8 samples → 1.7e-07, 16 →
+5e-15). The whole file runs in 0.18 s, and the convergence *rate* is itself
+asserted, so a future discontinuity in the sweep cannot quietly turn these
+identities into approximations.
 
 ## 4. Sources
 

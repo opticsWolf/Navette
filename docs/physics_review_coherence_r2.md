@@ -3,8 +3,13 @@
 STATUS: independent review round 2 of `docs/physics_review_coherence.md`
 (C1-C7). **Applied so far: C8** (`47b2e18`, 0.7.8), **C1's refusal half**
 (`f6f959d`, 0.7.9), **C2 + C9** (`6380ca0`, 0.7.10) and **C4**
-(`5b59aed`, 0.7.11) and **C3 + C5 + C6 + C10** (`e982e50`, 0.7.12).
-Only **C7** is not.
+(`5b59aed`, 0.7.11), **C3 + C5 + C6 + C10** (`e982e50`, 0.7.12) and
+**C7** (`84513dd`, 0.7.13). **Every finding of both rounds is now
+applied.** One half of one of them was applied by decision rather than by
+code: C1's synthesis pipeline *refuses* a flagged design instead of
+honouring it, and the multiblock implementation stays a phase of its own
+(§5, item 2). That is the only place a finding's remedy is deferred, and
+it is deferred explicitly.
 This round re-verified every round-1 finding
 against the code at 0.7.7 (`dev_phase_physics`, review round 1 committed as
 `903fda7`), extended the scope to every door that reaches a solve, and ran
@@ -36,7 +41,7 @@ Round-1 findings, as verified this round:
 | C4 | gain mangled differently per path | **CONFIRMED**, coherent path erases the sign entirely | §3.4 — **FIXED** `5b59aed` (0.7.11) |
 | C5 | half-space flags silently ignored | **CONFIRMED** (and the docstring invites it) | §3.5 — **FIXED** `e982e50` (0.7.12) |
 | C6 | caveat on the wrong docstrings | **CONFIRMED** | §3.6 — **FIXED** `e982e50` (0.7.12) |
-| C7 | no independent incoherent validation | **CONFIRMED** | §3.7 |
+| C7 | no independent incoherent validation | **CONFIRMED** | §3.7 — **FIXED** `84513dd` (0.7.13) |
 
 ## 1. Method
 
@@ -341,6 +346,16 @@ Round 1's three proposed probes are indeed the missing twins. This round
 adds one more candidate: the Stokes-vector phase average (the variant
 that would have caught C2), which round 1 ran only for R/T.
 
+**As applied** — `84513dd` (0.7.13). All four landed, three of them reproducing round
+1's numbers to the last digit they printed. The fourth — this round's
+addition — is the one that paid: it verifies `COHERENCY_MATRIX` against
+the definition (≤6.7e-16 on all four Stokes components, including the
+partial depolarization the average implies, `DOP = 0.994186` where every
+coherent sample has `DOP = 1`), and it measures `FRONT_BLOCK` missing the
+same average by 2.26e-02 and 3.91e-03 on `S2_R`/`S3_R` while passing it to
+1e-16 on `S0_R`/`S1_R`. See §3.7 of round 1 for the full note, including
+the two measurement traps now pinned as tests.
+
 ## 4. New findings
 
 ### 4.1 C8 — the coherence flag is an unchecked `i32` with an `== 1` gate (P2)
@@ -538,7 +553,13 @@ ordered by silent-wrongness per line of change:
 6. **C7** — land the three round-1 probes as
    `validation/review/incoherent_check.py` first (closed form,
    thickness independence, phase average); promote to regression twins
-   alongside the C2 commit.
+   alongside the C2 commit. **DONE** `84513dd` (0.7.13), with the Stokes-vector average
+   as a fourth part and `validation/smoke/test_incoherent_physics.py`
+   (17 tests) as the twins. The twins use 64 phase samples rather than
+   2048 — the integrand is analytic and periodic, so the Riemann sum
+   converges geometrically — and assert that convergence rate, so the
+   suite costs 0.18 s and still fails if a discontinuity ever enters the
+   sweep.
 
 ## 6. Recorded so a later pass does not re-derive them
 
