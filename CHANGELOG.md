@@ -5,6 +5,47 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.14] - the review harnesses document themselves, or CI says so
+
+### Added
+- **`tools/check_review_docs.py`**, the sixth check tool, wired into the
+  push/PR gate beside the exposure, CIE, stub and message-hygiene
+  guards. Three passes over `validation/review/`:
+  - **coverage** — every harness has a row in that directory's README,
+    and every row names a file that exists;
+  - **provenance** — each row's middle cell names the review section or
+    plan item that asked for the check (`§19`, `R4.6`, `C7`), because a
+    harness with no origin is one nobody can decide to retire;
+  - **the README's own claim** — "The `loom` reference is never
+    imported", checked on the AST rather than by grep, so the word may
+    still appear in prose explaining exactly why (it does, in two
+    docstrings).
+  All four findings were verified to fire against a sandboxed tree
+  before the tool was wired in: a guard that cannot fail is decoration.
+- Two harnesses the battery had been running undocumented:
+  - **`lm_check.py`** (R4.4 / §18.2, R4.6) — the scipy parity the plan
+    docs had been *claiming* for the bounded LM in
+    `synthesis/thick_opt.rs` without ever reproducing it;
+  - **`color_grad_python.py`** (R4.2) — the color gradient on the Python
+    needle path, which returned zero for every color demand with no
+    error because `build_needle_targets`' dict dropped the fold's
+    `grad_r`/`grad_t`.
+
+### Changed
+- `validation/review/README.md`'s scope line. The table was written for
+  `docs/code_review.md` §19–23 and was never widened when the R4
+  remediation items and the coherence review added harnesses of their
+  own — which is exactly how two of them stayed off the map for several
+  versions. It now names all three sources (§18–23, R4.2/R4.4/R4.6, C7),
+  and the new guard fails if the next one drifts the same way.
+
+### Unchanged on purpose
+- The two harnesses themselves. Their own module docstrings were already
+  better than anything a README row could say; the gap was the map, not
+  the scripts.
+- `check_toolchain.py` stays out of CI. It reports what `stable` moved
+  to, which is information rather than a gate.
+
 ## [0.7.13] - C7: the incoherent cascade, checked against something that is not itself
 
 ### Added

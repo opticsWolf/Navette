@@ -15,6 +15,11 @@
 #                                   space runs and non-encodable chars
 #                                   blocking; encodable chars allowlisted
 #                                   until F3.1)
+#   * tools/check_review_docs.py   (every validation/review harness is
+#                                   listed in that directory's README with
+#                                   the section or plan item that asked for
+#                                   it, and none imports the loom reference
+#                                   they exist to be independent of)
 #   * dependency floors               (R4.1: a floor with no wheel is fiction)
 #   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
 #   * cargo clippy -D warnings        (R2.3a: zero findings as of 0.6.6)
@@ -130,6 +135,9 @@ jobs:
 
       - name: message hygiene (lost line-continuations, non-encodable chars)
         run: python tools/check_message_whitespace.py
+
+      - name: review harnesses are documented and loom-free
+        run: python tools/check_review_docs.py
 
   dependency-floors:
     # A declared floor is a promise: "this package works with at least this
