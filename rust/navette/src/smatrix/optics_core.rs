@@ -214,6 +214,52 @@ pub const GAIN_MEDIUM_EXPLANATION: &str = "Im(n) < 0 is optical gain, and neithe
      imaginary part before it reaches the solver. Note -0.0 is not gain: it is \
      not < 0 and does not trip this.";
 
+/// The shared explanation carried by every "flagged layer is too thin"
+/// warning (C3). A warning, not a refusal: the flag is honoured either way,
+/// and a caller may well be modelling a thin layer's incoherent limit on
+/// purpose. The Python `ScatterMatrix` door emits the same sentences from its
+/// own copy, the `AMBIENT_DROP_EXPLANATION` pattern, and
+/// `test_both_doors_explain_thin_flags_the_same_way` pins them together.
+pub const THIN_FLAGGED_LAYER_EXPLANATION: &str = "An incoherent flag says the layer destroys the phase relation between its \
+     two surfaces, which needs the path-length spread across it to exceed the \
+     source coherence length L_C = lambda^2 / delta_lambda. A layer this thin \
+     does not, for any source anyone owns. The flag is honoured regardless -- \
+     the block sweep splits the stack wherever it is set, and the split alone \
+     changes the answer: a ZERO-thickness flagged layer still decoheres \
+     (measured Rs 0.193432 -> 0.109790), because the join breaks the p-s phase \
+     relation whatever the thickness. Frustrated total internal reflection is \
+     the case that bites: a 200 nm flagged air gap past the critical angle \
+     comes back R = 1.000000 exactly -- the thick limit, unconditionally -- \
+     where the coherent stack gives R = 0.763. In practice substrates go \
+     incoherent above roughly 50-100 um in the UV-VIS-NIR; below that, clear \
+     the flag and let the layer interfere. This is a warning, not an error: \
+     the thin incoherent limit is a legitimate thing to ask for, as long as it \
+     is what you meant to ask for.";
+
+/// Format the C3 warning for one interior row. `nd` is the optical thickness
+/// `Re(n) * d` at `lam`, both in the grid's length unit, and
+/// `lambda^2 / (2 * nd)` is the source bandwidth that layer would need before
+/// its two surfaces stopped interfering -- which is the honest form of "too
+/// thin", since it derives the threshold instead of picking one.
+pub(crate) fn thin_flagged_layer_message(site: &str, row: usize, nd: f64, lam: f64) -> String {
+    let need = lam * lam / (2.0 * nd);
+    format!(
+        "{site}: incoherent layer at row {row} has an optical thickness of \
+         {nd:.4} (n*d) at wavelength {lam:.4}, i.e. {ratio:.3} wavelengths. It \
+         would take a source bandwidth of delta_lambda > {need:.4} -- \
+         {pct:.0}% of the wavelength itself -- for that layer to be \
+         incoherent. {THIN_FLAGGED_LAYER_EXPLANATION}",
+        ratio = nd / lam,
+        pct = 100.0 * need / lam,
+    )
+}
+
+/// The threshold behind [`thin_flagged_layer_message`]: warn below five
+/// wavelengths of optical thickness, which is `delta_lambda > lambda / 10`.
+/// Stated as a named constant so it reads as a decision rather than a taste,
+/// and so both doors cannot drift to different numbers.
+pub const THIN_FLAG_WAVELENGTHS: f64 = 5.0;
+
 /// Format the C4 refusal, so every door says the same thing about the same
 /// grid position. Crate-private on purpose: it is a formatter for a rule the
 /// crate owns, not a door, and `check_exposure` should not have to carry a

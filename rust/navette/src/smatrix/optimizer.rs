@@ -6,6 +6,15 @@
 //! locate guided eigenmodes. [`char_func`] is the complex objective,
 //! [`char_func_xy`] the real-valued adapter for the minimizer, and
 //! [`reflection_coefficient_helper`] the shared forward solve.
+//!
+//! SINGLE BLOCK BY CONSTRUCTION (C10). Every path here calls
+//! `solve_coherent_block_fields_inner(0, n - 1)`: one coherent block over the
+//! whole stack, with `incoherent_flags` never consulted. That is correct by
+//! intent rather than an oversight -- a guided mode is a coherent-stack
+//! concept, and there is no eigenmode to find across a partition that has
+//! destroyed the phase relation. It is recorded because every other surface
+//! on the same `Solver` does honour the flags, so a caller who set them has
+//! no way to tell from the output that these do not.
 use num_complex::Complex64;
 
 // Reuse the shared low-level primitives from the crate

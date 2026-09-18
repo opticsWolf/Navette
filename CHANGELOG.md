@@ -5,6 +5,72 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.12] - C3/C5/C6/C10: what an incoherent flag can and cannot mean
+
+### Added
+- **C3.** A flagged layer thinner than five wavelengths of optical
+  thickness now warns at construction, at both engine doors. The flag
+  asserts the layer destroys the phase relation between its two surfaces,
+  which needs the path-length spread across it to exceed the source
+  coherence length `L_C = lambda^2 / delta_lambda`; nothing checked that.
+  The threshold is **derived, not chosen**: the warning quotes the source
+  bandwidth that layer would need — `delta_lambda > lambda^2 / (2*n*d)`,
+  and what percentage of the wavelength that is — so "too thin" is a
+  number the caller can argue with rather than a constant somebody picked.
+- **C5.** A flag on row 0 or the last row now warns that it does nothing.
+  The block sweep scans `current_idx + 1` up to `idx_n` and applies the
+  attenuation element only below `idx_n`, so half-space flags are never
+  consulted: bit-identical output, previously with no diagnostic at all.
+  The warning says what to do instead — a thick substrate is an *interior*
+  layer with a real thickness, flagged, between the film stack and the
+  exit medium.
+- `optics_core::THIN_FLAGGED_LAYER_EXPLANATION` and
+  `THIN_FLAG_WAVELENGTHS`, shared by both doors in the
+  `AMBIENT_DROP_EXPLANATION` shape, with
+  `test_both_doors_explain_thin_flags_the_same_way` to keep them from
+  drifting.
+- `validation/smoke/test_incoherent_flag_sanity.py` (14 tests), including
+  the measurement behind each warning: a half-space flag really is
+  bit-identical, an interior one really is not, and the flag is still
+  honoured after the thin-layer warning.
+
+### Changed
+- The `incoherent_flags` constructor docstring no longer offers "thick
+  substrate" as its example. That was the exact row a caller would flag to
+  no effect (C5). It now states the interior-only rule, the `L_C` criterion
+  with the 50–100 µm practical substrate threshold, and that the partition
+  changes the answer by itself — a **zero**-thickness flagged layer still
+  decoheres, because the join breaks the p-s phase relation whatever the
+  thickness (`Rs 0.193432 -> 0.109790`).
+- **C6.** `field_profile` gained the front-block/single-block caveat,
+  completing the sweep begun in 0.7.10 (`ellipsometry`, `stokes`,
+  `complex_amplitudes`).
+- **C10.** `eigenmode_landscape`, `find_eigenmodes`, `refine_mode` and
+  `field_profile` now say that the guided-mode kernels solve `[0, n-1]` as
+  one coherent block and never consult `incoherent_flags`, and
+  `smatrix/optimizer.rs` says it at the module level. This is correct by
+  intent — a guided mode is a coherent-stack concept and there is no
+  eigenmode to find across a partition — but every other surface on the
+  same `Solver` honours the flags, so a caller had no way to tell these do
+  not.
+
+### Unchanged on purpose
+- Both are warnings, not refusals. A half-space has no second surface to
+  lose coherence against, so a flag there is a no-op rather than a
+  mistake; and the thin incoherent limit is a legitimate thing to model,
+  as long as it is what the caller meant. The engine honours the array
+  either way.
+- All three coherence findings now share one interior-only predicate, so
+  C2's refusal, C3's thickness warning and C5's no-op warning cannot
+  contradict each other. A stack flagged only on its half-spaces gets C5's
+  warning and neither of the others — pinned by
+  `test_the_two_findings_do_not_contradict_each_other`.
+- Three existing tests now emit the new warnings and still pass
+  (`test_needle_t_a_phi`, `test_the_multiblock_span_is_not_the_coherent_one`,
+  `test_half_space_flags_alone_are_allowed`). All three use thin or
+  half-space flags deliberately, as FD and partition geometry rather than
+  as physics; the warning saying so is the warning working.
+
 ## [0.7.11] - C4: optical gain is refused at every door
 
 ### Fixed

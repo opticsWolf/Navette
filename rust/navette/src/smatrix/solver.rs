@@ -1184,6 +1184,54 @@ pub fn solve_arrays(
         );
     }
     let inc: Vec<i32> = incoherent.iter().map(|b| i32::from(*b)).collect();
+    // C5. The sentence above is the model this one copies: same convention,
+    // same two rows, stated where a caller who set the flag will read it. The
+    // block sweep scans `current_idx + 1 ..< idx_n` and applies the
+    // attenuation element only for `next_incoh < idx_n`, so a flag on row 0
+    // or row last is never consulted -- bit-identical output, no diagnostic,
+    // and the constructor docstring used to invite exactly that by naming a
+    // "thick substrate" as the example. It is a no-op rather than a mistake
+    // (a half-space has no second surface to lose coherence against), so it
+    // says so instead of refusing.
+    if n_rows >= 2 && (inc[0] != 0 || inc[n_rows - 1] != 0) {
+        warnings.push(
+            "solve_arrays: an incoherent flag on row 0 or the last row has no effect; \
+       those are half-spaces, and the block sweep never consults their flags. A thick \
+       substrate is modelled as an interior layer with a real thickness, flagged, \
+       between the film stack and the exit medium."
+                .to_string(),
+        );
+    }
+    // C3. An incoherent flag asserts the layer destroys the phase relation
+    // between its two surfaces; nothing checked that the layer is thick
+    // enough for that to be possible. The threshold is derived rather than
+    // chosen: report the source bandwidth the layer would need. Interior rows
+    // only, for the same reason as C5 -- the half-space flags do nothing at
+    // all, and they have their own sentence above. One warning per row, at
+    // the shortest wavelength in the grid, which is the most favourable case
+    // for the flag: if the layer is thin there it is thin everywhere.
+    if n_rows > 2 {
+        let lam = wavelengths.iter().cloned().fold(f64::INFINITY, f64::min);
+        for row in 1..n_rows - 1 {
+            if inc[row] == 0 || thicknesses[row] <= 0.0 {
+                continue;
+            }
+            // `indices` arrives layer-major -- (n_layers, n_wavs) row-major,
+            // which is what `from_raw` below takes -- so the row's own index
+            // at `lam` is `row * n_wavs + w`, not the wav-major stride the
+            // Solver's internal cache uses.
+            let w = wavelengths.iter().position(|v| *v == lam).unwrap_or(0);
+            let nd = indices[row * wavelengths.len() + w].re * thicknesses[row];
+            if nd > 0.0 && nd < crate::smatrix::optics_core::THIN_FLAG_WAVELENGTHS * lam {
+                warnings.push(crate::smatrix::optics_core::thin_flagged_layer_message(
+                    "solve_arrays",
+                    row,
+                    nd,
+                    lam,
+                ));
+            }
+        }
+    }
     // C2/C9. Mode A's cross channel is the front block while its intensities
     // are stack totals, so any cross observable on a stack with an INTERIOR
     // flag is a mix of two stacks. Rows 0 and last are half-spaces the sweep

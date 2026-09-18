@@ -536,6 +536,40 @@ _FRONT_BLOCK_CROSS_EXPLANATION = (
 )
 
 
+# ─── C3/C5: incoherent flags that cannot mean what they say ─────────────────
+# The shared explanation, word for word with
+# `optics_core::THIN_FLAGGED_LAYER_EXPLANATION`, and the same threshold
+# constant. Two doors, one rule, kept apart only so this one can point
+# `stacklevel` at the caller; `test_both_doors_explain_thin_flags_the_same_way`
+# pins them together.
+_THIN_FLAG_WAVELENGTHS = 5.0
+
+_THIN_FLAGGED_LAYER_EXPLANATION = (
+    "An incoherent flag says the layer destroys the phase relation between its "
+    "two surfaces, which needs the path-length spread across it to exceed the "
+    "source coherence length L_C = lambda^2 / delta_lambda. A layer this thin "
+    "does not, for any source anyone owns. The flag is honoured regardless -- "
+    "the block sweep splits the stack wherever it is set, and the split alone "
+    "changes the answer: a ZERO-thickness flagged layer still decoheres "
+    "(measured Rs 0.193432 -> 0.109790), because the join breaks the p-s phase "
+    "relation whatever the thickness. Frustrated total internal reflection is "
+    "the case that bites: a 200 nm flagged air gap past the critical angle "
+    "comes back R = 1.000000 exactly -- the thick limit, unconditionally -- "
+    "where the coherent stack gives R = 0.763. In practice substrates go "
+    "incoherent above roughly 50-100 um in the UV-VIS-NIR; below that, clear "
+    "the flag and let the layer interfere. This is a warning, not an error: "
+    "the thin incoherent limit is a legitimate thing to ask for, as long as it "
+    "is what you meant to ask for."
+)
+
+_HALF_SPACE_FLAG_WARNING = (
+    "ScatterMatrix: an incoherent flag on row 0 or the last row has no effect; "
+    "those are half-spaces, and the block sweep never consults their flags. A "
+    "thick substrate is modelled as an interior layer with a real thickness, "
+    "flagged, between the film stack and the exit medium."
+)
+
+
 # ─── Main entry point ────────────────────────────────────────────────────────
 class ScatterMatrix:
     """Multilayer optical solver over a (wavelength, angle) grid.
@@ -552,10 +586,32 @@ class ScatterMatrix:
     angles : float or float array
         Angle(s) of incidence, degrees unless ``angles_in_radians=True``.
     incoherent_flags : int array, shape (n_layers,), optional
-        Non-zero where a layer breaks phase coherence (thick substrate). Default
-        all-zero (fully coherent boundaries). Any non-zero value means the same
-        thing: the array is canonicalized to 0/1 at the door, so a flag of 2 is
-        the flag 1 answer and not a third behaviour.
+        Non-zero where a layer breaks phase coherence. Default all-zero (fully
+        coherent boundaries). Any non-zero value means the same thing: the
+        array is canonicalized to 0/1 at the door, so a flag of 2 is the flag 1
+        answer and not a third behaviour.
+
+        **Interior rows only.** Rows 0 and last are half-spaces, and the block
+        sweep never consults their flags -- it scans ``current_idx + 1`` up to
+        ``idx_n`` and applies the attenuation element only below ``idx_n``, so
+        a flag there is bit-for-bit a no-op (C5). A half-space has no second
+        surface to lose coherence against, so this is a no-op rather than a
+        mistake; it warns rather than refusing. A thick substrate is modelled
+        as an INTERIOR layer with its real thickness, flagged, sitting between
+        the film stack and the exit medium -- not as a flag on the exit medium
+        itself, which is what "thick substrate" used to read as here.
+
+        **Thickness matters, and is not checked.** The flag asserts the layer
+        destroys the phase relation between its two surfaces, which needs the
+        path-length spread across it to exceed the source coherence length
+        ``L_C = lambda**2 / delta_lambda``. Substrates reach that above roughly
+        50-100 um in the UV-VIS-NIR. Below about five wavelengths of optical
+        thickness the constructor warns, quoting the source bandwidth the layer
+        would need (C3); the flag is still honoured, because the thin
+        incoherent limit is a legitimate thing to ask for. Note the split
+        changes the answer by itself: a **zero**-thickness flagged layer still
+        decoheres, since the join breaks the p-s phase relation whatever the
+        thickness.
     roughness_types : int array, shape (n_layers,), optional
         Per-interface roughness model (see :class:`RoughnessType`). Default none.
         **All roughness models are specular-only: they do not account for diffuse
@@ -674,6 +730,48 @@ class ScatterMatrix:
             np.sin(theta) if angles_in_radians else np.sin(np.radians(theta)),
             dtype=np.float64,
         )
+        self._warn_about_flags()
+
+    def _warn_about_flags(self) -> None:
+        """C5 then C3: a flag that does nothing, then one that cannot mean it.
+
+        Both are warnings. A half-space flag is a no-op because a half-space
+        has no second surface to lose coherence against, and a thin flagged
+        layer is a legitimate model of the incoherent limit -- neither is an
+        error, and the engine honours the array either way. The Rust half of
+        each lives in ``solver::solve_arrays``, which is what
+        ``solve_structure`` and the raw FFI reach.
+        """
+        flags = self.incoherent_flags
+        if flags.size >= 2 and (flags[0] != 0 or flags[-1] != 0):
+            warnings.warn(_HALF_SPACE_FLAG_WARNING, stacklevel=3)
+        if flags.size <= 2:
+            return
+        interior = np.flatnonzero(flags[1:-1] != 0) + 1
+        if interior.size == 0:
+            return
+        # The shortest wavelength is the most favourable case for the flag: if
+        # the layer is thin there it is thin across the whole grid.
+        w = int(np.argmin(self.wavls))
+        lam = float(self.wavls[w])
+        for row in interior:
+            d = float(self.thicknesses[row])
+            if d <= 0.0:
+                continue
+            nd = float(self._indices[row, w].real) * d
+            if nd <= 0.0 or nd >= _THIN_FLAG_WAVELENGTHS * lam:
+                continue
+            need = lam * lam / (2.0 * nd)
+            warnings.warn(
+                f"ScatterMatrix: incoherent layer at row {int(row)} has an "
+                f"optical thickness of {nd:.4f} (n*d) at wavelength "
+                f"{lam:.4f}, i.e. {nd / lam:.3f} wavelengths. It would take a "
+                f"source bandwidth of delta_lambda > {need:.4f} -- "
+                f"{100.0 * need / lam:.0f}% of the wavelength itself -- for "
+                f"that layer to be incoherent. "
+                f"{_THIN_FLAGGED_LAYER_EXPLANATION}",
+                stacklevel=3,
+            )
 
     # ---- input helpers ------------------------------------------------------
     def _as_layer_array(self, value, dtype, name, default):
@@ -858,6 +956,14 @@ class ScatterMatrix:
         """Scan ``|1/r(n_eff)|^2`` over a complex effective-index box.
 
         ``resolution`` is ``(points_real, points_imag)``.
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
         """
         real_vals, imag_vals, flat = self._native.landscape(
             (float(n_real_range[0]), float(n_real_range[1])),
@@ -888,6 +994,15 @@ class ScatterMatrix:
         Returns ``(n_eff, characteristic_value)``. The characteristic value is
         :math:`|1/r(n_{eff})|^2`, so a true pole drives it to ~0; on the
         pinned surface-plasmon stack a converged mode reaches ``1e-24``.
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
+
 
         Parameters
         ----------
@@ -944,7 +1059,16 @@ class ScatterMatrix:
         wavelength: Optional[float] = None,
         wav_index: Optional[int] = None,
     ) -> List[complex]:
-        """Scan, locate coarse minima, and (optionally) Nelder-Mead refine each."""
+        """Scan, locate coarse minima, and (optionally) Nelder-Mead refine each.
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
+        """
         modes = self._native.find_eigenmodes(
             (float(n_real_range[0]), float(n_real_range[1])),
             (float(n_imag_range[0]), float(n_imag_range[1])),
@@ -969,6 +1093,14 @@ class ScatterMatrix:
         Returns a dict with ``z`` (positions), ``E`` (normalised |E|, max=1),
         ``layer_start`` / ``layer_end`` (per finite layer), and ``layer_index``
         (complex n of each finite layer).
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
         """
         z, e, lstart, lend, lidx = self._native.field_profile(
             complex(n_eff),
