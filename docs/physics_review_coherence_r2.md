@@ -3,7 +3,8 @@
 STATUS: independent review round 2 of `docs/physics_review_coherence.md`
 (C1-C7). **Applied so far: C8** (`47b2e18`, 0.7.8), **C1's refusal half**
 (`f6f959d`, 0.7.9), **C2 + C9** (`6380ca0`, 0.7.10) and **C4**
-(`5b59aed`, 0.7.11). C3, C5, C6, C7 and C10 are not.
+(`5b59aed`, 0.7.11) and **C3 + C5 + C6 + C10** (`e982e50`, 0.7.12).
+Only **C7** is not.
 This round re-verified every round-1 finding
 against the code at 0.7.7 (`dev_phase_physics`, review round 1 committed as
 `903fda7`), extended the scope to every door that reaches a solve, and ran
@@ -23,7 +24,7 @@ New findings:
 |---|---------|-----|---|
 | C8 | The coherence flag is an unchecked `i32` with an `== 1` gate: any other non-zero value partitions the stack **without** the attenuation element — a flag typo silently erases the flagged layer's absorption | **P2** | §4.1 — **FIXED** `47b2e18` (0.7.8) |
 | C9 | Mode A's `cross_T` is a third, undocumented object (product of per-block `t_p·t_s*` with no bounce series) — C2's disposition must cover it, and the record should state what it is | P3 | §4.2 — **RECORDED** `6380ca0` (0.7.10) |
-| C10 | Guided-mode tooling (`smatrix/optimizer.rs`) is single-block by construction — correct for mode search, but silent; folds into the C6 doc sweep | P3 | §4.3 |
+| C10 | Guided-mode tooling (`smatrix/optimizer.rs`) is single-block by construction — correct for mode search, but silent; folds into the C6 doc sweep | P3 | §4.3 — **RECORDED** `e982e50` (0.7.12) |
 
 Round-1 findings, as verified this round:
 
@@ -31,10 +32,10 @@ Round-1 findings, as verified this round:
 |---|---------------|---------|---|
 | C1 | synthesis ignores `coherent: false` | **CONFIRMED**, sharpened: the honored path already ships | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
 | C2 | Mode A Stokes mixes objects | **CONFIRMED** + cross_T precision | §3.2 — **FIXED** `6380ca0` (0.7.10) |
-| C3 | no thickness sanity for flagged layers | **CONFIRMED** | §3.3 |
+| C3 | no thickness sanity for flagged layers | **CONFIRMED** | §3.3 — **FIXED** `e982e50` (0.7.12) |
 | C4 | gain mangled differently per path | **CONFIRMED**, coherent path erases the sign entirely | §3.4 — **FIXED** `5b59aed` (0.7.11) |
-| C5 | half-space flags silently ignored | **CONFIRMED** (and the docstring invites it) | §3.5 |
-| C6 | caveat on the wrong docstrings | **CONFIRMED** | §3.6 |
+| C5 | half-space flags silently ignored | **CONFIRMED** (and the docstring invites it) | §3.5 — **FIXED** `e982e50` (0.7.12) |
+| C6 | caveat on the wrong docstrings | **CONFIRMED** | §3.6 — **FIXED** `e982e50` (0.7.12) |
 | C7 | no independent incoherent validation | **CONFIRMED** | §3.7 |
 
 ## 1. Method
@@ -217,6 +218,17 @@ Round 1's `tmm` comparison and disposition (warning at construction +
 `L_C = lambda^2/dlambda` docstring; refuse flagged layers as optimization
 parameters if C1 is ever implemented) stand as written.
 
+**As applied** — `e982e50`, 0.7.12. A warning at both doors below five
+wavelengths of optical thickness, with the threshold DERIVED rather than
+picked: the message quotes `delta_lambda > lambda^2 / (2*n*d)`, the source
+bandwidth that layer would need to be incoherent, and what fraction of the
+wavelength that is. Interior rows only, matching C2 and C5. The
+zero-thickness case above does NOT get a thickness warning — an infinite
+bandwidth figure teaches nothing — but the docstring now states the
+measurement, because that is the fact that makes a thin flag dangerous
+rather than merely pointless. The optimizer half of the disposition stays
+parked with C1's implementation phase.
+
 ### 3.4 C4 — gain media are silently mangled, differently per path (P2) — CONFIRMED
 
 Line evidence: the coherent path flips decay by conjugation
@@ -282,6 +294,15 @@ Two things round 1 did not record:
   row 0/last as half-spaces" (`solver.rs:1130-1135`). The coherence
   sentence should be appended there and in the constructor docstring.
 
+**As applied** — `e982e50`, 0.7.12. Both, as this section asked: the
+sentence sits beside the half-space thickness warning in `solve_arrays`,
+and the constructor docstring lost the "thick substrate" example that was
+inviting the mistake. It warns rather than refusing — a half-space has no
+second surface to lose coherence against, so the flag is a no-op rather
+than an error. `test_a_half_space_flag_really_is_bit_identical` measures
+the claim the warning makes instead of asserting it, and an interior
+control keeps that from being vacuous.
+
 ### 3.6 C6 — the front-block caveat is on the wrong docstrings (P3) — CONFIRMED
 
 Verified in the tree: `ellipsometry` (`smatrix.py:635-636`), `stokes`
@@ -293,6 +314,10 @@ the whole stack (Mode C)"); the Python convenience doors do not forward
 it. Round 1's demonstration (|rs_c|^2 = 0.1517 against Rs = 0.1826 in one
 output dict) is the user-visible consequence; the fix is a four-docstring
 sweep.
+
+**As applied** — three at `6380ca0` (0.7.10), with C2, and the fourth
+(`field_profile`) at `e982e50` (0.7.12). The Rust `OpticalState` wording
+this section praises is what the Python ones now forward.
 
 ### 3.7 C7 — no independent incoherent validation (P3) — CONFIRMED
 
@@ -436,6 +461,13 @@ consulted. Guided modes are a coherent-stack concept, so this is correct
 by intent; it deserves the same one-line docstring as `field_profile`
 (round 1's §5). Fold into the C6 docstring sweep; no code change.
 
+**As applied** — `e982e50`, 0.7.12. Recorded, not changed, as this
+section asked. The sentence went onto all four guided-mode entry points
+(`eigenmode_landscape`, `find_eigenmodes`, `refine_mode`, `field_profile`)
+and onto `optimizer.rs`'s module doc. The reason it is worth saying at all
+is that every OTHER surface on the same `Solver` honours the flags, so a
+caller who set them had no way to tell from the output that these do not.
+
 ## 5. Disposition — sequenced
 
 Each item its own commit and version bump (docs-only entries excepted),
@@ -485,9 +517,24 @@ ordered by silent-wrongness per line of change:
    carries the same text instead of "check provider data". No tolerance
    band: `-0.0` passes because `-0.0 < 0.0` is false, and anything truly
    negative is a data problem the Structure door has always reported.
-5. **C3 + C5 + C6 + C10** — the doc/warning sweep: thickness warning at
-   construction, half-space-flag sentence beside `solver.rs:1130`, four
-   Python docstrings, one optimizer docstring line.
+5. **C3 + C5 + C6 + C10** — **DONE**, `e982e50` (0.7.12). Both warnings
+   landed at both doors with one shared explanation
+   (`THIN_FLAGGED_LAYER_EXPLANATION`), beside the half-space sentence this
+   item pointed at. C3's threshold is derived rather than picked: the
+   warning quotes `delta_lambda > lambda^2 / (2*n*d)`, the source bandwidth
+   that layer would need, so "too thin" is a number the caller can argue
+   with. Both stay warnings — a half-space has no second surface to lose
+   coherence against, and the thin incoherent limit is a legitimate model.
+   Both use C2's interior-only predicate, so the three findings cannot
+   contradict each other
+   (`test_the_two_findings_do_not_contradict_each_other`). The constructor
+   docstring lost its "thick substrate" example, which was the exact row a
+   caller would flag to no effect, and gained the `L_C` criterion and the
+   zero-thickness measurement. C6's fourth docstring is `field_profile`;
+   C10 went onto the three eigenmode methods and `optimizer.rs`'s module
+   doc. Three existing tests now emit the new warnings and still pass —
+   all three use thin or half-space flags as FD and partition geometry
+   rather than as physics, which is the warning working.
 6. **C7** — land the three round-1 probes as
    `validation/review/incoherent_check.py` first (closed form,
    thickness independence, phase average); promote to regression twins

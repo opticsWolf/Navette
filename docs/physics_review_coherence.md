@@ -39,10 +39,10 @@ is either bypassed or read with the wrong object.
 |---|---------|-----|---|
 | C1 | The synthesis pipeline ignores `coherent: false` entirely — it solves every design as one coherent block | **P1** | §3.1 — refusal **FIXED** `f6f959d` (0.7.9) |
 | C2 | Mode A's Stokes vector mixes a front-block cross term with total intensities; Mode A is the default | **P1** | §3.2 — **FIXED** `6380ca0` (0.7.10) |
-| C3 | An incoherent flag carries no thickness sanity check — `d = 0` decoheres | P2 | §3.3 |
+| C3 | An incoherent flag carries no thickness sanity check — `d = 0` decoheres | P2 | §3.3 — **FIXED** `e982e50` (0.7.12) |
 | C4 | Gain media are silently mangled, differently in the coherent and incoherent paths | P2 | §3.4 — **FIXED** `5b59aed` (0.7.11) |
-| C5 | Coherence flags on the half-spaces are silently ignored | P3 | §3.5 |
-| C6 | `ellipsometry()` / `stokes()` / `complex_amplitudes()` carry no front-block caveat, while `dispersion()` does | P3 | §3.6 |
+| C5 | Coherence flags on the half-spaces are silently ignored | P3 | §3.5 — **FIXED** `e982e50` (0.7.12) |
+| C6 | `ellipsometry()` / `stokes()` / `complex_amplitudes()` carry no front-block caveat, while `dispersion()` does | P3 | §3.6 — **FIXED** `6380ca0` + `e982e50` (0.7.12) |
 | C7 | The incoherent cascade has no independent validation — parity is against a port of itself | P3 | §3.7 |
 
 ## 1. Where phase is kept, and where it is destroyed
@@ -376,6 +376,13 @@ optical thickness is below a few wavelengths, plus a sentence in
 flagged layer should additionally be refused as an optimization parameter
 unless it is absorbing.
 
+**As applied** — `e982e50`, 0.7.12. Both halves, at both doors. "A few
+wavelengths" became five, but the message does not lean on that number: it
+quotes the source bandwidth the layer would need,
+`Δλ > λ²/(2nd)`, so the threshold is derived and the caller can check it
+against their own source. The optimizer clause stays parked with C1's
+implementation phase, which has not happened.
+
 ### 3.4 C4 — gain media are silently mangled, and differently per path (P2)
 
 `coherent_block.rs` forces decay by conjugating the propagation phase
@@ -433,6 +440,13 @@ incoherent" is the first thing a user reaching for this feature will try.
 `solve_arrays` already warns when row 0 / last carries a non-zero thickness;
 the coherence flag deserves the same sentence, saying that a thick substrate
 is modelled as an interior layer plus an exit half-space.
+
+**As applied** — `e982e50`, 0.7.12. The sentence sits beside that one, at
+both doors, and says exactly that. The constructor docstring also lost the
+"thick substrate" example, which was inviting the mistake in the first
+place. The measurement above is now a test rather than a table
+(`test_a_half_space_flag_really_is_bit_identical`), with an interior
+control so it cannot pass vacuously.
 
 ### 3.6 C6 — the front-block caveat is on the wrong docstrings (P3)
 
