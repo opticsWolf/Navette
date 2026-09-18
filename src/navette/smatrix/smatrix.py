@@ -154,6 +154,17 @@ class CoherenceMode(IntEnum):
     COHERENCY_MATRIX: additionally tracks the complex p-s coherency
         channel (needed for Delta, DOP, S2/S3).
     FULLY_COHERENT: the whole stack is one coherent block.
+
+    FRONT_BLOCK is the default, and its INTENSITIES (Rs, Rp, Ts, Tp, A) are
+    correct totals over every incoherent echo -- bit-identical to
+    COHERENCY_MATRIX. Its p-s cross channel is not: it comes from the first
+    coherent block alone, so Delta, DOP, S2/S3, the retardance and the raw
+    cross terms would be a ratio of two different stacks. Rather than return
+    that, the doors REFUSE those observables under FRONT_BLOCK when an
+    interior layer is flagged incoherent (C2); pass COHERENCY_MATRIX, which
+    cascades the cross channel with the echoes and is validated against the
+    phase-averaged coherent Stokes vector. With nothing flagged the two modes
+    agree bit-for-bit and nothing is refused.
     """
     FRONT_BLOCK = 0       # incoherent gaps applied at flagged boundaries
     COHERENCY_MATRIX = 1  # tracks the complex p-s coherency channel (Mode B)
@@ -240,6 +251,29 @@ def _first_bad(mask: np.ndarray):
     return int(first[0]) if first.size == 1 else tuple(int(i) for i in first)
 
 
+# The shared explanation, word for word with
+# `optics_core::GAIN_MEDIUM_EXPLANATION`. Two doors, one rule, kept apart only
+# so this one can name the `layer_indices` argument the caller actually passed;
+# `test_both_doors_explain_gain_the_same_way` pins them together.
+_GAIN_MEDIUM_EXPLANATION = (
+    "Im(n) < 0 is optical gain, and neither solver path can represent it. The "
+    "coherent path conjugates the propagation phase back to decay (beta.im < 0 "
+    "-> -beta.im), so a gain layer comes back wearing the LOSS layer's answer: "
+    "on a symmetric stack it is bit-identical to +k, and the reported "
+    "absorptance is POSITIVE for a medium that amplifies. The incoherent path "
+    "clamps the same quantity to zero instead, so the layer turns transparent "
+    "and the energy books open by a small negative absorptance (A = -4.3e-5 "
+    "measured on a 2 um slab at |k| = 0.01, with T landing on the exact "
+    "lossless value). Both are fabrications, they disagree with each other, and "
+    "neither is recoverable from the output -- it reads as an ordinary "
+    "absorbing stack. There is no correction to apply, so this is refused "
+    "rather than quietly repaired. If the sign is a provider convention (an "
+    "exp(+i*w*t) time convention writes absorption as k < 0), negate the "
+    "imaginary part before it reaches the solver. Note -0.0 is not gain: it is "
+    "not < 0 and does not trip this."
+)
+
+
 def _validate_indices(idx2d: np.ndarray) -> None:
     """Every refractive index must be finite, real and imaginary part alike.
 
@@ -268,6 +302,22 @@ def _validate_indices(idx2d: np.ndarray) -> None:
             f"wavelength index {col}: {complex(idx2d[layer, col])}. |n|^2 "
             f"overflows double, so the solve returns NaN; keep |n| below "
             f"{np.sqrt(np.finfo(np.float64).max):.3e}."
+        )
+    # C4. Gain belongs in this gate for the same reason the two above do:
+    # there is no correction to apply, and the wrong answer is unrecoverable
+    # from the output. The engine refuses it too (`Solver::assemble`), so this
+    # is not the only guard -- it is the one that can name `layer_indices` and
+    # the row the caller wrote. `-0.0 < 0` is False in IEEE and stays allowed,
+    # matching `forward_branch` and `sanitize_incident_index`.
+    where = _first_bad(idx2d.imag < 0.0)
+    if where is not None:
+        layer, col = where if isinstance(where, tuple) else (where, 0)
+        n_bad = int(np.count_nonzero(idx2d.imag < 0.0))
+        raise ValueError(
+            f"`layer_indices`: layer {layer} has Im(n) = "
+            f"{float(idx2d[layer, col].imag):e} at wavelength index {col} "
+            f"({n_bad} of the index grid's values are negative). "
+            f"{_GAIN_MEDIUM_EXPLANATION}"
         )
 
 
@@ -459,6 +509,67 @@ class EigenLandscape:
         )
 
 
+# ─── C2/C9: the front-block cross channel ────────────────────────────────────
+# The observables that need the p-s coherency channel, taken FROM the engine's
+# own `core_engine::NEEDS_CROSS` rather than re-declared here, so the door and
+# the engine can never test different bits (the `NREQ_*` pattern in
+# `needle.py`). Psi is deliberately not among them: it comes from the amplitude
+# ratio |rp|/|rs| and is not one of the mixed objects.
+from navette._smatrix import NEEDS_CROSS as _NEEDS_CROSS  # noqa: E402
+
+# The shared explanation, word for word with
+# `optics_core::FRONT_BLOCK_CROSS_EXPLANATION`. Two doors, one rule, kept
+# apart only so this one can point `stacklevel` at the caller;
+# `test_both_doors_explain_the_cross_channel_the_same_way` pins them together.
+_FRONT_BLOCK_CROSS_EXPLANATION = (
+    "Mode A (front_block) takes the p-s cross channel from the FIRST coherent "
+    "block alone, while the intensities are totals over every incoherent echo: "
+    "those are two different stacks, so Delta, DOP, S2/S3, the retardance and "
+    "the raw cross terms are not the Stokes vector of the stack that was "
+    "solved. DOP_R comes back as |rs_c|^2/Rs instead of 1 for a stack that does "
+    "not depolarize, and Delta can be tens of degrees out at oblique incidence. "
+    "The transmitted cross term is a third object again: a product of per-block "
+    "t_p*conj(t_s) across the joins, with no multiple-bounce series. The "
+    "intensities themselves (Rs, Rp, Ts, Tp, A) are unaffected and correct. "
+    "Pass coherence_mode=1 (coherency_matrix) for a cross channel that cascades "
+    "with the echoes; it agrees with mode 0 bit-for-bit on the intensities."
+)
+
+
+# ─── C3/C5: incoherent flags that cannot mean what they say ─────────────────
+# The shared explanation, word for word with
+# `optics_core::THIN_FLAGGED_LAYER_EXPLANATION`, and the same threshold
+# constant. Two doors, one rule, kept apart only so this one can point
+# `stacklevel` at the caller; `test_both_doors_explain_thin_flags_the_same_way`
+# pins them together.
+_THIN_FLAG_WAVELENGTHS = 5.0
+
+_THIN_FLAGGED_LAYER_EXPLANATION = (
+    "An incoherent flag says the layer destroys the phase relation between its "
+    "two surfaces, which needs the path-length spread across it to exceed the "
+    "source coherence length L_C = lambda^2 / delta_lambda. A layer this thin "
+    "does not, for any source anyone owns. The flag is honoured regardless -- "
+    "the block sweep splits the stack wherever it is set, and the split alone "
+    "changes the answer: a ZERO-thickness flagged layer still decoheres "
+    "(measured Rs 0.193432 -> 0.109790), because the join breaks the p-s phase "
+    "relation whatever the thickness. Frustrated total internal reflection is "
+    "the case that bites: a 200 nm flagged air gap past the critical angle "
+    "comes back R = 1.000000 exactly -- the thick limit, unconditionally -- "
+    "where the coherent stack gives R = 0.763. In practice substrates go "
+    "incoherent above roughly 50-100 um in the UV-VIS-NIR; below that, clear "
+    "the flag and let the layer interfere. This is a warning, not an error: "
+    "the thin incoherent limit is a legitimate thing to ask for, as long as it "
+    "is what you meant to ask for."
+)
+
+_HALF_SPACE_FLAG_WARNING = (
+    "ScatterMatrix: an incoherent flag on row 0 or the last row has no effect; "
+    "those are half-spaces, and the block sweep never consults their flags. A "
+    "thick substrate is modelled as an interior layer with a real thickness, "
+    "flagged, between the film stack and the exit medium."
+)
+
+
 # ─── Main entry point ────────────────────────────────────────────────────────
 class ScatterMatrix:
     """Multilayer optical solver over a (wavelength, angle) grid.
@@ -475,8 +586,32 @@ class ScatterMatrix:
     angles : float or float array
         Angle(s) of incidence, degrees unless ``angles_in_radians=True``.
     incoherent_flags : int array, shape (n_layers,), optional
-        Non-zero where a layer breaks phase coherence (thick substrate). Default
-        all-zero (fully coherent boundaries).
+        Non-zero where a layer breaks phase coherence. Default all-zero (fully
+        coherent boundaries). Any non-zero value means the same thing: the
+        array is canonicalized to 0/1 at the door, so a flag of 2 is the flag 1
+        answer and not a third behaviour.
+
+        **Interior rows only.** Rows 0 and last are half-spaces, and the block
+        sweep never consults their flags -- it scans ``current_idx + 1`` up to
+        ``idx_n`` and applies the attenuation element only below ``idx_n``, so
+        a flag there is bit-for-bit a no-op (C5). A half-space has no second
+        surface to lose coherence against, so this is a no-op rather than a
+        mistake; it warns rather than refusing. A thick substrate is modelled
+        as an INTERIOR layer with its real thickness, flagged, sitting between
+        the film stack and the exit medium -- not as a flag on the exit medium
+        itself, which is what "thick substrate" used to read as here.
+
+        **Thickness matters, and is not checked.** The flag asserts the layer
+        destroys the phase relation between its two surfaces, which needs the
+        path-length spread across it to exceed the source coherence length
+        ``L_C = lambda**2 / delta_lambda``. Substrates reach that above roughly
+        50-100 um in the UV-VIS-NIR. Below about five wavelengths of optical
+        thickness the constructor warns, quoting the source bandwidth the layer
+        would need (C3); the flag is still honoured, because the thin
+        incoherent limit is a legitimate thing to ask for. Note the split
+        changes the answer by itself: a **zero**-thickness flagged layer still
+        decoheres, since the join breaks the p-s phase relation whatever the
+        thickness.
     roughness_types : int array, shape (n_layers,), optional
         Per-interface roughness model (see :class:`RoughnessType`). Default none.
         **All roughness models are specular-only: they do not account for diffuse
@@ -595,6 +730,48 @@ class ScatterMatrix:
             np.sin(theta) if angles_in_radians else np.sin(np.radians(theta)),
             dtype=np.float64,
         )
+        self._warn_about_flags()
+
+    def _warn_about_flags(self) -> None:
+        """C5 then C3: a flag that does nothing, then one that cannot mean it.
+
+        Both are warnings. A half-space flag is a no-op because a half-space
+        has no second surface to lose coherence against, and a thin flagged
+        layer is a legitimate model of the incoherent limit -- neither is an
+        error, and the engine honours the array either way. The Rust half of
+        each lives in ``solver::solve_arrays``, which is what
+        ``solve_structure`` and the raw FFI reach.
+        """
+        flags = self.incoherent_flags
+        if flags.size >= 2 and (flags[0] != 0 or flags[-1] != 0):
+            warnings.warn(_HALF_SPACE_FLAG_WARNING, stacklevel=3)
+        if flags.size <= 2:
+            return
+        interior = np.flatnonzero(flags[1:-1] != 0) + 1
+        if interior.size == 0:
+            return
+        # The shortest wavelength is the most favourable case for the flag: if
+        # the layer is thin there it is thin across the whole grid.
+        w = int(np.argmin(self.wavls))
+        lam = float(self.wavls[w])
+        for row in interior:
+            d = float(self.thicknesses[row])
+            if d <= 0.0:
+                continue
+            nd = float(self._indices[row, w].real) * d
+            if nd <= 0.0 or nd >= _THIN_FLAG_WAVELENGTHS * lam:
+                continue
+            need = lam * lam / (2.0 * nd)
+            warnings.warn(
+                f"ScatterMatrix: incoherent layer at row {int(row)} has an "
+                f"optical thickness of {nd:.4f} (n*d) at wavelength "
+                f"{lam:.4f}, i.e. {nd / lam:.3f} wavelengths. It would take a "
+                f"source bandwidth of delta_lambda > {need:.4f} -- "
+                f"{100.0 * need / lam:.0f}% of the wavelength itself -- for "
+                f"that layer to be incoherent. "
+                f"{_THIN_FLAGGED_LAYER_EXPLANATION}",
+                stacklevel=3,
+            )
 
     # ---- input helpers ------------------------------------------------------
     def _as_layer_array(self, value, dtype, name, default):
@@ -612,6 +789,40 @@ class ScatterMatrix:
         return arr[0] if self.n_angles == 1 else arr
 
     # ---- core engine --------------------------------------------------------
+    def _refuse_front_block_cross(self, req: int) -> None:
+        """C2/C9. Mode A's cross channel is the front block alone.
+
+        Its intensities are totals over every incoherent echo, so any
+        cross-channel observable on a stack with an INTERIOR incoherent flag
+        mixes two different stacks in one output dict. Rows 0 and last are
+        half-spaces the block sweep never consults (C5), so a flag there is
+        not the hazard and must not refuse.
+
+        The refusal is at the DOOR, not in the engine. Mode A's numbers are a
+        deliberate legacy port -- ``docs/remediation_plan.md`` pins them and
+        the parity suite pins its cross observables on exactly this
+        combination -- and that suite enters through the raw ``core_engine``
+        pyfunction, below this layer, so it still computes. Validation lives
+        at this layer; the native Solver stays permissive for internal
+        callers. The other door carries the same sentences from
+        ``optics_core::FRONT_BLOCK_CROSS_EXPLANATION``;
+        ``test_both_doors_explain_the_cross_channel_the_same_way`` fails if
+        either is edited without the other.
+        """
+        if int(self.coherence_mode) != int(CoherenceMode.FRONT_BLOCK):
+            return
+        if not req & _NEEDS_CROSS:
+            return
+        interior = self.incoherent_flags[1:-1]
+        if interior.size == 0 or not np.any(interior != 0):
+            return
+        rows = ", ".join(str(int(i) + 1) for i in np.flatnonzero(interior != 0))
+        raise ValueError(
+            f"ScatterMatrix: a cross-channel observable was requested under "
+            f"coherence_mode=0 on a stack with incoherent layer(s) at row(s) "
+            f"{rows}. {_FRONT_BLOCK_CROSS_EXPLANATION}"
+        )
+
     def compute(
         self, request: Union[int, Request], *, squeeze: bool = True
     ) -> Dict[str, np.ndarray]:
@@ -622,6 +833,7 @@ class ScatterMatrix:
         when a single angle was supplied and ``squeeze=True``.
         """
         req = int(request)
+        self._refuse_front_block_cross(req)
         out = self._native.solve(req)
         if not squeeze or self.n_angles != 1:
             return dict(out)
@@ -633,7 +845,15 @@ class ScatterMatrix:
         return self.compute(_rt_request(pol))
 
     def ellipsometry(self, *, transmission: bool = False) -> Dict[str, np.ndarray]:
-        """Psi/Delta/DOP plus R (and optionally T) spectra."""
+        """Psi/Delta/DOP plus R (and optionally T) spectra.
+
+        Delta and DOP need the p-s cross channel, which under the default
+        ``FRONT_BLOCK`` mode is the first coherent block alone while R and T
+        are totals over every echo. On a stack with an interior incoherent
+        layer this refuses rather than mixing the two (C2); pass
+        ``coherence_mode=CoherenceMode.COHERENCY_MATRIX``. Psi is an
+        amplitude ratio and is unaffected.
+        """
         return self.compute(_ellipsometry_request(bool(transmission)))
 
     def absorption(self) -> Dict[str, np.ndarray]:
@@ -641,11 +861,28 @@ class ScatterMatrix:
         return self.compute(_absorption_request())
 
     def complex_amplitudes(self) -> Dict[str, np.ndarray]:
-        """Complex r/t coefficients (rs_c, rp_c, ts_c, tp_c)."""
+        """Complex r/t coefficients (rs_c, rp_c, ts_c, tp_c).
+
+        These are the FIRST coherent block's amplitudes in ``FRONT_BLOCK`` and
+        ``COHERENCY_MATRIX``, and the whole stack's in ``FULLY_COHERENT`` --
+        they are not the amplitudes of the intensities this same object
+        returns. On a stack with an incoherent layer, ``|rs_c|**2`` is
+        therefore NOT ``Rs``: measured 0.1517 against 0.1826 on one stack.
+        Phase-bearing quantities have no single value across incoherent
+        echoes; the intensities are the totals.
+        """
         return self.compute(_amplitudes_request())
 
     def stokes(self, *, reflection: bool = True, transmission: bool = False) -> Dict[str, np.ndarray]:
-        """Stokes parameters S0..S3 for reflection and/or transmission."""
+        """Stokes parameters S0..S3 for reflection and/or transmission.
+
+        S0/S1 come from the intensity cascade; S2/S3 need the p-s cross
+        channel, which under the default ``FRONT_BLOCK`` mode is the first
+        coherent block alone. A vector built from both halves is not the
+        Stokes vector of one stack, so on a stack with an interior incoherent
+        layer this refuses rather than returning it (C2); pass
+        ``coherence_mode=CoherenceMode.COHERENCY_MATRIX``.
+        """
         return self.compute(_stokes_request(bool(reflection), bool(transmission)))
 
     def dispersion(
@@ -719,6 +956,14 @@ class ScatterMatrix:
         """Scan ``|1/r(n_eff)|^2`` over a complex effective-index box.
 
         ``resolution`` is ``(points_real, points_imag)``.
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
         """
         real_vals, imag_vals, flat = self._native.landscape(
             (float(n_real_range[0]), float(n_real_range[1])),
@@ -749,6 +994,15 @@ class ScatterMatrix:
         Returns ``(n_eff, characteristic_value)``. The characteristic value is
         :math:`|1/r(n_{eff})|^2`, so a true pole drives it to ~0; on the
         pinned surface-plasmon stack a converged mode reaches ``1e-24``.
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
+
 
         Parameters
         ----------
@@ -805,7 +1059,16 @@ class ScatterMatrix:
         wavelength: Optional[float] = None,
         wav_index: Optional[int] = None,
     ) -> List[complex]:
-        """Scan, locate coarse minima, and (optionally) Nelder-Mead refine each."""
+        """Scan, locate coarse minima, and (optionally) Nelder-Mead refine each.
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
+        """
         modes = self._native.find_eigenmodes(
             (float(n_real_range[0]), float(n_real_range[1])),
             (float(n_imag_range[0]), float(n_imag_range[1])),
@@ -830,6 +1093,14 @@ class ScatterMatrix:
         Returns a dict with ``z`` (positions), ``E`` (normalised |E|, max=1),
         ``layer_start`` / ``layer_end`` (per finite layer), and ``layer_index``
         (complex n of each finite layer).
+
+        Single block by construction: the guided-mode kernels solve
+        ``[0, n-1]`` as one coherent block and never consult
+        ``incoherent_flags`` (C10). That is correct by intent -- a guided
+        mode IS a coherent-stack concept, and there is no eigenmode to
+        find across a partition -- but it means the flags you set are
+        silently not in play here, unlike every other method on this
+        object.
         """
         z, e, lstart, lend, lidx = self._native.field_profile(
             complex(n_eff),

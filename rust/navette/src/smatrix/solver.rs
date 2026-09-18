@@ -250,7 +250,7 @@ impl Solver {
                 n_cache.push(indices_layer_major[l * n_wavs + w]);
             }
         }
-        Ok(Self::assemble(
+        Self::assemble(
             wavelengths,
             sin_theta,
             n_cache,
@@ -260,7 +260,7 @@ impl Solver {
             rough_types,
             rough_vals,
             coherence_mode,
-        ))
+        )
     }
 
     /// Same solver from the wav-major interleaved `[re, im]` cache the Python
@@ -310,7 +310,7 @@ impl Solver {
             rough_vals,
             coherence_mode,
         )?;
-        Ok(Self::assemble(
+        Self::assemble(
             wavelengths,
             sin_theta,
             n_cache,
@@ -320,11 +320,14 @@ impl Solver {
             rough_types,
             rough_vals,
             coherence_mode,
-        ))
+        )
     }
 
-    /// The shared tail of both constructors: take an already wav-major flat
-    /// index cache, derive the reciprocals, and own the rest.
+    /// The shared tail of every constructor: take an already wav-major flat
+    /// index cache, derive the reciprocals, and own the rest. The one place an
+    /// index cache becomes a `Solver`, whichever door it came in through --
+    /// which is why the C8 flag canonicalization and the C4 gain refusal both
+    /// sit here.
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         wavelengths: &[f64],
@@ -336,7 +339,27 @@ impl Solver {
         rough_types: &[i32],
         rough_vals: &[f64],
         coherence_mode: i32,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        // C4: refuse optical gain here rather than at each door. Unlike C2 --
+        // where Mode A's numbers are a deliberate legacy port and the refusal
+        // had to stay above the engine so the parity suite could still reach
+        // them -- there is nothing below this point worth preserving: a gain
+        // layer's output is not any physical system on either path (the
+        // coherent kernels conjugate beta, the incoherent ones clamp it), the
+        // two paths disagree, and both look like an ordinary absorbing stack
+        // from the outside. So it goes at the choke point every constructor
+        // funnels through, which covers `ScatterMatrix`, `solve_arrays` /
+        // `solve_structure` and the raw `core_engine` FFI in one rule. This
+        // is the same test the Structure door already applies
+        // (`structure/structure.rs:147-151`, "Nominal expansion produced
+        // k < 0"), so the two doors now agree instead of one guarding and one
+        // not. `-0.0 < 0.0` is false, so a signed zero passes, as it does in
+        // `forward_branch` and `sanitize_incident_index`.
+        if let Some((i, k, n_bad)) = crate::smatrix::optics_core::scan_for_gain(&n_cache) {
+            return Err(crate::smatrix::optics_core::gain_medium_message(
+                "Solver", n_layers, i, k, n_bad,
+            ));
+        }
         // Elementwise and pure, so serial and parallel are bit-identical; above the
         // threshold the 120 000 complex divisions a 20 000-point grid needs are a
         // third of what building the solver costs.
@@ -345,19 +368,34 @@ impl Solver {
         } else {
             n_cache.iter().map(|n| n.recip()).collect()
         };
-        Self {
+        Ok(Self {
             wavls: wavelengths.to_vec(),
             sin_theta: sin_theta.to_vec(),
             n_cache,
             inv_n_cache,
             flat_cache: OnceLock::new(),
             thicknesses: thicknesses.to_vec(),
-            incoherent_flags: incoherent_flags.to_vec(),
+            // C8: canonicalize the coherence flag to {0, 1} here, at the one
+            // place every constructor funnels through. The published contract
+            // is "non-zero breaks phase coherence" and the block sweep agrees
+            // -- it extends a coherent run only while `flag == 0` -- but the
+            // attenuation element was gated on `flag == 1`. A flag of 2 (or
+            // -1, or any other non-zero) therefore partitioned the stack and
+            // then skipped tau, so the flagged layer's absorption vanished
+            // from the energy books: measured A = 0.361 -> -4.3e-5 on a
+            // k = 0.01, 2 um slab, with Ts landing on the exact lossless
+            // value. Normalizing at the door makes both gates read the same
+            // array and keeps a future gate honest whichever comparison it
+            // happens to pick.
+            incoherent_flags: incoherent_flags
+                .iter()
+                .map(|&f| i32::from(f != 0))
+                .collect(),
             rough_types: rough_types.to_vec(),
             rough_vals: rough_vals.to_vec(),
             coherence_mode,
             n_layers,
-        }
+        })
     }
 
     /// Layer indices for wavelength `w`.
@@ -1026,6 +1064,16 @@ fn derive_range(states: &[OpticalState], mut sinks: Sinks<'_>) {
         // single coherent block) and the excess is pure round-off, measured at
         // 1.0000000000000004. Either way a degree of polarization above 1 is not a
         // number anyone can use, and the asymmetry was a review finding (R6.2).
+        //
+        // C2: note the scope condition on the reflection half -- "for a SINGLE
+        // COHERENT BLOCK". In Mode A on a stack with an interior incoherent
+        // flag that identity does not hold: s0r is the intensity cascade over
+        // every echo while s2r/s3r are the front block alone, so DOP_R comes
+        // out DEFICIENT, measured at 0.763904485 where the physical answer is
+        // exactly 1 (a 17% shortfall, not round-off). The clamp is `.min(1.0)`
+        // and cannot see a deficit, which is why that combination is refused
+        // at the doors rather than corrected here -- the numbers below are a
+        // deliberate legacy port. See `FRONT_BLOCK_CROSS_EXPLANATION`.
         put!(
             b_dop_r,
             k,
@@ -1136,6 +1184,80 @@ pub fn solve_arrays(
         );
     }
     let inc: Vec<i32> = incoherent.iter().map(|b| i32::from(*b)).collect();
+    // C5. The sentence above is the model this one copies: same convention,
+    // same two rows, stated where a caller who set the flag will read it. The
+    // block sweep scans `current_idx + 1 ..< idx_n` and applies the
+    // attenuation element only for `next_incoh < idx_n`, so a flag on row 0
+    // or row last is never consulted -- bit-identical output, no diagnostic,
+    // and the constructor docstring used to invite exactly that by naming a
+    // "thick substrate" as the example. It is a no-op rather than a mistake
+    // (a half-space has no second surface to lose coherence against), so it
+    // says so instead of refusing.
+    if n_rows >= 2 && (inc[0] != 0 || inc[n_rows - 1] != 0) {
+        warnings.push(
+            "solve_arrays: an incoherent flag on row 0 or the last row has no effect; \
+       those are half-spaces, and the block sweep never consults their flags. A thick \
+       substrate is modelled as an interior layer with a real thickness, flagged, \
+       between the film stack and the exit medium."
+                .to_string(),
+        );
+    }
+    // C3. An incoherent flag asserts the layer destroys the phase relation
+    // between its two surfaces; nothing checked that the layer is thick
+    // enough for that to be possible. The threshold is derived rather than
+    // chosen: report the source bandwidth the layer would need. Interior rows
+    // only, for the same reason as C5 -- the half-space flags do nothing at
+    // all, and they have their own sentence above. One warning per row, at
+    // the shortest wavelength in the grid, which is the most favourable case
+    // for the flag: if the layer is thin there it is thin everywhere.
+    if n_rows > 2 {
+        let lam = wavelengths.iter().cloned().fold(f64::INFINITY, f64::min);
+        for row in 1..n_rows - 1 {
+            if inc[row] == 0 || thicknesses[row] <= 0.0 {
+                continue;
+            }
+            // `indices` arrives layer-major -- (n_layers, n_wavs) row-major,
+            // which is what `from_raw` below takes -- so the row's own index
+            // at `lam` is `row * n_wavs + w`, not the wav-major stride the
+            // Solver's internal cache uses.
+            let w = wavelengths.iter().position(|v| *v == lam).unwrap_or(0);
+            let nd = indices[row * wavelengths.len() + w].re * thicknesses[row];
+            if nd > 0.0 && nd < crate::smatrix::optics_core::THIN_FLAG_WAVELENGTHS * lam {
+                warnings.push(crate::smatrix::optics_core::thin_flagged_layer_message(
+                    "solve_arrays",
+                    row,
+                    nd,
+                    lam,
+                ));
+            }
+        }
+    }
+    // C2/C9. Mode A's cross channel is the front block while its intensities
+    // are stack totals, so any cross observable on a stack with an INTERIOR
+    // flag is a mix of two stacks. Rows 0 and last are half-spaces the sweep
+    // never consults (C5), so a flag there is not the hazard and must not
+    // refuse. This is a DOOR check: Mode A's numbers are a deliberate legacy
+    // port, and the parity suite that pins them enters through the raw
+    // `core_engine` pyfunction (Solver::solve), below this function, so it
+    // still computes. The engine is untouched.
+    if coherence_mode == crate::smatrix::core_engine::MODE_A
+        && requested & crate::smatrix::core_engine::NEEDS_CROSS != 0
+        && n_rows > 2
+        && inc[1..n_rows - 1].iter().any(|&f| f != 0)
+    {
+        let flagged: Vec<String> = inc[1..n_rows - 1]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &f)| f != 0)
+            .map(|(i, _)| (i + 1).to_string())
+            .collect();
+        return Err(format!(
+            "solve_arrays: a cross-channel observable was requested under \
+             coherence_mode=0 on a stack with incoherent layer(s) at row(s) {}. {}",
+            flagged.join(", "),
+            crate::smatrix::optics_core::FRONT_BLOCK_CROSS_EXPLANATION
+        ));
+    }
     let solver = Solver::from_raw(
         wavelengths,
         angles,
@@ -1309,6 +1431,33 @@ pub fn needle_gradient(
     if n_stack_cache.len() != num_wavs * nl * 2 {
         return Err(String::from("n_stack_cache layout mismatch"));
     }
+    // C4. This entry point takes a raw flat cache and never builds a `Solver`,
+    // so the refusal at `Solver::assemble` does not reach it -- the same gap
+    // C8's flag canonicalization had to be repeated for. Both the host stack
+    // and the needle material are checked: the needle's own index goes into
+    // the same conjugating kernels (`needle_operator.rs:248`) and its spacer
+    // tau takes the same clamp (`:1290`), so a gain needle is mangled exactly
+    // like a gain layer, and it would be a strange rule that refused the stack
+    // it is inserted into but not the thing being inserted. The cache is
+    // wav-major interleaved [re, im], so element `j` is grid position `j / 2`.
+    let pairs = n_stack_cache.as_chunks::<2>().0;
+    if let Some(j) = pairs.iter().position(|ri| ri[1] < 0.0) {
+        let n_bad = pairs.iter().filter(|ri| ri[1] < 0.0).count();
+        return Err(crate::smatrix::optics_core::gain_medium_message(
+            "needle_gradient",
+            nl,
+            j,
+            n_stack_cache[j * 2 + 1],
+            n_bad,
+        ));
+    }
+    if let Some((i, k, n_bad)) = crate::smatrix::optics_core::scan_for_gain(needle_n_per_wav) {
+        return Err(format!(
+            "needle_gradient: the needle material has Im(n) = {k:e} at wavelength \
+             index {i} ({n_bad} of {num_wavs} wavelengths). {}",
+            crate::smatrix::optics_core::GAIN_MEDIUM_EXPLANATION
+        ));
+    }
     let want_p = requested & NREQ_P != 0;
     let want_pmb = requested & NREQ_P_MB != 0;
     let want_pmb_t = requested & NREQ_P_MB_T != 0;
@@ -1470,7 +1619,11 @@ pub fn needle_gradient(
             if v.len() != nl {
                 return Err(String::from("incoherent_flags must have n_layers entries"));
             }
-            Some(v.to_vec())
+            // Canonicalized for the same reason as in `assemble` (C8): these
+            // flags arrive from the caller, not from `self`, so they have not
+            // been through that door. `partition_blocks` splits on non-zero
+            // while its spacer tau is gated on 1.
+            Some(v.iter().map(|&f| i32::from(f != 0)).collect::<Vec<i32>>())
         }
     };
     let mask = match &host_mask {
@@ -2756,6 +2909,156 @@ mod tests {
     }
 
     #[test]
+    fn every_constructor_refuses_optical_gain() {
+        // C4. The check sits in `assemble`, so all three constructors inherit
+        // it -- which is the point: `ScatterMatrix`, `solve_arrays` /
+        // `solve_structure` and the raw `core_engine` FFI reach the engine
+        // through different ones, and a per-door check would have had to be
+        // written three times and kept in step.
+        let wavls = [500.0, 600.0];
+        let sin_theta = [0.0];
+        let d = [0.0, 2000.0, 0.0];
+        let flags = [0, 0, 0];
+        let zeros_i = [0, 0, 0];
+        let zeros_f = [0.0, 0.0, 0.0];
+
+        // layer-major (n_layers, n_wavs), gain on the middle film
+        let lm = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, -0.01),
+            Complex64::new(2.35, -0.01),
+            Complex64::new(1.52, 0.0),
+            Complex64::new(1.52, 0.0),
+        ];
+        let err = match Solver::new(
+            &wavls, &sin_theta, &lm, 3, &d, &flags, &zeros_i, &zeros_f, MODE_A,
+        ) {
+            Ok(_) => panic!("new must refuse gain"),
+            Err(e) => e,
+        };
+        assert!(err.contains("layer 1"), "{err}");
+        assert!(err.contains("optical gain"), "{err}");
+        assert!(err.is_ascii(), "the message must survive a cp1252 console");
+
+        // wav-major interleaved [re, im]
+        let flat: Vec<f64> = vec![
+            1.0, 0.0, 2.35, -0.01, 1.52, 0.0, // wav 0
+            1.0, 0.0, 2.35, -0.01, 1.52, 0.0, // wav 1
+        ];
+        assert!(
+            Solver::from_wav_major_flat(
+                &wavls, &sin_theta, &flat, 3, &d, &flags, &zeros_i, &zeros_f, MODE_A,
+            )
+            .is_err()
+        );
+
+        // per-layer broadcast through from_raw
+        let per_layer = [
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, -0.01),
+            Complex64::new(1.52, 0.0),
+        ];
+        assert!(
+            Solver::from_raw(
+                &wavls,
+                &[0.0],
+                false,
+                &per_layer,
+                3,
+                Some(&d),
+                Some(&flags),
+                None,
+                None,
+                MODE_A,
+            )
+            .is_err()
+        );
+
+        // The control: the same stack with loss builds, and a signed zero is
+        // NOT gain -- `-0.0 < 0.0` is false, exactly as `forward_branch` and
+        // `sanitize_incident_index` already treat it. Pinned because the
+        // obvious "tidy up the sign" edit would start refusing real grids.
+        let loss = [
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.35, 0.01),
+            Complex64::new(1.52, -0.0),
+        ];
+        assert!(
+            Solver::from_raw(
+                &wavls,
+                &[0.0],
+                false,
+                &loss,
+                3,
+                Some(&d),
+                Some(&flags),
+                None,
+                None,
+                MODE_A,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn needle_gradient_refuses_gain_in_the_stack_and_in_the_needle() {
+        // The free `needle_gradient` takes a raw flat cache and never builds a
+        // Solver, so `assemble`'s refusal does not reach it -- the same gap
+        // C8's flag canonicalization had to be closed separately.
+        let wavls = [550.0];
+        let sin_theta = [0.0];
+        let d = [0.0, 200.0, 300.0, 0.0];
+        let zeros_i = [0, 0, 0, 0];
+        let zeros_f = [0.0, 0.0, 0.0, 0.0];
+        let z_grid = [100.0];
+        let demands = NeedleDemands::default();
+        let good_cache: Vec<f64> = vec![1.0, 0.0, 2.35, 0.0, 1.46, 0.0, 1.52, 0.0];
+        let gain_cache: Vec<f64> = vec![1.0, 0.0, 2.35, -0.02, 1.46, 0.0, 1.52, 0.0];
+
+        let call = |cache: &[f64], needle: Complex64| {
+            needle_gradient(
+                &wavls,
+                &sin_theta,
+                4,
+                cache,
+                &d,
+                &zeros_i,
+                &zeros_f,
+                &[needle],
+                &z_grid,
+                NREQ_P,
+                None,
+                &demands,
+                0,
+                None,
+                0,
+                true,
+                false,
+                None,
+                0.0,
+            )
+        };
+
+        let err = match call(&gain_cache, Complex64::new(2.35, 0.0)) {
+            Ok(_) => panic!("a gain layer in the host stack must refuse"),
+            Err(e) => e,
+        };
+        assert!(err.contains("layer 1"), "{err}");
+        assert!(err.contains("optical gain"), "{err}");
+
+        let err = match call(&good_cache, Complex64::new(2.35, -0.02)) {
+            Ok(_) => panic!("a gain NEEDLE must refuse too"),
+            Err(e) => e,
+        };
+        assert!(err.contains("needle material"), "{err}");
+        assert!(err.contains("optical gain"), "{err}");
+
+        // Control: the same call with no gain anywhere gets past the gate.
+        assert!(call(&good_cache, Complex64::new(2.35, 0.0)).is_ok());
+    }
+
+    #[test]
     fn from_raw_broadcast_matches_explicit() {
         let wl = vec![500.0, 600.0];
         let per_layer = vec![Complex64::new(1.0, 0.0), Complex64::new(1.5, 0.0)];
@@ -3380,6 +3683,62 @@ mod tests {
             assert_eq!(rs[i], s.rs);
             assert_eq!(cross[i], s.cross_r);
         }
+    }
+
+    /// C8. The published contract is "non-zero breaks phase coherence", and
+    /// the block sweep splits on any non-zero -- but the attenuation element
+    /// used to be gated on exactly 1, so a flag of 2 partitioned the stack
+    /// and then skipped tau, deleting the flagged layer's absorption. Every
+    /// non-zero value must now land on the same answer as 1, bitwise, and
+    /// that answer must differ from the coherent one or the assert would
+    /// pass on a flag that was ignored outright.
+    #[test]
+    fn any_nonzero_coherence_flag_is_the_same_flag() {
+        use super::super::core_engine::{REQ_RS, REQ_TS};
+        let wl = vec![550.0];
+        // air / absorbing 2 um slab / air -- the absorption is what the
+        // skipped tau used to erase.
+        let idx = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(1.5, 0.01),
+            Complex64::new(1.0, 0.0),
+        ];
+        let solve_with = |flag: i32| -> (Vec<f64>, Vec<f64>) {
+            let s = Solver::new(
+                &wl,
+                &[0.0],
+                &idx,
+                3,
+                &[0.0, 2000.0, 0.0],
+                &[0, flag, 0],
+                &[0, 0, 0],
+                &[0.0, 0.0, 0.0],
+                0,
+            )
+            .unwrap();
+            let sol = s.solve(REQ_RS | REQ_TS).unwrap();
+            let get = |k: &str| {
+                sol.f64maps
+                    .iter()
+                    .find(|(name, _)| name == k)
+                    .unwrap()
+                    .1
+                    .clone()
+            };
+            (get("Rs"), get("Ts"))
+        };
+        let coherent = solve_with(0);
+        let one = solve_with(1);
+        for flag in [2, -1, 7, i32::MIN, i32::MAX] {
+            let other = solve_with(flag);
+            assert_eq!(other.0, one.0, "Rs differs for flag {flag}");
+            assert_eq!(other.1, one.1, "Ts differs for flag {flag}");
+        }
+        // The flag has to do something, or the equality above is vacuous.
+        assert!(one.0[0] != coherent.0[0]);
+        // And tau has to be applied: the lossless slab would transmit far
+        // more than the absorbing one does.
+        assert!(one.1[0] < 0.9);
     }
 
     #[test]

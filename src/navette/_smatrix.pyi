@@ -30,6 +30,11 @@ BoolArray = npt.NDArray[np.bool_]
 # usual combinations; OR them directly for anything else. The returned dict of
 # `Solver.solve` / `core_engine` carries one entry per requested channel.
 
+# The observables needing the p-s coherency channel (C2). Bound, not copied:
+# the `ScatterMatrix` door refuses these under FRONT_BLOCK on a flagged stack
+# and must test the same bits the engine does.
+NEEDS_CROSS: int
+
 NREQ_P: int
 NREQ_P_MB: int
 NREQ_P_T: int

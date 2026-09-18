@@ -175,6 +175,129 @@ pub const AMBIENT_DROP_EXPLANATION: &str = "Its absorption has been dropped -- t
      ambient is not included. Put the absorbing medium on the substrate side \
      (fully supported) if you need it carried.";
 
+/// The shared explanation carried by every "Mode A cross channel on a
+/// flagged stack" warning (C2/C9). The Python `ScatterMatrix` door emits the
+/// same sentences from its own copy of the rule, for the same reason as the
+/// ambient rule above -- only a warning raised Python-side can point
+/// `stacklevel` at the caller -- and
+/// `test_both_doors_explain_the_cross_channel_the_same_way` pins the two
+/// together so they cannot drift apart.
+pub const FRONT_BLOCK_CROSS_EXPLANATION: &str = "Mode A (front_block) takes the p-s cross channel from the FIRST coherent \
+     block alone, while the intensities are totals over every incoherent echo: \
+     those are two different stacks, so Delta, DOP, S2/S3, the retardance and \
+     the raw cross terms are not the Stokes vector of the stack that was \
+     solved. DOP_R comes back as |rs_c|^2/Rs instead of 1 for a stack that does \
+     not depolarize, and Delta can be tens of degrees out at oblique incidence. \
+     The transmitted cross term is a third object again: a product of per-block \
+     t_p*conj(t_s) across the joins, with no multiple-bounce series. The \
+     intensities themselves (Rs, Rp, Ts, Tp, A) are unaffected and correct. \
+     Pass coherence_mode=1 (coherency_matrix) for a cross channel that cascades \
+     with the echoes; it agrees with mode 0 bit-for-bit on the intensities.";
+
+/// The shared explanation carried by every "Im(n) < 0" refusal (C4). The
+/// Python `ScatterMatrix` door raises the same sentences from its own copy of
+/// the rule, the `AMBIENT_DROP_EXPLANATION` pattern above, and
+/// `test_both_doors_explain_gain_the_same_way` pins the two together.
+pub const GAIN_MEDIUM_EXPLANATION: &str = "Im(n) < 0 is optical gain, and neither solver path can represent it. The \
+     coherent path conjugates the propagation phase back to decay (beta.im < 0 \
+     -> -beta.im), so a gain layer comes back wearing the LOSS layer's answer: \
+     on a symmetric stack it is bit-identical to +k, and the reported \
+     absorptance is POSITIVE for a medium that amplifies. The incoherent path \
+     clamps the same quantity to zero instead, so the layer turns transparent \
+     and the energy books open by a small negative absorptance (A = -4.3e-5 \
+     measured on a 2 um slab at |k| = 0.01, with T landing on the exact \
+     lossless value). Both are fabrications, they disagree with each other, and \
+     neither is recoverable from the output -- it reads as an ordinary \
+     absorbing stack. There is no correction to apply, so this is refused \
+     rather than quietly repaired. If the sign is a provider convention (an \
+     exp(+i*w*t) time convention writes absorption as k < 0), negate the \
+     imaginary part before it reaches the solver. Note -0.0 is not gain: it is \
+     not < 0 and does not trip this.";
+
+/// The shared explanation carried by every "flagged layer is too thin"
+/// warning (C3). A warning, not a refusal: the flag is honoured either way,
+/// and a caller may well be modelling a thin layer's incoherent limit on
+/// purpose. The Python `ScatterMatrix` door emits the same sentences from its
+/// own copy, the `AMBIENT_DROP_EXPLANATION` pattern, and
+/// `test_both_doors_explain_thin_flags_the_same_way` pins them together.
+pub const THIN_FLAGGED_LAYER_EXPLANATION: &str = "An incoherent flag says the layer destroys the phase relation between its \
+     two surfaces, which needs the path-length spread across it to exceed the \
+     source coherence length L_C = lambda^2 / delta_lambda. A layer this thin \
+     does not, for any source anyone owns. The flag is honoured regardless -- \
+     the block sweep splits the stack wherever it is set, and the split alone \
+     changes the answer: a ZERO-thickness flagged layer still decoheres \
+     (measured Rs 0.193432 -> 0.109790), because the join breaks the p-s phase \
+     relation whatever the thickness. Frustrated total internal reflection is \
+     the case that bites: a 200 nm flagged air gap past the critical angle \
+     comes back R = 1.000000 exactly -- the thick limit, unconditionally -- \
+     where the coherent stack gives R = 0.763. In practice substrates go \
+     incoherent above roughly 50-100 um in the UV-VIS-NIR; below that, clear \
+     the flag and let the layer interfere. This is a warning, not an error: \
+     the thin incoherent limit is a legitimate thing to ask for, as long as it \
+     is what you meant to ask for.";
+
+/// Format the C3 warning for one interior row. `nd` is the optical thickness
+/// `Re(n) * d` at `lam`, both in the grid's length unit, and
+/// `lambda^2 / (2 * nd)` is the source bandwidth that layer would need before
+/// its two surfaces stopped interfering -- which is the honest form of "too
+/// thin", since it derives the threshold instead of picking one.
+pub(crate) fn thin_flagged_layer_message(site: &str, row: usize, nd: f64, lam: f64) -> String {
+    let need = lam * lam / (2.0 * nd);
+    format!(
+        "{site}: incoherent layer at row {row} has an optical thickness of \
+         {nd:.4} (n*d) at wavelength {lam:.4}, i.e. {ratio:.3} wavelengths. It \
+         would take a source bandwidth of delta_lambda > {need:.4} -- \
+         {pct:.0}% of the wavelength itself -- for that layer to be \
+         incoherent. {THIN_FLAGGED_LAYER_EXPLANATION}",
+        ratio = nd / lam,
+        pct = 100.0 * need / lam,
+    )
+}
+
+/// The threshold behind [`thin_flagged_layer_message`]: warn below five
+/// wavelengths of optical thickness, which is `delta_lambda > lambda / 10`.
+/// Stated as a named constant so it reads as a decision rather than a taste,
+/// and so both doors cannot drift to different numbers.
+pub const THIN_FLAG_WAVELENGTHS: f64 = 5.0;
+
+/// Format the C4 refusal, so every door says the same thing about the same
+/// grid position. Crate-private on purpose: it is a formatter for a rule the
+/// crate owns, not a door, and `check_exposure` should not have to carry a
+/// rationale for something the type system can state. `first_bad` indexes a wav-major `[n_wavs][n_layers]` cache,
+/// which is the layout both the `Solver`'s `n_cache` and the needle kernels'
+/// flat `n_stack_cache` arrive in.
+pub(crate) fn gain_medium_message(
+    site: &str,
+    n_layers: usize,
+    first_bad: usize,
+    k: f64,
+    n_bad: usize,
+) -> String {
+    let layer = first_bad % n_layers.max(1);
+    let wav = first_bad / n_layers.max(1);
+    format!(
+        "{site}: layer {layer} has Im(n) = {k:e} at wavelength index {wav} \
+         ({n_bad} of the index grid's values are negative). {GAIN_MEDIUM_EXPLANATION}"
+    )
+}
+
+/// Scan a wav-major complex index cache for gain, returning the first
+/// offending position and how many there are in total. One pass, no
+/// allocation, and `None` on the common path.
+pub(crate) fn scan_for_gain(n_cache: &[Complex64]) -> Option<(usize, f64, usize)> {
+    let mut first: Option<(usize, f64)> = None;
+    let mut n_bad = 0usize;
+    for (i, z) in n_cache.iter().enumerate() {
+        if z.im < 0.0 {
+            n_bad += 1;
+            if first.is_none() {
+                first = Some((i, z.im));
+            }
+        }
+    }
+    first.map(|(i, k)| (i, k, n_bad))
+}
+
 /// Strip absorption from an incident-medium index vector.
 ///
 /// Returns `None` when `nk` is already transparent -- one scan, no allocation,

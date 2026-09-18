@@ -5,6 +5,355 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.14] - the review harnesses document themselves, or CI says so
+
+### Added
+- **`tools/check_review_docs.py`**, the sixth check tool, wired into the
+  push/PR gate beside the exposure, CIE, stub and message-hygiene
+  guards. Three passes over `validation/review/`:
+  - **coverage** — every harness has a row in that directory's README,
+    and every row names a file that exists;
+  - **provenance** — each row's middle cell names the review section or
+    plan item that asked for the check (`§19`, `R4.6`, `C7`), because a
+    harness with no origin is one nobody can decide to retire;
+  - **the README's own claim** — "The `loom` reference is never
+    imported", checked on the AST rather than by grep, so the word may
+    still appear in prose explaining exactly why (it does, in two
+    docstrings).
+  All four findings were verified to fire against a sandboxed tree
+  before the tool was wired in: a guard that cannot fail is decoration.
+- Two harnesses the battery had been running undocumented:
+  - **`lm_check.py`** (R4.4 / §18.2, R4.6) — the scipy parity the plan
+    docs had been *claiming* for the bounded LM in
+    `synthesis/thick_opt.rs` without ever reproducing it;
+  - **`color_grad_python.py`** (R4.2) — the color gradient on the Python
+    needle path, which returned zero for every color demand with no
+    error because `build_needle_targets`' dict dropped the fold's
+    `grad_r`/`grad_t`.
+
+### Changed
+- `validation/review/README.md`'s scope line. The table was written for
+  `docs/code_review.md` §19–23 and was never widened when the R4
+  remediation items and the coherence review added harnesses of their
+  own — which is exactly how two of them stayed off the map for several
+  versions. It now names all three sources (§18–23, R4.2/R4.4/R4.6, C7),
+  and the new guard fails if the next one drifts the same way.
+
+### Unchanged on purpose
+- The two harnesses themselves. Their own module docstrings were already
+  better than anything a README row could say; the gap was the map, not
+  the scripts.
+- `check_toolchain.py` stays out of CI. It reports what `stable` moved
+  to, which is information rather than a gate.
+
+## [0.7.13] - C7: the incoherent cascade, checked against something that is not itself
+
+### Added
+- **C7.** `validation/review/incoherent_check.py`, the eleventh review
+  harness. Everything that pinned the incoherent path before this pinned
+  it against a copy of itself: `parity/smatrix/refs/loom_matrix.py` is a
+  port of the same block sweep citing the same paper,
+  `intensity_path_matches_full_path_bitwise` compares two routes through
+  one algorithm, and `test_physics_mirror.py` translates the Rust tests
+  through the Python API. All useful; none of them evidence that the
+  physics is right. Four checks against oracles that do not know how
+  Navette works:
+  - the lossless-slab closed form `R = 2*R1/(1 + R1)`, `T = (1 - R1)/(1 + R1)`
+    — the geometric sum with the phase discarded — matched to 1e-12 by
+    both `FRONT_BLOCK` and `COHERENCY_MATRIX`;
+  - bit-exact thickness independence from 10 µm to 3.7 mm, asserted on
+    `float.hex()` rather than a tolerance;
+  - the phase average on R and T, at normal and 45° incidence — the
+    *definition* of an incoherent layer, so nothing about the block sweep
+    is assumed — matching to 8e-17 / 1e-15, and to 7e-07 on an absorbing
+    slab with `k*d` held invariant;
+  - the same average on the Stokes vector, which is the check that would
+    have caught C2.
+  Each part carries a control that fails it.
+- `validation/smoke/test_incoherent_physics.py` (17 tests), the regression
+  twins of the harness. They use 64 phase samples rather than the
+  harness's 2048: the coherent answer is analytic and periodic in the
+  round-trip phase, so an equispaced Riemann sum converges geometrically —
+  8 samples land at 1.7e-07, 16 already at 5e-15. The whole file runs in
+  0.18 s, and `test_the_phase_average_converges_geometrically` pins the
+  rate so a future discontinuity in the sweep cannot quietly turn the
+  averages into approximations.
+
+### Fixed
+- Two traps in the measurement itself are now pinned as tests, because
+  both were live mistakes and both look like engine bugs:
+  - **`k*d`.** Sweeping `d` to turn the phase also sweeps
+    `tau = exp(-2*Im(beta))`, so the naive absorbing average is taken over
+    a stack whose absorption moves underneath it — it disagrees at 3.4e-04
+    and is measuring itself. The test asserts both that holding `k*d`
+    fixed works *and* that the naive version fails, so the correction
+    cannot be deleted as redundant.
+  - **DOP.** `S0..S3` are bilinear in the fields, so incoherent
+    superposition averages *them*; `DOP = sqrt(S1^2+S2^2+S3^2)/S0` is a
+    nonlinear function OF them. The first draft of part D averaged DOP and
+    reported a 5.8e-03 "disagreement" that was entirely its own: this
+    stack is non-depolarizing, so every coherent sample has DOP = 1
+    exactly and their mean is 1, while the averaged Stokes vector has
+    DOP = 0.994186. That gap is the physics — partial depolarization is
+    what incoherent superposition produces — and mode B reproduces it to
+    1e-16.
+
+### Measured
+- **C2, from the definition rather than from a disagreement.** Reaching
+  past the 0.7.10 refusal through the raw engine, `FRONT_BLOCK`'s cross
+  channel misses the phase average by 2.26e-02 (`S2_R`) and 3.91e-03
+  (`S3_R`) — *while its `S0_R` and `S1_R` pass the very same average to
+  1e-16*. The intensity half is right and the cross half is wrong, which
+  is exactly what "the cross channel comes from the front block while the
+  intensities are totals" predicts. Every prior C2 evidence was one
+  implementation disagreeing with another.
+- `COHERENCY_MATRIX` reproduces the full averaged Stokes vector to
+  ≤6.7e-16 on all four components. Mode B is now verified against the
+  definition, not against a port.
+
+## [0.7.12] - C3/C5/C6/C10: what an incoherent flag can and cannot mean
+
+### Added
+- **C3.** A flagged layer thinner than five wavelengths of optical
+  thickness now warns at construction, at both engine doors. The flag
+  asserts the layer destroys the phase relation between its two surfaces,
+  which needs the path-length spread across it to exceed the source
+  coherence length `L_C = lambda^2 / delta_lambda`; nothing checked that.
+  The threshold is **derived, not chosen**: the warning quotes the source
+  bandwidth that layer would need — `delta_lambda > lambda^2 / (2*n*d)`,
+  and what percentage of the wavelength that is — so "too thin" is a
+  number the caller can argue with rather than a constant somebody picked.
+- **C5.** A flag on row 0 or the last row now warns that it does nothing.
+  The block sweep scans `current_idx + 1` up to `idx_n` and applies the
+  attenuation element only below `idx_n`, so half-space flags are never
+  consulted: bit-identical output, previously with no diagnostic at all.
+  The warning says what to do instead — a thick substrate is an *interior*
+  layer with a real thickness, flagged, between the film stack and the
+  exit medium.
+- `optics_core::THIN_FLAGGED_LAYER_EXPLANATION` and
+  `THIN_FLAG_WAVELENGTHS`, shared by both doors in the
+  `AMBIENT_DROP_EXPLANATION` shape, with
+  `test_both_doors_explain_thin_flags_the_same_way` to keep them from
+  drifting.
+- `validation/smoke/test_incoherent_flag_sanity.py` (14 tests), including
+  the measurement behind each warning: a half-space flag really is
+  bit-identical, an interior one really is not, and the flag is still
+  honoured after the thin-layer warning.
+
+### Changed
+- The `incoherent_flags` constructor docstring no longer offers "thick
+  substrate" as its example. That was the exact row a caller would flag to
+  no effect (C5). It now states the interior-only rule, the `L_C` criterion
+  with the 50–100 µm practical substrate threshold, and that the partition
+  changes the answer by itself — a **zero**-thickness flagged layer still
+  decoheres, because the join breaks the p-s phase relation whatever the
+  thickness (`Rs 0.193432 -> 0.109790`).
+- **C6.** `field_profile` gained the front-block/single-block caveat,
+  completing the sweep begun in 0.7.10 (`ellipsometry`, `stokes`,
+  `complex_amplitudes`).
+- **C10.** `eigenmode_landscape`, `find_eigenmodes`, `refine_mode` and
+  `field_profile` now say that the guided-mode kernels solve `[0, n-1]` as
+  one coherent block and never consult `incoherent_flags`, and
+  `smatrix/optimizer.rs` says it at the module level. This is correct by
+  intent — a guided mode is a coherent-stack concept and there is no
+  eigenmode to find across a partition — but every other surface on the
+  same `Solver` honours the flags, so a caller had no way to tell these do
+  not.
+
+### Unchanged on purpose
+- Both are warnings, not refusals. A half-space has no second surface to
+  lose coherence against, so a flag there is a no-op rather than a
+  mistake; and the thin incoherent limit is a legitimate thing to model,
+  as long as it is what the caller meant. The engine honours the array
+  either way.
+- All three coherence findings now share one interior-only predicate, so
+  C2's refusal, C3's thickness warning and C5's no-op warning cannot
+  contradict each other. A stack flagged only on its half-spaces gets C5's
+  warning and neither of the others — pinned by
+  `test_the_two_findings_do_not_contradict_each_other`.
+- Three existing tests now emit the new warnings and still pass
+  (`test_needle_t_a_phi`, `test_the_multiblock_span_is_not_the_coherent_one`,
+  `test_half_space_flags_alone_are_allowed`). All three use thin or
+  half-space flags deliberately, as FD and partition geometry rather than
+  as physics; the warning saying so is the warning working.
+
+## [0.7.11] - C4: optical gain is refused at every door
+
+### Fixed
+- `Im(n) < 0` is now refused instead of silently mangled (physics review
+  rounds 1 and 2, C4). Gain has no representation in either solver path,
+  and the two paths destroyed it *differently*: the coherent kernels
+  conjugate the propagation phase back to decay, so a gain layer came back
+  wearing the loss layer's answer — bit-identical to `+k` on a symmetric
+  stack, reporting a **positive** absorptance for a medium that
+  amplifies — while the incoherent cascade clamps the same quantity to
+  zero, turning the layer transparent and opening the energy books by
+  `A = -4.3e-5`. Neither is any physical system, and neither is
+  recoverable from the output: it reads as an ordinary absorbing stack.
+- The check sits at `Solver::assemble`, the one place every constructor
+  funnels through, so `ScatterMatrix`, `solve_arrays` / `solve_structure`
+  and the raw `core_engine` FFI are covered by one rule rather than three
+  copies. This is deliberately **unlike** C2, whose refusal had to stay at
+  the doors because Mode A's numbers are a legacy port reached from below;
+  nothing below the doors computes anything about gain worth preserving.
+- The free `needle_gradient` takes a flat cache and never builds a
+  `Solver`, so it carries the check itself — the same gap C8's flag
+  canonicalization had to close separately. It also checks the needle
+  material, which arrives as its own argument: the needle's index goes
+  into the same conjugating kernels and its spacer `tau` takes the same
+  clamp.
+- The `Structure` door, which was the one door already refusing `k < 0`,
+  now carries the same explanation as the other two. Its message said
+  "check provider data" and nothing about what the solver would otherwise
+  have done with the number.
+
+### Added
+- `optics_core::GAIN_MEDIUM_EXPLANATION`, the shared text behind all three
+  refusals, in the `AMBIENT_DROP_EXPLANATION` shape, plus
+  `gain_medium_message` and `scan_for_gain` so every Rust site reports the
+  same grid position the same way. `test_both_doors_explain_gain_the_same_way`
+  fails if any one door is edited without the others.
+- `validation/smoke/test_gain_refusal.py` (9 tests): each door refuses and
+  names the layer, the wavelength index and how many grid values are
+  negative; the explanation states what each path does, the measured size
+  of the damage and the way out for a time-convention mismatch; and the
+  controls pin what must **not** refuse.
+
+### Unchanged on purpose
+- `-0.0` is not gain. `-0.0 < 0.0` is false in IEEE, `forward_branch` and
+  `sanitize_incident_index` already treat a signed zero as zero, and a
+  provider that writes `-0.0` for a transparent material is not describing
+  an amplifier. Pinned on both sides, because the obvious "tidy up the
+  sign" edit would start refusing real grids.
+- The gate is on the **index** array only. The flat-array roughness
+  surface stays permissive exactly as `test_layer_gate.py` pins it; the
+  dividing line is whether a correction exists, not which surface the
+  value arrived on. Indices were already gated there for non-finite values
+  and for `|n|^2` overflow, and gain is the same kind of problem.
+- The ambient is checked like any other row, and the gain gate runs before
+  the absorbing-ambient drop. That drop counts a negative imaginary part
+  as absorption, so left alone it would have swallowed a sign error and
+  reported dropping absorption that was never there.
+
+## [0.7.10] - C2/C9: the front-block cross channel is refused, not mixed
+
+### Fixed
+- Cross-channel observables under the default `FRONT_BLOCK` mode on a stack
+  with an interior incoherent layer now refuse instead of returning a
+  vector built from two different stacks (physics review rounds 1 and 2,
+  C2). Mode A takes the p-s cross channel from the FIRST coherent block
+  while its intensities are totals over every incoherent echo, so `DOP_R`
+  came back as `|rs_c|^2/Rs` — measured 0.763904485 where the physical
+  answer for a non-depolarizing stack at normal incidence is exactly 1,
+  and `Delta` up to 22.2 degrees out at 70 degrees.
+- The refusal covers all twelve `NEEDS_CROSS` bits (Delta, DOP, S2/S3,
+  retardance, and the raw `cross_R`/`cross_T`) as one rule. There is no
+  "raw cross is fine" split: the raw channel is the same defective object,
+  and letting it through would let a caller rebuild the broken DOP by hand.
+- The predicate is deliberately narrow — `FRONT_BLOCK` **and** a cross bit
+  **and** a non-zero flag on an INTERIOR row. Rows 0 and last are
+  half-spaces whose flags the engine never consults (C5), so flagging only
+  those does not refuse. With nothing flagged, Modes A and B are
+  bit-identical, so nothing refuses there either. Mode C is one block over
+  the whole stack and its cross channel is correct.
+- Both doors carry one shared explanation, `FRONT_BLOCK_CROSS_EXPLANATION`,
+  in the `AMBIENT_DROP_EXPLANATION` shape:
+  `ScatterMatrix.compute` (Python, where `stacklevel` can point at the
+  caller) and `solver::solve_arrays` (Rust, which is what `solve_structure`
+  and the raw FFI reach). `test_both_doors_explain_the_cross_channel_the_same_way`
+  fails if either is edited without the other.
+- `NEEDS_CROSS` is now exported to Python and imported by the door rather
+  than re-declared there, so the door and the engine cannot test different
+  bits — the `NREQ_*` pattern. `test_needs_cross_is_bound_not_copied` pins
+  the composition against the Rust constants and pins Psi's absence from
+  the mask (it is an amplitude ratio, not one of the mixed objects).
+
+### Unchanged on purpose
+- **The engine is untouched.** `solve_point`, `solve_point_intensity` and
+  `Solver::solve` compute exactly what they computed before. The legacy
+  parity port drives Mode A with interior flags and cross observables
+  through the raw `core_engine` pyfunction, which enters below both doors,
+  so it still runs and still pins its numbers bit-for-bit.
+  `test_the_engine_still_computes_what_the_doors_refuse` fails first if
+  the door check ever leaks inward.
+- Mode A's `cross_T` is recorded rather than changed (C9). It is a third
+  object — a product of per-block `t_p*conj(t_s)` across the joins with no
+  multiple-bounce series — neither the front block nor the Mode B cascade.
+  `test_mode_a_and_mode_b_cross_terms_are_different_objects` pins that,
+  alongside the A/B photometric identity.
+- The Python default stays `FRONT_BLOCK`. It matches the legacy port by a
+  remediation-plan decision, and flipping it would silently re-litigate
+  that for stored results. With the refusal in place the default is no
+  longer dangerous, only loud; a flip would be its own bump.
+- The R6.2 DOP clamp is unchanged. Its comment now states the scope
+  condition it always had — the reflected identity holds "for a single
+  coherent block" — and records that Mode A on a flagged stack produces a
+  DEFICIT the `.min(1.0)` clamp cannot see.
+
+## [0.7.9] - C1: synthesis refuses the flag it cannot honor
+
+### Fixed
+- A film marked `coherent: false` now refuses at the synthesis door
+  instead of being silently ignored (physics review rounds 1 and 2, C1).
+  `DesignStack::solver_arrays` materialized the flag faithfully
+  (`incoherent_flags[slot] = i32::from(!layer.coherent)`) and
+  `simulate_inner` then solved `[0, nl-1)` as ONE coherent block without
+  ever reading it; the needle pass built its stack fields over the same
+  single block. Every consumer of that funnel — the design door, the
+  multi-environment door, the LM step, the FD jacobian, the needle scan —
+  returned the fully-coherent answer for a stack the caller had marked
+  otherwise. Measured: merit bit-identical with the flag on and off,
+  while the engine door moves on the same stack.
+- The refusal sits in `DesignStack::from_parts`, the one internal
+  constructor every `DesignStack` passes through, so no route into
+  synthesis can carry the flag — `with_films`, `from_design`,
+  `insert_needle_seed`, `merge_adjacent` and the rest reach it. It names
+  the film by index and material, and it names the doors that DO honor
+  the flag (`solve_structure`, `ScatterMatrix`) rather than only saying
+  no.
+
+### Unchanged on purpose
+- Ambient and substrate are not checked. They are half-spaces at rows 0
+  and last, where the engine never consults the flag either (C5), so a
+  flag there is the same no-op on every door and refusing it would be a
+  different finding.
+- This is the refusal half of C1 only. `p_function_multiblock` still
+  exists, validated and unwired, and wiring the synthesis funnel to the
+  multiblock path stays available as a later phase — unblocked by this,
+  which only converts a silent wrong answer into a loud one.
+
+## [0.7.8] - C8: one coherence flag, one meaning
+
+### Fixed
+- A coherence flag of any non-zero value other than 1 no longer deletes
+  the flagged layer's absorption (physics review round 2, C8). The
+  published contract is "non-zero where a layer breaks phase coherence"
+  and the block sweep agrees — it extends a coherent run only while
+  `flag == 0` — but the attenuation element was gated on `flag == 1`.
+  A flag of 2 therefore partitioned the stack and then skipped `tau`:
+  the layer decohered but never absorbed. Measured on an air / 2 um
+  `n = 1.5 + 0.01i` slab / air stack at 550 nm: `flag = 1` gives
+  `Ts = 0.583945129` with `A = 0.361243521`, while `flag = 2`, `-1` and
+  `7` all gave `Ts = 0.923089546` with `A = -0.000042666` — the exact
+  lossless transmittance, and a negative absorptance from the open
+  energy books.
+- `incoherent_flags` is now canonicalized to 0/1 in `Solver::assemble`,
+  the shared tail every constructor funnels through (`new`,
+  `from_wav_major_flat`, `from_raw`, and so `solve_arrays`, `ScatterMatrix`
+  and `core_engine` with them), and in the free `needle_gradient`, whose
+  flags arrive from the caller rather than from `self`. Both gates now
+  read the same array, and a future gate is honest whichever comparison
+  it picks.
+
+### Unchanged on purpose
+- `coherence_mode` needed no work: `Solver::validate` already refuses
+  anything outside {0, 1, 2} with a named message, every door reaches it
+  through `new`, and `validation_refuses` has pinned it since before this
+  review. Round 2 read the raw FFI door as unvalidated; it is not.
+- Flags of 0 and 1 are bit-for-bit unchanged, so no fingerprint moves.
+  The canonicalization can only alter a stack that was already getting a
+  physically impossible answer.
+
 ## [0.7.7] - M7: the merit spec remembers its roster
 
 ### Fixed

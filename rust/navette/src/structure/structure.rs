@@ -145,9 +145,18 @@ impl Structure {
                 ));
                         }
                         if sa.indices.iter().any(|z| z.im < 0.0) {
-                            issues.push(ValidationIssue::error(
-                  "Nominal expansion produced k < 0 (check provider data / group k_factor).".to_string(),
-                ));
+                            // C4: this door refused first and alone. It now
+                            // carries the same explanation the Solver and the
+                            // Python index gate do, so a caller who meets the
+                            // rule here learns the same thing they would
+                            // anywhere else -- and the terse original told
+                            // them to check their data without saying what
+                            // the solver would otherwise have done with it.
+                            issues.push(ValidationIssue::error(format!(
+                                "Nominal expansion produced k < 0 (check provider data / \
+                                 group k_factor). {}",
+                                crate::smatrix::optics_core::GAIN_MEDIUM_EXPLANATION
+                            )));
                         }
                         let n_rows = sa.n_rows();
                         for j in 1..n_rows.saturating_sub(1).max(1) {
