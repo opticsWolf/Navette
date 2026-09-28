@@ -172,7 +172,39 @@ impl Default for ErrorParamsCfg {
     }
 }
 
+/// The roughness channel's defaults, mirroring `ErrorParams::roughness()`.
+///
+/// Every channel used to deserialize through `ErrorParamsCfg::default()`,
+/// which mirrors `standard()` alone -- so a config document that omitted
+/// `roughness_error_params` got `abs_std_dev = 0.01` where `Group::new()`
+/// gives 0.001, and one that omitted `k_error_params` got 0.01 where the
+/// engine gives 0.0001. Same defect as the `rel_variance` drift fixed at
+/// 0.7.15: the config surface has to mirror the engine per channel, not once.
+fn d_ep_roughness() -> ErrorParamsCfg {
+    ErrorParamsCfg::from_params(&ErrorParams::roughness())
+}
+
+/// The extinction channel's defaults, mirroring `ErrorParams::extinction()`.
+fn d_ep_extinction() -> ErrorParamsCfg {
+    ErrorParamsCfg::from_params(&ErrorParams::extinction())
+}
+
 impl ErrorParamsCfg {
+    /// Build the config mirror of an engine `ErrorParams`, so the per-channel
+    /// defaults above cannot drift from the values they claim to mirror.
+    fn from_params(p: &ErrorParams) -> Self {
+        Self {
+            abs_mean_delta_g: p.abs_mean_delta_g,
+            abs_std_dev: p.abs_std_dev,
+            rel_mean_delta_g: p.rel_mean_delta_g,
+            rel_std_dev: p.rel_std_dev,
+            abs_mean_delta_h: p.abs_mean_delta_h,
+            abs_variance: p.abs_variance,
+            rel_mean_delta_h: p.rel_mean_delta_h,
+            rel_variance: p.rel_variance,
+        }
+    }
+
     fn build(&self) -> ErrorParams {
         ErrorParams {
             abs_mean_delta_g: self.abs_mean_delta_g,
@@ -226,13 +258,13 @@ pub struct GroupRow {
     pub thickness_error_params: ErrorParamsCfg,
     #[serde(default)]
     pub inh_delta_error_params: ErrorParamsCfg,
-    #[serde(default)]
+    #[serde(default = "d_ep_roughness")]
     pub roughness_error_params: ErrorParamsCfg,
     #[serde(default)]
     pub interface_error_params: ErrorParamsCfg,
     #[serde(default)]
     pub n_error_params: ErrorParamsCfg,
-    #[serde(default)]
+    #[serde(default = "d_ep_extinction")]
     pub k_error_params: ErrorParamsCfg,
 }
 
@@ -739,6 +771,70 @@ pub fn build_design(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config document that names no error params at all must produce the
+    /// same `Group` as `Group::new()`. All six channels used to deserialize
+    /// through one `ErrorParamsCfg::default()`, so roughness and k silently
+    /// disagreed with the engine; this is the guard that would have caught
+    /// both, and the `rel_variance` drift fixed at 0.7.15 before them.
+    #[test]
+    fn omitted_error_params_match_the_engine_channel_for_channel() {
+        let row: GroupRow = serde_json::from_str(r#"{"name": "g"}"#)
+            .expect("a group with only a name must deserialize");
+        let engine = Group::new("g");
+        for (channel, cfg, want) in [
+            (
+                "thickness",
+                &row.thickness_error_params,
+                &engine.thickness_error_params,
+            ),
+            (
+                "inh_delta",
+                &row.inh_delta_error_params,
+                &engine.inh_delta_error_params,
+            ),
+            (
+                "roughness",
+                &row.roughness_error_params,
+                &engine.roughness_error_params,
+            ),
+            (
+                "interface",
+                &row.interface_error_params,
+                &engine.interface_error_params,
+            ),
+            ("n", &row.n_error_params, &engine.n_error_params),
+            ("k", &row.k_error_params, &engine.k_error_params),
+        ] {
+            let got = cfg.build();
+            assert_eq!(got.abs_std_dev, want.abs_std_dev, "{channel} abs_std_dev");
+            assert_eq!(
+                got.abs_variance, want.abs_variance,
+                "{channel} abs_variance"
+            );
+            assert_eq!(got.rel_std_dev, want.rel_std_dev, "{channel} rel_std_dev");
+            assert_eq!(
+                got.rel_variance, want.rel_variance,
+                "{channel} rel_variance"
+            );
+            assert_eq!(
+                got.abs_mean_delta_g, want.abs_mean_delta_g,
+                "{channel} abs_mean_delta_g"
+            );
+            assert_eq!(
+                got.rel_mean_delta_g, want.rel_mean_delta_g,
+                "{channel} rel_mean_delta_g"
+            );
+            assert_eq!(
+                got.abs_mean_delta_h, want.abs_mean_delta_h,
+                "{channel} abs_mean_delta_h"
+            );
+            assert_eq!(
+                got.rel_mean_delta_h, want.rel_mean_delta_h,
+                "{channel} rel_mean_delta_h"
+            );
+        }
+    }
 
     fn lib() -> Vec<MaterialDef> {
         vec![

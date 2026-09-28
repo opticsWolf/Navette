@@ -5,6 +5,38 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.18] - the absolute error spreads carry a unit, and k's is not nm
+
+### Changed
+- **`ErrorParams::extinction()`**, a third per-channel default, now backs
+  `k_error_params`: `abs_std_dev` and `abs_variance` drop from 0.01 to
+  0.0001. The absolute spreads carry the unit of the quantity they
+  perturb, and `standard()`'s 0.01 is sized for a thickness in nanometres.
+  Applied to `k`, which runs from roughly 1e-4 to 1e-2 in the visible, a
+  0.01 absolute scatter is one to two orders of magnitude larger than the
+  value, so about half of all draws landed at `k < 0`. That is optical
+  gain, which the solver door refuses outright -- so enabling the k error
+  channel aborted a tolerance run rather than perturbing it, and the
+  refusal named gain rather than the tolerance that caused it. The
+  relative channel needed nothing: `k * (1 + g)` scales with the value.
+
+### Fixed
+- **The config surface mirrored the engine once instead of per channel.**
+  All six `error_params` fields on `GroupRow` deserialized through the one
+  `ErrorParamsCfg::default()`, which mirrors `ErrorParams::standard()`
+  alone -- so a design document omitting `roughness_error_params` got
+  `abs_std_dev = 0.01` where `Group::new()` gives 0.001, and the new
+  extinction defaults would have diverged the same way. This is the third
+  instance of one defect (after the `rel_variance` drift fixed at 0.7.15):
+  a config default hand-copied from an engine default it does not track.
+  The roughness and k fields now default through functions that build from
+  `ErrorParams::roughness()` and `::extinction()` directly, so the mirror
+  cannot drift by construction.
+- Added `omitted_error_params_match_the_engine_channel_for_channel`: a
+  group config naming nothing but its name must build the same six
+  channels as `Group::new()`, asserted field by field. Verified to fail,
+  naming the offending channel and field, against a tree with the old
+  shared default restored.
 ## [0.7.17] - the relative error spreads were a hundred times too wide
 
 ### Changed

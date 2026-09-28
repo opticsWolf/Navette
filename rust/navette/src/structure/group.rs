@@ -82,6 +82,34 @@ impl ErrorParams {
             rel_variance: 0.01,
         }
     }
+
+    /// Extinction-channel defaults: `abs_*` x0.01 relative to `standard()`.
+    ///
+    /// The absolute spreads carry the unit of the quantity they perturb, and
+    /// `standard()`'s 0.01 is sized for a thickness in nanometres. Applied to
+    /// `k`, which runs from about 1e-4 to 1e-2 in the visible, a 0.01
+    /// absolute scatter is one to two orders of magnitude *larger than the
+    /// value*, so roughly half of all draws land at `k < 0`. That is optical
+    /// gain, which the solver door refuses outright
+    /// (`GAIN_MEDIUM_EXPLANATION`) -- so enabling the k error channel used to
+    /// abort a tolerance run rather than perturb it, and the refusal named
+    /// gain rather than the tolerance that caused it.
+    ///
+    /// 0.0001 keeps the absolute scatter below a typical `k`. The relative
+    /// channel needed nothing: `k * (1 + g)` scales with the value and was
+    /// already well behaved.
+    pub fn extinction() -> Self {
+        Self {
+            abs_mean_delta_g: 0.0,
+            abs_std_dev: 0.0001,
+            rel_mean_delta_g: 0.0,
+            rel_std_dev: 0.01,
+            abs_mean_delta_h: 0.0,
+            abs_variance: 0.0001,
+            rel_mean_delta_h: 0.0,
+            rel_variance: 0.01,
+        }
+    }
 }
 
 /// Wrap a group in a shared handle (structure storage).
@@ -141,7 +169,7 @@ impl Group {
             roughness_error_params: ErrorParams::roughness(),
             interface_error_params: ErrorParams::standard(),
             n_error_params: ErrorParams::standard(),
-            k_error_params: ErrorParams::standard(),
+            k_error_params: ErrorParams::extinction(),
         }
     }
 
