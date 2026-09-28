@@ -5,6 +5,44 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.16] - a fourth error law, where the relative channels compose
+
+### Added
+- **`ErrorType::Cascaded` (discriminant 3)**, a fourth fabrication-error
+  law. The existing three all have the shape `v_out = v*(1 + rel) + abs`,
+  and `Combined` builds its relative channel as `G_rel + U_rel`: each law
+  measures its own slice off the *nominal*, neither sees the other.
+  `Cascaded` composes them as factors instead,
+
+      v_out = v * (1 + G_rel) * (1 + U_rel) + G_abs + U_abs
+
+  which is the right arithmetic when the two laws are multiplicative
+  stages in series -- a systematic rate-calibration error, then a per-run
+  monitor error acting on the already-mis-calibrated deposit, rather than
+  on what was nominally asked for.
+
+  It is a superset of `Combined`, not a rival. Expanding the product gives
+  `v*(1 + G_rel + U_rel + G_rel*U_rel)`, so the two differ by exactly the
+  cross term `v*G_rel*U_rel`: they agree to first order, and whenever
+  either relative channel is switched off the product collapses back to
+  `Combined` -- one factor is then 1 -- so turning a channel off cannot
+  change the answer. (In `f64` both identities hold to a rounding rather
+  than bitwise, since the product associates its multiplications
+  differently from the sum; the tests assert them at 1e-14 relative.)
+
+  The absolute channel stays additive and outside the product, keeping the
+  meaning it has in the other three laws: an offset applied after the
+  multiplicative stage, not one that stage then scales.
+
+  `Cascaded` draws the same four numbers as `Combined` in the same order,
+  so the two remain stream-comparable. The expansion path needed no
+  structural change: `(1 + g)(1 + u) = 1 + (g + u + g*u)`, so
+  `channel_draws` still returns one scalar `(abs, rel)` pair and every
+  call site still applies `v + abs + rel*v`.
+- Four tests in `structure::group` pinning the cross-term identity, the
+  collapse to `Combined` with either channel off, the deterministic
+  product of two systematic centres (`100 * 1.1 * 1.2 = 132`, where
+  `Combined` gives 130), and agreement between the two draw paths.
 ## [0.7.15] - the uniform law gets its centre back
 
 ### Fixed

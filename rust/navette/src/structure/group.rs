@@ -180,6 +180,10 @@ impl Group {
     /// `N(*_mean_delta_g, *_std_dev)`, uniform is
     /// `U(*_mean_delta_h ± *_variance)`. The uniform centre was dropped by
     /// every version before 0.7.15 — see `unif_draw`.
+    ///
+    /// `Cascaded` draws the same four numbers as `Combined`, in the same
+    /// order, and composes the two relative laws as factors instead of
+    /// summing them — see [`ErrorType`] for the table and the reasoning.
     pub fn apply_error(
         value: f64,
         error_type: ErrorType,
@@ -202,6 +206,14 @@ impl Group {
                     + gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng) * value
                     + unif_draw(params.abs_mean_delta_h, params.abs_variance, rng)
                     + unif_draw(params.rel_mean_delta_h, params.rel_variance, rng) * value
+            }
+            ErrorType::Cascaded => {
+                // Same four draws as Combined, in the same order, so the two
+                // laws stay stream-comparable; only the composition differs.
+                let g_rel = gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng);
+                let u_abs = unif_draw(params.abs_mean_delta_h, params.abs_variance, rng);
+                let u_rel = unif_draw(params.rel_mean_delta_h, params.rel_variance, rng);
+                value * (1.0 + g_rel) * (1.0 + u_rel) + g_abs + u_abs
             }
         }
     }
@@ -664,6 +676,112 @@ mod tests {
                 + unif_draw(0.0, p.abs_variance, &mut b)
                 + unif_draw(0.0, p.rel_variance, &mut b) * 10.0;
             assert_eq!(got, want);
+        }
+    }
+
+    /// `Cascaded` is `Combined` plus the cross term `v * G_rel * U_rel`,
+    /// drawing the same four numbers in the same order. Replaying the two
+    /// laws on parallel streams pins that difference. The identity is exact
+    /// in real arithmetic but not bitwise: the product associates the
+    /// multiplications differently from the sum, so it holds to a rounding.
+    #[test]
+    fn cascaded_is_combined_plus_the_cross_term() {
+        let p = ErrorParams::standard();
+        let mut a = rng();
+        let mut b = rng();
+        for _ in 0..256 {
+            let casc = Group::apply_error(10.0, ErrorType::Cascaded, &p, &mut a);
+            // The same stream, decomposed: apply_error's order is the
+            // unconditional absolute Gaussian, then g_rel, u_abs, u_rel.
+            let g_abs = gauss_draw(p.abs_mean_delta_g, p.abs_std_dev, &mut b);
+            let g_rel = gauss_draw(p.rel_mean_delta_g, p.rel_std_dev, &mut b);
+            let u_abs = unif_draw(p.abs_mean_delta_h, p.abs_variance, &mut b);
+            let u_rel = unif_draw(p.rel_mean_delta_h, p.rel_variance, &mut b);
+            let combined = 10.0 + g_abs + g_rel * 10.0 + u_abs + u_rel * 10.0;
+            let want = combined + 10.0 * g_rel * u_rel;
+            assert!(
+                (casc - want).abs() <= 1e-14 * want.abs().max(1.0),
+                "{casc} vs {want}"
+            );
+        }
+    }
+
+    /// One relative channel off makes its factor exactly 1, so the product
+    /// collapses and `Cascaded` becomes `Combined` -- to a rounding, since
+    /// `v * (1 + g)` and `v + g * v` are the same number but not the same
+    /// sequence of operations. This is what makes the new law a superset
+    /// rather than a rival: turning a channel off cannot change the answer.
+    #[test]
+    fn cascaded_collapses_to_combined_when_a_factor_is_one() {
+        for p in [
+            // Gaussian relative off: (1 + 0) * (1 + U_rel).
+            ErrorParams {
+                rel_mean_delta_g: 0.0,
+                rel_std_dev: 0.0,
+                ..ErrorParams::standard()
+            },
+            // Uniform relative off: (1 + G_rel) * (1 + 0).
+            ErrorParams {
+                rel_mean_delta_h: 0.0,
+                rel_variance: 0.0,
+                ..ErrorParams::standard()
+            },
+        ] {
+            let mut a = rng();
+            let mut b = rng();
+            for _ in 0..128 {
+                let casc = Group::apply_error(10.0, ErrorType::Cascaded, &p, &mut a);
+                let comb = Group::apply_error(10.0, ErrorType::Combined, &p, &mut b);
+                assert!(
+                    (casc - comb).abs() <= 1e-14 * comb.abs().max(1.0),
+                    "{casc} vs {comb}"
+                );
+            }
+        }
+    }
+
+    /// The composition is what it says: two multiplicative stages in series.
+    /// Systematic centres with no spread make the draw deterministic, so the
+    /// product is checkable against arithmetic rather than a statistic.
+    #[test]
+    fn cascaded_multiplies_its_systematic_centres() {
+        let p = ErrorParams {
+            abs_mean_delta_g: 0.0,
+            abs_std_dev: 0.0,
+            rel_mean_delta_g: 0.1,
+            rel_std_dev: 0.0,
+            abs_mean_delta_h: 0.0,
+            abs_variance: 0.0,
+            rel_mean_delta_h: 0.2,
+            rel_variance: 0.0,
+        };
+        let mut r = rng();
+        for _ in 0..16 {
+            // 100 * 1.1 * 1.2 = 132, where Combined would give 100 * 1.3 = 130.
+            let d = Group::apply_error(100.0, ErrorType::Cascaded, &p, &mut r);
+            assert!((d - 132.0).abs() < 1e-12, "{d}");
+        }
+    }
+
+    /// The expansion path builds the same law out of a scalar `(abs, rel)`
+    /// pair, since `(1 + g)(1 + u) = 1 + (g + u + g*u)`. Both call sites must
+    /// therefore agree on the value, whatever order they draw in.
+    #[test]
+    fn cascaded_agrees_across_both_draw_paths() {
+        let p = ErrorParams::standard();
+        let mut a = rng();
+        let mut b = rng();
+        for _ in 0..128 {
+            // apply_error's order: g_abs, g_rel, u_abs, u_rel.
+            let direct = Group::apply_error(10.0, ErrorType::Cascaded, &p, &mut a);
+            let g_abs = gauss_draw(p.abs_mean_delta_g, p.abs_std_dev, &mut b);
+            let g_rel = gauss_draw(p.rel_mean_delta_g, p.rel_std_dev, &mut b);
+            let u_abs = unif_draw(p.abs_mean_delta_h, p.abs_variance, &mut b);
+            let u_rel = unif_draw(p.rel_mean_delta_h, p.rel_variance, &mut b);
+            // The expansion form: one scalar rel, applied as v + abs + rel*v.
+            let rel = g_rel + u_rel + g_rel * u_rel;
+            let via_pair = 10.0 + (g_abs + u_abs) + rel * 10.0;
+            assert!((direct - via_pair).abs() <= 1e-12 * direct.abs().max(1.0));
         }
     }
 

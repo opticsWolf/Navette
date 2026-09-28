@@ -7,12 +7,41 @@
 use std::fmt;
 
 /// Statistical law used when drawing fabrication errors.
+///
+/// All four share the shape `v_out = v * (1 + rel) + abs`, and differ only in
+/// how the per-law draws build `rel` and `abs`. Writing
+/// `G = N(*_mean_delta_g, *_std_dev)` and `U = U(*_mean_delta_h +- *_variance)`:
+///
+/// | Variant     | `rel`                          | `abs`         |
+/// |-------------|--------------------------------|---------------|
+/// | `Gaussian`  | `G_rel`                        | `G_abs`       |
+/// | `Uniform`   | `U_rel`                        | `U_abs`       |
+/// | `Combined`  | `G_rel + U_rel`                | `G_abs+U_abs` |
+/// | `Cascaded`  | `G_rel + U_rel + G_rel*U_rel`  | `G_abs+U_abs` |
+///
+/// `Combined` and `Cascaded` draw exactly the same four numbers and differ by
+/// the single cross term `G_rel*U_rel`, because `Cascaded` composes the two
+/// relative laws as factors -- `v*(1 + G_rel)*(1 + U_rel)` -- rather than
+/// letting each measure its own slice off the nominal. Use it when the two
+/// laws are multiplicative stages in series, where the second scales what the
+/// first already produced: a systematic rate-calibration error, then a per-run
+/// monitor error acting on the already-mis-calibrated deposit. The two agree
+/// to first order, and whenever either relative channel is switched off the
+/// product collapses to `Combined` exactly -- one factor is then 1 -- so
+/// turning a channel off cannot change the answer. (In `f64` that collapse
+/// holds to a rounding, not bitwise: `v * (1 + g)` and `v + g * v` are the
+/// same number by a different sequence of operations.)
+///
+/// The absolute channel stays additive and outside the product in both, so it
+/// keeps the meaning it has in `Gaussian` and `Uniform`: an offset applied
+/// after the multiplicative stage, not one the stage then scales.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorType {
     Gaussian = 0,
     Uniform = 1,
     Combined = 2,
+    Cascaded = 3,
 }
 
 /// Per-interface roughness form factor (solver contract, sigma in nm).
@@ -127,7 +156,7 @@ macro_rules! impl_int_coercion {
   };
 }
 
-impl_int_coercion!(ErrorType, [Gaussian, Uniform, Combined]);
+impl_int_coercion!(ErrorType, [Gaussian, Uniform, Combined, Cascaded]);
 impl_int_coercion!(
     RoughnessType,
     [None, Linear, Step, Exponential, Gaussian, NevotCroce]
@@ -155,6 +184,7 @@ mod tests {
         assert_eq!(ErrorType::Gaussian.as_i32(), 0);
         assert_eq!(ErrorType::Uniform.as_i32(), 1);
         assert_eq!(ErrorType::Combined.as_i32(), 2);
+        assert_eq!(ErrorType::Cascaded.as_i32(), 3);
         let rough = [0, 1, 2, 3, 4, 5];
         for (i, v) in [
             RoughnessType::None,

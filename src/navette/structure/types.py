@@ -17,10 +17,37 @@ COMPLEX_TYPE = np.complex128
 INT_TYPE = np.int32
 
 class ErrorType(IntEnum):
-    """Statistical law used when drawing fabrication errors."""
+    """Statistical law used when drawing fabrication errors.
+
+    All four share the shape ``v_out = v * (1 + rel) + abs`` and differ only
+    in how the per-law draws build ``rel`` and ``abs``. Writing
+    ``G = N(*_mean_delta_g, *_std_dev)`` and
+    ``U = U(*_mean_delta_h +- *_variance)``:
+
+    ==========  ============================  ===============
+    Variant     ``rel``                       ``abs``
+    ==========  ============================  ===============
+    GAUSSIAN    ``G_rel``                     ``G_abs``
+    UNIFORM     ``U_rel``                     ``U_abs``
+    COMBINED    ``G_rel + U_rel``             ``G_abs + U_abs``
+    CASCADED    ``G_rel + U_rel + G_rel*U_rel``  ``G_abs + U_abs``
+    ==========  ============================  ===============
+
+    COMBINED and CASCADED draw the same four numbers in the same order and
+    differ by the single cross term, because CASCADED composes the relative
+    laws as factors -- ``v * (1 + G_rel) * (1 + U_rel)`` -- rather than
+    letting each measure its own slice off the nominal. Use it when the two
+    laws are multiplicative stages in series, the second scaling what the
+    first already produced. They agree to first order, and whenever either
+    relative channel is off the product collapses to COMBINED exactly, since
+    one factor is then 1 -- in float, to a rounding rather than bitwise.
+
+    The absolute channel stays additive and outside the product in both.
+    """
     GAUSSIAN = 0
     UNIFORM = 1
     COMBINED = 2
+    CASCADED = 3
 
 class RoughnessType(IntEnum):
     """Per-interface roughness form factor (solver contract, [nm] sigma).
