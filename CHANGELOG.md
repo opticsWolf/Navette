@@ -5,6 +5,40 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.17] - the relative error spreads were a hundred times too wide
+
+### Changed
+- **`rel_std_dev` and `rel_variance` default to 0.01, not 1.0**, in both
+  `ErrorParams::standard()` and `ErrorParams::roughness()`, and in the
+  `ErrorParamsCfg` serde defaults that mirror them.
+
+  These parameters are unit-free *fractions* of the value being perturbed
+  (`docs/plans/structure_plan.md` line 29), not percentages, so 1.0 was a
+  100% one-sigma relative scatter -- one sigma covering the entire nominal
+  thickness. Nothing in the library wants that, and it is not a tolerance
+  any deposition process has. 0.01 is a 1% relative scatter, which reads
+  the same way as the absolute channel's 0.01 nm beside it.
+
+  The value dates to the first Python upload and survived the port because
+  it is almost unreachable: `error_mask` defaults to all-zero, so no
+  channel draws at all until a caller switches one on -- at which point
+  the very first draw was wild. At 1.0 the Gaussian factor `1 + G_rel` is
+  negative for 15.9% of draws, which `thickness_error`'s floor turns into
+  a dead layer; `inh_delta_error` has no floor and passed it straight
+  through. It surfaced while sizing the clamping question for the new
+  `Cascaded` law, where the same defaults put 4% of draws (at
+  `rel_variance > 1`) into a doubly-inverted, plausibly-positive band that
+  no floor catches. Narrowing the default removes that regime rather than
+  papering over it: at any realistic tolerance both factors are
+  sign-definite and the question does not arise.
+
+  Nothing that sets these parameters explicitly is affected, which is
+  every regression fixture that pins a number: `test_differential.py`
+  passes 0.0, `test_restored_surface.py` passes 0.0, and the recorded
+  state document `validation/fixtures/state/v1_architect.json` carries an
+  explicit 1.0 and is deliberately left alone -- it pins what a v1 state
+  file contained, which the new default must keep loading unchanged.
+  `test_api.py`'s hand-copied mirror of the defaults was updated.
 ## [0.7.16] - a fourth error law, where the relative channels compose
 
 ### Added

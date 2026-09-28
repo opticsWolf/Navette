@@ -79,9 +79,25 @@ def test_v1_state_fixture_loads_and_expands_bit_identically():
           inh_mode={"RateCapped": {"rate": 0.05, "ref_thickness": 100.0,
                                     "cap": 0.3}}),
   ]
+  live_group = Group("TiO2", n_factor=1.1)
+  # The fixture records rel_std_dev == rel_variance == 1.0, which were the
+  # library defaults when it was written; they dropped to 0.01 at 0.7.17
+  # because 1.0 is a 100% relative scatter (they are unit-free fractions,
+  # not percentages). Restate them here rather than regenerating the
+  # fixture: the file's whole value is that it predates the range gate, and
+  # a fixture rewritten to match today's defaults stops testing anything.
+  # Making the values explicit also keeps this test honest about what it
+  # covers -- "v1 stays readable", not "the defaults have never moved".
+  for channel in ("thickness", "n", "k", "inh_delta", "roughness",
+                  "interface"):
+    params = dict(getattr(live_group, f"{channel}_error_params"))
+    params["rel_std_dev"] = 1.0
+    params["rel_variance"] = 1.0
+    live_group.set_error_params(channel, params)
+
   live = Navette_Architect(materials=MATS)
   live.add_structure(Navette_Structure(
-    layers, {"TiO2": Group("TiO2", n_factor=1.1)}, MATS))
+    layers, {"TiO2": live_group}, MATS))
 
   assert loaded.get_state() == live.get_state()
   a, b = loaded.get_solver_inputs(), live.get_solver_inputs()

@@ -151,9 +151,11 @@ def test_from_state_bad_ref_raises():
 def test_apply_error_is_systematic_across_wl():
   from navette._structure import apply_error
   # Pinned defaults (both implementations agree; avoids impl-specific accessors).
+  # The rel_* spreads are unit-free fractions: 0.01 is a 1% relative scatter.
+  # They read 1.0 -- i.e. 100% -- through 0.7.16; see ErrorParams::standard().
   params = dict(abs_mean_delta_g=0.0, abs_std_dev=0.01, rel_mean_delta_g=0.0,
-                rel_std_dev=1.0, abs_mean_delta_h=0.0, abs_variance=0.01,
-                rel_mean_delta_h=0.0, rel_variance=1.0)
+                rel_std_dev=0.01, abs_mean_delta_h=0.0, abs_variance=0.01,
+                rel_mean_delta_h=0.0, rel_variance=0.01)
   out1 = np.array([apply_error(1.5, 0, params, seed=3) for _ in range(4)])
   out2 = np.array([apply_error(1.5, 0, params, seed=3) for _ in range(4)])
   np.testing.assert_allclose(out1, out2)  # seeded reproducible

@@ -45,31 +45,41 @@ pub struct ErrorParams {
 
 impl ErrorParams {
     /// Default law params (all channels except roughness).
+    ///
+    /// The relative spreads are unit-free *fractions* of the value, not
+    /// percentages: `rel_std_dev: 0.01` is a 1% one-sigma relative scatter,
+    /// matching the absolute channel's 0.01 nm. They read 1.0 from the first
+    /// Python upload through 0.7.16 -- a 100% one-sigma spread, one sigma
+    /// covering the entire nominal thickness, which is not a fabrication
+    /// tolerance anyone has. It stayed invisible because `error_mask`
+    /// defaults to all-zero, so no channel draws at all until it is switched
+    /// on, at which point the first draw was wild.
     pub fn standard() -> Self {
         Self {
             abs_mean_delta_g: 0.0,
             abs_std_dev: 0.01,
             rel_mean_delta_g: 0.0,
-            rel_std_dev: 1.0,
+            rel_std_dev: 0.01,
             abs_mean_delta_h: 0.0,
             abs_variance: 0.01,
             rel_mean_delta_h: 0.0,
-            rel_variance: 1.0,
+            rel_variance: 0.01,
         }
     }
 
     /// Roughness-channel defaults: `abs_*` x0.1 so the physical magnitude is
-    /// unchanged by the Å→nm switch (0.01 Å == 0.001 nm); `rel_*` untouched.
+    /// unchanged by the Å→nm switch (0.01 Å == 0.001 nm); `rel_*` untouched,
+    /// since a fraction has no unit to convert.
     pub fn roughness() -> Self {
         Self {
             abs_mean_delta_g: 0.0,
             abs_std_dev: 0.001,
             rel_mean_delta_g: 0.0,
-            rel_std_dev: 1.0,
+            rel_std_dev: 0.01,
             abs_mean_delta_h: 0.0,
             abs_variance: 0.001,
             rel_mean_delta_h: 0.0,
-            rel_variance: 1.0,
+            rel_variance: 0.01,
         }
     }
 }
@@ -529,7 +539,7 @@ mod tests {
         // Roughness abs defaults x0.1 (Å→nm magnitude preservation).
         assert_eq!(g.roughness_error_params.abs_std_dev, 0.001);
         assert_eq!(g.roughness_error_params.abs_variance, 0.001);
-        assert_eq!(g.roughness_error_params.rel_std_dev, 1.0);
+        assert_eq!(g.roughness_error_params.rel_std_dev, 0.01);
         assert_eq!(g.to_string(), "Group(name='TiO2', thick_factor=1.000)");
     }
 

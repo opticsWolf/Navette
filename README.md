@@ -282,7 +282,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.7.16-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.7.17-*.whl (single wheel, all engines)
 ```
 
 #### Optimizer backends

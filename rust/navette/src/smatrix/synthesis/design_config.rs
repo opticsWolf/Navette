@@ -127,7 +127,7 @@ pub struct ErrorParamsCfg {
     pub abs_std_dev: f64,
     #[serde(default)]
     pub rel_mean_delta_g: f64,
-    #[serde(default = "d_one")]
+    #[serde(default = "d_rel_std")]
     pub rel_std_dev: f64,
     #[serde(default)]
     pub abs_mean_delta_h: f64,
@@ -135,7 +135,7 @@ pub struct ErrorParamsCfg {
     pub abs_variance: f64,
     #[serde(default)]
     pub rel_mean_delta_h: f64,
-    #[serde(default = "d_one")]
+    #[serde(default = "d_rel_std")]
     pub rel_variance: f64,
 }
 
@@ -143,22 +143,31 @@ fn d_abs_std() -> f64 {
     0.01
 }
 
+/// The relative spreads are unit-free fractions of the value, so this is a
+/// 1% one-sigma scatter. Same number as `d_abs_std`, different meaning and
+/// different unit -- kept apart so either can move without the other.
+fn d_rel_std() -> f64 {
+    0.01
+}
+
 impl Default for ErrorParamsCfg {
-    /// Mirrors `ErrorParams::standard()`, which is also what the Python
-    /// `ErrorParams` model carried. `rel_variance` used to default to 0.0
-    /// here while both of those said 1.0, so a config document that omitted
-    /// the key got no relative uniform scatter and a hand-built `Group` got
-    /// full scatter from the same nominal defaults.
+    /// Mirrors `ErrorParams::standard()`, which is the single owner of these
+    /// numbers -- the Python `ErrorParams` model delegates to the native one
+    /// rather than carrying its own copy. Two drifts have been corrected
+    /// here: `rel_variance` defaulted to 0.0 while `standard()` said 1.0
+    /// (fixed at 0.7.15), and both relative spreads then dropped from 1.0 to
+    /// 0.01 at 0.7.17, 1.0 having been a 100% one-sigma scatter nobody asked
+    /// for.
     fn default() -> Self {
         Self {
             abs_mean_delta_g: 0.0,
             abs_std_dev: 0.01,
             rel_mean_delta_g: 0.0,
-            rel_std_dev: 1.0,
+            rel_std_dev: 0.01,
             abs_mean_delta_h: 0.0,
             abs_variance: 0.01,
             rel_mean_delta_h: 0.0,
-            rel_variance: 1.0,
+            rel_variance: 0.01,
         }
     }
 }
