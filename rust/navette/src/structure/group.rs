@@ -92,21 +92,29 @@ impl ErrorParams {
         }
     }
 
-    /// Thickness-channel defaults: `standard()` unchanged.
+    /// Thickness-channel defaults: `abs_*` 0.5 nm.
     ///
-    /// This is the one channel `standard()` was actually sized for -- a
-    /// physical thickness in nm, where an absolute 0.01 nm scatter is a
-    /// tight but coherent tolerance. Named separately so the sizing is
-    /// stated rather than inherited by accident, and so it can move without
-    /// dragging the other five.
+    /// The absolute spread here is a physical thickness in nm, and 0.5 nm is
+    /// a one-sigma figure that matches what deposition control actually
+    /// achieves -- the process sits somewhere around 0.1 to 1 nm absolute,
+    /// depending on monitoring. It read 0.01 nm from the first Python upload
+    /// through 0.7.19, fifty times tighter than any real chamber, which made
+    /// the default an optimistic answer rather than a neutral one.
     ///
-    /// Note 0.01 nm is *tighter* than real deposition control, which is
-    /// closer to 0.1-1 nm absolute. It is left where it is because nothing
-    /// here establishes a better number and a wider default would loosen the
-    /// one channel most likely to be switched on; set it explicitly to model
-    /// a specific process.
+    /// This is the only channel whose default was widened rather than
+    /// narrowed in the 0.7.18-0.7.21 pass. The other five were mis-scaled
+    /// because they inherited a length's spread for a quantity that is not a
+    /// length; this one was in the right unit all along and simply carried
+    /// an unrealistic value. It also means the change is not inert for
+    /// anyone who had enabled the thickness error channel and relied on the
+    /// default: tolerance spreads widen by 50x in the absolute term, which
+    /// is the point.
     pub fn thickness() -> Self {
-        Self::standard()
+        Self {
+            abs_std_dev: 0.5,
+            abs_variance: 0.5,
+            ..Self::standard()
+        }
     }
 
     /// Interface-channel defaults: `abs_*` x0.1 relative to `standard()`.
@@ -641,6 +649,10 @@ mod tests {
         StdRng::seed_from_u64(7)
     }
 
+    /// The constructor's defaults, pinned. Named for the Python ctor it was
+    /// originally an oracle for; the scaling factors and masks still match it
+    /// exactly, but the error params deliberately no longer do -- see the
+    /// comment on the loops below.
     #[test]
     fn defaults_match_python_ctor() {
         let g = Group::new("TiO2");
@@ -650,11 +662,39 @@ mod tests {
         assert_eq!(g.error_mask, [0; 6]);
         assert_eq!(g.optimization_mask, [1; 7]);
         assert_eq!(g.thickness_error_type, ErrorType::Gaussian);
-        assert_eq!(g.thickness_error_params.abs_std_dev, 0.01);
-        // Roughness abs defaults x0.1 (Å→nm magnitude preservation).
-        assert_eq!(g.roughness_error_params.abs_std_dev, 0.001);
-        assert_eq!(g.roughness_error_params.abs_variance, 0.001);
-        assert_eq!(g.roughness_error_params.rel_std_dev, 0.01);
+
+        // The error-param defaults are no longer Python's: the absolute
+        // spreads carry the unit of the quantity they perturb, and one shared
+        // value was wrong for five of the six channels (0.7.18-0.7.21).
+        // Pinned here per channel so a change has to be deliberate.
+        for (channel, abs, want) in [
+            ("thickness", g.thickness_error_params.abs_std_dev, 0.5),
+            ("roughness", g.roughness_error_params.abs_std_dev, 0.001),
+            ("interface", g.interface_error_params.abs_std_dev, 0.001),
+            ("inh_delta", g.inh_delta_error_params.abs_std_dev, 0.001),
+            ("n", g.n_error_params.abs_std_dev, 0.001),
+            ("k", g.k_error_params.abs_std_dev, 0.0001),
+        ] {
+            assert_eq!(abs, want, "{channel} abs_std_dev");
+        }
+        // The uniform half-width tracks the Gaussian sigma in every channel,
+        // so switching ErrorType cannot change the scale of the scatter.
+        for (channel, params) in [
+            ("thickness", &g.thickness_error_params),
+            ("roughness", &g.roughness_error_params),
+            ("interface", &g.interface_error_params),
+            ("inh_delta", &g.inh_delta_error_params),
+            ("n", &g.n_error_params),
+            ("k", &g.k_error_params),
+        ] {
+            assert_eq!(
+                params.abs_variance, params.abs_std_dev,
+                "{channel} abs_variance vs abs_std_dev"
+            );
+            // The relative spreads are unit-free fractions, common to all.
+            assert_eq!(params.rel_std_dev, 0.01, "{channel} rel_std_dev");
+            assert_eq!(params.rel_variance, 0.01, "{channel} rel_variance");
+        }
         assert_eq!(g.to_string(), "Group(name='TiO2', thick_factor=1.000)");
     }
 

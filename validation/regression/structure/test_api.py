@@ -456,10 +456,15 @@ def test_errors_still_block():
 
 # NIT-6: from_state deep-copies (also pinned in test_roundtrip) --------------------
 def test_group_from_state_independent_params():
+  # What is under test is that from_state deep-copies, so the original's
+  # value is captured rather than hard-coded: the default has moved twice
+  # (0.7.17, 0.7.21) and the copy semantics are what this guards.
   g = Group("x")
+  before = g.thickness_error_params["abs_std_dev"]
   back = Group.from_state(g.get_state())
+  assert back.thickness_error_params["abs_std_dev"] == before
   back.thickness_error_params["abs_std_dev"] = 99.0
-  assert g.thickness_error_params["abs_std_dev"] == 0.01
+  assert g.thickness_error_params["abs_std_dev"] == before
 
 
 # NIT-7: provider-overwrite warning --------------------------------------------------

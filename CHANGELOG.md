@@ -5,6 +5,41 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.21] - the thickness tolerance meets a real chamber
+
+### Changed
+- **`ErrorParams::thickness()`: `abs_std_dev` and `abs_variance` 0.01 ->
+  0.5 nm.** The absolute spread here is a physical thickness in nm, and
+  0.5 nm is a one-sigma figure that matches what deposition control
+  actually achieves -- the process sits around 0.1 to 1 nm absolute
+  depending on monitoring. It read 0.01 nm from the first Python upload
+  through 0.7.20, fifty times tighter than any real chamber, which made
+  the default an optimistic answer rather than a neutral one.
+
+  This is the only channel of the six whose default was *widened*. The
+  other five were mis-scaled because they inherited a length's spread for
+  a quantity that is not a length; this one was in the right unit all
+  along and simply carried an unrealistic value. It is also the only one
+  of the six that is not inert for existing callers: anyone who enabled
+  the thickness error channel and relied on the default will see the
+  absolute term of their tolerance spread widen by 50x, which is the
+  intent.
+
+### Fixed
+- `defaults_match_python_ctor` asserted a single hard-coded
+  `thickness_error_params.abs_std_dev`. It is a Python-parity oracle whose
+  name outlived what it can honestly claim: the scaling factors and masks
+  it guards still match the Python ctor exactly, but the error params have
+  deliberately diverged since 0.7.15. Rather than edit the one number, it
+  now pins all six channels' `abs_std_dev`, asserts `abs_variance` tracks
+  `abs_std_dev` in every channel -- so switching `ErrorType` cannot change
+  the scale of the scatter -- and asserts `rel_*` is 0.01 throughout. The
+  docstring says which half of the test is still a Python oracle.
+- `test_group_from_state_independent_params` hard-coded the same default
+  while testing something else entirely: that `from_state` deep-copies. It
+  now captures the original value and asserts the copy matches it and that
+  mutating the copy leaves it alone, which is the actual contract and is
+  immune to the default moving again.
 ## [0.7.20] - all six error channels now name their own defaults
 
 ### Changed
