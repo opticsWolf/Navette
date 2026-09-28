@@ -5,6 +5,47 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.20] - all six error channels now name their own defaults
+
+### Changed
+- **`ErrorParams::thickness()`, `::interface()` and `::inh_delta()`**
+  complete the set begun at 0.7.18. All six channels now derive from
+  `standard()` explicitly rather than five of them inheriting it by
+  accident.
+
+  The *absolute* spreads carry the unit of the quantity they perturb, and
+  the six channels do not share one -- thickness, roughness and interface
+  width are lengths in nm; `n`, `k` and the grading amplitude are
+  dimensionless -- so one shared default was necessarily wrong for five of
+  them. Only the relative spreads are genuinely common, being unit-free
+  fractions everywhere.
+
+  - `interface()`: `abs_*` 0.01 -> 0.001. `interface_thickness` is a width
+    in nm, the same physical quantity class as `roughness`, gated by the
+    same rules in `Layer::validate`; the two now share a scale as well.
+  - `inh_delta()`: `abs_*` 0.01 -> 0.001. This channel does not perturb the
+    authored `inh_delta`. Expansion computes
+    `current_delta = (delta_layer + inh_delta_summand) * 0.5`, clamps it,
+    and perturbs *that* -- the ramp half-amplitude, around 0.05 to 0.1 for
+    a typical authored delta, and dimensionless, since the profile scales
+    the complex index by `1 - d ..= 1 + d`. The old 0.01 was a 10-20%
+    absolute scatter in nanometre units on a quantity with no unit.
+  - `thickness()`: values unchanged. This is the one channel `standard()`
+    was actually sized for. Named separately so the sizing is stated
+    rather than inherited, and so it can move alone. Worth knowing that
+    0.01 nm is *tighter* than real deposition control (0.1-1 nm absolute);
+    it is left alone because nothing here establishes a better number and a
+    wider default would loosen the channel most likely to be enabled.
+
+  Also confirms, from the code rather than by inference, why
+  `inh_delta_error` has no floor while the length channels do: at the point
+  of the draw the amplitude is signed -- the cap is `clamp(-cap, cap)` and
+  a negative amplitude reverses the ramp. The authored `inh_delta` is a
+  separate quantity, gated to `[0, 2)` as a magnitude.
+
+  `omitted_error_params_match_the_engine_channel_for_channel` again needed
+  no change, and was re-verified to fail naming `inh_delta abs_std_dev`
+  against a tree with the shared defaults restored.
 ## [0.7.19] - the index channel gets its own absolute spread too
 
 ### Changed

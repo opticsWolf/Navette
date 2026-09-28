@@ -44,7 +44,16 @@ pub struct ErrorParams {
 }
 
 impl ErrorParams {
-    /// Default law params (all channels except roughness).
+    /// The base law params, and the reference the five per-channel
+    /// constructors below are derived from.
+    ///
+    /// Every channel has its own constructor as of 0.7.20, because the
+    /// *absolute* spreads carry the unit of the quantity they perturb and the
+    /// six channels do not share one: thickness, roughness and interface
+    /// width are lengths in nm; `n`, `k` and the grading amplitude are
+    /// dimensionless. A single shared default necessarily had five of them
+    /// wrong. Only the relative spreads are genuinely common, being unit-free
+    /// fractions in every channel.
     ///
     /// The relative spreads are unit-free *fractions* of the value, not
     /// percentages: `rel_std_dev: 0.01` is a 1% one-sigma relative scatter,
@@ -80,6 +89,61 @@ impl ErrorParams {
             abs_variance: 0.001,
             rel_mean_delta_h: 0.0,
             rel_variance: 0.01,
+        }
+    }
+
+    /// Thickness-channel defaults: `standard()` unchanged.
+    ///
+    /// This is the one channel `standard()` was actually sized for -- a
+    /// physical thickness in nm, where an absolute 0.01 nm scatter is a
+    /// tight but coherent tolerance. Named separately so the sizing is
+    /// stated rather than inherited by accident, and so it can move without
+    /// dragging the other five.
+    ///
+    /// Note 0.01 nm is *tighter* than real deposition control, which is
+    /// closer to 0.1-1 nm absolute. It is left where it is because nothing
+    /// here establishes a better number and a wider default would loosen the
+    /// one channel most likely to be switched on; set it explicitly to model
+    /// a specific process.
+    pub fn thickness() -> Self {
+        Self::standard()
+    }
+
+    /// Interface-channel defaults: `abs_*` x0.1 relative to `standard()`.
+    ///
+    /// `interface_thickness` is a width in nm, the same physical quantity
+    /// class as `roughness`, and the two are gated by the same rules in
+    /// `Layer::validate`. They now share a scale as well: an interface is a
+    /// sub-nanometre-to-few-nanometre feature, so it takes roughness's
+    /// absolute spread rather than a full layer thickness's.
+    pub fn interface() -> Self {
+        Self {
+            abs_std_dev: 0.001,
+            abs_variance: 0.001,
+            ..Self::standard()
+        }
+    }
+
+    /// Grading-amplitude defaults: `abs_*` x0.1 relative to `standard()`.
+    ///
+    /// This channel does not perturb the authored `inh_delta`. Expansion
+    /// computes `current_delta = (delta_layer + inh_delta_summand) * 0.5`,
+    /// clamps it, and perturbs *that* -- the ramp half-amplitude, which runs
+    /// around 0.05 to 0.1 for a typical authored delta of 0.1 to 0.2. It is
+    /// dimensionless: the profile scales the complex index by
+    /// `1 - d ..= 1 + d`. So `standard()`'s 0.01 was a 10-20% absolute
+    /// scatter in nanometre units on a quantity that has no unit; 0.001 is a
+    /// percent-level modulation, in line with `index()` on the index it
+    /// modulates.
+    ///
+    /// Unlike the length channels this one is signed at the point of the
+    /// draw -- the cap is `clamp(-cap, cap)` and a negative amplitude simply
+    /// reverses the ramp -- which is why `inh_delta_error` has no floor.
+    pub fn inh_delta() -> Self {
+        Self {
+            abs_std_dev: 0.001,
+            abs_variance: 0.001,
+            ..Self::standard()
         }
     }
 
@@ -187,10 +251,10 @@ impl Group {
             inh_delta_error_type: ErrorType::Gaussian,
             roughness_error_type: ErrorType::Gaussian,
             interface_error_type: ErrorType::Gaussian,
-            thickness_error_params: ErrorParams::standard(),
-            inh_delta_error_params: ErrorParams::standard(),
+            thickness_error_params: ErrorParams::thickness(),
+            inh_delta_error_params: ErrorParams::inh_delta(),
             roughness_error_params: ErrorParams::roughness(),
-            interface_error_params: ErrorParams::standard(),
+            interface_error_params: ErrorParams::interface(),
             n_error_params: ErrorParams::index(),
             k_error_params: ErrorParams::extinction(),
         }

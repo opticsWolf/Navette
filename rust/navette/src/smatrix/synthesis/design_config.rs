@@ -151,13 +151,12 @@ fn d_rel_std() -> f64 {
 }
 
 impl Default for ErrorParamsCfg {
-    /// Mirrors `ErrorParams::standard()`, which is the single owner of these
-    /// numbers -- the Python `ErrorParams` model delegates to the native one
-    /// rather than carrying its own copy. Two drifts have been corrected
-    /// here: `rel_variance` defaulted to 0.0 while `standard()` said 1.0
-    /// (fixed at 0.7.15), and both relative spreads then dropped from 1.0 to
-    /// 0.01 at 0.7.17, 1.0 having been a 100% one-sigma scatter nobody asked
-    /// for.
+    /// Mirrors `ErrorParams::standard()`, the base the six per-channel
+    /// constructors derive from. Every `error_params` field on `GroupRow`
+    /// now defaults through its own `d_ep_*` function instead, so this impl
+    /// is the fallback for a bare `ErrorParamsCfg` rather than the value any
+    /// channel actually receives -- which is the point: it was serving as
+    /// all six, and five of them wanted something else.
     fn default() -> Self {
         Self {
             abs_mean_delta_g: 0.0,
@@ -192,6 +191,22 @@ fn d_ep_extinction() -> ErrorParamsCfg {
 /// The index channel's defaults, mirroring `ErrorParams::index()`.
 fn d_ep_index() -> ErrorParamsCfg {
     ErrorParamsCfg::from_params(&ErrorParams::index())
+}
+
+/// The thickness channel's defaults, mirroring `ErrorParams::thickness()`.
+fn d_ep_thickness() -> ErrorParamsCfg {
+    ErrorParamsCfg::from_params(&ErrorParams::thickness())
+}
+
+/// The interface channel's defaults, mirroring `ErrorParams::interface()`.
+fn d_ep_interface() -> ErrorParamsCfg {
+    ErrorParamsCfg::from_params(&ErrorParams::interface())
+}
+
+/// The grading-amplitude channel's defaults, mirroring
+/// `ErrorParams::inh_delta()`.
+fn d_ep_inh_delta() -> ErrorParamsCfg {
+    ErrorParamsCfg::from_params(&ErrorParams::inh_delta())
 }
 
 impl ErrorParamsCfg {
@@ -259,13 +274,13 @@ pub struct GroupRow {
     pub roughness_error_type: i32,
     #[serde(default)]
     pub interface_error_type: i32,
-    #[serde(default)]
+    #[serde(default = "d_ep_thickness")]
     pub thickness_error_params: ErrorParamsCfg,
-    #[serde(default)]
+    #[serde(default = "d_ep_inh_delta")]
     pub inh_delta_error_params: ErrorParamsCfg,
     #[serde(default = "d_ep_roughness")]
     pub roughness_error_params: ErrorParamsCfg,
-    #[serde(default)]
+    #[serde(default = "d_ep_interface")]
     pub interface_error_params: ErrorParamsCfg,
     #[serde(default = "d_ep_index")]
     pub n_error_params: ErrorParamsCfg,
