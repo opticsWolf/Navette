@@ -83,6 +83,29 @@ impl ErrorParams {
         }
     }
 
+    /// Index-channel defaults: `abs_*` x0.1 relative to `standard()`.
+    ///
+    /// Same unit argument as `extinction()`, one order of magnitude milder.
+    /// `standard()`'s absolute 0.01 is sized for a thickness in nanometres;
+    /// against a refractive index of 1.5 to 2.4 it is a scatter of under 1%,
+    /// which is survivable but still a nanometre spread wearing an index's
+    /// clothes. 0.001 is a defensible index tolerance -- the fourth decimal
+    /// is where dispersion data itself usually stops being trustworthy --
+    /// and it stays sane for a low-contrast film near `n = 1`, where 0.01
+    /// starts to matter and `nk_error`'s floor at 0 is the only backstop.
+    pub fn index() -> Self {
+        Self {
+            abs_mean_delta_g: 0.0,
+            abs_std_dev: 0.001,
+            rel_mean_delta_g: 0.0,
+            rel_std_dev: 0.01,
+            abs_mean_delta_h: 0.0,
+            abs_variance: 0.001,
+            rel_mean_delta_h: 0.0,
+            rel_variance: 0.01,
+        }
+    }
+
     /// Extinction-channel defaults: `abs_*` x0.01 relative to `standard()`.
     ///
     /// The absolute spreads carry the unit of the quantity they perturb, and
@@ -168,7 +191,7 @@ impl Group {
             inh_delta_error_params: ErrorParams::standard(),
             roughness_error_params: ErrorParams::roughness(),
             interface_error_params: ErrorParams::standard(),
-            n_error_params: ErrorParams::standard(),
+            n_error_params: ErrorParams::index(),
             k_error_params: ErrorParams::extinction(),
         }
     }

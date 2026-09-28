@@ -189,6 +189,11 @@ fn d_ep_extinction() -> ErrorParamsCfg {
     ErrorParamsCfg::from_params(&ErrorParams::extinction())
 }
 
+/// The index channel's defaults, mirroring `ErrorParams::index()`.
+fn d_ep_index() -> ErrorParamsCfg {
+    ErrorParamsCfg::from_params(&ErrorParams::index())
+}
+
 impl ErrorParamsCfg {
     /// Build the config mirror of an engine `ErrorParams`, so the per-channel
     /// defaults above cannot drift from the values they claim to mirror.
@@ -262,7 +267,7 @@ pub struct GroupRow {
     pub roughness_error_params: ErrorParamsCfg,
     #[serde(default)]
     pub interface_error_params: ErrorParamsCfg,
-    #[serde(default)]
+    #[serde(default = "d_ep_index")]
     pub n_error_params: ErrorParamsCfg,
     #[serde(default = "d_ep_extinction")]
     pub k_error_params: ErrorParamsCfg,

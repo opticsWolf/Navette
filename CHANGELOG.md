@@ -5,6 +5,27 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.19] - the index channel gets its own absolute spread too
+
+### Changed
+- **`ErrorParams::index()`**, a fourth per-channel default, now backs
+  `n_error_params`: `abs_std_dev` and `abs_variance` drop from 0.01 to
+  0.001. Same unit argument as `extinction()` at 0.7.18, one order of
+  magnitude milder. `standard()`'s absolute 0.01 is sized for a thickness
+  in nanometres; against a refractive index of 1.5 to 2.4 it is a scatter
+  of under 1%, survivable but still a nanometre spread wearing an index's
+  clothes. 0.001 is a defensible index tolerance -- the fourth decimal is
+  where dispersion data itself usually stops being trustworthy -- and it
+  stays sane for a low-contrast film near `n = 1`, where 0.01 begins to
+  matter and `nk_error`'s floor at 0 is the only backstop.
+
+  Four of the six channels now carry their own defaults (`standard()` for
+  thickness, inh_delta and interface; `roughness()`, `index()` and
+  `extinction()` for the rest), and the config surface mirrors each one
+  through `ErrorParamsCfg::from_params` rather than a hand-copied literal.
+  `omitted_error_params_match_the_engine_channel_for_channel` needed no
+  change -- it walks all six channels -- and was re-verified to fail,
+  naming `n abs_std_dev`, against a tree with the shared default restored.
 ## [0.7.18] - the absolute error spreads carry a unit, and k's is not nm
 
 ### Changed
