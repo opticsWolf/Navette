@@ -135,7 +135,7 @@ pub struct ErrorParamsCfg {
     pub abs_variance: f64,
     #[serde(default)]
     pub rel_mean_delta_h: f64,
-    #[serde(default)]
+    #[serde(default = "d_one")]
     pub rel_variance: f64,
 }
 
@@ -144,7 +144,11 @@ fn d_abs_std() -> f64 {
 }
 
 impl Default for ErrorParamsCfg {
-    /// Mirrors the Python `ErrorParams` model defaults.
+    /// Mirrors `ErrorParams::standard()`, which is also what the Python
+    /// `ErrorParams` model carried. `rel_variance` used to default to 0.0
+    /// here while both of those said 1.0, so a config document that omitted
+    /// the key got no relative uniform scatter and a hand-built `Group` got
+    /// full scatter from the same nominal defaults.
     fn default() -> Self {
         Self {
             abs_mean_delta_g: 0.0,
@@ -154,7 +158,7 @@ impl Default for ErrorParamsCfg {
             abs_mean_delta_h: 0.0,
             abs_variance: 0.01,
             rel_mean_delta_h: 0.0,
-            rel_variance: 0.0,
+            rel_variance: 1.0,
         }
     }
 }

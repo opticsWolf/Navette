@@ -175,6 +175,11 @@ impl Group {
     /// Non-positive spreads contribute their mean deterministically (NumPy
     /// draws exactly at zero spread; no RNG consumed either way that matters
     /// — streams are per-side by §9.2).
+    ///
+    /// Both laws are `(centre, spread)`: Gaussian is
+    /// `N(*_mean_delta_g, *_std_dev)`, uniform is
+    /// `U(*_mean_delta_h ± *_variance)`. The uniform centre was dropped by
+    /// every version before 0.7.15 — see `unif_draw`.
     pub fn apply_error(
         value: f64,
         error_type: ErrorType,
@@ -188,15 +193,15 @@ impl Group {
             }
             ErrorType::Uniform => {
                 value
-                    + unif_draw(params.abs_variance, rng)
-                    + unif_draw(params.rel_variance, rng) * value
+                    + unif_draw(params.abs_mean_delta_h, params.abs_variance, rng)
+                    + unif_draw(params.rel_mean_delta_h, params.rel_variance, rng) * value
             }
             ErrorType::Combined => {
                 value
                     + g_abs
                     + gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng) * value
-                    + unif_draw(params.abs_variance, rng)
-                    + unif_draw(params.rel_variance, rng) * value
+                    + unif_draw(params.abs_mean_delta_h, params.abs_variance, rng)
+                    + unif_draw(params.rel_mean_delta_h, params.rel_variance, rng) * value
             }
         }
     }
@@ -443,13 +448,25 @@ pub(crate) fn gauss_draw<R: RngCore + ?Sized>(mean: f64, std: f64, rng: &mut R) 
     }
 }
 
-pub(crate) fn unif_draw<R: RngCore + ?Sized>(half_width: f64, rng: &mut R) -> f64 {
+/// One uniform draw on `[mean - half_width, mean + half_width]`.
+///
+/// `mean` is the law's systematic offset, the uniform counterpart of
+/// `gauss_draw`'s. It was declared as `abs_mean_delta_h` / `rel_mean_delta_h`
+/// from the first Python upload and never read by any version, Python or
+/// Rust: the draw was hard-centred on zero, so a configured bias was
+/// accepted, stored, serialized and then silently dropped. Both defaults are
+/// `0.0`, where `U(-w, w)` and `U(mean-w, mean+w)` are the same distribution,
+/// which is why nothing ever noticed.
+///
+/// Zero or negative width contributes the mean deterministically and consumes
+/// no RNG, exactly as `gauss_draw` does at zero spread.
+pub(crate) fn unif_draw<R: RngCore + ?Sized>(mean: f64, half_width: f64, rng: &mut R) -> f64 {
     if half_width <= 0.0 {
-        0.0
+        mean
     } else {
-        Uniform::new(-half_width, half_width)
+        Uniform::new(mean - half_width, mean + half_width)
             .map(|d| d.sample(rng))
-            .unwrap_or(0.0)
+            .unwrap_or(mean)
     }
 }
 
@@ -557,6 +574,96 @@ mod tests {
         for _ in 0..100 {
             let d = Group::apply_error(10.0, ErrorType::Combined, &ErrorParams::standard(), &mut r);
             assert!(d.is_finite());
+        }
+    }
+
+    /// The uniform law is `U(mean ± width)`, not `U(±width)`.
+    ///
+    /// `abs_mean_delta_h` was declared from the first Python upload and read
+    /// by no version until 0.7.15: a configured bias was accepted, stored and
+    /// dropped. Both bounds are asserted, so a regression to the old
+    /// zero-centred draw fails on the lower one rather than merely widening.
+    #[test]
+    fn the_uniform_law_is_centred_on_its_mean() {
+        let p = ErrorParams {
+            abs_mean_delta_h: 5.0,
+            abs_variance: 1.0,
+            rel_mean_delta_h: 0.0,
+            rel_variance: 0.0,
+            ..ErrorParams::standard()
+        };
+        let mut r = rng();
+        let n = 20_000;
+        let mut sum = 0.0;
+        for _ in 0..n {
+            let d = Group::apply_error(10.0, ErrorType::Uniform, &p, &mut r);
+            // Old behaviour drew U(-1, 1) and landed in [9, 11].
+            assert!((14.0..=16.0).contains(&d), "out of the shifted band: {d}");
+            sum += d;
+        }
+        let mean = sum / n as f64;
+        assert!((mean - 15.0).abs() < 0.05, "mean {mean}");
+    }
+
+    /// The relative channel carries its own centre, scaled by the value.
+    #[test]
+    fn the_relative_uniform_law_is_centred_too() {
+        let p = ErrorParams {
+            abs_mean_delta_h: 0.0,
+            abs_variance: 0.0,
+            rel_mean_delta_h: 0.1,
+            rel_variance: 0.01,
+            ..ErrorParams::standard()
+        };
+        let mut r = rng();
+        for _ in 0..2_000 {
+            let d = Group::apply_error(10.0, ErrorType::Uniform, &p, &mut r);
+            // 10 + U(0.1 ± 0.01)*10 = 10 + [0.9, 1.1] = [10.9, 11.1].
+            assert!((10.9..=11.1).contains(&d), "out of the shifted band: {d}");
+        }
+    }
+
+    /// Zero width contributes the mean deterministically, as `gauss_draw`
+    /// does at zero spread. Before 0.7.15 it contributed 0.0 and the bias
+    /// vanished entirely.
+    #[test]
+    fn a_zero_width_uniform_contributes_its_mean() {
+        let p = ErrorParams {
+            abs_mean_delta_h: 3.0,
+            abs_variance: 0.0,
+            rel_mean_delta_h: 0.0,
+            rel_variance: 0.0,
+            ..ErrorParams::standard()
+        };
+        let mut r = rng();
+        for _ in 0..16 {
+            assert_eq!(
+                Group::apply_error(10.0, ErrorType::Uniform, &p, &mut r),
+                13.0
+            );
+        }
+    }
+
+    /// The fix is inert at the shipped defaults, which is why it can land
+    /// without moving a single pinned number: both centres are 0.0, and
+    /// `U(0 ± w)` is `U(±w)`.
+    #[test]
+    fn zero_centres_leave_the_draw_where_it_was() {
+        let p = ErrorParams::standard();
+        assert_eq!(p.abs_mean_delta_h, 0.0);
+        assert_eq!(p.rel_mean_delta_h, 0.0);
+        let mut a = rng();
+        let mut b = rng();
+        for _ in 0..64 {
+            let got = Group::apply_error(10.0, ErrorType::Uniform, &p, &mut a);
+            // Reproduce the pre-fix expression from the same stream. The
+            // absolute Gaussian is drawn unconditionally, before the match,
+            // so the mirror has to consume it too or the streams desync.
+            let _ = gauss_draw(p.abs_mean_delta_g, p.abs_std_dev, &mut b);
+            let want = 10.0
+                + unif_draw(0.0, p.abs_variance, &mut b)
+                + unif_draw(0.0, p.rel_variance, &mut b) * 10.0;
+            assert_eq!(got, want);
         }
     }
 

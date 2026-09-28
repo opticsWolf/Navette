@@ -744,14 +744,14 @@ fn channel_draws(
             gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng),
         ),
         ErrorType::Uniform => (
-            unif_draw(params.abs_variance, rng),
-            unif_draw(params.rel_variance, rng),
+            unif_draw(params.abs_mean_delta_h, params.abs_variance, rng),
+            unif_draw(params.rel_mean_delta_h, params.rel_variance, rng),
         ),
         ErrorType::Combined => (
             gauss_draw(params.abs_mean_delta_g, params.abs_std_dev, rng)
-                + unif_draw(params.abs_variance, rng),
+                + unif_draw(params.abs_mean_delta_h, params.abs_variance, rng),
             gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng)
-                + unif_draw(params.rel_variance, rng),
+                + unif_draw(params.rel_mean_delta_h, params.rel_variance, rng),
         ),
     }
 }

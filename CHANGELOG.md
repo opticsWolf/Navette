@@ -5,6 +5,42 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.15] - the uniform law gets its centre back
+
+### Fixed
+- **The uniform error law was hard-centred on zero.**
+  `ErrorParams` has carried `abs_mean_delta_h` and `rel_mean_delta_h`
+  since the first Python upload, the uniform counterparts of the
+  Gaussian `*_mean_delta_g` centres. No version ever read them: every
+  `_apply_error` / `apply_error`, Python and Rust alike, drew
+  `U(-variance, +variance)` and dropped the configured bias. The key was
+  not merely tolerated -- `ErrorParamsCfg` is `deny_unknown_fields`, so a
+  design document naming it was explicitly accepted, deserialized, copied
+  into `ErrorParams` and serialized back into saved state, then silently
+  ignored at the draw. `unif_draw` now takes `(mean, half_width)` and
+  samples `U(mean - w, mean + w)`; `Group::apply_error` and
+  `expansion::channel_draws` pass both centres on the `Uniform` and
+  `Combined` branches. At zero width the mean is contributed
+  deterministically with no RNG consumed, matching `gauss_draw` at zero
+  spread.
+
+  The fix is inert at the shipped defaults, where both centres are 0.0
+  and `U(0 +/- w)` is the distribution `U(+/-w)` already was -- same
+  values, same RNG consumption. Every pinned fingerprint is unmoved, and
+  `zero_centres_leave_the_draw_where_it_was` asserts exactly that
+  bitwise, against the pre-fix expression replayed on a parallel stream.
+- **`ErrorParamsCfg::rel_variance` defaulted to 0.0** while
+  `ErrorParams::standard()` and the Python `ErrorParams` model both said
+  1.0, so a config document omitting the key got no relative uniform
+  scatter while a hand-built `Group` got full scatter from nominally the
+  same defaults. Aligned on 1.0, which is also what
+  `validation/fixtures/state/v1_architect.json` has always stored.
+
+### Added
+- Four tests in `structure::group`: the absolute and relative uniform
+  laws land in their shifted bands with the right mean, zero width
+  contributes its centre exactly, and zero centres reproduce the old
+  draw bit for bit.
 ## [0.7.14] - the review harnesses document themselves, or CI says so
 
 ### Added
