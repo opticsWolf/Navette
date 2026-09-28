@@ -9,7 +9,7 @@ review could not find anywhere it had been reproduced. This is that check,
 run for the first time, against the hardened solver of 0.6.7 (QR step,
 gain-ratio damping, MINPACK ftol/gtol).
 
-Three parts:
+Checks:
 
   A. **The thin-film case.** `SmatrixContext.optimize_thicknesses` drives the
      engine LM over film thicknesses. The same residual system --
@@ -60,6 +60,11 @@ Three parts:
      because a film driven toward zero thickness makes `J^T J` singular and
      the step undefined. Both are properties of the algorithms, asserted here
      so a future version changing either is noticed rather than assumed.
+
+  F. **Basin QR LM and full TRF** (issue #2), skipped without ``opt-basin``.
+     Both Jacobian modes are checked near established optima, at active bounds,
+     and from distant starts. The Rust matrix additionally covers fixed
+     coordinates, zero columns, and rank-deficient systems.
 
 Run explicitly:  python validation/review/lm_check.py
 Exit code 0 = all comparisons within tolerance.
@@ -137,10 +142,10 @@ def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
 
 
 def run_engine(spec, wl, angles, layers, names, x0, clamp_max,
-               max_iterations=200, optimizer="builtin"):
+               max_iterations=200, optimizer="builtin", jacobian="analytic"):
     ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max,
                          LmConfig(max_iterations=max_iterations,
-                                  optimizer=optimizer))
+                                  optimizer=optimizer, jacobian=jacobian))
     stack, _ = stack_from_layers(
         [(m, float(d)) for (m, _), d in zip(layers, x0)], wl, {}, names=names)
     cost, report = ctx.optimize_thicknesses_report(stack)
@@ -544,12 +549,89 @@ def part_e():
           f"{gn_refusals} of {len(ARGMIN_CASES)} starts refused")
 
 
+def basin_cases():
+    """Shared physical cases for Basin parity and repeatable timing."""
+    wl = np.linspace(450.0, 750.0, 13)
+    angles = np.array([0.0])
+    spec = thin_film_problem(wl, angles)
+    cases = []
+    for label, films, offset in ARGMIN_CASES:
+        layers = [(MaterialSpec("Konstant", dict(n=n)), d) for n, d in films]
+        names = [f"L{i}" for i in range(len(films))]
+        start = np.array([d for _, d in films])
+        anchor, _, _ = run_scipy(spec, wl, angles, layers, names, start, CLAMP_MAX)
+        near = np.clip(anchor + offset, 5.0, CLAMP_MAX - 5.0)
+        for suffix, x0, parity in [("near", near, True), ("far", start, False)]:
+            cases.append(dict(label=f"{label}/{suffix}", spec=spec, wl=wl,
+                              angles=angles, layers=layers, names=names,
+                              x0=x0, clamp_max=CLAMP_MAX, parity=parity))
+    for label, index, clamp, start, parity in [
+        ("upper bound", 1.38, 50.0, 10.0, True),
+        ("lower bound", 2.35, 50.0, 10.0, True),
+        ("interior control", 1.38, 1000.0, 40.0, True),
+        ("interior control/far", 1.38, 1000.0, 10.0, False),
+    ]:
+        cases.append(dict(label=label, spec=spec, wl=wl, angles=angles,
+                          layers=[(MaterialSpec("Konstant", dict(n=index)), start)],
+                          names=["L"], x0=np.array([start]), clamp_max=clamp,
+                          parity=parity))
+    return cases
+
+
+def case_arguments(case):
+    return {key: case[key] for key in
+            ("spec", "wl", "angles", "layers", "names", "x0", "clamp_max")}
+
+
+def part_f():
+    print("--- F. Basin QR LM and full TRF (issue #2) ---")
+    backends = [name for name in ("basin_lm_qr", "basin_trf")
+                if name in available_optimizers()]
+    if not backends:
+        print("  opt-basin not compiled in -- skipping")
+        return
+    for case in basin_cases():
+        args = case_arguments(case)
+        sx, scost, _ = run_scipy(**args)
+        ctx = SmatrixContext(case["spec"], case["angles"], case["wl"])
+        stack, _ = stack_from_layers(case["layers"], case["wl"], {}, names=case["names"])
+        start_r = residual_fn(case["spec"], ctx, stack)(case["x0"])
+        cost0 = float(np.dot(start_r, start_r))
+        for backend in backends:
+            for jacobian in ("analytic", "fd"):
+                label = f"F/{case['label']}/{backend}/{jacobian}"
+                try:
+                    x, cost, report = run_engine(**args, optimizer=backend,
+                                                jacobian=jacobian, max_iterations=FAR_ITERS)
+                except ValueError as error:
+                    check(label, False, str(error))
+                    continue
+                print(f"  {label}: cost={cost:.12g}, x={np.round(x, 7)}, "
+                      f"{report['termination']}, {report['evals']} evals")
+                check(f"{label}: feasible improvement",
+                      np.all(np.isfinite(x)) and np.all(x >= 0.0)
+                      and np.all(x <= case["clamp_max"]) and cost <= cost0 + 1e-12)
+                if case["parity"]:
+                    check(f"{label}: cost parity", close(cost, scost, rel=1e-9, abs_=1e-12),
+                          f"{cost:.12g} vs scipy {scost:.12g}")
+                    # A solver can retain a sub-tolerance film that another
+                    # solver's removal sweep deletes. Treat both as zero at
+                    # the declared thickness tolerance; removal itself has a
+                    # separate smoke test with the physical 2 nm threshold.
+                    kept = sx[sx > 1e-4]
+                    actual = x[x > 1e-4]
+                    check(f"{label}: thickness parity",
+                          actual.size == kept.size and np.allclose(actual, kept, rtol=0.0, atol=1e-4),
+                          f"{x} vs scipy {sx}")
+
+
 def main():
     part_a()
     part_b()
     part_c()
     part_d()
     part_e()
+    part_f()
     print("ALL OK" if not FAILURES else f"FAILURES: {FAILURES}")
     return 1 if FAILURES else 0
 

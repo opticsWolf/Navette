@@ -18,6 +18,7 @@ default = []
 # with one: `maturin develop --release --features opt-minpack-lm`.
 opt-minpack-lm = ["navette/opt-minpack-lm"]
 opt-argmin = ["navette/opt-argmin"]
+opt-basin = ["navette/opt-basin"]
 
 [dependencies]
 navette = { workspace = true }

@@ -1,0 +1,3937 @@
+{
+  "provenance": {
+    "build_profile": "release",
+    "navette_version": "0.7.14",
+    "python": "3.12.14",
+    "platform": "Linux-6.18.52-x86_64-with-glibc2.42",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "commit": "49c28642261509dcdcf36a0d5d5556600e7bc81f",
+    "dirty": true,
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "cpu": "AMD Ryzen 9 7900 12-Core Processor",
+    "logical_cpus": 24,
+    "threads": {
+      "RAYON_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1"
+    },
+    "solver_versions": {
+      "argmin": "0.11.0",
+      "basin": "1.15.0",
+      "levenberg-marquardt": "0.15.0"
+    },
+    "backends": [
+      "builtin",
+      "minpack_lm",
+      "trf",
+      "argmin_gauss_newton",
+      "argmin_trust_region",
+      "basin_lm_qr",
+      "basin_trf"
+    ],
+    "warmups": 1,
+    "repetitions": 5,
+    "max_iterations": 200,
+    "max_evals": 100000,
+    "ftol": 1e-12,
+    "xtol": 1e-12,
+    "gtol": 1e-10
+  },
+  "results": [
+    {
+      "case": "two films/near",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0009470549994148314,
+        0.000835003000247525,
+        0.0008209150000766385,
+        0.0007929319999675499,
+        0.0008821419996820623
+      ],
+      "median_seconds": 0.000835003000247525,
+      "cost": 302.7025963165356,
+      "thicknesses_nm": [
+        302.89904297820357
+      ],
+      "iterations": 21,
+      "evals": 25,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007335399986914126,
+        0.0007064679994073231,
+        0.0006945860004634596,
+        0.0007000470013736049,
+        0.0006959790007385891
+      ],
+      "median_seconds": 0.0007000470013736049,
+      "cost": 302.7025963164734,
+      "thicknesses_nm": [
+        302.8989824608217
+      ],
+      "iterations": 18,
+      "evals": 22,
+      "analytic_jacobians": 18,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0009236909991159337,
+        0.0008840760001476156,
+        0.0008654100001876941,
+        0.0008575560004828731,
+        0.0008469350013911026
+      ],
+      "median_seconds": 0.0008654100001876941,
+      "cost": 302.7025963164682,
+      "thicknesses_nm": [
+        302.89895879963177
+      ],
+      "iterations": 21,
+      "evals": 25,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films/near",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0028360739997879136,
+        0.003044940000108909,
+        0.0031200720004562754,
+        0.0028307939992373576,
+        0.0028646990012930473
+      ],
+      "median_seconds": 0.0028646990012930473,
+      "cost": 302.70259631646815,
+      "thicknesses_nm": [
+        1.4145484783512075e-09,
+        302.8989606231031
+      ],
+      "iterations": 200,
+      "evals": 217,
+      "analytic_jacobians": 32,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films/near",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0014295780001702951,
+        0.001361139000437106,
+        0.0013589040008810116,
+        0.0013510999997379258,
+        0.001348896001218236
+      ],
+      "median_seconds": 0.0013589040008810116,
+      "cost": 302.70259631692386,
+      "thicknesses_nm": [
+        9.405221589986468e-06,
+        302.8989220773084
+      ],
+      "iterations": 35,
+      "evals": 37,
+      "analytic_jacobians": 36,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0009230790001311107,
+        0.0009190010005113436,
+        0.0009104450000450015,
+        0.0009068079998542089,
+        0.0008993439987534657
+      ],
+      "median_seconds": 0.0009104450000450015,
+      "cost": 302.70259631646815,
+      "thicknesses_nm": [
+        302.89896000067387
+      ],
+      "iterations": 21,
+      "evals": 28,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0028093230012018466,
+        0.002954068000690313,
+        0.0032263840002997313,
+        0.003023399000085192,
+        0.003052002999538672
+      ],
+      "median_seconds": 0.003023399000085192,
+      "cost": 302.7025963176574,
+      "thicknesses_nm": [
+        302.89931122812925
+      ],
+      "iterations": 57,
+      "evals": 365,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006477679999079555,
+        0.0006257360000745393,
+        0.0005959890004305635,
+        0.0005783159995189635,
+        0.0005768430000898661
+      ],
+      "median_seconds": 0.0005959890004305635,
+      "cost": 302.7025963164846,
+      "thicknesses_nm": [
+        302.89891782275635
+      ],
+      "iterations": 14,
+      "evals": 71,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0010029510012827814,
+        0.0010065469996334286,
+        0.0009887939995678607,
+        0.0009840349994192366,
+        0.000981409999440075
+      ],
+      "median_seconds": 0.0009887939995678607,
+      "cost": 302.7025963164681,
+      "thicknesses_nm": [
+        302.8989602787227
+      ],
+      "iterations": 21,
+      "evals": 120,
+      "analytic_jacobians": 0,
+      "termination": "Step"
+    },
+    {
+      "case": "two films/near",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films/near",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.003100264999375213,
+        0.003059156999370316,
+        0.003065950000745943,
+        0.0030517329996655462,
+        0.0030591270005970728
+      ],
+      "median_seconds": 0.003059156999370316,
+      "cost": 302.70259631648094,
+      "thicknesses_nm": [
+        1.5789272538313526e-06,
+        302.8989528328607
+      ],
+      "iterations": 200,
+      "evals": 372,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films/near",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.001631230999919353,
+        0.0017194379997818032,
+        0.0020809630004805513,
+        0.002008837000175845,
+        0.001705932998447679
+      ],
+      "median_seconds": 0.0017194379997818032,
+      "cost": 302.70259631675077,
+      "thicknesses_nm": [
+        7.406586860270181e-06,
+        302.8989298014765
+      ],
+      "iterations": 36,
+      "evals": 186,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/near",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        5.0,
+        299.8989195629677
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0011884420000569662,
+        0.0011976289988524513,
+        0.001361729999189265,
+        0.0013559089984482853,
+        0.0011801660002674907
+      ],
+      "median_seconds": 0.0011976289988524513,
+      "cost": 302.7025963164682,
+      "thicknesses_nm": [
+        302.89896016327367
+      ],
+      "iterations": 21,
+      "evals": 140,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.007288671000424074,
+        0.007158233998779906,
+        0.006935972000064794,
+        0.006901758000822156,
+        0.00697262299945578
+      ],
+      "median_seconds": 0.00697262299945578,
+      "cost": 10837.710661940053,
+      "thicknesses_nm": [
+        771.3243266275043,
+        0.1762605598510273
+      ],
+      "iterations": 200,
+      "evals": 206,
+      "analytic_jacobians": 200,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films/far",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.00015951200111885555,
+        0.00015010500101197977,
+        0.00014717900012328755,
+        0.00014366199866344687,
+        0.00014317199929791968
+      ],
+      "median_seconds": 0.00014717900012328755,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [],
+      "iterations": 3,
+      "evals": 4,
+      "analytic_jacobians": 3,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0005784059994766722,
+        0.0006020109995006351,
+        0.0005948470006842399,
+        0.0005760220010415651,
+        0.0005757609997090185
+      ],
+      "median_seconds": 0.0005784059994766722,
+      "cost": 302.7025963164835,
+      "thicknesses_nm": [
+        7.439633199972191e-07,
+        302.89892023298063
+      ],
+      "iterations": 14,
+      "evals": 15,
+      "analytic_jacobians": 15,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0030638560001534643,
+        0.002986780000355793,
+        0.002996246999828145,
+        0.0029980500003148336,
+        0.002832347001458402
+      ],
+      "median_seconds": 0.002996246999828145,
+      "cost": 4407.445621706096,
+      "thicknesses_nm": [
+        121.4623248356288,
+        2.6961567982652923e-06
+      ],
+      "iterations": 200,
+      "evals": 219,
+      "analytic_jacobians": 36,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0013636240000778344,
+        0.0014756460004718974,
+        0.0014817770006629871,
+        0.0014456089993473142,
+        0.0014417829988815356
+      ],
+      "median_seconds": 0.0014456089993473142,
+      "cost": 11139.950388141591,
+      "thicknesses_nm": [
+        940.3980825552096
+      ],
+      "iterations": 40,
+      "evals": 42,
+      "analytic_jacobians": 39,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006095549997553462,
+        0.0006037240000296151,
+        0.0009236810001311824,
+        0.0007726940002612537,
+        0.0007729939989076229
+      ],
+      "median_seconds": 0.0007726940002612537,
+      "cost": 302.7025963164834,
+      "thicknesses_nm": [
+        7.439633198966356e-07,
+        302.8989202329806
+      ],
+      "iterations": 14,
+      "evals": 15,
+      "analytic_jacobians": 15,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.013800721000734484,
+        0.009739504999743076,
+        0.00927876199966704,
+        0.010591319000013755,
+        0.009097277999899234
+      ],
+      "median_seconds": 0.009739504999743076,
+      "cost": 10837.30626299446,
+      "thicknesses_nm": [
+        770.721226958764,
+        0.0001107469056849349
+      ],
+      "iterations": 200,
+      "evals": 1107,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films/far",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.00017257699983019847,
+        0.0001623780008230824,
+        0.0001612760006537428,
+        0.00016739700004109181,
+        0.0001595129997440381
+      ],
+      "median_seconds": 0.0001623780008230824,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [],
+      "iterations": 3,
+      "evals": 15,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "two films/far",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006696279997413512,
+        0.0006469649997598026,
+        0.0006313459998636972,
+        0.0006750390002707718,
+        0.0006488889994216152
+      ],
+      "median_seconds": 0.0006488889994216152,
+      "cost": 302.702596316484,
+      "thicknesses_nm": [
+        6.91728084938877e-07,
+        302.8989191364286
+      ],
+      "iterations": 14,
+      "evals": 75,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0030159439993440174,
+        0.003434637999816914,
+        0.0033175160006067017,
+        0.0030207330000848742,
+        0.0031567619989800733
+      ],
+      "median_seconds": 0.0031567619989800733,
+      "cost": 4407.445621706105,
+      "thicknesses_nm": [
+        121.4623253218549,
+        8.754929808674206e-06
+      ],
+      "iterations": 200,
+      "evals": 363,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.001746079000440659,
+        0.001743734001138364,
+        0.0016308199992636219,
+        0.0015962749985192204,
+        0.0015990600004442967
+      ],
+      "median_seconds": 0.0016308199992636219,
+      "cost": 11139.950388141615,
+      "thicknesses_nm": [
+        940.3980825284339
+      ],
+      "iterations": 40,
+      "evals": 198,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films/far",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        60.0,
+        95.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007660119990759995,
+        0.0007651500000065425,
+        0.0007654410001123324,
+        0.0007738160002190853,
+        0.0007657910009584157
+      ],
+      "median_seconds": 0.0007657910009584157,
+      "cost": 302.70259631648344,
+      "thicknesses_nm": [
+        7.439011998240347e-07,
+        302.8989202567824
+      ],
+      "iterations": 14,
+      "evals": 90,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.004450664000614779,
+        0.004575760000079754,
+        0.004454461000932497,
+        0.004479227998672286,
+        0.004452266999578569
+      ],
+      "median_seconds": 0.004454461000932497,
+      "cost": 9097.007242780028,
+      "thicknesses_nm": [
+        294.20793187314723,
+        0.00010777408575358278
+      ],
+      "iterations": 126,
+      "evals": 140,
+      "analytic_jacobians": 127,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006846670003142208,
+        0.000679587999911746,
+        0.000677965001159464,
+        0.0006739669988746755,
+        0.0006752699991920963
+      ],
+      "median_seconds": 0.000677965001159464,
+      "cost": 9097.007242747166,
+      "thicknesses_nm": [
+        294.20779991915714
+      ],
+      "iterations": 18,
+      "evals": 22,
+      "analytic_jacobians": 18,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0008104349999484839,
+        0.000836033999803476,
+        0.0008207860009861179,
+        0.0008141020007315092,
+        0.0008051949989749119
+      ],
+      "median_seconds": 0.0008141020007315092,
+      "cost": 9097.007242747386,
+      "thicknesses_nm": [
+        294.20785727574713,
+        2.0720512258130965e-05
+      ],
+      "iterations": 21,
+      "evals": 22,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0033026689998223446,
+        0.003412395999475848,
+        0.003288091000285931,
+        0.0039689009990979685,
+        0.003554655999323586
+      ],
+      "median_seconds": 0.003412395999475848,
+      "cost": 9097.007242744654,
+      "thicknesses_nm": [
+        294.2078284065385,
+        5.655161317008606e-07
+      ],
+      "iterations": 200,
+      "evals": 225,
+      "analytic_jacobians": 48,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.000832908001029864,
+        0.0007988739998836536,
+        0.0007853379993321141,
+        0.0007698680001340108,
+        0.0007669839997106465
+      ],
+      "median_seconds": 0.0007853379993321141,
+      "cost": 9097.0072427464,
+      "thicknesses_nm": [
+        294.20784605932295,
+        4.9719741696208075e-05
+      ],
+      "iterations": 22,
+      "evals": 24,
+      "analytic_jacobians": 19,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0008577150001656264,
+        0.0008867609994922532,
+        0.0009366450012748828,
+        0.0008745180002733832,
+        0.0008565529988118215
+      ],
+      "median_seconds": 0.0008745180002733832,
+      "cost": 9097.007242747386,
+      "thicknesses_nm": [
+        294.20785727574713,
+        2.0720512286829177e-05
+      ],
+      "iterations": 21,
+      "evals": 22,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.002495778999218601,
+        0.002492182999048964,
+        0.0025170999997499166,
+        0.002414766000583768,
+        0.0023014310008875327
+      ],
+      "median_seconds": 0.002492182999048964,
+      "cost": 9097.007242784488,
+      "thicknesses_nm": [
+        294.20794039154566,
+        7.538592765417334e-05
+      ],
+      "iterations": 50,
+      "evals": 288,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007742170000710757,
+        0.0007729749995633028,
+        0.0008111369988910155,
+        0.0007833640011085663,
+        0.000788373999967007
+      ],
+      "median_seconds": 0.0007833640011085663,
+      "cost": 9097.007242747204,
+      "thicknesses_nm": [
+        294.20779968721126
+      ],
+      "iterations": 18,
+      "evals": 94,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0009057570005097659,
+        0.0009085009987757076,
+        0.000910063999981503,
+        0.0009111869985645171,
+        0.0009066080001502996
+      ],
+      "median_seconds": 0.0009085009987757076,
+      "cost": 9097.007242747384,
+      "thicknesses_nm": [
+        294.20785726303296,
+        2.065036267504631e-05
+      ],
+      "iterations": 21,
+      "evals": 110,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.003293591000328888,
+        0.003488028998617665,
+        0.0032874490007088752,
+        0.003499821999866981,
+        0.0035477619985613273
+      ],
+      "median_seconds": 0.003488028998617665,
+      "cost": 9097.007242744658,
+      "thicknesses_nm": [
+        294.2078291762147
+      ],
+      "iterations": 200,
+      "evals": 399,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0009184800001094118,
+        0.000913552001293283,
+        0.000913781001145253,
+        0.0009499400002823677,
+        0.000946533000387717
+      ],
+      "median_seconds": 0.0009184800001094118,
+      "cost": 9097.007242745856,
+      "thicknesses_nm": [
+        294.20784459393667,
+        3.574326740363176e-05
+      ],
+      "iterations": 22,
+      "evals": 100,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/near",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        297.2078282372163,
+        5.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0012157930013927398,
+        0.001212258001032751,
+        0.0012118860013288213,
+        0.0011813490000349702,
+        0.001111907000449719
+      ],
+      "median_seconds": 0.0012118860013288213,
+      "cost": 9097.00724274738,
+      "thicknesses_nm": [
+        294.2078572704833,
+        2.0743406620831997e-05
+      ],
+      "iterations": 21,
+      "evals": 132,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0028551399991556536,
+        0.0029112569991411874,
+        0.002807449998726952,
+        0.0028289399997447617,
+        0.0028215260008437326
+      ],
+      "median_seconds": 0.0028289399997447617,
+      "cost": 4407.445621706565,
+      "thicknesses_nm": [
+        121.46233141393107,
+        6.243648122825716e-05
+      ],
+      "iterations": 79,
+      "evals": 86,
+      "analytic_jacobians": 80,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006268670003919397,
+        0.0006259659985516919,
+        0.0005997160005790647,
+        0.0005934250002610497,
+        0.0006182819997775368
+      ],
+      "median_seconds": 0.0006182819997775368,
+      "cost": 4407.445621706223,
+      "thicknesses_nm": [
+        121.4623214102192
+      ],
+      "iterations": 16,
+      "evals": 17,
+      "analytic_jacobians": 16,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0017606370001885807,
+        0.0018139969997719163,
+        0.0017624699994485127,
+        0.0017350670004816493,
+        0.0017546239996590884
+      ],
+      "median_seconds": 0.0017606370001885807,
+      "cost": 9097.00724274581,
+      "thicknesses_nm": [
+        294.2078095808583,
+        7.79952340758772e-06
+      ],
+      "iterations": 48,
+      "evals": 49,
+      "analytic_jacobians": 49,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0052214240004104795,
+        0.005233878000581171,
+        0.005211465000684257,
+        0.005239508000158821,
+        0.005334788000254775
+      ],
+      "median_seconds": 0.005233878000581171,
+      "cost": 9097.007242744658,
+      "thicknesses_nm": [
+        294.20782724813284,
+        4.710437337962503e-07
+      ],
+      "iterations": 200,
+      "evals": 256,
+      "analytic_jacobians": 110,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0005941459985479014,
+        0.0005892469998798333,
+        0.000588535000133561,
+        0.0005829950005136197,
+        0.0005873030004295288
+      ],
+      "median_seconds": 0.000588535000133561,
+      "cost": 4407.445621706302,
+      "thicknesses_nm": [
+        121.46232902837346
+      ],
+      "iterations": 14,
+      "evals": 16,
+      "analytic_jacobians": 15,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0018892499992944067,
+        0.001846780000050785,
+        0.0019598840008256957,
+        0.001913224999952945,
+        0.0018595239998830948
+      ],
+      "median_seconds": 0.0018892499992944067,
+      "cost": 9097.00724274581,
+      "thicknesses_nm": [
+        294.2078095808583,
+        7.799523407103582e-06
+      ],
+      "iterations": 48,
+      "evals": 49,
+      "analytic_jacobians": 49,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.002210409000326763,
+        0.002284658999997191,
+        0.0021113399998284876,
+        0.002191872999901534,
+        0.002176855001380318
+      ],
+      "median_seconds": 0.002191872999901534,
+      "cost": 4385.699314343299,
+      "thicknesses_nm": [
+        121.22846948202859,
+        473.51200655243684
+      ],
+      "iterations": 46,
+      "evals": 249,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007276089982042322,
+        0.0007172890000219923,
+        0.0007232799998746486,
+        0.0007248340007208753,
+        0.0007254849988385104
+      ],
+      "median_seconds": 0.0007248340007208753,
+      "cost": 4407.4456217061115,
+      "thicknesses_nm": [
+        121.46232368445806
+      ],
+      "iterations": 16,
+      "evals": 81,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.002074309999443358,
+        0.0019798419998551253,
+        0.0020894090012006927,
+        0.0020759839990205364,
+        0.002134043999831192
+      ],
+      "median_seconds": 0.0020759839990205364,
+      "cost": 9097.007242745809,
+      "thicknesses_nm": [
+        294.2078095736394,
+        7.777611287045339e-06
+      ],
+      "iterations": 48,
+      "evals": 245,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.005706502999601071,
+        0.006094016998758889,
+        0.005894920001082937,
+        0.005738372999985586,
+        0.005584562000876758
+      ],
+      "median_seconds": 0.005738372999985586,
+      "cost": 9097.007242744652,
+      "thicknesses_nm": [
+        294.20782724844776
+      ],
+      "iterations": 200,
+      "evals": 696,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006456730006902944,
+        0.000644280000415165,
+        0.0006449619995692046,
+        0.0006618240004172549,
+        0.0006903779994900106
+      ],
+      "median_seconds": 0.0006456730006902944,
+      "cost": 4407.4456217063025,
+      "thicknesses_nm": [
+        121.46232903153901
+      ],
+      "iterations": 14,
+      "evals": 76,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "two films, far/far",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        200.0,
+        30.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0024249550006061327,
+        0.0024602819994470337,
+        0.002431467000860721,
+        0.0024358860009670025,
+        0.002483596001184196
+      ],
+      "median_seconds": 0.0024358860009670025,
+      "cost": 9097.007242745802,
+      "thicknesses_nm": [
+        294.20780957624055,
+        7.825696828990903e-06
+      ],
+      "iterations": 48,
+      "evals": 294,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007045250004011905,
+        0.0007634159992448986,
+        0.0007382489984593121,
+        0.0007241719995363383,
+        0.0007223390002764063
+      ],
+      "median_seconds": 0.0007241719995363383,
+      "cost": 2670.0310922242115,
+      "thicknesses_nm": [
+        121.50940116375882,
+        217.0047655061805,
+        19.359410426192554
+      ],
+      "iterations": 13,
+      "evals": 19,
+      "analytic_jacobians": 14,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0008178500011126744,
+        0.0008336200007761363,
+        0.0007865110001148423,
+        0.0007753989993943833,
+        0.0007797670004947577
+      ],
+      "median_seconds": 0.0007865110001148423,
+      "cost": 2670.0310922241015,
+      "thicknesses_nm": [
+        121.50940245907037,
+        217.0047637390137,
+        19.35940831218778
+      ],
+      "iterations": 13,
+      "evals": 26,
+      "analytic_jacobians": 13,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0012663199995586183,
+        0.001294433001021389,
+        0.0012634640006581321,
+        0.0012546769994514761,
+        0.0012565399993036408
+      ],
+      "median_seconds": 0.0012634640006581321,
+      "cost": 2670.031092224107,
+      "thicknesses_nm": [
+        121.50940377260314,
+        217.00475213928576,
+        19.359405628611725
+      ],
+      "iterations": 24,
+      "evals": 32,
+      "analytic_jacobians": 25,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.009548123000058695,
+        0.009238796999852639,
+        0.009251731000404106,
+        0.00939457099957508,
+        0.00931396899977699
+      ],
+      "median_seconds": 0.00931396899977699,
+      "cost": 2694.1066485371703,
+      "thicknesses_nm": [
+        121.7682485853909,
+        213.6593020229913,
+        18.867180874485086
+      ],
+      "iterations": 200,
+      "evals": 201,
+      "analytic_jacobians": 200,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "three films/near",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.021050737999757985,
+        0.021000873000957654,
+        0.018385397999736597,
+        0.017692173998511862,
+        0.018130714999642805
+      ],
+      "median_seconds": 0.018385397999736597,
+      "cost": 2670.0310922241,
+      "thicknesses_nm": [
+        121.50940296064556,
+        217.00476251077941,
+        19.35939877751173
+      ],
+      "iterations": 200,
+      "evals": 393,
+      "analytic_jacobians": 384,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "three films/near",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007407229986711172,
+        0.0007344719997490756,
+        0.0007246630011650268,
+        0.0007323079989873804,
+        0.0007264160012709908
+      ],
+      "median_seconds": 0.0007323079989873804,
+      "cost": 2670.0310922240815,
+      "thicknesses_nm": [
+        121.50940239813661,
+        217.00475847665007,
+        19.35940013480564
+      ],
+      "iterations": 16,
+      "evals": 18,
+      "analytic_jacobians": 13,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0014830799991614185,
+        0.0014478039993264247,
+        0.0014460799993685214,
+        0.0014320129994302988,
+        0.0014463909992628032
+      ],
+      "median_seconds": 0.0014463909992628032,
+      "cost": 2670.031092224145,
+      "thicknesses_nm": [
+        121.509398748954,
+        217.00476468119365,
+        19.35940067256466
+      ],
+      "iterations": 24,
+      "evals": 33,
+      "analytic_jacobians": 25,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0009193620007863501,
+        0.0009132909999607364,
+        0.0009406330009369412,
+        0.0009198830011882819,
+        0.0009088619990507141
+      ],
+      "median_seconds": 0.0009193620007863501,
+      "cost": 2670.031092224209,
+      "thicknesses_nm": [
+        121.50940116487206,
+        217.00476550937404,
+        19.359410423670774
+      ],
+      "iterations": 13,
+      "evals": 103,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.000948978999076644,
+        0.0009468739990552422,
+        0.000944669998716563,
+        0.000951052001255448,
+        0.0009496689999650698
+      ],
+      "median_seconds": 0.000948978999076644,
+      "cost": 2670.0310922241024,
+      "thicknesses_nm": [
+        121.50940245769243,
+        217.00476375133127,
+        19.35940831619473
+      ],
+      "iterations": 13,
+      "evals": 104,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0015824479996808805,
+        0.0015900329999567475,
+        0.0015842619995964924,
+        0.0015795129984326195,
+        0.0015905839991319226
+      ],
+      "median_seconds": 0.0015842619995964924,
+      "cost": 2670.0310922241033,
+      "thicknesses_nm": [
+        121.50940377347486,
+        217.0047521426786,
+        19.359405627053974
+      ],
+      "iterations": 24,
+      "evals": 182,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.011941386999751558,
+        0.01186252799925569,
+        0.011896281999725034,
+        0.01185301899931801,
+        0.011771085000873427
+      ],
+      "median_seconds": 0.01186252799925569,
+      "cost": 2691.4139079509623,
+      "thicknesses_nm": [
+        121.66428405142415,
+        213.88102576887002,
+        18.968771735904625
+      ],
+      "iterations": 200,
+      "evals": 1401,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "three films/near",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.022766028001569794,
+        0.022897606999322306,
+        0.022629639999649953,
+        0.022664095000436646,
+        0.02304686000024958
+      ],
+      "median_seconds": 0.022766028001569794,
+      "cost": 2670.031092224063,
+      "thicknesses_nm": [
+        121.50940314374219,
+        217.00476134103087,
+        19.359399938858303
+      ],
+      "iterations": 200,
+      "evals": 2697,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "three films/near",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0008920399995986372,
+        0.00088835299902712,
+        0.0008957169993664138,
+        0.0009010080011648824,
+        0.0009147239998128498
+      ],
+      "median_seconds": 0.0008957169993664138,
+      "cost": 2670.031092224082,
+      "thicknesses_nm": [
+        121.50940239943066,
+        217.00475848345445,
+        19.359400130806875
+      ],
+      "iterations": 16,
+      "evals": 96,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/near",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        124.50940143427107,
+        214.0047619069074,
+        21.359403963256216
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.002367074999710894,
+        0.0023040350006340304,
+        0.0022979140012466814,
+        0.0022935359993425664,
+        0.0022898700008227024
+      ],
+      "median_seconds": 0.0022979140012466814,
+      "cost": 2670.0310922241465,
+      "thicknesses_nm": [
+        121.50939875008336,
+        217.00476468356499,
+        19.359400671704446
+      ],
+      "iterations": 24,
+      "evals": 208,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0012212139990879223,
+        0.0012069870008417638,
+        0.0011792839995905524,
+        0.0011844340006064158,
+        0.0011906670006283093
+      ],
+      "median_seconds": 0.0011906670006283093,
+      "cost": 4061.1760362336154,
+      "thicknesses_nm": [
+        121.34716631108803,
+        512.4266489858182,
+        9.785944255838123
+      ],
+      "iterations": 23,
+      "evals": 30,
+      "analytic_jacobians": 24,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.001114310998673318,
+        0.0010922800011030631,
+        0.0011966179990849923,
+        0.0011310739992040908,
+        0.0010776019989862107
+      ],
+      "median_seconds": 0.001114310998673318,
+      "cost": 4359.3101380725975,
+      "thicknesses_nm": [
+        121.28307228721303,
+        668.2788819279667,
+        1.2882139799330616e-08
+      ],
+      "iterations": 19,
+      "evals": 33,
+      "analytic_jacobians": 19,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0011816389996965881,
+        0.0011840839997603325,
+        0.001196798000819399,
+        0.0012261539995961357,
+        0.0012120370010961778
+      ],
+      "median_seconds": 0.001196798000819399,
+      "cost": 2670.031092224196,
+      "thicknesses_nm": [
+        121.5094037270226,
+        217.00474978254118,
+        19.359408548270903
+      ],
+      "iterations": 22,
+      "evals": 31,
+      "analytic_jacobians": 23,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "three films/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.017763118999937433,
+        0.017666656000074,
+        0.018991136001204723,
+        0.017674650998742436,
+        0.017668428999968455
+      ],
+      "median_seconds": 0.017674650998742436,
+      "cost": 4061.210923886897,
+      "thicknesses_nm": [
+        121.35143281631582,
+        512.3544435950497,
+        9.70816099864453
+      ],
+      "iterations": 200,
+      "evals": 393,
+      "analytic_jacobians": 384,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "three films/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007043850000627572,
+        0.0008198930008802563,
+        0.0007826529999874765,
+        0.000802329999714857,
+        0.0007209560008050175
+      ],
+      "median_seconds": 0.0007826529999874765,
+      "cost": 4359.3101377611465,
+      "thicknesses_nm": [
+        121.28307283278048,
+        668.2806970724116,
+        0.0001496176499244939
+      ],
+      "iterations": 15,
+      "evals": 17,
+      "analytic_jacobians": 12,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0015041599999676691,
+        0.0015783409999130527,
+        0.001506013999460265,
+        0.0013374840000324184,
+        0.0013278360002004774
+      ],
+      "median_seconds": 0.0015041599999676691,
+      "cost": 2670.03109222549,
+      "thicknesses_nm": [
+        121.50939612174531,
+        217.00479250455942,
+        19.359395573799883
+      ],
+      "iterations": 22,
+      "evals": 30,
+      "analytic_jacobians": 23,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.001768771999195451,
+        0.0017296380010520807,
+        0.0017345059986837441,
+        0.0017433730008633574,
+        0.0017337160006718477
+      ],
+      "median_seconds": 0.0017345059986837441,
+      "cost": 4061.1760362338264,
+      "thicknesses_nm": [
+        121.3471661872056,
+        512.4266798166342,
+        9.785945934732755
+      ],
+      "iterations": 27,
+      "evals": 202,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0013062550005997764,
+        0.001325682000242523,
+        0.0013062750003882684,
+        0.0013282069994602352,
+        0.001328156000454328
+      ],
+      "median_seconds": 0.001325682000242523,
+      "cost": 4359.310138073362,
+      "thicknesses_nm": [
+        121.28307560508756,
+        668.2790271683447,
+        1.2882651390100364e-08
+      ],
+      "iterations": 19,
+      "evals": 145,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0014322940005513374,
+        0.0014814969999861205,
+        0.0014832400011073332,
+        0.001678530001299805,
+        0.001768882000760641
+      ],
+      "median_seconds": 0.0014832400011073332,
+      "cost": 2670.031092224196,
+      "thicknesses_nm": [
+        121.50940372841094,
+        217.00474978499753,
+        19.359408545926797
+      ],
+      "iterations": 22,
+      "evals": 169,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "three films/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.026449818000401137,
+        0.029209166999862646,
+        0.02450976300133334,
+        0.022823306999271153,
+        0.022645390001343912
+      ],
+      "median_seconds": 0.02450976300133334,
+      "cost": 4061.2109227314468,
+      "thicknesses_nm": [
+        121.35143274765704,
+        512.3544436286091,
+        9.708162400500555
+      ],
+      "iterations": 200,
+      "evals": 2697,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "three films/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0008557620003557531,
+        0.0008347319999302272,
+        0.0008331989993166644,
+        0.0008407029999943916,
+        0.0008388890000787796
+      ],
+      "median_seconds": 0.0008388890000787796,
+      "cost": 4359.310137761152,
+      "thicknesses_nm": [
+        121.2830728356488,
+        668.2806970808922,
+        0.00014961682910552554
+      ],
+      "iterations": 15,
+      "evals": 89,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "three films/far",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        80.0,
+        140.0,
+        70.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0021730270000261953,
+        0.0021593210003629792,
+        0.002152569000827498,
+        0.002118364000125439,
+        0.0021709140000893967
+      ],
+      "median_seconds": 0.0021593210003629792,
+      "cost": 2670.0310922254876,
+      "thicknesses_nm": [
+        121.50939612346342,
+        217.00479250294703,
+        19.35939557594983
+      ],
+      "iterations": 22,
+      "evals": 191,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "upper bound",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        8.806699952401686e-05,
+        8.406900087720715e-05,
+        8.347800030605868e-05,
+        8.994100062409416e-05,
+        8.42890003696084e-05
+      ],
+      "median_seconds": 8.42890003696084e-05,
+      "cost": 223.5510192078077,
+      "thicknesses_nm": [
+        50.0
+      ],
+      "iterations": 1,
+      "evals": 2,
+      "analytic_jacobians": 2,
+      "termination": "Stalled"
+    },
+    {
+      "case": "upper bound",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        9.117199988395441e-05,
+        8.915900070860516e-05,
+        9.026100087794475e-05,
+        8.912900011637248e-05,
+        8.976999924925622e-05
+      ],
+      "median_seconds": 8.976999924925622e-05,
+      "cost": 223.5510192078077,
+      "thicknesses_nm": [
+        50.0
+      ],
+      "iterations": 2,
+      "evals": 3,
+      "analytic_jacobians": 2,
+      "termination": "Cost"
+    },
+    {
+      "case": "upper bound",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00021411600027931854,
+        0.00022299299962469377,
+        0.00020818499979213811,
+        0.00020715199934784323,
+        0.00020748299903061707
+      ],
+      "median_seconds": 0.00020818499979213811,
+      "cost": 223.55101920789164,
+      "thicknesses_nm": [
+        49.999999999986834
+      ],
+      "iterations": 6,
+      "evals": 7,
+      "analytic_jacobians": 7,
+      "termination": "Gradient"
+    },
+    {
+      "case": "upper bound",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00010450799891259521,
+        9.694400068838149e-05,
+        9.293699986301363e-05,
+        9.059100011654664e-05,
+        9.271500130125787e-05
+      ],
+      "median_seconds": 9.293699986301363e-05,
+      "cost": 223.5510192078077,
+      "thicknesses_nm": [
+        50.0
+      ],
+      "iterations": 2,
+      "evals": 3,
+      "analytic_jacobians": 2,
+      "termination": "Cost"
+    },
+    {
+      "case": "upper bound",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.0024142550009855768,
+        0.0025352239990752423,
+        0.002374027999394457,
+        0.0022939570008020382,
+        0.002359190000788658
+      ],
+      "median_seconds": 0.002374027999394457,
+      "cost": 223.55101920868915,
+      "thicknesses_nm": [
+        49.999999999861714
+      ],
+      "iterations": 200,
+      "evals": 220,
+      "analytic_jacobians": 38,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "upper bound",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        9.195399979944341e-05,
+        8.698500096215867e-05,
+        8.503099888912402e-05,
+        8.431900096184108e-05,
+        8.324699956574477e-05
+      ],
+      "median_seconds": 8.503099888912402e-05,
+      "cost": 223.55101920780785,
+      "thicknesses_nm": [
+        49.99999999999998
+      ],
+      "iterations": 1,
+      "evals": 2,
+      "analytic_jacobians": 2,
+      "termination": "Gradient"
+    },
+    {
+      "case": "upper bound",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00022017700030119158,
+        0.0002162000000680564,
+        0.0002132640001946129,
+        0.00021210200065979734,
+        0.00021143100093468092
+      ],
+      "median_seconds": 0.0002132640001946129,
+      "cost": 223.55101920789164,
+      "thicknesses_nm": [
+        49.999999999986834
+      ],
+      "iterations": 6,
+      "evals": 7,
+      "analytic_jacobians": 7,
+      "termination": "Gradient"
+    },
+    {
+      "case": "upper bound",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        7.571300011477433e-05,
+        7.31979998818133e-05,
+        7.449100121448282e-05,
+        7.346900019911118e-05,
+        7.704599920543842e-05
+      ],
+      "median_seconds": 7.449100121448282e-05,
+      "cost": 223.5510192078077,
+      "thicknesses_nm": [
+        50.0
+      ],
+      "iterations": 1,
+      "evals": 6,
+      "analytic_jacobians": 0,
+      "termination": "Stalled"
+    },
+    {
+      "case": "upper bound",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        7.478200132027268e-05,
+        8.19549986772472e-05,
+        7.46710011299001e-05,
+        7.308900057978462e-05,
+        7.254699994518887e-05
+      ],
+      "median_seconds": 7.46710011299001e-05,
+      "cost": 223.55101920780783,
+      "thicknesses_nm": [
+        49.999999999999986
+      ],
+      "iterations": 2,
+      "evals": 6,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "upper bound",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.0001996179998968728,
+        0.0001638610010559205,
+        0.00016170600065379404,
+        0.00016079500164778437,
+        0.00016133600001921877
+      ],
+      "median_seconds": 0.00016170600065379404,
+      "cost": 223.55101920789164,
+      "thicknesses_nm": [
+        49.999999999986834
+      ],
+      "iterations": 6,
+      "evals": 21,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "upper bound",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "upper bound",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.0020882469998468878,
+        0.002172066000639461,
+        0.0023538699988421286,
+        0.0022468669994850643,
+        0.0020921449995512376
+      ],
+      "median_seconds": 0.002172066000639461,
+      "cost": 223.551019208132,
+      "thicknesses_nm": [
+        49.999999999949125
+      ],
+      "iterations": 200,
+      "evals": 301,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "upper bound",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        7.15750011295313e-05,
+        6.726700121362228e-05,
+        6.695699994452298e-05,
+        6.619600026169792e-05,
+        6.635600038862322e-05
+      ],
+      "median_seconds": 6.695699994452298e-05,
+      "cost": 223.55101920780785,
+      "thicknesses_nm": [
+        49.99999999999998
+      ],
+      "iterations": 1,
+      "evals": 6,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "upper bound",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.0002144859990949044,
+        0.00022787200032325927,
+        0.00022110899953986518,
+        0.00021369500063883606,
+        0.0002105490002577426
+      ],
+      "median_seconds": 0.0002144859990949044,
+      "cost": 223.55101920789164,
+      "thicknesses_nm": [
+        49.999999999986834
+      ],
+      "iterations": 6,
+      "evals": 28,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        7.069400089676492e-05,
+        6.851000034657773e-05,
+        8.802699994703289e-05,
+        7.11049997335067e-05,
+        7.155599996622186e-05
+      ],
+      "median_seconds": 7.11049997335067e-05,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [],
+      "iterations": 1,
+      "evals": 2,
+      "analytic_jacobians": 2,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00025390100017830264,
+        0.0002474689990776824,
+        0.000254821999988053,
+        0.00028445899988582823,
+        0.0002994269998453092
+      ],
+      "median_seconds": 0.000254821999988053,
+      "cost": 471.39455242731987,
+      "thicknesses_nm": [
+        4.4827033107708303e-07
+      ],
+      "iterations": 9,
+      "evals": 10,
+      "analytic_jacobians": 9,
+      "termination": "Cost"
+    },
+    {
+      "case": "lower bound",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00016829899868753273,
+        0.00015827000061108265,
+        0.0001588710001669824,
+        0.00016641500042169355,
+        0.0001575089991092682
+      ],
+      "median_seconds": 0.0001588710001669824,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [
+        1.8314455013310194e-09
+      ],
+      "iterations": 4,
+      "evals": 5,
+      "analytic_jacobians": 5,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00010915699931501877,
+        0.00011070999971707352,
+        0.00011682100011967123,
+        0.00011329399967507925,
+        0.00011290299880784005
+      ],
+      "median_seconds": 0.00011290299880784005,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [
+        6.361916149444369e-08
+      ],
+      "iterations": 3,
+      "evals": 4,
+      "analytic_jacobians": 3,
+      "termination": "Cost"
+    },
+    {
+      "case": "lower bound",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.002433050000036019,
+        0.002274790000228677,
+        0.0025829450005403487,
+        0.0024804299991956213,
+        0.0025513439995847875
+      ],
+      "median_seconds": 0.0024804299991956213,
+      "cost": 471.3945524277223,
+      "thicknesses_nm": [
+        8.388465257525013e-06
+      ],
+      "iterations": 200,
+      "evals": 222,
+      "analytic_jacobians": 42,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "lower bound",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.0001341740007774206,
+        0.00011568000081751961,
+        0.00011123099830001593,
+        0.00011070000073232222,
+        0.0001206580000143731
+      ],
+      "median_seconds": 0.00011568000081751961,
+      "cost": 471.39455242735,
+      "thicknesses_nm": [
+        2.3347170809984163e-06
+      ],
+      "iterations": 2,
+      "evals": 3,
+      "analytic_jacobians": 3,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00014876199929858558,
+        0.00014871100029267836,
+        0.00014717900012328755,
+        0.00014784000086365268,
+        0.00014660799934063107
+      ],
+      "median_seconds": 0.00014784000086365268,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [
+        1.8314457129672834e-09
+      ],
+      "iterations": 4,
+      "evals": 5,
+      "analytic_jacobians": 5,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        7.826799992471933e-05,
+        6.79990007483866e-05,
+        6.352000127662905e-05,
+        6.408199988072738e-05,
+        6.154699985927437e-05
+      ],
+      "median_seconds": 6.408199988072738e-05,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [],
+      "iterations": 1,
+      "evals": 6,
+      "analytic_jacobians": 0,
+      "termination": "Stalled"
+    },
+    {
+      "case": "lower bound",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00020686199968622532,
+        0.00020855500042671338,
+        0.0002044079992629122,
+        0.00019952799993916415,
+        0.00021140100034244824
+      ],
+      "median_seconds": 0.00020686199968622532,
+      "cost": 471.3945524273542,
+      "thicknesses_nm": [
+        2.4893524326330407e-06
+      ],
+      "iterations": 9,
+      "evals": 27,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00012310300007811747,
+        0.00012898500062874518,
+        0.00012261200026841834,
+        0.0001236039988725679,
+        0.00012064899965480436
+      ],
+      "median_seconds": 0.00012310300007811747,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [
+        1.8314454510240386e-09
+      ],
+      "iterations": 4,
+      "evals": 15,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "lower bound",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.002118585000062012,
+        0.002452016000461299,
+        0.0023170210006355774,
+        0.0021336230001907097,
+        0.002152809000108391
+      ],
+      "median_seconds": 0.002152809000108391,
+      "cost": 471.39455242746715,
+      "thicknesses_nm": [
+        5.087861705277419e-06
+      ],
+      "iterations": 200,
+      "evals": 311,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "lower bound",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.00010362600005464628,
+        9.636200047680177e-05,
+        9.053199937625322e-05,
+        8.681500003149267e-05,
+        8.570200043322984e-05
+      ],
+      "median_seconds": 9.053199937625322e-05,
+      "cost": 471.39455242735,
+      "thicknesses_nm": [
+        2.3347170881038437e-06
+      ],
+      "iterations": 2,
+      "evals": 9,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "lower bound",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        50.0
+      ],
+      "seconds": [
+        0.0001599830011400627,
+        0.00015917199925752357,
+        0.00016406100075982977,
+        0.00016086499999801163,
+        0.0001584999990882352
+      ],
+      "median_seconds": 0.0001599830011400627,
+      "cost": 471.3945524273184,
+      "thicknesses_nm": [
+        1.8314455672505114e-09
+      ],
+      "iterations": 4,
+      "evals": 20,
+      "analytic_jacobians": 0,
+      "termination": "Gradient"
+    },
+    {
+      "case": "interior control",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0004257159998815041,
+        0.00042208999911963474,
+        0.00042658799975470174,
+        0.00047629300024709664,
+        0.0004883949986833613
+      ],
+      "median_seconds": 0.00042658799975470174,
+      "cost": 54.89908726867727,
+      "thicknesses_nm": [
+        103.16562138554934
+      ],
+      "iterations": 14,
+      "evals": 21,
+      "analytic_jacobians": 15,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0002558050000516232,
+        0.0002505550000932999,
+        0.00025282900060119573,
+        0.00025164600083371624,
+        0.00024866100102372
+      ],
+      "median_seconds": 0.00025164600083371624,
+      "cost": 54.89908726867615,
+      "thicknesses_nm": [
+        103.16561692282323
+      ],
+      "iterations": 6,
+      "evals": 15,
+      "analytic_jacobians": 6,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0004225610009598313,
+        0.00042151900015596766,
+        0.0004349849987193011,
+        0.0004381299986562226,
+        0.0004278409996913979
+      ],
+      "median_seconds": 0.0004278409996913979,
+      "cost": 54.89908726867645,
+      "thicknesses_nm": [
+        103.1656146941919
+      ],
+      "iterations": 12,
+      "evals": 21,
+      "analytic_jacobians": 13,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0004588290012179641,
+        0.0004613740002241684,
+        0.0004625059991667513,
+        0.00045440100075211376,
+        0.00045331900037126616
+      ],
+      "median_seconds": 0.0004588290012179641,
+      "cost": 179.41709220905167,
+      "thicknesses_nm": [
+        317.03897204973873
+      ],
+      "iterations": 16,
+      "evals": 17,
+      "analytic_jacobians": 16,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.002868925999791827,
+        0.0028048439999110997,
+        0.002688885000679875,
+        0.0025491809992672643,
+        0.002576732000306947
+      ],
+      "median_seconds": 0.002688885000679875,
+      "cost": 54.89908726867615,
+      "thicknesses_nm": [
+        103.1656169525894
+      ],
+      "iterations": 200,
+      "evals": 228,
+      "analytic_jacobians": 54,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "interior control",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0003256470008636825,
+        0.0003291630000603618,
+        0.0003228210007364396,
+        0.0003187239999533631,
+        0.0003230219990655314
+      ],
+      "median_seconds": 0.0003230219990655314,
+      "cost": 54.89908726867667,
+      "thicknesses_nm": [
+        103.16561993566631
+      ],
+      "iterations": 15,
+      "evals": 17,
+      "analytic_jacobians": 10,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0004029930005344795,
+        0.0004008089999842923,
+        0.0004312170003686333,
+        0.00048474799950781744,
+        0.00046062300134508405
+      ],
+      "median_seconds": 0.0004312170003686333,
+      "cost": 54.89908726867645,
+      "thicknesses_nm": [
+        103.1656146941919
+      ],
+      "iterations": 12,
+      "evals": 21,
+      "analytic_jacobians": 13,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.00038480900002468843,
+        0.0003895979989465559,
+        0.00045927000064693857,
+        0.0004181629992672242,
+        0.0004136040006414987
+      ],
+      "median_seconds": 0.0004136040006414987,
+      "cost": 54.89908726867728,
+      "thicknesses_nm": [
+        103.1656213860719
+      ],
+      "iterations": 14,
+      "evals": 51,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0002065820008283481,
+        0.0002009309991990449,
+        0.00020801399841730017,
+        0.00019971899928350467,
+        0.00020248399960109964
+      ],
+      "median_seconds": 0.00020248399960109964,
+      "cost": 54.89908726867614,
+      "thicknesses_nm": [
+        103.16561692262394
+      ],
+      "iterations": 6,
+      "evals": 27,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.00033918299959623255,
+        0.0003394229988771258,
+        0.0003384709998499602,
+        0.00033797099968069233,
+        0.0003341330011608079
+      ],
+      "median_seconds": 0.0003384709998499602,
+      "cost": 54.899087268676446,
+      "thicknesses_nm": [
+        103.16561469455587
+      ],
+      "iterations": 12,
+      "evals": 47,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.00035675599974638317,
+        0.000351957000020775,
+        0.00035410100099397823,
+        0.0003648809997685021,
+        0.0003544310002325801
+      ],
+      "median_seconds": 0.0003544310002325801,
+      "cost": 179.41709220905173,
+      "thicknesses_nm": [
+        317.0389720893561
+      ],
+      "iterations": 16,
+      "evals": 49,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0022553939998033457,
+        0.002537238000513753,
+        0.002706968998609227,
+        0.00258086999929219,
+        0.0025721239999256795
+      ],
+      "median_seconds": 0.0025721239999256795,
+      "cost": 54.89908726867614,
+      "thicknesses_nm": [
+        103.16561688112824
+      ],
+      "iterations": 200,
+      "evals": 326,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "interior control",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0003376099994056858,
+        0.00032160000046133064,
+        0.0003168200000800425,
+        0.0003216900004190393,
+        0.0003180129988322733
+      ],
+      "median_seconds": 0.00032160000046133064,
+      "cost": 54.89908726867665,
+      "thicknesses_nm": [
+        103.16561993185104
+      ],
+      "iterations": 15,
+      "evals": 37,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        40.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0004910309999104356,
+        0.0004961100003129104,
+        0.0004906499998469371,
+        0.0004958999998052604,
+        0.00048131199946510606
+      ],
+      "median_seconds": 0.0004910309999104356,
+      "cost": 54.899087268676446,
+      "thicknesses_nm": [
+        103.16561469458452
+      ],
+      "iterations": 12,
+      "evals": 60,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "builtin",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.000408674000937026,
+        0.0003491320003377041,
+        0.00035206699976697564,
+        0.00034867099930124823,
+        0.0003512860002956586
+      ],
+      "median_seconds": 0.0003512860002956586,
+      "cost": 179.41709220905548,
+      "thicknesses_nm": [
+        317.0389512004893
+      ],
+      "iterations": 12,
+      "evals": 14,
+      "analytic_jacobians": 13,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "minpack_lm",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006354939996526809,
+        0.0006261060007091146,
+        0.0006320980010059429,
+        0.0006681060003757011,
+        0.0006712319991493132
+      ],
+      "median_seconds": 0.0006354939996526809,
+      "cost": 195.85166193396395,
+      "thicknesses_nm": [
+        907.2997512586746
+      ],
+      "iterations": 24,
+      "evals": 26,
+      "analytic_jacobians": 24,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006785850000596838,
+        0.0006674440010101534,
+        0.0006726749998051673,
+        0.0006722939997416688,
+        0.0006651509993389482
+      ],
+      "median_seconds": 0.0006722939997416688,
+      "cost": 54.899087268682564,
+      "thicknesses_nm": [
+        103.16562755957055
+      ],
+      "iterations": 21,
+      "evals": 32,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "interior control/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0026969209993694676,
+        0.0027413740008341847,
+        0.00290789000064251,
+        0.00306241299949761,
+        0.002683745000467752
+      ],
+      "median_seconds": 0.0027413740008341847,
+      "cost": 54.89908726867616,
+      "thicknesses_nm": [
+        103.1656164920181
+      ],
+      "iterations": 200,
+      "evals": 227,
+      "analytic_jacobians": 52,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        9.706399941933341e-05,
+        9.441899965167977e-05,
+        9.919799958879594e-05,
+        9.356800001114607e-05,
+        9.285600026487373e-05
+      ],
+      "median_seconds": 9.441899965167977e-05,
+      "cost": 249.17187857424273,
+      "thicknesses_nm": [
+        999.9999999878818
+      ],
+      "iterations": 1,
+      "evals": 3,
+      "analytic_jacobians": 2,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "basin_trf",
+      "jacobian": "analytic",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0006392909999703988,
+        0.0006367470014083665,
+        0.0006328189992927946,
+        0.0006364459986798465,
+        0.0006612830002268311
+      ],
+      "median_seconds": 0.0006367470014083665,
+      "cost": 54.899087268682564,
+      "thicknesses_nm": [
+        103.16562755957055
+      ],
+      "iterations": 21,
+      "evals": 32,
+      "analytic_jacobians": 22,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "builtin",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.00029032100064796396,
+        0.000290470001345966,
+        0.000292132999675232,
+        0.0002894989993365016,
+        0.0002891079984692624
+      ],
+      "median_seconds": 0.00029032100064796396,
+      "cost": 179.41709220905554,
+      "thicknesses_nm": [
+        317.0389512202824
+      ],
+      "iterations": 12,
+      "evals": 40,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "minpack_lm",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0005326990012690658,
+        0.0005991149992041755,
+        0.0005916209993301891,
+        0.0005211269999563228,
+        0.000525945999470423
+      ],
+      "median_seconds": 0.0005326990012690658,
+      "cost": 195.8516619339641,
+      "thicknesses_nm": [
+        907.2997512493903
+      ],
+      "iterations": 24,
+      "evals": 74,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "trf",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0005535289983527036,
+        0.0005345329991541803,
+        0.0005348730010155123,
+        0.000529282999195857,
+        0.0005382489998737583
+      ],
+      "median_seconds": 0.0005348730010155123,
+      "cost": 54.89908726868254,
+      "thicknesses_nm": [
+        103.1656275597407
+      ],
+      "iterations": 21,
+      "evals": 76,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "argmin_gauss_newton",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "error": "argmin_gauss_newton: J^T J is singular at this point, so the undamped Gauss-Newton step is undefined (Non-invertible matrix). A parameter with no effect on the residual, or a bound the interior map has flattened, is enough to cause it. Use a damped backend (builtin, trf, minpack_lm) on problems that can reach that state -- this one is a baseline, not a hardened solver."
+    },
+    {
+      "case": "interior control/far",
+      "backend": "argmin_trust_region",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.002323532999071176,
+        0.002307963000930613,
+        0.0023078630001691636,
+        0.002314886000021943,
+        0.0023101269998733187
+      ],
+      "median_seconds": 0.0023101269998733187,
+      "cost": 54.899087268676155,
+      "thicknesses_nm": [
+        103.16561694738698
+      ],
+      "iterations": 200,
+      "evals": 336,
+      "analytic_jacobians": 0,
+      "termination": "MaxIterations"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "basin_lm_qr",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        7.691600148973521e-05,
+        7.58440000936389e-05,
+        7.41300009394763e-05,
+        7.403100062219892e-05,
+        7.740700129943434e-05
+      ],
+      "median_seconds": 7.58440000936389e-05,
+      "cost": 249.17187857424273,
+      "thicknesses_nm": [
+        999.9999999878818
+      ],
+      "iterations": 1,
+      "evals": 7,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    },
+    {
+      "case": "interior control/far",
+      "backend": "basin_trf",
+      "jacobian": "fd",
+      "start_nm": [
+        10.0
+      ],
+      "bounds_nm": [
+        0.0,
+        1000.0
+      ],
+      "seconds": [
+        0.0007255250002344837,
+        0.0007423570004903013,
+        0.0007010789995547384,
+        0.0006926330006535864,
+        0.0006919209990883246
+      ],
+      "median_seconds": 0.0007010789995547384,
+      "cost": 54.89908726868256,
+      "thicknesses_nm": [
+        103.16562755975141
+      ],
+      "iterations": 21,
+      "evals": 98,
+      "analytic_jacobians": 0,
+      "termination": "Cost"
+    }
+  ]
+}

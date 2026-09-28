@@ -909,8 +909,8 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///
 /// ``optimizer`` selects the solver itself:
 ///
-/// * ``"builtin"`` (default) -- this crate's bounded LM. The only backend
-///   with bounds semantics of its own: a thickness may end up exactly on a
+/// * ``"builtin"`` (default) -- this crate's bounded LM. A thickness may
+///   end up exactly on a
 ///   bound, which is how the synthesis loop learns a film wants removing.
 /// * ``"minpack_lm"`` -- the ``levenberg-marquardt`` crate (MINPACK
 ///   ``lmdif``-derived), available only if the wheel was built with the
@@ -939,6 +939,28 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///   it always runs the full ``max_iterations`` and always reports
 ///   ``MaxIterations``; budget accordingly and read the cost, not the
 ///   termination reason.
+///
+/// * ``"basin_lm_qr"`` -- Basin's pivoted-QR LM, behind ``opt-basin``.
+///   Runs in the same interior reparametrization as MINPACK. ``gtol`` tests
+///   the absolute gradient and, when enabled, gradient orthogonality;
+///   ``ftol`` tests actual and predicted reduction, and ``xtol`` the attempted
+///   relative step. ``lambda_init`` sets Basin's initial relative damping.
+///   Basin uses Nielsen damping; ``damping``, ``lambda_up``, and
+///   ``lambda_down`` do not apply.
+/// * ``"basin_trf"`` -- Basin's full dense trust-region reflective solver,
+///   behind ``opt-basin``. Native bounds, including fixed coordinates;
+///   finite-difference probes stay feasible. ``gtol`` tests the Coleman-Li
+///   scaled gradient, ``ftol`` observed relative cost change, and ``xtol``
+///   observed relative step. Damping controls and ``gtol_scale_invariant``
+///   do not apply.
+///
+/// Both Basin backends count residual evaluations including adapter finite
+/// differences. ``max_evals`` is checked after initialization and between
+/// iterations, so an iteration can exceed it. ``iterations`` counts Basin's
+/// fully completed iterations. Native convergence reports ``"Gradient"``,
+/// ``"Cost"``, or ``"Step"``, in that order when several tests pass.
+/// All-fixed TRF problems report ``"Converged"``; numerical no-progress
+/// reports ``"Stalled"`` and preserves the result. Costs remain sum(r**2).
 ///
 /// Naming a backend the wheel was not built with raises ``ValueError`` with
 /// the rebuild command -- never a silent fall back to a different solver.
