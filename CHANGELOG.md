@@ -5,6 +5,55 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.22] - a set_properties key that wrote the wrong channel
+
+### Fixed
+- **`Group.set_properties("interface_error_type", ...)` wrote
+  `roughness_error_type` and left `interface_error_type` untouched.** No
+  error, no warning, the wrong field mutated. Measured on a fresh group:
+
+      before: roughness=0 interface=0
+      set_properties({'interface_error_type': 3})
+      after : roughness=3 interface=0
+
+  The dispatch guarded on six key names, then handled five of them with
+  explicit arms and let a catch-all take the sixth. That is only correct
+  while the guard pattern's final alternative and the catch-all's target
+  agree by hand, and here they did not: the last explicit arm and the
+  catch-all both wrote `roughness_error_type`, so roughness was handled
+  twice and interface never.
+
+  `set_properties` is public on the Python `Group`, so a caller
+  configuring the interface channel's error law silently reconfigured
+  roughness instead -- and, because `error_mask` defaults to all-zero,
+  neither channel drew anything until enabled, which is why the subsystem
+  hid this for as long as it hid the mis-scaled defaults of 0.7.17-0.7.21.
+
+  The predecessor of `ErrorType::Cascaded` (0.7.16) is not implicated: the
+  bug predates it and applies to every value. Adding the fourth law only
+  widened the range of wrong writes by one.
+
+### Changed
+- **Three `set_properties` dispatch arms now resolve through
+  `scalar_slot` / `error_type_slot` / `error_params_slot`**, each spelling
+  out every name its caller's guard pattern admits, with `unreachable!`
+  where a field used to sit. The `*_summand` and `*_error_params` arms were
+  *correct*, but they were the same construction as the broken one and one
+  reordering away from the same defect. Adding a channel, or reordering
+  the alternatives, now fails to compile instead of silently writing a
+  neighbouring field. `Layer::set_properties` was checked and needs
+  nothing: every key there already has its own arm.
+
+### Added
+- `set_properties_lands_each_error_type_in_its_own_channel` sets each of
+  the six keys on a fresh group and asserts that channel moved and the
+  other five did not, so a failure names the offending pair
+  (`setting interface_error_type moved roughness_error_type`). Verified to
+  fail before the fix.
+- `set_properties_lands_each_summand_and_params_block_in_its_own_field`
+  pins the two arms that were correct, so the hardening cannot regress
+  unnoticed.
+
 ## [0.7.21] - the thickness tolerance meets a real chamber
 
 ### Changed

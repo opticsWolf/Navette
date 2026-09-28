@@ -503,6 +503,57 @@ impl Group {
         })
     }
 
+    /// The scalar field one `set_properties` key names.
+    ///
+    /// These three resolvers exist so the dispatch cannot drift: each spells
+    /// out every name its caller's guard pattern admits, and the catch-all is
+    /// `unreachable!` instead of a field. The previous form dispatched all but
+    /// the last alternative explicitly and let a catch-all stand for the
+    /// remainder, which is only correct while the guard pattern's final
+    /// alternative and the catch-all's target agree by hand. In
+    /// `*_error_type` they did not: `interface_error_type` fell through to
+    /// `roughness_error_type`. Adding a channel, or reordering the
+    /// alternatives, now fails to compile rather than silently writing a
+    /// neighbouring field.
+    fn scalar_slot(&mut self, key: &str) -> &mut f64 {
+        match key {
+            "thick_factor" => &mut self.thick_factor,
+            "thick_summand" => &mut self.thick_summand,
+            "n_factor" => &mut self.n_factor,
+            "k_factor" => &mut self.k_factor,
+            "inh_delta_summand" => &mut self.inh_delta_summand,
+            "roughness_summand" => &mut self.roughness_summand,
+            "interface_summand" => &mut self.interface_summand,
+            other => unreachable!("scalar_slot on unguarded key '{other}'"),
+        }
+    }
+
+    /// The error-law field one `set_properties` key names. See [`Self::scalar_slot`].
+    fn error_type_slot(&mut self, key: &str) -> &mut ErrorType {
+        match key {
+            "thickness_error_type" => &mut self.thickness_error_type,
+            "n_error_type" => &mut self.n_error_type,
+            "k_error_type" => &mut self.k_error_type,
+            "inh_delta_error_type" => &mut self.inh_delta_error_type,
+            "roughness_error_type" => &mut self.roughness_error_type,
+            "interface_error_type" => &mut self.interface_error_type,
+            other => unreachable!("error_type_slot on unguarded key '{other}'"),
+        }
+    }
+
+    /// The error-params block one `set_properties` key names. See [`Self::scalar_slot`].
+    fn error_params_slot(&mut self, key: &str) -> &mut ErrorParams {
+        match key {
+            "thickness_error_params" => &mut self.thickness_error_params,
+            "inh_delta_error_params" => &mut self.inh_delta_error_params,
+            "roughness_error_params" => &mut self.roughness_error_params,
+            "interface_error_params" => &mut self.interface_error_params,
+            "n_error_params" => &mut self.n_error_params,
+            "k_error_params" => &mut self.k_error_params,
+            other => unreachable!("error_params_slot on unguarded key '{other}'"),
+        }
+    }
+
     /// Bulk-set known properties; unknown keys become returned warnings.
     pub fn set_properties(&mut self, props: &BTreeMap<String, Value>) -> Vec<ValidationIssue> {
         let mut warnings = Vec::new();
@@ -513,18 +564,10 @@ impl Group {
                     Some(s) => self.group_name = s.to_string(),
                     None => warnings.push(bad("ignoring non-string 'group_name'.".to_string())),
                 },
-                "thick_factor" | "thick_summand" | "n_factor" | "k_factor"
-                | "inh_delta_summand" | "roughness_summand" | "interface_summand" => {
+                s @ ("thick_factor" | "thick_summand" | "n_factor" | "k_factor"
+                | "inh_delta_summand" | "roughness_summand" | "interface_summand") => {
                     match value.as_f64() {
-                        Some(v) => match key.as_str() {
-                            "thick_factor" => self.thick_factor = v,
-                            "thick_summand" => self.thick_summand = v,
-                            "n_factor" => self.n_factor = v,
-                            "k_factor" => self.k_factor = v,
-                            "inh_delta_summand" => self.inh_delta_summand = v,
-                            "roughness_summand" => self.roughness_summand = v,
-                            _ => self.interface_summand = v,
-                        },
+                        Some(v) => *self.scalar_slot(s) = v,
                         None => warnings.push(bad(format!("ignoring non-numeric '{key}'."))),
                     }
                 }
@@ -549,14 +592,7 @@ impl Group {
                         .map(|v| v as i32)
                         .map(ErrorType::try_from_i32)
                     {
-                        Some(Ok(e)) => match t {
-                            "thickness_error_type" => self.thickness_error_type = e,
-                            "n_error_type" => self.n_error_type = e,
-                            "k_error_type" => self.k_error_type = e,
-                            "inh_delta_error_type" => self.inh_delta_error_type = e,
-                            "roughness_error_type" => self.roughness_error_type = e,
-                            _ => self.roughness_error_type = e,
-                        },
+                        Some(Ok(e)) => *self.error_type_slot(t) = e,
                         _ => warnings.push(bad(format!("unknown {t}; ignoring."))),
                     }
                 }
@@ -566,14 +602,7 @@ impl Group {
                 | "interface_error_params"
                 | "n_error_params"
                 | "k_error_params") => match serde_json::from_value::<ErrorParams>(value.clone()) {
-                    Ok(ep) => match p {
-                        "thickness_error_params" => self.thickness_error_params = ep,
-                        "inh_delta_error_params" => self.inh_delta_error_params = ep,
-                        "roughness_error_params" => self.roughness_error_params = ep,
-                        "interface_error_params" => self.interface_error_params = ep,
-                        "n_error_params" => self.n_error_params = ep,
-                        _ => self.k_error_params = ep,
-                    },
+                    Ok(ep) => *self.error_params_slot(p) = ep,
                     Err(_) => warnings.push(bad(format!("ignoring malformed '{p}'."))),
                 },
                 other => warnings.push(bad(format!("ignoring unknown attribute '{other}'."))),
@@ -988,6 +1017,69 @@ mod tests {
         g.inh_delta_error_params.abs_mean_delta_g = -100.0;
         g.inh_delta_error_params.abs_std_dev = 0.0;
         assert!(g.inh_delta_error(0.2, &mut r) < 0.0);
+    }
+
+    /// Every `*_error_type` key lands in its own channel and moves no other.
+    ///
+    /// `set_properties` dispatched five of the six names explicitly and let a
+    /// catch-all take the sixth, which only works while the guard pattern's
+    /// last alternative and the catch-all's target agree. They did not:
+    /// `interface_error_type` fell through to `roughness_error_type`, so
+    /// asking for interface silently wrote roughness and left interface
+    /// untouched -- no error, no warning, the wrong field mutated.
+    #[test]
+    fn set_properties_lands_each_error_type_in_its_own_channel() {
+        let read: [(&str, fn(&Group) -> ErrorType); 6] = [
+            ("thickness_error_type", |g| g.thickness_error_type),
+            ("n_error_type", |g| g.n_error_type),
+            ("k_error_type", |g| g.k_error_type),
+            ("inh_delta_error_type", |g| g.inh_delta_error_type),
+            ("roughness_error_type", |g| g.roughness_error_type),
+            ("interface_error_type", |g| g.interface_error_type),
+        ];
+        for (key, _) in read {
+            let mut g = Group::new("g");
+            let mut props = BTreeMap::new();
+            props.insert(key.to_string(), Value::from(ErrorType::Cascaded.as_i32()));
+            let warnings = g.set_properties(&props);
+            assert!(warnings.is_empty(), "{key}: {warnings:?}");
+            for (other, get) in read {
+                let want = if other == key {
+                    ErrorType::Cascaded
+                } else {
+                    ErrorType::Gaussian
+                };
+                assert_eq!(get(&g), want, "setting {key} moved {other}");
+            }
+        }
+    }
+
+    /// The same trap in the sibling arms of `set_properties`: a catch-all
+    /// standing for the guard pattern's last alternative. Both were correct,
+    /// and both were one reordering away from the defect above.
+    #[test]
+    fn set_properties_lands_each_summand_and_params_block_in_its_own_field() {
+        let mut g = Group::new("g");
+        let mut props = BTreeMap::new();
+        props.insert("interface_summand".to_string(), Value::from(3.5));
+        assert!(g.set_properties(&props).is_empty());
+        assert_eq!(g.interface_summand, 3.5);
+        assert_eq!(g.roughness_summand, 0.0);
+        assert_eq!(g.inh_delta_summand, 0.0);
+
+        let mut g = Group::new("g");
+        let mut props = BTreeMap::new();
+        let ep = ErrorParams {
+            abs_std_dev: 7.0,
+            ..ErrorParams::standard()
+        };
+        props.insert(
+            "k_error_params".to_string(),
+            serde_json::to_value(&ep).unwrap(),
+        );
+        assert!(g.set_properties(&props).is_empty());
+        assert_eq!(g.k_error_params.abs_std_dev, 7.0);
+        assert_eq!(g.n_error_params.abs_std_dev, 0.001);
     }
 
     #[test]
