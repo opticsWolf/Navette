@@ -44,8 +44,15 @@ pub struct ErrorParams {
 }
 
 impl ErrorParams {
-    /// The base law params, and the reference the five per-channel
-    /// constructors below are derived from.
+    /// The base law params, and the reference all six per-channel
+    /// constructors below derive from.
+    ///
+    /// Derive, literally: each spells out only the fields it changes and
+    /// takes the rest with `..Self::standard()`. Three of them wrote all
+    /// eight as literals until 0.7.24, which meant a change to the relative
+    /// spreads here would have reached three channels and silently skipped
+    /// the other three. The relative defaults are the shared part, so they
+    /// belong in exactly one place.
     ///
     /// Every channel has its own constructor as of 0.7.20, because the
     /// *absolute* spreads carry the unit of the quantity they perturb and the
@@ -81,14 +88,9 @@ impl ErrorParams {
     /// since a fraction has no unit to convert.
     pub fn roughness() -> Self {
         Self {
-            abs_mean_delta_g: 0.0,
             abs_std_dev: 0.001,
-            rel_mean_delta_g: 0.0,
-            rel_std_dev: 0.01,
-            abs_mean_delta_h: 0.0,
             abs_variance: 0.001,
-            rel_mean_delta_h: 0.0,
-            rel_variance: 0.01,
+            ..Self::standard()
         }
     }
 
@@ -138,11 +140,18 @@ impl ErrorParams {
     /// computes `current_delta = (delta_layer + inh_delta_summand) * 0.5`,
     /// clamps it, and perturbs *that* -- the ramp half-amplitude, which runs
     /// around 0.05 to 0.1 for a typical authored delta of 0.1 to 0.2. It is
-    /// dimensionless: the profile scales the complex index by
-    /// `1 - d ..= 1 + d`. So `standard()`'s 0.01 was a 10-20% absolute
-    /// scatter in nanometre units on a quantity that has no unit; 0.001 is a
-    /// percent-level modulation, in line with `index()` on the index it
-    /// modulates.
+    /// dimensionless: writing `c` for that half-amplitude, the profile scales
+    /// the complex index by `1 - c ..= 1 + c`. So `standard()`'s 0.01 was a
+    /// 10-20% absolute scatter in nanometre units on a quantity that has no
+    /// unit; 0.001 is a percent-level modulation, in line with `index()` on
+    /// the index it modulates.
+    ///
+    /// The letter matters here. `Layer::validate` writes the authored
+    /// `inh_delta` as `d` and its window as `1 - d/2 ..= 1 + d/2`; this is
+    /// the same physical ramp seen after the halving, so `c = d/2` and the
+    /// two windows are one window. Both were written `d` until 0.7.24, which
+    /// put a factor of two between two identically-named quantities in one
+    /// module.
     ///
     /// Unlike the length channels this one is signed at the point of the
     /// draw -- the cap is `clamp(-cap, cap)` and a negative amplitude simply
@@ -167,14 +176,9 @@ impl ErrorParams {
     /// starts to matter and `nk_error`'s floor at 0 is the only backstop.
     pub fn index() -> Self {
         Self {
-            abs_mean_delta_g: 0.0,
             abs_std_dev: 0.001,
-            rel_mean_delta_g: 0.0,
-            rel_std_dev: 0.01,
-            abs_mean_delta_h: 0.0,
             abs_variance: 0.001,
-            rel_mean_delta_h: 0.0,
-            rel_variance: 0.01,
+            ..Self::standard()
         }
     }
 
@@ -195,14 +199,9 @@ impl ErrorParams {
     /// already well behaved.
     pub fn extinction() -> Self {
         Self {
-            abs_mean_delta_g: 0.0,
             abs_std_dev: 0.0001,
-            rel_mean_delta_g: 0.0,
-            rel_std_dev: 0.01,
-            abs_mean_delta_h: 0.0,
             abs_variance: 0.0001,
-            rel_mean_delta_h: 0.0,
-            rel_variance: 0.01,
+            ..Self::standard()
         }
     }
 }
@@ -678,12 +677,17 @@ mod tests {
         StdRng::seed_from_u64(7)
     }
 
-    /// The constructor's defaults, pinned. Named for the Python ctor it was
-    /// originally an oracle for; the scaling factors and masks still match it
-    /// exactly, but the error params deliberately no longer do -- see the
-    /// comment on the loops below.
+    /// Every `Group::new` default, pinned.
+    ///
+    /// It began as a Python-parity oracle and was still called
+    /// `defaults_match_python_ctor` at 0.7.23, by which point its own doc
+    /// comment had to concede that the error params deliberately no longer
+    /// match Python's. The factors, summands, masks and law choice still do,
+    /// and those assertions are unchanged; the error params are pinned
+    /// per channel instead, so a change has to be deliberate rather than
+    /// merely passing.
     #[test]
-    fn defaults_match_python_ctor() {
+    fn constructor_defaults_are_pinned() {
         let g = Group::new("TiO2");
         assert_eq!((g.thick_factor, g.thick_summand), (1.0, 0.0));
         assert_eq!((g.n_factor, g.k_factor), (1.0, 1.0));
@@ -706,8 +710,25 @@ mod tests {
         ] {
             assert_eq!(abs, want, "{channel} abs_std_dev");
         }
-        // The uniform half-width tracks the Gaussian sigma in every channel,
-        // so switching ErrorType cannot change the scale of the scatter.
+        // The uniform half-width takes the same number as the Gaussian sigma
+        // in every channel, so the two laws stay within a small factor of one
+        // another and switching `ErrorType` cannot change the scatter by an
+        // order of magnitude.
+        //
+        // It does not make them equal, and an earlier version of this comment
+        // claimed it did. A uniform of half-width `w` has standard deviation
+        // `w/sqrt(3)`, so matching the numbers leaves the uniform law 42%
+        // NARROWER in sigma, on bounded rather than unbounded support; and
+        // `Combined`/`Cascaded` add the two in quadrature, so they are wider
+        // than either. Measured on a 100 nm layer at the thickness defaults
+        // (abs 0.5 nm, rel 0.01):
+        //
+        //   Gaussian sigma 1.105   Uniform sigma 0.647  (-41%)
+        //   Combined sigma 1.283   Cascaded sigma 1.283  (+16% vs Gaussian)
+        //
+        // Equal *numbers* is the property worth pinning -- it is what keeps a
+        // channel's two spreads from drifting apart by a factor of ten -- so
+        // the assertion stands; only the reason given for it was wrong.
         for (channel, params) in [
             ("thickness", &g.thickness_error_params),
             ("roughness", &g.roughness_error_params),
@@ -957,11 +978,26 @@ mod tests {
         }
     }
 
-    /// The expansion path builds the same law out of a scalar `(abs, rel)`
-    /// pair, since `(1 + g)(1 + u) = 1 + (g + u + g*u)`. Both call sites must
-    /// therefore agree on the value, whatever order they draw in.
+    /// The factored law reduces to one scalar `(abs, rel)` pair, since
+    /// `(1 + g)(1 + u) = 1 + (g + u + g*u)`. That is what lets
+    /// `expansion::channel_draws` carry `Cascaded` without changing its
+    /// signature or its call sites.
+    ///
+    /// This checks the *algebra*, from `apply_error`'s draw order on both
+    /// sides. It was called `cascaded_agrees_across_both_draw_paths` until
+    /// 0.7.24, which overstated it twice over: it never calls
+    /// `channel_draws`, and the two paths do not in fact produce the same
+    /// number from the same stream state. They draw in deliberately
+    /// different orders -- `channel_draws` takes the abs pair then the rel
+    /// pair, `apply_error` takes `g_abs, g_rel, u_abs, u_rel` -- so the same
+    /// seed feeds the four draws to different slots. Nothing is broken by
+    /// that: the two serve different channels (`channel_draws` does n and k
+    /// at expansion, `apply_error` the other four and the `nk_error` probe)
+    /// on independent per-side streams, and it is equally true of
+    /// `Combined`, which predates this law. But no test should be read as
+    /// promising they agree numerically, because they do not.
     #[test]
-    fn cascaded_agrees_across_both_draw_paths() {
+    fn cascaded_reduces_to_one_scalar_rel_pair() {
         let p = ErrorParams::standard();
         let mut a = rng();
         let mut b = rng();

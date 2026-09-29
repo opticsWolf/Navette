@@ -5,6 +5,64 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.24] - four comments from the error pass that did not survive checking
+
+No behaviour change. Reviewing 0.7.15-0.7.23 turned up four claims in
+their own comments and test names that are wrong or overstated. The code
+they describe was right; the descriptions were not, and a wrong comment
+next to correct code costs the next reader more than no comment.
+
+### Fixed
+- **`constructor_defaults_are_pinned` (was `defaults_match_python_ctor`)
+  justified `abs_variance == abs_std_dev` with "switching ErrorType cannot
+  change the scale of the scatter".** It can. A uniform of half-width `w`
+  has standard deviation `w/sqrt(3)`, so equal *numbers* leave the uniform
+  law 42% narrower in sigma, on bounded rather than unbounded support, and
+  `Combined`/`Cascaded` add the two in quadrature so they exceed either.
+  Measured on a 100 nm layer at the thickness defaults:
+
+      Gaussian sigma 1.105   Uniform sigma 0.647  (-41%)
+      Combined sigma 1.283   Cascaded sigma 1.283  (+16% vs Gaussian)
+
+  The assertion stands -- equal numbers is what keeps a channel's two
+  spreads from drifting apart by a factor of ten -- but the reason given
+  for it was false. The name was also stale: the test's own doc comment
+  had to concede that the error params deliberately no longer match
+  Python's ctor.
+- **`cascaded_reduces_to_one_scalar_rel_pair` (was
+  `cascaded_agrees_across_both_draw_paths`) overstated itself twice.** It
+  never calls `channel_draws`, and the two paths do *not* produce the same
+  number from the same stream state: `channel_draws` takes the abs pair
+  then the rel pair, `apply_error` takes `g_abs, g_rel, u_abs, u_rel`, so
+  one seed feeds the four draws to different slots. Nothing is broken by
+  that -- they serve different channels on independent per-side streams,
+  and it is equally true of `Combined`, which predates `Cascaded` -- but no
+  test name should promise a numeric agreement that does not hold. What the
+  test actually checks, the algebraic reduction `(1+g)(1+u) = 1+(g+u+g*u)`,
+  is what lets `channel_draws` carry the law without changing its
+  signature.
+- **The `ErrorType` docs did not say `Cascaded` is inert at the shipped
+  defaults.** The cross term is `G_rel * U_rel`, so with both relative
+  spreads at 0.01 and both centres at 0.0 it is of order 1e-4: sigma
+  `1.28283` against `Combined`'s `1.28293`, a relative difference of 1e-5.
+  Anyone switching laws to see what changes would have seen nothing and
+  reasonably concluded the law was not wired. Both the Rust and Python docs
+  now say to set the centres, and name the case the law is for: two
+  multiplicative stages of 10% compose to 21%, and the cross term is that
+  1%.
+- **`inh_delta()` wrote the grading window as `1 - d ..= 1 + d` while
+  `Layer::validate` writes `1 - d/2 ..= 1 + d/2`** -- the same letter for
+  two quantities a factor of two apart, in one module. The half-amplitude
+  is now `c`, with `c = d/2` stated, so the two windows read as the one
+  window they are.
+
+### Changed
+- **`roughness()`, `index()` and `extinction()` now derive from
+  `standard()`** like the other three, instead of spelling all eight fields
+  as literals. A change to the shared relative defaults would have reached
+  three channels and silently skipped three. The values are unchanged and
+  `constructor_defaults_are_pinned` proves it.
+
 ## [0.7.23] - the per-channel defaults only covered an omitted block
 
 ### Fixed

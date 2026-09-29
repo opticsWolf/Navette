@@ -43,6 +43,20 @@ class ErrorType(IntEnum):
     one factor is then 1 -- in float, to a rounding rather than bitwise.
 
     The absolute channel stays additive and outside the product in both.
+
+    **Set the centres, or CASCADED does nothing.** The cross term is
+    ``G_rel * U_rel``, so at the shipped defaults -- both relative spreads
+    0.01, both relative centres 0.0 -- it is of order 1e-4 and CASCADED is
+    numerically indistinguishable from COMBINED. Measured on a 100 nm layer
+    at the thickness defaults, the two scatter at sigma 1.28283 and 1.28293:
+    a relative difference of 1e-5, which reads as "nothing happened" to
+    anyone switching laws to see what changes. The law separates only when
+    the relative channels carry real weight -- a systematic
+    ``rel_mean_delta_g`` or ``rel_mean_delta_h``, or a relative spread well
+    above a percent. That is the case it is for: a rate calibration off by a
+    known few percent, then a per-run monitor error acting on the
+    already-mis-calibrated deposit. Two stages of 10% compose to 21%, not
+    20%, and the cross term is that 1%.
     """
     GAUSSIAN = 0
     UNIFORM = 1
