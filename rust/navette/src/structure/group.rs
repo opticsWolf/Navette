@@ -44,6 +44,41 @@ pub struct ErrorParams {
 }
 
 impl ErrorParams {
+    /// The eight field names, in declaration order.
+    pub const FIELDS: [&'static str; 8] = [
+        "abs_mean_delta_g",
+        "abs_std_dev",
+        "rel_mean_delta_g",
+        "rel_std_dev",
+        "abs_mean_delta_h",
+        "abs_variance",
+        "rel_mean_delta_h",
+        "rel_variance",
+    ];
+
+    /// The fields a JSON object does not carry, in declaration order.
+    ///
+    /// Both live doors -- `Group::set_properties` and the `set_error_params`
+    /// binding -- deserialize a whole `ErrorParams`, so an incomplete block
+    /// is refused. Until 0.7.26 they refused it as "malformed", which is the
+    /// wrong word for a well-formed subset and sent the reader looking for a
+    /// syntax error that was not there; serde names only the first missing
+    /// field, so even a careful reader fixed them one round trip at a time.
+    /// This names all of them at once.
+    ///
+    /// Empty for a non-object, where the block really is malformed and
+    /// serde's own message is the better one.
+    pub fn missing_fields(value: &Value) -> Vec<&'static str> {
+        match value.as_object() {
+            Some(map) => Self::FIELDS
+                .iter()
+                .copied()
+                .filter(|f| !map.contains_key(*f))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// The base law params, and the reference all six per-channel
     /// constructors below derive from.
     ///
@@ -602,7 +637,26 @@ impl Group {
                 | "n_error_params"
                 | "k_error_params") => match serde_json::from_value::<ErrorParams>(value.clone()) {
                     Ok(ep) => *self.error_params_slot(p) = ep,
-                    Err(_) => warnings.push(bad(format!("ignoring malformed '{p}'."))),
+                    Err(e) => {
+                        let missing = ErrorParams::missing_fields(value);
+                        // Only absence gets the incompleteness message. A bad
+                        // *value* on a field that IS present keeps serde's own
+                        // diagnosis, or naming the absent fields would bury the
+                        // one thing actually wrong with what was written.
+                        warnings.push(bad(
+                            if missing.is_empty() || !e.to_string().starts_with("missing field") {
+                                format!("ignoring malformed '{p}': {e}.")
+                            } else {
+                                format!(
+                                    "ignoring incomplete '{p}': missing {}. A params block \
+                                 replaces the channel whole, so all eight fields are \
+                                 required; to change a few, edit a copy of the current \
+                                 block rather than naming only what moves.",
+                                    missing.join(", ")
+                                )
+                            },
+                        ));
+                    }
                 },
                 other => warnings.push(bad(format!("ignoring unknown attribute '{other}'."))),
             }
@@ -1088,6 +1142,68 @@ mod tests {
                 assert_eq!(get(&g), want, "setting {key} moved {other}");
             }
         }
+    }
+
+    /// An incomplete params block is named as incomplete, with every missing
+    /// field listed, not as "malformed" with one of them.
+    #[test]
+    fn an_incomplete_params_block_names_every_missing_field() {
+        let mut g = Group::new("g");
+        let mut props = BTreeMap::new();
+        props.insert(
+            "k_error_params".to_string(),
+            serde_json::json!({"abs_std_dev": 0.5, "rel_std_dev": 0.02}),
+        );
+        let warnings = g.set_properties(&props);
+        assert_eq!(warnings.len(), 1);
+        let msg = warnings[0].message.clone();
+        assert!(msg.contains("incomplete"), "{msg}");
+        assert!(!msg.contains("malformed"), "{msg}");
+        // The six absent fields, all of them, and neither of the two present.
+        for f in [
+            "abs_mean_delta_g",
+            "rel_mean_delta_g",
+            "abs_mean_delta_h",
+            "abs_variance",
+            "rel_mean_delta_h",
+            "rel_variance",
+        ] {
+            assert!(msg.contains(f), "missing field {f} not named: {msg}");
+        }
+        // Refusal is unchanged: the block is still not applied.
+        assert_eq!(g.k_error_params, ErrorParams::extinction());
+
+        // A block that is genuinely malformed keeps serde's own diagnosis.
+        let mut props = BTreeMap::new();
+        props.insert("k_error_params".to_string(), serde_json::json!("nonsense"));
+        let warnings = g.set_properties(&props);
+        assert!(warnings[0].message.contains("malformed"), "{warnings:?}");
+
+        // A bad VALUE on a present field keeps serde's diagnosis too, even
+        // though the block is also incomplete -- otherwise listing the absent
+        // fields would bury the one thing actually wrong with what was typed.
+        let mut props = BTreeMap::new();
+        props.insert(
+            "k_error_params".to_string(),
+            serde_json::json!({"abs_std_dev": "not a number"}),
+        );
+        let warnings = g.set_properties(&props);
+        let msg = warnings[0].message.clone();
+        assert!(msg.contains("malformed"), "{msg}");
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(!msg.contains("incomplete"), "{msg}");
+    }
+
+    #[test]
+    fn missing_fields_lists_declaration_order_and_nothing_for_a_complete_block() {
+        let complete = serde_json::to_value(ErrorParams::standard()).unwrap();
+        assert!(ErrorParams::missing_fields(&complete).is_empty());
+        assert_eq!(
+            ErrorParams::missing_fields(&serde_json::json!({})),
+            ErrorParams::FIELDS.to_vec()
+        );
+        // Not an object: serde's message is the better one, so nothing here.
+        assert!(ErrorParams::missing_fields(&serde_json::json!(7)).is_empty());
     }
 
     /// The same trap in the sibling arms of `set_properties`: a catch-all

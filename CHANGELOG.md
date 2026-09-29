@@ -5,6 +5,63 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.26] - an incomplete params block said the wrong thing
+
+A params block replaces a channel whole, so all eight fields are required.
+That contract is unchanged here; what it *said* when you broke it was
+wrong twice over.
+
+### Fixed
+- **A well-formed subset was reported as "malformed".** The wrong word: it
+  sends the reader looking for a syntax error that is not there. Both live
+  doors now say "incomplete" and reserve "malformed" for input that really
+  is.
+- **serde named only the first missing field**, so fixing one block cost a
+  round trip per field -- add `abs_mean_delta_g`, run again, learn about
+  `rel_mean_delta_g`, run again. `ErrorParams::missing_fields` now lists
+  every absent field at once, in declaration order, and both doors say how
+  to fix it: edit a copy of the current block. `set_error_params` names the
+  channel, so its suggestion is copy-pasteable:
+
+      set_error_params: incomplete params, missing abs_mean_delta_g,
+      rel_mean_delta_g, rel_std_dev, abs_mean_delta_h, abs_variance,
+      rel_mean_delta_h, rel_variance. A params block replaces the channel
+      whole, so all eight fields are required; to change a few, edit a copy
+      of the current block -- group.set_error_params(channel,
+      {**group.thickness_error_params, ...}).
+
+  A bad *value* on a field that is present -- a string where a float
+  belongs -- keeps serde's own diagnosis even when the block is also
+  incomplete, since listing the absent fields would otherwise bury the one
+  thing actually wrong with what was typed.
+
+### Not changed, deliberately
+- **`set_properties` still warns rather than raising.** Raising was
+  considered and rejected: the method's contract is uniform across every
+  key class it handles -- collect warnings, apply what is valid, never
+  raise -- and making this one key the exception would trade a known
+  inconsistency for a new one. It is a bulk applier; a caller passing
+  twenty properties should not lose nineteen good ones to one bad block.
+  `set_error_params`, the single-channel door, raises as it always has.
+  Both now carry the same diagnosis.
+- **Neither door merges onto the current value.** Partial blocks arise only
+  from hand-authored input, never from a round trip (`get_state`,
+  `to_dict` and `model_dump` all emit all eight), and the hand-authoring
+  surface that mattered -- the config document -- was fixed at 0.7.23 with
+  per-channel defaults. What remains is ergonomics, and it costs nothing at
+  runtime: the eight-field parse happens once at setup, while the draw path
+  reads a plain `&ErrorParams` struct field. Measured on a 3-layer stack
+  with all six channels enabled, 10,000 draws spend 0.030 s drawing and
+  0.000003 s on setup -- 0.009%.
+
+### Added
+- `an_incomplete_params_block_names_every_missing_field` pins the wording,
+  the full missing list, the refusal itself, and both fallbacks to serde.
+- `missing_fields_lists_declaration_order_and_nothing_for_a_complete_block`.
+- `test_incomplete_params_are_named_incomplete_not_malformed` covers both
+  doors from Python, including that `set_properties` applies its other keys
+  in the same call and that the suggested copy idiom works.
+
 ## [0.7.25] - the four error laws get Python-side coverage
 
 ### Added

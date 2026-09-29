@@ -211,6 +211,45 @@ def test_each_error_law_has_its_own_signature():
   assert sd[ErrorType.COMBINED] == pytest.approx(1.283, abs=0.02)
 
 
+def test_incomplete_params_are_named_incomplete_not_malformed():
+  # A params block replaces the channel whole, so all eight fields are
+  # required. Until 0.7.26 both live doors called a well-formed subset
+  # "malformed" -- the wrong word, pointing at a syntax error that is not
+  # there -- and serde named only the FIRST missing field, so fixing one
+  # block took a round trip per field.
+  g = Group("T")
+  with pytest.raises(ValueError) as e:
+    g.set_error_params("thickness", {"abs_std_dev": 1.0, "rel_std_dev": 0.02})
+  msg = str(e.value)
+  assert "incomplete" in msg and "malformed" not in msg, msg
+  for field in ("abs_mean_delta_g", "rel_mean_delta_g", "abs_mean_delta_h",
+                "abs_variance", "rel_mean_delta_h", "rel_variance"):
+    assert field in msg, f"{field} not named: {msg}"
+  # It names the channel, so the suggested idiom is copy-pasteable.
+  assert "thickness_error_params" in msg, msg
+  # And that idiom works.
+  g.set_error_params("thickness", {**g.thickness_error_params, "abs_std_dev": 1.0})
+  assert g.thickness_error_params["abs_std_dev"] == 1.0
+  assert g.thickness_error_params["rel_std_dev"] == 0.01  # untouched
+
+  # set_properties warns rather than raising -- its documented contract for
+  # every key class -- but carries the same diagnosis and still applies the
+  # other properties in the same call.
+  g2 = Group("T")
+  with pytest.warns(UserWarning, match="incomplete 'k_error_params'"):
+    g2.set_properties({"k_error_params": {"abs_std_dev": 1.0},
+                       "thick_factor": 1.5})
+  assert g2.thick_factor == 1.5              # the good key landed
+  assert g2.k_error_params["abs_std_dev"] == 0.0001  # the bad one did not
+
+  # A bad VALUE on a present field keeps the type diagnosis, even though the
+  # block is also incomplete: listing the absent fields must not bury the one
+  # thing actually wrong with what was typed.
+  with pytest.raises(ValueError) as e:
+    g.set_error_params("thickness", {"abs_std_dev": "not a number"})
+  assert "invalid type" in str(e.value) and "incomplete" not in str(e.value)
+
+
 def test_cascaded_is_inert_at_defaults_and_parts_once_centred():
   # The claim the 0.7.24 docs make, pinned. The cross term is G_rel*U_rel, so
   # at the shipped defaults (relative spreads 0.01, centres 0.0) CASCADED is
