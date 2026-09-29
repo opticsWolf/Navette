@@ -13,6 +13,7 @@ import navette.structure.models as models_mod
 from navette.structure import (
   BlockKind,
   DictMaterialProvider,
+  ErrorType,
   Group,
   Layer,
   Navette_Architect,
@@ -151,13 +152,131 @@ def test_from_state_bad_ref_raises():
 def test_apply_error_is_systematic_across_wl():
   from navette._structure import apply_error
   # Pinned defaults (both implementations agree; avoids impl-specific accessors).
+  # The rel_* spreads are unit-free fractions: 0.01 is a 1% relative scatter.
+  # They read 1.0 -- i.e. 100% -- through 0.7.16; see ErrorParams::standard().
   params = dict(abs_mean_delta_g=0.0, abs_std_dev=0.01, rel_mean_delta_g=0.0,
-                rel_std_dev=1.0, abs_mean_delta_h=0.0, abs_variance=0.01,
-                rel_mean_delta_h=0.0, rel_variance=1.0)
+                rel_std_dev=0.01, abs_mean_delta_h=0.0, abs_variance=0.01,
+                rel_mean_delta_h=0.0, rel_variance=0.01)
   out1 = np.array([apply_error(1.5, 0, params, seed=3) for _ in range(4)])
   out2 = np.array([apply_error(1.5, 0, params, seed=3) for _ in range(4)])
   np.testing.assert_allclose(out1, out2)  # seeded reproducible
   assert np.ptp(out1) == 0.0  # one offset across lambda, not per-lambda noise
+
+
+# ErrorType, from Python -------------------------------------------------------------
+# The suite exercised no law behaviourally before 0.7.25: `*_error_type`
+# appeared only as key NAMES in the state key-set assertion, so UNIFORM and
+# COMBINED went uncovered from the day they were written, and CASCADED joined
+# them at 0.7.16. What the Rust tests cannot cover is the discriminant
+# crossing the PyO3 boundary -- `impl_int_coercion!` and the setter's refusal.
+def test_every_error_type_crosses_the_boundary():
+  g = Group("T")
+  for et in ErrorType:
+    g.set_error_type("thickness", int(et))
+    assert g.thickness_error_type == int(et), et.name
+  # CASCADED is the newest discriminant; a fifth value must still be refused
+  # rather than silently coerced to one of the four.
+  with pytest.raises(ValueError, match="invalid discriminant 4"):
+    g.set_error_type("thickness", 4)
+
+
+def test_each_error_law_has_its_own_signature():
+  # Draws at the shipped thickness defaults (abs 0.5 nm, rel 0.01) on a
+  # 100 nm layer, so the numbers here are the documented ones.
+  nominal = 100.0
+  draws = {}
+  for et in ErrorType:
+    g = Group("T")
+    g.set_error_type("thickness", int(et))
+    draws[et] = np.array(
+      [g.thickness_error(nominal, seed=s) for s in range(20_000)])
+
+  # UNIFORM has bounded support: |delta| <= abs + rel*v = 0.5 + 1.0.
+  assert np.all(np.abs(draws[ErrorType.UNIFORM] - nominal) <= 1.5)
+  # GAUSSIAN does not -- it must exceed the uniform law's hard bound.
+  assert np.abs(draws[ErrorType.GAUSSIAN] - nominal).max() > 1.5
+  # Every law is centred on the nominal (all four centres default to 0.0).
+  for et, v in draws.items():
+    assert abs(v.mean() - nominal) < 0.05, et.name
+
+  # Equal NUMBERS for sigma and half-width do not mean equal scatter: a
+  # uniform of half-width w has sigma w/sqrt(3), so UNIFORM is the narrowest,
+  # and COMBINED sums both laws so it exceeds either. See ErrorParams
+  # ::standard() -- an earlier comment there claimed switching laws could not
+  # change the scale, which is false by ~40%.
+  sd = {et: v.std() for et, v in draws.items()}
+  assert sd[ErrorType.UNIFORM] < sd[ErrorType.GAUSSIAN] < sd[ErrorType.COMBINED]
+  assert sd[ErrorType.UNIFORM] == pytest.approx(0.647, abs=0.02)
+  assert sd[ErrorType.GAUSSIAN] == pytest.approx(1.105, abs=0.02)
+  assert sd[ErrorType.COMBINED] == pytest.approx(1.283, abs=0.02)
+
+
+def test_incomplete_params_are_named_incomplete_not_malformed():
+  # A params block replaces the channel whole, so all eight fields are
+  # required. Until 0.7.26 both live doors called a well-formed subset
+  # "malformed" -- the wrong word, pointing at a syntax error that is not
+  # there -- and serde named only the FIRST missing field, so fixing one
+  # block took a round trip per field.
+  g = Group("T")
+  with pytest.raises(ValueError) as e:
+    g.set_error_params("thickness", {"abs_std_dev": 1.0, "rel_std_dev": 0.02})
+  msg = str(e.value)
+  assert "incomplete" in msg and "malformed" not in msg, msg
+  for field in ("abs_mean_delta_g", "rel_mean_delta_g", "abs_mean_delta_h",
+                "abs_variance", "rel_mean_delta_h", "rel_variance"):
+    assert field in msg, f"{field} not named: {msg}"
+  # It names the channel, so the suggested idiom is copy-pasteable.
+  assert "thickness_error_params" in msg, msg
+  # And that idiom works.
+  g.set_error_params("thickness", {**g.thickness_error_params, "abs_std_dev": 1.0})
+  assert g.thickness_error_params["abs_std_dev"] == 1.0
+  assert g.thickness_error_params["rel_std_dev"] == 0.01  # untouched
+
+  # set_properties warns rather than raising -- its documented contract for
+  # every key class -- but carries the same diagnosis and still applies the
+  # other properties in the same call.
+  g2 = Group("T")
+  with pytest.warns(UserWarning, match="incomplete 'k_error_params'"):
+    g2.set_properties({"k_error_params": {"abs_std_dev": 1.0},
+                       "thick_factor": 1.5})
+  assert g2.thick_factor == 1.5              # the good key landed
+  assert g2.k_error_params["abs_std_dev"] == 0.0001  # the bad one did not
+
+  # A bad VALUE on a present field keeps the type diagnosis, even though the
+  # block is also incomplete: listing the absent fields must not bury the one
+  # thing actually wrong with what was typed.
+  with pytest.raises(ValueError) as e:
+    g.set_error_params("thickness", {"abs_std_dev": "not a number"})
+  assert "invalid type" in str(e.value) and "incomplete" not in str(e.value)
+
+
+def test_cascaded_is_inert_at_defaults_and_parts_once_centred():
+  # The claim the 0.7.24 docs make, pinned. The cross term is G_rel*U_rel, so
+  # at the shipped defaults (relative spreads 0.01, centres 0.0) CASCADED is
+  # indistinguishable from COMBINED -- which is why the docs tell the reader
+  # to set the centres rather than just switching laws.
+  out = {}
+  for name in ("COMBINED", "CASCADED"):
+    g = Group("T")
+    g.set_error_type("thickness", int(ErrorType[name]))
+    out[name] = np.array([g.thickness_error(100.0, seed=s) for s in range(4000)])
+  rel = abs(out["CASCADED"].std() - out["COMBINED"].std()) / out["COMBINED"].std()
+  assert rel < 1e-3, f"defaults should be inert, got {rel}"
+
+  # With both relative stages carrying a systematic 10%, the laws separate by
+  # exactly the cross term: COMBINED gives 1 + 0.1 + 0.1 = 1.20 of nominal,
+  # CASCADED gives 1.1 * 1.1 = 1.21. Zero spreads make the draw deterministic.
+  centred = dict(abs_mean_delta_g=0.0, abs_std_dev=0.0, rel_mean_delta_g=0.1,
+                 rel_std_dev=0.0, abs_mean_delta_h=0.0, abs_variance=0.0,
+                 rel_mean_delta_h=0.1, rel_variance=0.0)
+  got = {}
+  for name, want in (("COMBINED", 120.0), ("CASCADED", 121.0)):
+    g = Group("T")
+    g.set_error_params("thickness", dict(centred))
+    g.set_error_type("thickness", int(ErrorType[name]))
+    got[name] = g.thickness_error(100.0, seed=11)
+    assert got[name] == pytest.approx(want, abs=1e-9), name
+  assert got["CASCADED"] - got["COMBINED"] == pytest.approx(1.0, abs=1e-9)
 
 
 # bake_films -------------------------------------------------------------------------
@@ -454,10 +573,15 @@ def test_errors_still_block():
 
 # NIT-6: from_state deep-copies (also pinned in test_roundtrip) --------------------
 def test_group_from_state_independent_params():
+  # What is under test is that from_state deep-copies, so the original's
+  # value is captured rather than hard-coded: the default has moved twice
+  # (0.7.17, 0.7.21) and the copy semantics are what this guards.
   g = Group("x")
+  before = g.thickness_error_params["abs_std_dev"]
   back = Group.from_state(g.get_state())
+  assert back.thickness_error_params["abs_std_dev"] == before
   back.thickness_error_params["abs_std_dev"] = 99.0
-  assert g.thickness_error_params["abs_std_dev"] == 0.01
+  assert g.thickness_error_params["abs_std_dev"] == before
 
 
 # NIT-7: provider-overwrite warning --------------------------------------------------

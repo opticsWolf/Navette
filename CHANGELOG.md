@@ -5,6 +5,519 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.27] - the error model had shipped undocumented for eleven releases
+
+0.7.15 through 0.7.26 built, fixed and tested a six-channel fabrication-error
+model. The README mentioned the word "error" exactly once in all that time,
+and only about Névot-Croce roughness. A reader of this project had no way to
+know the subsystem existed.
+
+### Added
+- **README: "Fabrication Tolerances as a Model, Not a Postscript"** in the
+  synthesis section. It names the six channels and the four laws, gives the
+  common shape `v_out = v·(1 + rel) + abs`, and spends its length on the two
+  things a reader cannot guess from a signature: why `Cascaded` composes the
+  relative stages as `v·(1 + G)·(1 + U)` rather than summing them (stages in
+  series -- a mis-calibrated rate, then a monitor error acting on the
+  already-wrong deposit; 10% and 10% make 21%, and that percent is the whole
+  difference between `Cascaded` and `Combined`), and why the six channels
+  carry separate defaults (an absolute spread has the unit of what it
+  perturbs, so the 0.5 nm that suits a thickness would put about half of all
+  `k` draws below zero -- optical gain, which stops the run at the gain door
+  instead of reporting a tolerance). Also: the all-zero `error_mask`, floors
+  on the result rather than on the error, and the measured cost.
+- **README: a `Fabrication Tolerances` row** in Technical Specifications,
+  where a reader skimming the table for capabilities will actually look.
+- **README: the release section now admits two gaps of its own.** The wheel
+  filename in that section is a seventh version site that the CI gate cannot
+  check, because it is prose; it is maintained by hand. And nothing anywhere
+  checks that a shipped feature is described here at all -- every claim in
+  this README is backed by a test, but no test requires a claim to exist.
+  The release notes say to read the feature list against what the release
+  added, and why: this subsystem stayed invisible precisely because its mask
+  defaults to all-zero, so nothing else had occasion to mention it either.
+
+## [0.7.26] - an incomplete params block said the wrong thing
+
+A params block replaces a channel whole, so all eight fields are required.
+That contract is unchanged here; what it *said* when you broke it was
+wrong twice over.
+
+### Fixed
+- **A well-formed subset was reported as "malformed".** The wrong word: it
+  sends the reader looking for a syntax error that is not there. Both live
+  doors now say "incomplete" and reserve "malformed" for input that really
+  is.
+- **serde named only the first missing field**, so fixing one block cost a
+  round trip per field -- add `abs_mean_delta_g`, run again, learn about
+  `rel_mean_delta_g`, run again. `ErrorParams::missing_fields` now lists
+  every absent field at once, in declaration order, and both doors say how
+  to fix it: edit a copy of the current block. `set_error_params` names the
+  channel, so its suggestion is copy-pasteable:
+
+      set_error_params: incomplete params, missing abs_mean_delta_g,
+      rel_mean_delta_g, rel_std_dev, abs_mean_delta_h, abs_variance,
+      rel_mean_delta_h, rel_variance. A params block replaces the channel
+      whole, so all eight fields are required; to change a few, edit a copy
+      of the current block -- group.set_error_params(channel,
+      {**group.thickness_error_params, ...}).
+
+  A bad *value* on a field that is present -- a string where a float
+  belongs -- keeps serde's own diagnosis even when the block is also
+  incomplete, since listing the absent fields would otherwise bury the one
+  thing actually wrong with what was typed.
+
+### Not changed, deliberately
+- **`set_properties` still warns rather than raising.** Raising was
+  considered and rejected: the method's contract is uniform across every
+  key class it handles -- collect warnings, apply what is valid, never
+  raise -- and making this one key the exception would trade a known
+  inconsistency for a new one. It is a bulk applier; a caller passing
+  twenty properties should not lose nineteen good ones to one bad block.
+  `set_error_params`, the single-channel door, raises as it always has.
+  Both now carry the same diagnosis.
+- **Neither door merges onto the current value.** Partial blocks arise only
+  from hand-authored input, never from a round trip (`get_state`,
+  `to_dict` and `model_dump` all emit all eight), and the hand-authoring
+  surface that mattered -- the config document -- was fixed at 0.7.23 with
+  per-channel defaults. What remains is ergonomics, and it costs nothing at
+  runtime: the eight-field parse happens once at setup, while the draw path
+  reads a plain `&ErrorParams` struct field. Measured on a 3-layer stack
+  with all six channels enabled, 10,000 draws spend 0.030 s drawing and
+  0.000003 s on setup -- 0.009%.
+
+### Added
+- `an_incomplete_params_block_names_every_missing_field` pins the wording,
+  the full missing list, the refusal itself, and both fallbacks to serde.
+- `missing_fields_lists_declaration_order_and_nothing_for_a_complete_block`.
+- `test_incomplete_params_are_named_incomplete_not_malformed` covers both
+  doors from Python, including that `set_properties` applies its other keys
+  in the same call and that the suggested copy idiom works.
+
+## [0.7.25] - the four error laws get Python-side coverage
+
+### Added
+- **The validation suite exercised no `ErrorType` behaviourally.**
+  `*_error_type` appeared only as key *names* in the state key-set
+  assertion, so `UNIFORM` and `COMBINED` went uncovered from the day they
+  were written and `CASCADED` joined them at 0.7.16. The Rust unit tests
+  are thorough on the laws themselves, but they cannot cover the
+  discriminant crossing the PyO3 boundary, which is where a new variant
+  actually gets forgotten. Three tests in
+  `validation/regression/structure/test_api.py`:
+  - `test_every_error_type_crosses_the_boundary` round-trips all four
+    discriminants through `set_error_type` and pins the refusal of a fifth
+    (`invalid discriminant 4`), so adding a law without extending
+    `impl_int_coercion!` fails here.
+  - `test_each_error_law_has_its_own_signature` draws 20k values per law at
+    the shipped thickness defaults and asserts each law's fingerprint:
+    `UNIFORM` inside its hard bound `abs + rel*v = 1.5`, `GAUSSIAN` outside
+    it, all four centred on the nominal, and the sigma ordering
+    `UNIFORM < GAUSSIAN < COMBINED` with the measured values
+    `0.647 / 1.105 / 1.283`. That last assertion is the one that would have
+    caught the false claim corrected at 0.7.24, and it is tight enough to
+    catch a channel default moving back.
+  - `test_cascaded_is_inert_at_defaults_and_parts_once_centred` pins both
+    halves of the 0.7.24 doc claim: indistinguishable from `COMBINED` at the
+    defaults (relative sigma difference under 1e-3), and separated by
+    exactly the cross term once both relative stages carry a systematic
+    10% -- `COMBINED` 120.0 against `CASCADED` 121.0 on a nominal of 100,
+    deterministic at zero spread.
+
+## [0.7.24] - four comments from the error pass that did not survive checking
+
+No behaviour change. Reviewing 0.7.15-0.7.23 turned up four claims in
+their own comments and test names that are wrong or overstated. The code
+they describe was right; the descriptions were not, and a wrong comment
+next to correct code costs the next reader more than no comment.
+
+### Fixed
+- **`constructor_defaults_are_pinned` (was `defaults_match_python_ctor`)
+  justified `abs_variance == abs_std_dev` with "switching ErrorType cannot
+  change the scale of the scatter".** It can. A uniform of half-width `w`
+  has standard deviation `w/sqrt(3)`, so equal *numbers* leave the uniform
+  law 42% narrower in sigma, on bounded rather than unbounded support, and
+  `Combined`/`Cascaded` add the two in quadrature so they exceed either.
+  Measured on a 100 nm layer at the thickness defaults:
+
+      Gaussian sigma 1.105   Uniform sigma 0.647  (-41%)
+      Combined sigma 1.283   Cascaded sigma 1.283  (+16% vs Gaussian)
+
+  The assertion stands -- equal numbers is what keeps a channel's two
+  spreads from drifting apart by a factor of ten -- but the reason given
+  for it was false. The name was also stale: the test's own doc comment
+  had to concede that the error params deliberately no longer match
+  Python's ctor.
+- **`cascaded_reduces_to_one_scalar_rel_pair` (was
+  `cascaded_agrees_across_both_draw_paths`) overstated itself twice.** It
+  never calls `channel_draws`, and the two paths do *not* produce the same
+  number from the same stream state: `channel_draws` takes the abs pair
+  then the rel pair, `apply_error` takes `g_abs, g_rel, u_abs, u_rel`, so
+  one seed feeds the four draws to different slots. Nothing is broken by
+  that -- they serve different channels on independent per-side streams,
+  and it is equally true of `Combined`, which predates `Cascaded` -- but no
+  test name should promise a numeric agreement that does not hold. What the
+  test actually checks, the algebraic reduction `(1+g)(1+u) = 1+(g+u+g*u)`,
+  is what lets `channel_draws` carry the law without changing its
+  signature.
+- **The `ErrorType` docs did not say `Cascaded` is inert at the shipped
+  defaults.** The cross term is `G_rel * U_rel`, so with both relative
+  spreads at 0.01 and both centres at 0.0 it is of order 1e-4: sigma
+  `1.28283` against `Combined`'s `1.28293`, a relative difference of 1e-5.
+  Anyone switching laws to see what changes would have seen nothing and
+  reasonably concluded the law was not wired. Both the Rust and Python docs
+  now say to set the centres, and name the case the law is for: two
+  multiplicative stages of 10% compose to 21%, and the cross term is that
+  1%.
+- **`inh_delta()` wrote the grading window as `1 - d ..= 1 + d` while
+  `Layer::validate` writes `1 - d/2 ..= 1 + d/2`** -- the same letter for
+  two quantities a factor of two apart, in one module. The half-amplitude
+  is now `c`, with `c = d/2` stated, so the two windows read as the one
+  window they are.
+
+### Changed
+- **`roughness()`, `index()` and `extinction()` now derive from
+  `standard()`** like the other three, instead of spelling all eight fields
+  as literals. A change to the shared relative defaults would have reached
+  three channels and silently skipped three. The values are unchanged and
+  `constructor_defaults_are_pinned` proves it.
+
+## [0.7.23] - the per-channel defaults only covered an omitted block
+
+### Fixed
+- **A config document that *named* an `*_error_params` block got the old
+  shared 0.01 for every field it did not name.** The per-channel defaults
+  added at 0.7.18-0.7.21 sat on the container, so they fired only when the
+  key was absent; `ErrorParamsCfg` kept its own per-field `serde` defaults
+  for the key-present case, and those were one value for all six channels.
+  Measured through `GroupConfig`, block naming a single unrelated field:
+
+      thickness  partial-block abs_std_dev=0.01  omitted-block gives 0.5
+      k          partial-block abs_std_dev=0.01  omitted-block gives 0.0001
+      n / roughness / interface / inh_delta       0.01, all want 0.001
+
+  So the fix shipped across those four releases missed the configuration a
+  user is most likely to write -- opening the block to set one thing. For
+  `k` it restored `abs_std_dev = 0.01` against a `k` of ~1e-3, which is the
+  case 0.7.18 existed to remove: roughly half of all draws land at `k < 0`,
+  and the run aborts on the gain door rather than perturbing anything.
+
+  The guard test added at 0.7.18 named the gap in its own title --
+  `omitted_error_params_match_the_engine_channel_for_channel`. It tested
+  the case that worked.
+
+### Changed
+- **`ErrorParamsCfg` no longer derives `Deserialize` and carries no
+  per-field defaults.** A document now reaches it only through
+  `ErrorParamsPatch`, eight `Option<f64>` that distinguish "absent" from
+  "set to the default", resolved against the channel's own base by
+  `ErrorParamsPatch::onto`. Each `GroupRow` field pairs `d_ep_*` (key
+  absent) with `de_ep_*` (key present, possibly incomplete), and both
+  resolve from the same `ErrorParams` constructor, so the two cases cannot
+  disagree. `deny_unknown_fields` moves to the patch, so a misspelled field
+  is still refused rather than being read as unnamed and silently defaulted.
+- **`impl Default for ErrorParamsCfg` is gone**, along with `d_abs_std` and
+  `d_rel_std`. It mirrored `ErrorParams::standard()`, which is the
+  documented *base* the six channel constructors derive from and not a value
+  any channel should receive. It was dead after the change above, and it was
+  the last place the shared 0.01 could leak in from; the absence is now
+  enforced by the compiler rather than by discipline.
+
+### Added
+- `partial_error_params_inherit_their_own_channel` feeds each of the six
+  channels a block naming one field and asserts the other seven kept *that
+  channel's* defaults. Verified to fail before the fix
+  (`thickness_error_params abs_std_dev: 0.01 vs 0.5`).
+- `a_partial_error_params_block_still_refuses_unknown_fields` pins the
+  `deny_unknown_fields` move, so a typo in a partial block cannot become a
+  silent default.
+
+## [0.7.22] - a set_properties key that wrote the wrong channel
+
+### Fixed
+- **`Group.set_properties("interface_error_type", ...)` wrote
+  `roughness_error_type` and left `interface_error_type` untouched.** No
+  error, no warning, the wrong field mutated. Measured on a fresh group:
+
+      before: roughness=0 interface=0
+      set_properties({'interface_error_type': 3})
+      after : roughness=3 interface=0
+
+  The dispatch guarded on six key names, then handled five of them with
+  explicit arms and let a catch-all take the sixth. That is only correct
+  while the guard pattern's final alternative and the catch-all's target
+  agree by hand, and here they did not: the last explicit arm and the
+  catch-all both wrote `roughness_error_type`, so roughness was handled
+  twice and interface never.
+
+  `set_properties` is public on the Python `Group`, so a caller
+  configuring the interface channel's error law silently reconfigured
+  roughness instead -- and, because `error_mask` defaults to all-zero,
+  neither channel drew anything until enabled, which is why the subsystem
+  hid this for as long as it hid the mis-scaled defaults of 0.7.17-0.7.21.
+
+  The predecessor of `ErrorType::Cascaded` (0.7.16) is not implicated: the
+  bug predates it and applies to every value. Adding the fourth law only
+  widened the range of wrong writes by one.
+
+### Changed
+- **Three `set_properties` dispatch arms now resolve through
+  `scalar_slot` / `error_type_slot` / `error_params_slot`**, each spelling
+  out every name its caller's guard pattern admits, with `unreachable!`
+  where a field used to sit. The `*_summand` and `*_error_params` arms were
+  *correct*, but they were the same construction as the broken one and one
+  reordering away from the same defect. Adding a channel, or reordering
+  the alternatives, now fails to compile instead of silently writing a
+  neighbouring field. `Layer::set_properties` was checked and needs
+  nothing: every key there already has its own arm.
+
+### Added
+- `set_properties_lands_each_error_type_in_its_own_channel` sets each of
+  the six keys on a fresh group and asserts that channel moved and the
+  other five did not, so a failure names the offending pair
+  (`setting interface_error_type moved roughness_error_type`). Verified to
+  fail before the fix.
+- `set_properties_lands_each_summand_and_params_block_in_its_own_field`
+  pins the two arms that were correct, so the hardening cannot regress
+  unnoticed.
+
+## [0.7.21] - the thickness tolerance meets a real chamber
+
+### Changed
+- **`ErrorParams::thickness()`: `abs_std_dev` and `abs_variance` 0.01 ->
+  0.5 nm.** The absolute spread here is a physical thickness in nm, and
+  0.5 nm is a one-sigma figure that matches what deposition control
+  actually achieves -- the process sits around 0.1 to 1 nm absolute
+  depending on monitoring. It read 0.01 nm from the first Python upload
+  through 0.7.20, fifty times tighter than any real chamber, which made
+  the default an optimistic answer rather than a neutral one.
+
+  This is the only channel of the six whose default was *widened*. The
+  other five were mis-scaled because they inherited a length's spread for
+  a quantity that is not a length; this one was in the right unit all
+  along and simply carried an unrealistic value. It is also the only one
+  of the six that is not inert for existing callers: anyone who enabled
+  the thickness error channel and relied on the default will see the
+  absolute term of their tolerance spread widen by 50x, which is the
+  intent.
+
+### Fixed
+- `defaults_match_python_ctor` asserted a single hard-coded
+  `thickness_error_params.abs_std_dev`. It is a Python-parity oracle whose
+  name outlived what it can honestly claim: the scaling factors and masks
+  it guards still match the Python ctor exactly, but the error params have
+  deliberately diverged since 0.7.15. Rather than edit the one number, it
+  now pins all six channels' `abs_std_dev`, asserts `abs_variance` tracks
+  `abs_std_dev` in every channel -- so switching `ErrorType` cannot change
+  the scale of the scatter -- and asserts `rel_*` is 0.01 throughout. The
+  docstring says which half of the test is still a Python oracle.
+- `test_group_from_state_independent_params` hard-coded the same default
+  while testing something else entirely: that `from_state` deep-copies. It
+  now captures the original value and asserts the copy matches it and that
+  mutating the copy leaves it alone, which is the actual contract and is
+  immune to the default moving again.
+## [0.7.20] - all six error channels now name their own defaults
+
+### Changed
+- **`ErrorParams::thickness()`, `::interface()` and `::inh_delta()`**
+  complete the set begun at 0.7.18. All six channels now derive from
+  `standard()` explicitly rather than five of them inheriting it by
+  accident.
+
+  The *absolute* spreads carry the unit of the quantity they perturb, and
+  the six channels do not share one -- thickness, roughness and interface
+  width are lengths in nm; `n`, `k` and the grading amplitude are
+  dimensionless -- so one shared default was necessarily wrong for five of
+  them. Only the relative spreads are genuinely common, being unit-free
+  fractions everywhere.
+
+  - `interface()`: `abs_*` 0.01 -> 0.001. `interface_thickness` is a width
+    in nm, the same physical quantity class as `roughness`, gated by the
+    same rules in `Layer::validate`; the two now share a scale as well.
+  - `inh_delta()`: `abs_*` 0.01 -> 0.001. This channel does not perturb the
+    authored `inh_delta`. Expansion computes
+    `current_delta = (delta_layer + inh_delta_summand) * 0.5`, clamps it,
+    and perturbs *that* -- the ramp half-amplitude, around 0.05 to 0.1 for
+    a typical authored delta, and dimensionless, since the profile scales
+    the complex index by `1 - d ..= 1 + d`. The old 0.01 was a 10-20%
+    absolute scatter in nanometre units on a quantity with no unit.
+  - `thickness()`: values unchanged. This is the one channel `standard()`
+    was actually sized for. Named separately so the sizing is stated
+    rather than inherited, and so it can move alone. Worth knowing that
+    0.01 nm is *tighter* than real deposition control (0.1-1 nm absolute);
+    it is left alone because nothing here establishes a better number and a
+    wider default would loosen the channel most likely to be enabled.
+
+  Also confirms, from the code rather than by inference, why
+  `inh_delta_error` has no floor while the length channels do: at the point
+  of the draw the amplitude is signed -- the cap is `clamp(-cap, cap)` and
+  a negative amplitude reverses the ramp. The authored `inh_delta` is a
+  separate quantity, gated to `[0, 2)` as a magnitude.
+
+  `omitted_error_params_match_the_engine_channel_for_channel` again needed
+  no change, and was re-verified to fail naming `inh_delta abs_std_dev`
+  against a tree with the shared defaults restored.
+## [0.7.19] - the index channel gets its own absolute spread too
+
+### Changed
+- **`ErrorParams::index()`**, a fourth per-channel default, now backs
+  `n_error_params`: `abs_std_dev` and `abs_variance` drop from 0.01 to
+  0.001. Same unit argument as `extinction()` at 0.7.18, one order of
+  magnitude milder. `standard()`'s absolute 0.01 is sized for a thickness
+  in nanometres; against a refractive index of 1.5 to 2.4 it is a scatter
+  of under 1%, survivable but still a nanometre spread wearing an index's
+  clothes. 0.001 is a defensible index tolerance -- the fourth decimal is
+  where dispersion data itself usually stops being trustworthy -- and it
+  stays sane for a low-contrast film near `n = 1`, where 0.01 begins to
+  matter and `nk_error`'s floor at 0 is the only backstop.
+
+  Four of the six channels now carry their own defaults (`standard()` for
+  thickness, inh_delta and interface; `roughness()`, `index()` and
+  `extinction()` for the rest), and the config surface mirrors each one
+  through `ErrorParamsCfg::from_params` rather than a hand-copied literal.
+  `omitted_error_params_match_the_engine_channel_for_channel` needed no
+  change -- it walks all six channels -- and was re-verified to fail,
+  naming `n abs_std_dev`, against a tree with the shared default restored.
+## [0.7.18] - the absolute error spreads carry a unit, and k's is not nm
+
+### Changed
+- **`ErrorParams::extinction()`**, a third per-channel default, now backs
+  `k_error_params`: `abs_std_dev` and `abs_variance` drop from 0.01 to
+  0.0001. The absolute spreads carry the unit of the quantity they
+  perturb, and `standard()`'s 0.01 is sized for a thickness in nanometres.
+  Applied to `k`, which runs from roughly 1e-4 to 1e-2 in the visible, a
+  0.01 absolute scatter is one to two orders of magnitude larger than the
+  value, so about half of all draws landed at `k < 0`. That is optical
+  gain, which the solver door refuses outright -- so enabling the k error
+  channel aborted a tolerance run rather than perturbing it, and the
+  refusal named gain rather than the tolerance that caused it. The
+  relative channel needed nothing: `k * (1 + g)` scales with the value.
+
+### Fixed
+- **The config surface mirrored the engine once instead of per channel.**
+  All six `error_params` fields on `GroupRow` deserialized through the one
+  `ErrorParamsCfg::default()`, which mirrors `ErrorParams::standard()`
+  alone -- so a design document omitting `roughness_error_params` got
+  `abs_std_dev = 0.01` where `Group::new()` gives 0.001, and the new
+  extinction defaults would have diverged the same way. This is the third
+  instance of one defect (after the `rel_variance` drift fixed at 0.7.15):
+  a config default hand-copied from an engine default it does not track.
+  The roughness and k fields now default through functions that build from
+  `ErrorParams::roughness()` and `::extinction()` directly, so the mirror
+  cannot drift by construction.
+- Added `omitted_error_params_match_the_engine_channel_for_channel`: a
+  group config naming nothing but its name must build the same six
+  channels as `Group::new()`, asserted field by field. Verified to fail,
+  naming the offending channel and field, against a tree with the old
+  shared default restored.
+## [0.7.17] - the relative error spreads were a hundred times too wide
+
+### Changed
+- **`rel_std_dev` and `rel_variance` default to 0.01, not 1.0**, in both
+  `ErrorParams::standard()` and `ErrorParams::roughness()`, and in the
+  `ErrorParamsCfg` serde defaults that mirror them.
+
+  These parameters are unit-free *fractions* of the value being perturbed
+  (`docs/plans/structure_plan.md` line 29), not percentages, so 1.0 was a
+  100% one-sigma relative scatter -- one sigma covering the entire nominal
+  thickness. Nothing in the library wants that, and it is not a tolerance
+  any deposition process has. 0.01 is a 1% relative scatter, which reads
+  the same way as the absolute channel's 0.01 nm beside it.
+
+  The value dates to the first Python upload and survived the port because
+  it is almost unreachable: `error_mask` defaults to all-zero, so no
+  channel draws at all until a caller switches one on -- at which point
+  the very first draw was wild. At 1.0 the Gaussian factor `1 + G_rel` is
+  negative for 15.9% of draws, which `thickness_error`'s floor turns into
+  a dead layer; `inh_delta_error` has no floor and passed it straight
+  through. It surfaced while sizing the clamping question for the new
+  `Cascaded` law, where the same defaults put 4% of draws (at
+  `rel_variance > 1`) into a doubly-inverted, plausibly-positive band that
+  no floor catches. Narrowing the default removes that regime rather than
+  papering over it: at any realistic tolerance both factors are
+  sign-definite and the question does not arise.
+
+  Nothing that sets these parameters explicitly is affected, which is
+  every regression fixture that pins a number: `test_differential.py`
+  passes 0.0, `test_restored_surface.py` passes 0.0, and the recorded
+  state document `validation/fixtures/state/v1_architect.json` carries an
+  explicit 1.0 and is deliberately left alone -- it pins what a v1 state
+  file contained, which the new default must keep loading unchanged.
+  `test_api.py`'s hand-copied mirror of the defaults was updated.
+## [0.7.16] - a fourth error law, where the relative channels compose
+
+### Added
+- **`ErrorType::Cascaded` (discriminant 3)**, a fourth fabrication-error
+  law. The existing three all have the shape `v_out = v*(1 + rel) + abs`,
+  and `Combined` builds its relative channel as `G_rel + U_rel`: each law
+  measures its own slice off the *nominal*, neither sees the other.
+  `Cascaded` composes them as factors instead,
+
+      v_out = v * (1 + G_rel) * (1 + U_rel) + G_abs + U_abs
+
+  which is the right arithmetic when the two laws are multiplicative
+  stages in series -- a systematic rate-calibration error, then a per-run
+  monitor error acting on the already-mis-calibrated deposit, rather than
+  on what was nominally asked for.
+
+  It is a superset of `Combined`, not a rival. Expanding the product gives
+  `v*(1 + G_rel + U_rel + G_rel*U_rel)`, so the two differ by exactly the
+  cross term `v*G_rel*U_rel`: they agree to first order, and whenever
+  either relative channel is switched off the product collapses back to
+  `Combined` -- one factor is then 1 -- so turning a channel off cannot
+  change the answer. (In `f64` both identities hold to a rounding rather
+  than bitwise, since the product associates its multiplications
+  differently from the sum; the tests assert them at 1e-14 relative.)
+
+  The absolute channel stays additive and outside the product, keeping the
+  meaning it has in the other three laws: an offset applied after the
+  multiplicative stage, not one that stage then scales.
+
+  `Cascaded` draws the same four numbers as `Combined` in the same order,
+  so the two remain stream-comparable. The expansion path needed no
+  structural change: `(1 + g)(1 + u) = 1 + (g + u + g*u)`, so
+  `channel_draws` still returns one scalar `(abs, rel)` pair and every
+  call site still applies `v + abs + rel*v`.
+- Four tests in `structure::group` pinning the cross-term identity, the
+  collapse to `Combined` with either channel off, the deterministic
+  product of two systematic centres (`100 * 1.1 * 1.2 = 132`, where
+  `Combined` gives 130), and agreement between the two draw paths.
+## [0.7.15] - the uniform law gets its centre back
+
+### Fixed
+- **The uniform error law was hard-centred on zero.**
+  `ErrorParams` has carried `abs_mean_delta_h` and `rel_mean_delta_h`
+  since the first Python upload, the uniform counterparts of the
+  Gaussian `*_mean_delta_g` centres. No version ever read them: every
+  `_apply_error` / `apply_error`, Python and Rust alike, drew
+  `U(-variance, +variance)` and dropped the configured bias. The key was
+  not merely tolerated -- `ErrorParamsCfg` is `deny_unknown_fields`, so a
+  design document naming it was explicitly accepted, deserialized, copied
+  into `ErrorParams` and serialized back into saved state, then silently
+  ignored at the draw. `unif_draw` now takes `(mean, half_width)` and
+  samples `U(mean - w, mean + w)`; `Group::apply_error` and
+  `expansion::channel_draws` pass both centres on the `Uniform` and
+  `Combined` branches. At zero width the mean is contributed
+  deterministically with no RNG consumed, matching `gauss_draw` at zero
+  spread.
+
+  The fix is inert at the shipped defaults, where both centres are 0.0
+  and `U(0 +/- w)` is the distribution `U(+/-w)` already was -- same
+  values, same RNG consumption. Every pinned fingerprint is unmoved, and
+  `zero_centres_leave_the_draw_where_it_was` asserts exactly that
+  bitwise, against the pre-fix expression replayed on a parallel stream.
+- **`ErrorParamsCfg::rel_variance` defaulted to 0.0** while
+  `ErrorParams::standard()` and the Python `ErrorParams` model both said
+  1.0, so a config document omitting the key got no relative uniform
+  scatter while a hand-built `Group` got full scatter from nominally the
+  same defaults. Aligned on 1.0, which is also what
+  `validation/fixtures/state/v1_architect.json` has always stored.
+
+### Added
+- Four tests in `structure::group`: the absolute and relative uniform
+  laws land in their shifted bands with the right mean, zero width
+  contributes its centre exactly, and zero centres reproduce the old
+  draw bit for bit.
 ## [0.7.14] - the review harnesses document themselves, or CI says so
 
 ### Added

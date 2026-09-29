@@ -747,8 +747,28 @@ impl PyGroup {
 
     fn set_error_params(&mut self, channel: &str, params: &Bound<'_, PyDict>) -> PyResult<()> {
         let v = py_to_json(params.as_any())?;
-        let p: navette::structure::ErrorParams = ver(serde_json::from_value(v)
-            .map_err(|e| format!("set_error_params: malformed params ({e})")))?;
+        // Name every missing field at once. serde reports only the first, so
+        // "malformed params (missing field `abs_mean_delta_g`)" cost a round
+        // trip per field and called a well-formed subset malformed.
+        let missing = navette::structure::ErrorParams::missing_fields(&v);
+        let p: navette::structure::ErrorParams = ver(serde_json::from_value(v).map_err(|e| {
+            // Only absence gets the incompleteness message. A bad *value* on a
+            // field that IS present -- a string where a float belongs -- must
+            // keep serde's own diagnosis, or naming the absent fields would
+            // bury the one thing actually wrong with what was written.
+            if missing.is_empty() || !e.to_string().starts_with("missing field") {
+                format!("set_error_params: malformed params ({e})")
+            } else {
+                format!(
+                    "set_error_params: incomplete params, missing {}. A params block \
+                         replaces the channel whole, so all eight fields are required; to \
+                         change a few, edit a copy of the current block -- \
+                         group.set_error_params(channel, {{**group.{}_error_params, ...}}).",
+                    missing.join(", "),
+                    channel
+                )
+            }
+        }))?;
         match channel {
             "thickness" => self.inner.borrow_mut().thickness_error_params = p,
             "n" => self.inner.borrow_mut().n_error_params = p,
