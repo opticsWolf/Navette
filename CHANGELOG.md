@@ -5,6 +5,38 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.27] - the error model had shipped undocumented for eleven releases
+
+0.7.15 through 0.7.26 built, fixed and tested a six-channel fabrication-error
+model. The README mentioned the word "error" exactly once in all that time,
+and only about Névot-Croce roughness. A reader of this project had no way to
+know the subsystem existed.
+
+### Added
+- **README: "Fabrication Tolerances as a Model, Not a Postscript"** in the
+  synthesis section. It names the six channels and the four laws, gives the
+  common shape `v_out = v·(1 + rel) + abs`, and spends its length on the two
+  things a reader cannot guess from a signature: why `Cascaded` composes the
+  relative stages as `v·(1 + G)·(1 + U)` rather than summing them (stages in
+  series -- a mis-calibrated rate, then a monitor error acting on the
+  already-wrong deposit; 10% and 10% make 21%, and that percent is the whole
+  difference between `Cascaded` and `Combined`), and why the six channels
+  carry separate defaults (an absolute spread has the unit of what it
+  perturbs, so the 0.5 nm that suits a thickness would put about half of all
+  `k` draws below zero -- optical gain, which stops the run at the gain door
+  instead of reporting a tolerance). Also: the all-zero `error_mask`, floors
+  on the result rather than on the error, and the measured cost.
+- **README: a `Fabrication Tolerances` row** in Technical Specifications,
+  where a reader skimming the table for capabilities will actually look.
+- **README: the release section now admits two gaps of its own.** The wheel
+  filename in that section is a seventh version site that the CI gate cannot
+  check, because it is prose; it is maintained by hand. And nothing anywhere
+  checks that a shipped feature is described here at all -- every claim in
+  this README is backed by a test, but no test requires a claim to exist.
+  The release notes say to read the feature list against what the release
+  added, and why: this subsystem stayed invisible precisely because its mask
+  defaults to all-zero, so nothing else had occasion to mention it either.
+
 ## [0.7.26] - an incomplete params block said the wrong thing
 
 A params block replaces a channel whole, so all eight fields are required.
