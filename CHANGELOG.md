@@ -5,6 +5,56 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.23] - the per-channel defaults only covered an omitted block
+
+### Fixed
+- **A config document that *named* an `*_error_params` block got the old
+  shared 0.01 for every field it did not name.** The per-channel defaults
+  added at 0.7.18-0.7.21 sat on the container, so they fired only when the
+  key was absent; `ErrorParamsCfg` kept its own per-field `serde` defaults
+  for the key-present case, and those were one value for all six channels.
+  Measured through `GroupConfig`, block naming a single unrelated field:
+
+      thickness  partial-block abs_std_dev=0.01  omitted-block gives 0.5
+      k          partial-block abs_std_dev=0.01  omitted-block gives 0.0001
+      n / roughness / interface / inh_delta       0.01, all want 0.001
+
+  So the fix shipped across those four releases missed the configuration a
+  user is most likely to write -- opening the block to set one thing. For
+  `k` it restored `abs_std_dev = 0.01` against a `k` of ~1e-3, which is the
+  case 0.7.18 existed to remove: roughly half of all draws land at `k < 0`,
+  and the run aborts on the gain door rather than perturbing anything.
+
+  The guard test added at 0.7.18 named the gap in its own title --
+  `omitted_error_params_match_the_engine_channel_for_channel`. It tested
+  the case that worked.
+
+### Changed
+- **`ErrorParamsCfg` no longer derives `Deserialize` and carries no
+  per-field defaults.** A document now reaches it only through
+  `ErrorParamsPatch`, eight `Option<f64>` that distinguish "absent" from
+  "set to the default", resolved against the channel's own base by
+  `ErrorParamsPatch::onto`. Each `GroupRow` field pairs `d_ep_*` (key
+  absent) with `de_ep_*` (key present, possibly incomplete), and both
+  resolve from the same `ErrorParams` constructor, so the two cases cannot
+  disagree. `deny_unknown_fields` moves to the patch, so a misspelled field
+  is still refused rather than being read as unnamed and silently defaulted.
+- **`impl Default for ErrorParamsCfg` is gone**, along with `d_abs_std` and
+  `d_rel_std`. It mirrored `ErrorParams::standard()`, which is the
+  documented *base* the six channel constructors derive from and not a value
+  any channel should receive. It was dead after the change above, and it was
+  the last place the shared 0.01 could leak in from; the absence is now
+  enforced by the compiler rather than by discipline.
+
+### Added
+- `partial_error_params_inherit_their_own_channel` feeds each of the six
+  channels a block naming one field and asserts the other seven kept *that
+  channel's* defaults. Verified to fail before the fix
+  (`thickness_error_params abs_std_dev: 0.01 vs 0.5`).
+- `a_partial_error_params_block_still_refuses_unknown_fields` pins the
+  `deny_unknown_fields` move, so a typo in a partial block cannot become a
+  silent default.
+
 ## [0.7.22] - a set_properties key that wrote the wrong channel
 
 ### Fixed

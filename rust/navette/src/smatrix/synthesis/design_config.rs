@@ -118,67 +118,110 @@ pub struct LayerRow {
 }
 
 /// One fabrication-error channel (mirrors the Python `ErrorParams` model).
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Deliberately **not** `Deserialize`: a document reaches this type only
+/// through [`ErrorParamsPatch`], which resolves the fields it did not name
+/// against that channel's own engine defaults. Deriving `Deserialize` here
+/// again would reintroduce the per-field defaults that caused the 0.7.23
+/// defect -- one shared fallback standing in for six channels.
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct ErrorParamsCfg {
-    #[serde(default)]
     pub abs_mean_delta_g: f64,
-    #[serde(default = "d_abs_std")]
     pub abs_std_dev: f64,
-    #[serde(default)]
     pub rel_mean_delta_g: f64,
-    #[serde(default = "d_rel_std")]
     pub rel_std_dev: f64,
-    #[serde(default)]
     pub abs_mean_delta_h: f64,
-    #[serde(default = "d_abs_std")]
     pub abs_variance: f64,
-    #[serde(default)]
     pub rel_mean_delta_h: f64,
-    #[serde(default = "d_rel_std")]
     pub rel_variance: f64,
 }
 
-fn d_abs_std() -> f64 {
-    0.01
+/// Only the fields a document actually named.
+///
+/// Every field is `Option`, so "absent" is distinguishable from "set to the
+/// default", and [`Self::onto`] fills the absent ones from the *channel's*
+/// base rather than from one value shared by all six. The container-level
+/// `d_ep_*` defaults handle the key being omitted entirely; this handles the
+/// key being present and incomplete, which they could not.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ErrorParamsPatch {
+    abs_mean_delta_g: Option<f64>,
+    abs_std_dev: Option<f64>,
+    rel_mean_delta_g: Option<f64>,
+    rel_std_dev: Option<f64>,
+    abs_mean_delta_h: Option<f64>,
+    abs_variance: Option<f64>,
+    rel_mean_delta_h: Option<f64>,
+    rel_variance: Option<f64>,
 }
 
-/// The relative spreads are unit-free fractions of the value, so this is a
-/// 1% one-sigma scatter. Same number as `d_abs_std`, different meaning and
-/// different unit -- kept apart so either can move without the other.
-fn d_rel_std() -> f64 {
-    0.01
-}
-
-impl Default for ErrorParamsCfg {
-    /// Mirrors `ErrorParams::standard()`, the base the six per-channel
-    /// constructors derive from. Every `error_params` field on `GroupRow`
-    /// now defaults through its own `d_ep_*` function instead, so this impl
-    /// is the fallback for a bare `ErrorParamsCfg` rather than the value any
-    /// channel actually receives -- which is the point: it was serving as
-    /// all six, and five of them wanted something else.
-    fn default() -> Self {
-        Self {
-            abs_mean_delta_g: 0.0,
-            abs_std_dev: 0.01,
-            rel_mean_delta_g: 0.0,
-            rel_std_dev: 0.01,
-            abs_mean_delta_h: 0.0,
-            abs_variance: 0.01,
-            rel_mean_delta_h: 0.0,
-            rel_variance: 0.01,
+impl ErrorParamsPatch {
+    fn onto(self, base: &ErrorParams) -> ErrorParamsCfg {
+        ErrorParamsCfg {
+            abs_mean_delta_g: self.abs_mean_delta_g.unwrap_or(base.abs_mean_delta_g),
+            abs_std_dev: self.abs_std_dev.unwrap_or(base.abs_std_dev),
+            rel_mean_delta_g: self.rel_mean_delta_g.unwrap_or(base.rel_mean_delta_g),
+            rel_std_dev: self.rel_std_dev.unwrap_or(base.rel_std_dev),
+            abs_mean_delta_h: self.abs_mean_delta_h.unwrap_or(base.abs_mean_delta_h),
+            abs_variance: self.abs_variance.unwrap_or(base.abs_variance),
+            rel_mean_delta_h: self.rel_mean_delta_h.unwrap_or(base.rel_mean_delta_h),
+            rel_variance: self.rel_variance.unwrap_or(base.rel_variance),
         }
     }
 }
 
+/// Deserialize one channel's block against that channel's engine defaults.
+fn de_ep<'de, D>(d: D, base: &ErrorParams) -> Result<ErrorParamsCfg, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(ErrorParamsPatch::deserialize(d)?.onto(base))
+}
+
+/// One shim per channel, because `deserialize_with` takes no extra argument.
+/// Each pairs with the `d_ep_*` default of the same channel on the same
+/// field, and both resolve from the same `ErrorParams` constructor, so the
+/// omitted and partial cases cannot disagree.
+macro_rules! de_ep_channel {
+    ($name:ident, $ctor:ident) => {
+        fn $name<'de, D>(d: D) -> Result<ErrorParamsCfg, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            de_ep(d, &ErrorParams::$ctor())
+        }
+    };
+}
+
+de_ep_channel!(de_ep_thickness, thickness);
+de_ep_channel!(de_ep_inh_delta, inh_delta);
+de_ep_channel!(de_ep_roughness, roughness);
+de_ep_channel!(de_ep_interface, interface);
+de_ep_channel!(de_ep_index, index);
+de_ep_channel!(de_ep_extinction, extinction);
+
+// No `Default for ErrorParamsCfg`. It mirrored `ErrorParams::standard()`,
+// which is the documented *base* the six channel constructors derive from and
+// not a value any channel should receive: it was serving as all six, and five
+// of them wanted something else. Every route into this type now names its
+// channel -- `d_ep_*` when the key is absent, `de_ep_*` when it is present --
+// so the shared value has nowhere left to leak in from. Reach for
+// `ErrorParamsCfg::from_params(&ErrorParams::<channel>())` instead.
+
 /// The roughness channel's defaults, mirroring `ErrorParams::roughness()`.
 ///
-/// Every channel used to deserialize through `ErrorParamsCfg::default()`,
-/// which mirrors `standard()` alone -- so a config document that omitted
+/// Every channel used to deserialize through one shared default mirroring
+/// `standard()` alone -- so a config document that omitted
 /// `roughness_error_params` got `abs_std_dev = 0.01` where `Group::new()`
 /// gives 0.001, and one that omitted `k_error_params` got 0.01 where the
 /// engine gives 0.0001. Same defect as the `rel_variance` drift fixed at
 /// 0.7.15: the config surface has to mirror the engine per channel, not once.
+///
+/// This function covers the key being *absent*. `de_ep_roughness` covers it
+/// being present and incomplete, which 0.7.18-0.7.21 missed: the default sat
+/// on the container, so opening the block to set one field handed the other
+/// seven back to the shared value these functions exist to displace.
 fn d_ep_roughness() -> ErrorParamsCfg {
     ErrorParamsCfg::from_params(&ErrorParams::roughness())
 }
@@ -274,17 +317,20 @@ pub struct GroupRow {
     pub roughness_error_type: i32,
     #[serde(default)]
     pub interface_error_type: i32,
-    #[serde(default = "d_ep_thickness")]
+    // Each channel pairs a `d_ep_*` (key absent) with a `de_ep_*` (key
+    // present, possibly incomplete). Both resolve from the same
+    // `ErrorParams` constructor, so a named block and an omitted one agree.
+    #[serde(default = "d_ep_thickness", deserialize_with = "de_ep_thickness")]
     pub thickness_error_params: ErrorParamsCfg,
-    #[serde(default = "d_ep_inh_delta")]
+    #[serde(default = "d_ep_inh_delta", deserialize_with = "de_ep_inh_delta")]
     pub inh_delta_error_params: ErrorParamsCfg,
-    #[serde(default = "d_ep_roughness")]
+    #[serde(default = "d_ep_roughness", deserialize_with = "de_ep_roughness")]
     pub roughness_error_params: ErrorParamsCfg,
-    #[serde(default = "d_ep_interface")]
+    #[serde(default = "d_ep_interface", deserialize_with = "de_ep_interface")]
     pub interface_error_params: ErrorParamsCfg,
-    #[serde(default = "d_ep_index")]
+    #[serde(default = "d_ep_index", deserialize_with = "de_ep_index")]
     pub n_error_params: ErrorParamsCfg,
-    #[serde(default = "d_ep_extinction")]
+    #[serde(default = "d_ep_extinction", deserialize_with = "de_ep_extinction")]
     pub k_error_params: ErrorParamsCfg,
 }
 
@@ -792,11 +838,82 @@ pub fn build_design(
 mod tests {
     use super::*;
 
+    /// Naming a block must not reset the fields it does not name.
+    ///
+    /// The per-channel defaults of 0.7.18-0.7.21 sat on the *container*, so
+    /// they fired only when the key was absent. A document that opened the
+    /// block to set one field got `ErrorParamsCfg`'s own field defaults --
+    /// the shared 0.01 -- for the other seven, which is the arrangement
+    /// those four releases existed to remove. For `k` it restored
+    /// `abs_std_dev = 0.01` against a `k` of ~1e-3: the case where roughly
+    /// half of all draws land negative and the run aborts on the gain door.
+    #[test]
+    fn partial_error_params_inherit_their_own_channel() {
+        for (key, want) in [
+            ("thickness_error_params", ErrorParams::thickness()),
+            ("inh_delta_error_params", ErrorParams::inh_delta()),
+            ("roughness_error_params", ErrorParams::roughness()),
+            ("interface_error_params", ErrorParams::interface()),
+            ("n_error_params", ErrorParams::index()),
+            ("k_error_params", ErrorParams::extinction()),
+        ] {
+            // One field named, the other seven silent.
+            let doc = format!(r#"{{"name": "g", "{key}": {{"rel_mean_delta_g": 0.25}}}}"#);
+            let row: GroupRow =
+                serde_json::from_str(&doc).expect("a partial block must deserialize");
+            let cfg = match key {
+                "thickness_error_params" => &row.thickness_error_params,
+                "inh_delta_error_params" => &row.inh_delta_error_params,
+                "roughness_error_params" => &row.roughness_error_params,
+                "interface_error_params" => &row.interface_error_params,
+                "n_error_params" => &row.n_error_params,
+                _ => &row.k_error_params,
+            };
+            let got = cfg.build();
+            // The named field took.
+            assert_eq!(got.rel_mean_delta_g, 0.25, "{key} rel_mean_delta_g");
+            // The seven unnamed ones kept THIS channel's defaults.
+            for (field, g, w) in [
+                ("abs_std_dev", got.abs_std_dev, want.abs_std_dev),
+                ("abs_variance", got.abs_variance, want.abs_variance),
+                ("rel_std_dev", got.rel_std_dev, want.rel_std_dev),
+                ("rel_variance", got.rel_variance, want.rel_variance),
+                (
+                    "abs_mean_delta_g",
+                    got.abs_mean_delta_g,
+                    want.abs_mean_delta_g,
+                ),
+                (
+                    "abs_mean_delta_h",
+                    got.abs_mean_delta_h,
+                    want.abs_mean_delta_h,
+                ),
+                (
+                    "rel_mean_delta_h",
+                    got.rel_mean_delta_h,
+                    want.rel_mean_delta_h,
+                ),
+            ] {
+                assert_eq!(g, w, "{key} {field}");
+            }
+        }
+    }
+
+    /// A partial block still refuses a misspelled field, rather than
+    /// silently treating it as unnamed and inheriting the default.
+    #[test]
+    fn a_partial_error_params_block_still_refuses_unknown_fields() {
+        let doc = r#"{"name": "g", "k_error_params": {"abs_std_dv": 0.5}}"#;
+        let err = serde_json::from_str::<GroupRow>(doc).unwrap_err();
+        assert!(err.to_string().contains("abs_std_dv"), "{err}");
+    }
+
     /// A config document that names no error params at all must produce the
     /// same `Group` as `Group::new()`. All six channels used to deserialize
-    /// through one `ErrorParamsCfg::default()`, so roughness and k silently
-    /// disagreed with the engine; this is the guard that would have caught
-    /// both, and the `rel_variance` drift fixed at 0.7.15 before them.
+    /// through one shared default, so roughness and k silently disagreed with
+    /// the engine; this is the guard that would have caught both, and the
+    /// `rel_variance` drift fixed at 0.7.15 before them. Its twin above
+    /// covers the case it does not: a block that is present but incomplete.
     #[test]
     fn omitted_error_params_match_the_engine_channel_for_channel() {
         let row: GroupRow = serde_json::from_str(r#"{"name": "g"}"#)
