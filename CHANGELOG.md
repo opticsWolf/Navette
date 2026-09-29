@@ -5,6 +5,36 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.7.25] - the four error laws get Python-side coverage
+
+### Added
+- **The validation suite exercised no `ErrorType` behaviourally.**
+  `*_error_type` appeared only as key *names* in the state key-set
+  assertion, so `UNIFORM` and `COMBINED` went uncovered from the day they
+  were written and `CASCADED` joined them at 0.7.16. The Rust unit tests
+  are thorough on the laws themselves, but they cannot cover the
+  discriminant crossing the PyO3 boundary, which is where a new variant
+  actually gets forgotten. Three tests in
+  `validation/regression/structure/test_api.py`:
+  - `test_every_error_type_crosses_the_boundary` round-trips all four
+    discriminants through `set_error_type` and pins the refusal of a fifth
+    (`invalid discriminant 4`), so adding a law without extending
+    `impl_int_coercion!` fails here.
+  - `test_each_error_law_has_its_own_signature` draws 20k values per law at
+    the shipped thickness defaults and asserts each law's fingerprint:
+    `UNIFORM` inside its hard bound `abs + rel*v = 1.5`, `GAUSSIAN` outside
+    it, all four centred on the nominal, and the sigma ordering
+    `UNIFORM < GAUSSIAN < COMBINED` with the measured values
+    `0.647 / 1.105 / 1.283`. That last assertion is the one that would have
+    caught the false claim corrected at 0.7.24, and it is tight enough to
+    catch a channel default moving back.
+  - `test_cascaded_is_inert_at_defaults_and_parts_once_centred` pins both
+    halves of the 0.7.24 doc claim: indistinguishable from `COMBINED` at the
+    defaults (relative sigma difference under 1e-3), and separated by
+    exactly the cross term once both relative stages carry a systematic
+    10% -- `COMBINED` 120.0 against `CASCADED` 121.0 on a nominal of 100,
+    deterministic at zero spread.
+
 ## [0.7.24] - four comments from the error pass that did not survive checking
 
 No behaviour change. Reviewing 0.7.15-0.7.23 turned up four claims in

@@ -13,6 +13,7 @@ import navette.structure.models as models_mod
 from navette.structure import (
   BlockKind,
   DictMaterialProvider,
+  ErrorType,
   Group,
   Layer,
   Navette_Architect,
@@ -160,6 +161,83 @@ def test_apply_error_is_systematic_across_wl():
   out2 = np.array([apply_error(1.5, 0, params, seed=3) for _ in range(4)])
   np.testing.assert_allclose(out1, out2)  # seeded reproducible
   assert np.ptp(out1) == 0.0  # one offset across lambda, not per-lambda noise
+
+
+# ErrorType, from Python -------------------------------------------------------------
+# The suite exercised no law behaviourally before 0.7.25: `*_error_type`
+# appeared only as key NAMES in the state key-set assertion, so UNIFORM and
+# COMBINED went uncovered from the day they were written, and CASCADED joined
+# them at 0.7.16. What the Rust tests cannot cover is the discriminant
+# crossing the PyO3 boundary -- `impl_int_coercion!` and the setter's refusal.
+def test_every_error_type_crosses_the_boundary():
+  g = Group("T")
+  for et in ErrorType:
+    g.set_error_type("thickness", int(et))
+    assert g.thickness_error_type == int(et), et.name
+  # CASCADED is the newest discriminant; a fifth value must still be refused
+  # rather than silently coerced to one of the four.
+  with pytest.raises(ValueError, match="invalid discriminant 4"):
+    g.set_error_type("thickness", 4)
+
+
+def test_each_error_law_has_its_own_signature():
+  # Draws at the shipped thickness defaults (abs 0.5 nm, rel 0.01) on a
+  # 100 nm layer, so the numbers here are the documented ones.
+  nominal = 100.0
+  draws = {}
+  for et in ErrorType:
+    g = Group("T")
+    g.set_error_type("thickness", int(et))
+    draws[et] = np.array(
+      [g.thickness_error(nominal, seed=s) for s in range(20_000)])
+
+  # UNIFORM has bounded support: |delta| <= abs + rel*v = 0.5 + 1.0.
+  assert np.all(np.abs(draws[ErrorType.UNIFORM] - nominal) <= 1.5)
+  # GAUSSIAN does not -- it must exceed the uniform law's hard bound.
+  assert np.abs(draws[ErrorType.GAUSSIAN] - nominal).max() > 1.5
+  # Every law is centred on the nominal (all four centres default to 0.0).
+  for et, v in draws.items():
+    assert abs(v.mean() - nominal) < 0.05, et.name
+
+  # Equal NUMBERS for sigma and half-width do not mean equal scatter: a
+  # uniform of half-width w has sigma w/sqrt(3), so UNIFORM is the narrowest,
+  # and COMBINED sums both laws so it exceeds either. See ErrorParams
+  # ::standard() -- an earlier comment there claimed switching laws could not
+  # change the scale, which is false by ~40%.
+  sd = {et: v.std() for et, v in draws.items()}
+  assert sd[ErrorType.UNIFORM] < sd[ErrorType.GAUSSIAN] < sd[ErrorType.COMBINED]
+  assert sd[ErrorType.UNIFORM] == pytest.approx(0.647, abs=0.02)
+  assert sd[ErrorType.GAUSSIAN] == pytest.approx(1.105, abs=0.02)
+  assert sd[ErrorType.COMBINED] == pytest.approx(1.283, abs=0.02)
+
+
+def test_cascaded_is_inert_at_defaults_and_parts_once_centred():
+  # The claim the 0.7.24 docs make, pinned. The cross term is G_rel*U_rel, so
+  # at the shipped defaults (relative spreads 0.01, centres 0.0) CASCADED is
+  # indistinguishable from COMBINED -- which is why the docs tell the reader
+  # to set the centres rather than just switching laws.
+  out = {}
+  for name in ("COMBINED", "CASCADED"):
+    g = Group("T")
+    g.set_error_type("thickness", int(ErrorType[name]))
+    out[name] = np.array([g.thickness_error(100.0, seed=s) for s in range(4000)])
+  rel = abs(out["CASCADED"].std() - out["COMBINED"].std()) / out["COMBINED"].std()
+  assert rel < 1e-3, f"defaults should be inert, got {rel}"
+
+  # With both relative stages carrying a systematic 10%, the laws separate by
+  # exactly the cross term: COMBINED gives 1 + 0.1 + 0.1 = 1.20 of nominal,
+  # CASCADED gives 1.1 * 1.1 = 1.21. Zero spreads make the draw deterministic.
+  centred = dict(abs_mean_delta_g=0.0, abs_std_dev=0.0, rel_mean_delta_g=0.1,
+                 rel_std_dev=0.0, abs_mean_delta_h=0.0, abs_variance=0.0,
+                 rel_mean_delta_h=0.1, rel_variance=0.0)
+  got = {}
+  for name, want in (("COMBINED", 120.0), ("CASCADED", 121.0)):
+    g = Group("T")
+    g.set_error_params("thickness", dict(centred))
+    g.set_error_type("thickness", int(ErrorType[name]))
+    got[name] = g.thickness_error(100.0, seed=11)
+    assert got[name] == pytest.approx(want, abs=1e-9), name
+  assert got["CASCADED"] - got["COMBINED"] == pytest.approx(1.0, abs=1e-9)
 
 
 # bake_films -------------------------------------------------------------------------
