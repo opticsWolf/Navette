@@ -16,8 +16,8 @@ one only where the feature is on:
   optimum as the built-in.
 
 ``trf`` (R4.6) is hand-rolled and needs no feature, so it is in the first
-group: always present, always selectable. It is the one alternative backend
-with bounds of its own, so unlike the reparametrized ones it is compared on a
+group: always present, always selectable. Basin full TRF also has native bounds when
+``opt-basin`` is enabled. Both are compared on a
 *bound-active* problem as well as an interior one.
 
 Bounds are otherwise deliberately not compared. The built-in's veto+clamp lets
@@ -78,8 +78,8 @@ def interior():
     return build_merit_spec(tc)
 
 
-def _run(spec, optimizer):
-    ctx = _ctx(spec, optimizer=optimizer)
+def _run(spec, optimizer, jacobian="analytic"):
+    ctx = _ctx(spec, optimizer=optimizer, jacobian=jacobian)
     stack, _ = stack_from_layers(_layers(_START), _WL, {}, names=_NAMES)
     mf, report = ctx.optimize_thicknesses_report(stack)
     return mf, report, [f["thickness"] for f in stack.films()]
@@ -179,3 +179,51 @@ def test_the_reference_lm_finds_the_same_interior_optimum(interior):
     assert mf_b == pytest.approx(mf_a, rel=1e-5, abs=1e-12)
     for got, want in zip(d_b, _REFERENCE):
         assert got == pytest.approx(want, abs=1e-2)
+
+
+@pytest.mark.parametrize("backend", ["basin_lm_qr", "basin_trf"])
+def test_basin_feature_discovery_or_rebuild_hint(backend):
+    if backend in available_optimizers():
+        assert backend in repr(LmConfig(optimizer=backend))
+    else:
+        with pytest.raises(ValueError, match="--features opt-basin"):
+            LmConfig(optimizer=backend)
+
+
+@pytest.mark.parametrize("backend", ["basin_lm_qr", "basin_trf"])
+@pytest.mark.parametrize("jacobian", ["analytic", "fd"])
+def test_basin_interior_optimum_and_report(interior, backend, jacobian):
+    if backend not in available_optimizers():
+        pytest.skip("needs opt-basin")
+    mf, report, thicknesses = _run(interior, backend, jacobian)
+    assert report["backend"] == backend
+    assert report["termination"] in {"Cost", "Step", "Gradient"}
+    assert report["cost"] < 1e-12
+    assert mf < 1e-12
+    assert thicknesses == pytest.approx(_REFERENCE, abs=1e-4)
+    assert (report["analytic_jacobians"] > 0) == (jacobian == "analytic")
+    assert np.isnan(report["gain_ratio"])
+
+
+@pytest.mark.skipif("basin_trf" not in available_optimizers(), reason="needs opt-basin")
+@pytest.mark.parametrize("jacobian", ["analytic", "fd"])
+@pytest.mark.parametrize("index,clamp,remaining", [(1.38, 50.0, 1), (2.35, 50.0, 0)])
+def test_basin_trf_active_bounds_and_film_removal(jacobian, index, clamp, remaining):
+    tc = TargetCollection()
+    tc.add(SpectralTarget(_WL, np.zeros(_WL.size), np.full(_WL.size, 0.01),
+                          0.0, "s", "R", kind="e"))
+    spec = build_merit_spec(tc)
+    costs = []
+    for backend in ["trf", "basin_trf"]:
+        ctx = SmatrixContext(spec, _ANGLES, _WL, 2.0, clamp,
+                             LmConfig(optimizer=backend, jacobian=jacobian))
+        stack, _ = stack_from_layers([(MaterialSpec("Konstant", dict(n=index)), 10.0)],
+                                     _WL, {}, names=["L"])
+        cost, report = ctx.optimize_thicknesses_report(stack)
+        films = stack.films()
+        assert len(films) == remaining
+        assert report["backend"] == backend
+        if remaining:
+            assert films[0]["thickness"] == pytest.approx(clamp, abs=1e-4)
+        costs.append(cost)
+    assert costs[1] == pytest.approx(costs[0], rel=1e-9, abs=1e-12)

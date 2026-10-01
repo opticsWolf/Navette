@@ -55,9 +55,11 @@ use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct LmConfig {
-    /// Hard cap on accepted iterations.
+    /// Cap on iterations; Basin counts fully completed solver iterations.
     pub max_iterations: usize,
-    /// Hard cap on total residual evaluations (including Jacobian probes).
+    /// Budget for residual evaluations, including adapter Jacobian probes.
+    /// Basin checks it after initialization and between iterations, so a
+    /// completed initialization or iteration may exceed it.
     pub max_evals: usize,
     /// Terminate when relative cost decrease falls below this.
     pub ftol: f64,
@@ -177,13 +179,17 @@ pub enum LmTermination {
     /// Relative step below xtol.
     Step,
     /// Actual *and* predicted relative cost improvement below ftol, or no
-    /// further step could improve the cost at all.
+    /// further step could improve the cost at all. Some external backends
+    /// test only the observed cost change.
     Cost,
-    /// max_iterations reached.
+    /// An iteration or residual-evaluation budget was reached.
     MaxIterations,
     /// Damping escalated without any acceptable step (stuck at bounds or
     /// numerically degenerate system).
     Stalled,
+    /// The backend converged without a gradient, cost, or step reason,
+    /// for example because all parameters are fixed.
+    Converged,
 }
 
 #[derive(Clone, Debug)]

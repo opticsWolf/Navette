@@ -15,11 +15,10 @@
 //! Navette's built-in LM keeps `lb ≤ x ≤ ub` by vetoing and clamping the step
 //! it just solved, so an optimum **may sit exactly on a bound** — a film
 //! driven to zero thickness is a real answer the synthesis loop then removes.
-//! Every reference implementation in the ecosystem is *unbounded*
-//! ([`OptimizerBackend::MinpackLm`] included), so those backends run on an
-//! interior reparametrization ([`IntervalMap`]) and their optima are
-//! **strictly inside** the box. That is a contract difference, not a bug, and
-//! it is why the built-in stays the default for bounded problems.
+//! Unbounded backends, including MINPACK and Basin QR LM, run on the
+//! interior reparametrization ([`IntervalMap`]). Both TRF implementations
+//! handle bounds natively and approach active bounds from the interior.
+//! The built-in remains the default.
 //!
 //! # Feature gating
 //!
@@ -32,6 +31,9 @@
 use super::thick_opt::{
     JacobianSource, LmConfig, LmResult, LmTermination, levenberg_marquardt_with,
 };
+
+#[cfg(feature = "opt-basin")]
+mod basin_backends;
 
 // ---------------------------------------------------------------------------
 // Backend selection
@@ -47,8 +49,7 @@ use super::thick_opt::{
 pub enum OptimizerBackend {
     /// Navette's own bounded Levenberg-Marquardt (`thick_opt`): QR step
     /// solve, gain-ratio damping, veto+clamp bounds, analytic or differenced
-    /// Jacobian. The default, and the only backend with bounds semantics of
-    /// its own.
+    /// Jacobian. The default backend.
     #[default]
     BuiltinLm,
     /// The `levenberg-marquardt` crate (rust-cv, MINPACK `lmdif`-derived) —
@@ -78,6 +79,12 @@ pub enum OptimizerBackend {
     /// structure has to be assembled into those by hand here. It also has **no
     /// convergence test of its own** — see [`OptimizerBackend::runs_to_max_iterations`].
     ArgminTrustRegion,
+    /// Basin's pivoted-QR Levenberg-Marquardt, behind `opt-basin`.
+    /// Unbounded: runs on the interior reparametrization.
+    BasinLmQr,
+    /// Basin's full dense trust-region reflective solver, behind `opt-basin`.
+    /// Uses native box bounds and a rank-aware SVD subproblem.
+    BasinTrf,
 }
 
 impl OptimizerBackend {
@@ -89,6 +96,8 @@ impl OptimizerBackend {
             OptimizerBackend::Trf => "trf",
             OptimizerBackend::ArgminGaussNewton => "argmin_gauss_newton",
             OptimizerBackend::ArgminTrustRegion => "argmin_trust_region",
+            OptimizerBackend::BasinLmQr => "basin_lm_qr",
+            OptimizerBackend::BasinTrf => "basin_trf",
         }
     }
 
@@ -101,9 +110,11 @@ impl OptimizerBackend {
             "trf" => Ok(OptimizerBackend::Trf),
             "argmin_gauss_newton" => Ok(OptimizerBackend::ArgminGaussNewton),
             "argmin_trust_region" => Ok(OptimizerBackend::ArgminTrustRegion),
+            "basin_lm_qr" => Ok(OptimizerBackend::BasinLmQr),
+            "basin_trf" => Ok(OptimizerBackend::BasinTrf),
             other => Err(format!(
                 "unknown optimizer backend {other:?} (expected one of: builtin, \
-                 minpack_lm, trf, argmin_gauss_newton, argmin_trust_region)"
+                 minpack_lm, trf, argmin_gauss_newton, argmin_trust_region, basin_lm_qr, basin_trf)"
             )),
         }
     }
@@ -117,6 +128,7 @@ impl OptimizerBackend {
             OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
                 cfg!(feature = "opt-argmin")
             }
+            OptimizerBackend::BasinLmQr | OptimizerBackend::BasinTrf => cfg!(feature = "opt-basin"),
         }
     }
 
@@ -136,7 +148,10 @@ impl OptimizerBackend {
     /// Whether the backend honours `lb`/`ub` natively, or has to be wrapped
     /// in [`IntervalMap`] and therefore ends strictly inside the box.
     pub fn bounds_are_native(self) -> bool {
-        matches!(self, OptimizerBackend::BuiltinLm | OptimizerBackend::Trf)
+        matches!(
+            self,
+            OptimizerBackend::BuiltinLm | OptimizerBackend::Trf | OptimizerBackend::BasinTrf
+        )
     }
 
     /// The cargo feature that supplies this backend, if any. `None` for the
@@ -152,6 +167,7 @@ impl OptimizerBackend {
             OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
                 Some("opt-argmin")
             }
+            OptimizerBackend::BasinLmQr | OptimizerBackend::BasinTrf => Some("opt-basin"),
         }
     }
 
@@ -175,15 +191,17 @@ impl OptimizerBackend {
 /// The list is the whole enum, not the compiled-in subset — pair it with
 /// [`OptimizerBackend::is_available`] to answer "what can this build run?",
 /// which is the question a caller has before it picks one.
-pub const ALL_BACKENDS: [OptimizerBackend; 5] = [
+pub const ALL_BACKENDS: [OptimizerBackend; 7] = [
     OptimizerBackend::BuiltinLm,
     OptimizerBackend::MinpackLm,
     OptimizerBackend::Trf,
     OptimizerBackend::ArgminGaussNewton,
     OptimizerBackend::ArgminTrustRegion,
+    OptimizerBackend::BasinLmQr,
+    OptimizerBackend::BasinTrf,
 ];
 
-/// The names this build can actually run. `["builtin"]` on a standard build.
+/// The names this build can actually run. `["builtin", "trf"]` on a standard build.
 pub fn available_backends() -> Vec<&'static str> {
     ALL_BACKENDS
         .iter()
@@ -331,13 +349,23 @@ impl IntervalMap {
 ///
 /// Compiled in only where something uses it: the unbounded backends, and the
 /// tests that pin it against differences taken in `u` directly.
-#[cfg(any(test, feature = "opt-minpack-lm", feature = "opt-argmin"))]
+#[cfg(any(
+    test,
+    feature = "opt-minpack-lm",
+    feature = "opt-argmin",
+    feature = "opt-basin"
+))]
 struct MappedJacobian<'a, J: ?Sized> {
     inner: &'a J,
     map: &'a IntervalMap,
 }
 
-#[cfg(any(test, feature = "opt-minpack-lm", feature = "opt-argmin"))]
+#[cfg(any(
+    test,
+    feature = "opt-minpack-lm",
+    feature = "opt-argmin",
+    feature = "opt-basin"
+))]
 impl<J: JacobianSource + ?Sized> JacobianSource for MappedJacobian<'_, J> {
     fn fill(&self, u: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
         let x = self.map.to_bounded(u);
@@ -346,6 +374,9 @@ impl<J: JacobianSource + ?Sized> JacobianSource for MappedJacobian<'_, J> {
             None => return Ok(None),
         };
         let n = u.len();
+        if m.checked_mul(n) != Some(jac.len()) {
+            return Err("MappedJacobian: inconsistent Jacobian shape".into());
+        }
         for (k, &uk) in u.iter().enumerate() {
             let s = self.map.slope(k, uk);
             for i in 0..m {
@@ -390,6 +421,16 @@ where
             residuals, jacobian, x0, lb, ub, cfg,
         )
         .map(|r| OptimizerResult::from_lm(r, backend)),
+        OptimizerBackend::BasinLmQr | OptimizerBackend::BasinTrf => {
+            #[cfg(feature = "opt-basin")]
+            {
+                basin_backends::run(residuals, jacobian, x0, lb, ub, cfg)
+            }
+            #[cfg(not(feature = "opt-basin"))]
+            {
+                Err(backend.unavailable())
+            }
+        }
         OptimizerBackend::MinpackLm => {
             #[cfg(feature = "opt-minpack-lm")]
             {
