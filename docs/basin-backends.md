@@ -118,19 +118,25 @@ demonstration remains in the review harness.
 ## Measured results and limitations
 
 The [recorded run](../validation/benches/synthesis/results/basin_backends.json)
-used Basin 1.15.0, Rust 1.98.1, and one thread. All near-optimum and
-active-bound optical comparisons passed at `rtol=1e-9, atol=1e-12` for cost and
-`1e-4 nm` for thickness, in both analytic and finite-difference modes. These
-sample medians include fresh context and stack construction; they measure
+used Basin 1.15.0, Rust 1.97.0, one thread, and 21 timed runs per row on a
+shared cloud VM, so absolute times are slower and noisier than on a desktop;
+compare backends within a row, not against other machines. All near-optimum
+and active-bound optical comparisons passed at `rtol=1e-9, atol=1e-12` for
+cost and `1e-4 nm` for thickness, in both analytic and finite-difference
+modes. Times include fresh context and stack construction; they measure
 end-to-end optimization rather than the linear solve alone.
 
-  | Case, analytic Jacobian   | Built-in TRF, ms / residual calls | Basin full TRF, ms / residual calls | Basin QR LM, ms / residual calls |
-  | ---                       | ---                               | ---                                 | ---                              |
-  | Two films, near optimum   | 0.865 / 25                        | 0.910 / 28                          | 1.359 / 37                       |
-  | Three films, near optimum | 1.263 / 32                        | 1.446 / 33                          | 0.732 / 18                       |
-  | Upper thickness bound     | 0.208 / 7                         | 0.213 / 7                           | 0.085 / 2                        |
-  | Lower thickness bound     | 0.159 / 5                         | 0.148 / 5                           | 0.116 / 3                        |
-  | One-film interior control | 0.428 / 21                        | 0.431 / 21                          | 0.323 / 17                       |
+Each cell is median wall time in ms, the interquartile range in brackets, and
+residual calls. QR LM's calls include the inward probe `run_optimizer` adds
+for each coordinate it leaves saturated at a bound.
+
+| Case, analytic Jacobian | Built-in TRF | Basin full TRF | Basin QR LM |
+| --- | --- | --- | --- |
+| Two films, near optimum | 2.02 [2.00–2.04] / 25 | 2.67 [2.57–2.75] / 28 | 3.79 [3.38–3.99] / 38 |
+| Three films, near optimum | 2.92 [2.85–3.02] / 32 | 3.06 [3.02–3.13] / 33 | 1.72 [1.64–1.80] / 18 |
+| Upper thickness bound | 0.516 [0.509–0.559] / 7 | 0.581 [0.563–0.602] / 7 | 0.239 [0.231–0.256] / 3 |
+| Lower thickness bound | 0.386 [0.378–0.416] / 5 | 0.566 [0.553–0.624] / 5 | 0.418 [0.397–0.438] / 3 |
+| One-film interior control | 1.54 [1.42–1.68] / 21 | 1.23 [1.17–1.27] / 21 | 0.997 [0.953–1.02] / 17 |
 
 From a distant `10 nm` start in the one-film interior problem, Basin QR LM
 saturates at the `1000 nm` upper bound with cost `249.17`. Moving inward lowers
