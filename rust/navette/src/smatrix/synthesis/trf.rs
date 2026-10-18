@@ -366,7 +366,11 @@ where
         cost: 2.0 * cost,
         iterations: iteration,
         evals,
-        termination: termination.unwrap_or(LmTermination::MaxIterations),
+        termination: termination.unwrap_or(if evals >= cfg.max_evals {
+            LmTermination::MaxEvaluations
+        } else {
+            LmTermination::MaxIterations
+        }),
         gain_ratio: ratio,
         analytic_jacobians,
     })
@@ -1508,7 +1512,7 @@ mod tests {
         // The budget is a floor-and-overshoot, not a hard cut: a Jacobian
         // build spends 2n at once. What must hold is that it stopped early.
         assert!(r.evals <= 12 + 2 * 2 + 1, "{}", r.evals);
-        assert_eq!(r.termination, LmTermination::MaxIterations);
+        assert_eq!(r.termination, LmTermination::MaxEvaluations);
     }
 
     #[test]

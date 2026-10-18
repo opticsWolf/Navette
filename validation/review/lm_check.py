@@ -63,8 +63,11 @@ Checks:
 
   F. **Basin QR LM and full TRF** (issue #2), skipped without ``opt-basin``.
      Both Jacobian modes are checked near established optima, at active bounds,
-     and from distant starts. The Rust matrix additionally covers fixed
-     coordinates, zero columns, and rank-deficient systems.
+     and from distant starts. From the far start of the interior control, QR
+     LM saturates at the upper bound; F pins that it reports ``StuckAtBound``
+     there rather than a convergence reason, and nowhere else. The Rust matrix
+     additionally covers fixed coordinates, zero columns, and rank-deficient
+     systems.
 
 Run explicitly:  python validation/review/lm_check.py
 Exit code 0 = all comparisons within tolerance.
@@ -77,6 +80,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import numpy as np
 from scipy.optimize import least_squares
+
+# Termination reasons that mean "a convergence test passed" (or there was
+# nothing to optimize). Budget stops and the no-progress reasons -- Stalled,
+# StuckAtBound -- are deliberately absent.
+CONVERGED = {"Gradient", "Step", "Cost", "Converged", "NoFreeParameters"}
 
 from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
@@ -248,7 +256,7 @@ def part_a():
         check(f"A2/{label}: engine improved on its start", ecost < cost0,
               f"{ecost:.6g} < {cost0:.6g}")
         check(f"A2/{label}: engine converged rather than running out of room",
-              erep["termination"] != "MaxIterations", erep["termination"])
+              erep["termination"] in CONVERGED, erep["termination"])
         check(f"A2/{label}: engine answer is stationary",
               ecost2 >= ecost - 1e-6 * max(abs(ecost), 1e-12),
               f"re-run {ecost2:.10g} vs {ecost:.10g}")
@@ -537,7 +545,7 @@ def part_e():
             check(f"E4/{label}: the refusal names the cause and a way out",
                   "singular" in msg and "trf" in msg, msg[:80])
         else:
-            converged = grep["termination"] != "MaxIterations"
+            converged = grep["termination"] in CONVERGED
             print(f"    argmin_gn {gcost:.10g} ({grep['evals']} evals, "
                   f"{grep['termination']})")
             check(f"E4/{label}: it does not claim convergence at a worse cost",
@@ -608,6 +616,14 @@ def part_f():
                     continue
                 print(f"  {label}: cost={cost:.12g}, x={np.round(x, 7)}, "
                       f"{report['termination']}, {report['evals']} evals")
+                if case["label"] == "interior control/far" and backend == "basin_lm_qr":
+                    # The interval map saturates at the 1000 nm bound; moving
+                    # inward lowers the cost, so this is a false convergence
+                    # and must not be reported as one.
+                    check(f"{label}: saturation reported as StuckAtBound",
+                          report["termination"] == "StuckAtBound", report["termination"])
+                elif report["termination"] == "StuckAtBound":
+                    check(f"{label}: unexpected StuckAtBound", False, str(x))
                 check(f"{label}: feasible improvement",
                       np.all(np.isfinite(x)) and np.all(x >= 0.0)
                       and np.all(x <= case["clamp_max"]) and cost <= cost0 + 1e-12)

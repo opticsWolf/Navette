@@ -55,11 +55,13 @@ use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct LmConfig {
-    /// Cap on iterations; Basin counts fully completed solver iterations.
+    /// Cap on iterations. Reached → [`LmTermination::MaxIterations`].
     pub max_iterations: usize,
-    /// Budget for residual evaluations, including adapter Jacobian probes.
-    /// Basin checks it after initialization and between iterations, so a
-    /// completed initialization or iteration may exceed it.
+    /// Budget for residual evaluations, including the ones finite-difference
+    /// Jacobians spend. Reached → [`LmTermination::MaxEvaluations`]. Some
+    /// external backends check it only between iterations and may overshoot;
+    /// see the [`OptimizerBackend`](super::optimizer::OptimizerBackend)
+    /// variant.
     pub max_evals: usize,
     /// Terminate when relative cost decrease falls below this.
     pub ftol: f64,
@@ -171,25 +173,87 @@ impl JacobianSource for NoJacobian {
     }
 }
 
+/// Why a run stopped.
+///
+/// Three groups, and the group is usually what a caller wants to know:
+///
+/// * **converged** — [`Gradient`](Self::Gradient), [`Step`](Self::Step),
+///   [`Cost`](Self::Cost), [`Converged`](Self::Converged),
+///   [`NoFreeParameters`](Self::NoFreeParameters): a convergence test passed,
+///   or there was nothing to optimize. See [`is_converged`](Self::is_converged).
+/// * **budget** — [`MaxIterations`](Self::MaxIterations),
+///   [`MaxEvaluations`](Self::MaxEvaluations): stopped by a limit, not by a
+///   test. The result is the best point so far, not an optimum.
+/// * **no progress** — [`Stalled`](Self::Stalled),
+///   [`StuckAtBound`](Self::StuckAtBound): stopped without converging. The
+///   result is still the best point found and safe to use; it is just not
+///   known to be stationary.
+///
+/// The exact form of each test differs between backends (see each
+/// [`OptimizerBackend`](super::optimizer::OptimizerBackend) variant); the
+/// meaning of each variant does not.
+///
+/// `#[non_exhaustive]`: reasons may be added in a minor release, so a `match`
+/// needs a wildcard arm. Prefer the group predicates for control flow.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum LmTermination {
-    /// ‖Jᵀr‖∞ < gtol, or — when `gtol_scale_invariant` is set — the residual
-    /// is orthogonal to every Jacobian column to within gtol.
+    /// The gradient test passed: ‖Jᵀr‖∞ < gtol, or — when
+    /// `gtol_scale_invariant` is set — the residual is orthogonal to every
+    /// Jacobian column to within gtol. Bounded backends test a projected or
+    /// scaled gradient over the free coordinates.
     Gradient,
     /// Relative step below xtol.
     Step,
-    /// Actual *and* predicted relative cost improvement below ftol, or no
-    /// further step could improve the cost at all. Some external backends
-    /// test only the observed cost change.
+    /// Relative cost improvement below ftol, or no further step could improve
+    /// the cost at all.
     Cost,
-    /// An iteration or residual-evaluation budget was reached.
-    MaxIterations,
-    /// Damping escalated without any acceptable step (stuck at bounds or
-    /// numerically degenerate system).
-    Stalled,
-    /// The backend converged without a gradient, cost, or step reason,
-    /// for example because all parameters are fixed.
+    /// The backend reported convergence without saying which test passed.
     Converged,
+    /// Every coordinate is fixed (`lb == ub`), so there was nothing to
+    /// optimize. `x` is the bounds and `cost` the residual there.
+    NoFreeParameters,
+    /// The iteration budget (`max_iterations`) was reached.
+    MaxIterations,
+    /// The residual-evaluation budget (`max_evals`) was reached.
+    MaxEvaluations,
+    /// No acceptable step could be found: damping escalated without one being
+    /// accepted, or further cost reductions round to zero. Typical of a
+    /// numerically degenerate system or a floating-point cost floor.
+    Stalled,
+    /// An interval-mapped backend ([`IntervalMap`](super::optimizer::IntervalMap))
+    /// stopped with a coordinate saturated at a bound **while moving that
+    /// coordinate back inside lowers the cost**.
+    ///
+    /// The map's slope vanishes at the bound, so the transformed gradient is
+    /// ≈ 0 there whatever the physics says, and the backend's own convergence
+    /// test passes. This is that false convergence, detected after the fact.
+    /// A bound optimum the physics actually wants (a film driven to zero) is
+    /// not reported this way. Restart from an interior point, or use a backend
+    /// with native bounds.
+    StuckAtBound,
+}
+
+impl LmTermination {
+    /// A convergence test passed, or there was nothing to optimize.
+    pub fn is_converged(self) -> bool {
+        matches!(
+            self,
+            LmTermination::Gradient
+                | LmTermination::Step
+                | LmTermination::Cost
+                | LmTermination::Converged
+                | LmTermination::NoFreeParameters
+        )
+    }
+
+    /// Stopped by `max_iterations` or `max_evals`.
+    pub fn is_budget(self) -> bool {
+        matches!(
+            self,
+            LmTermination::MaxIterations | LmTermination::MaxEvaluations
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -492,8 +556,13 @@ where
         if !accepted {
             // Every trial in the ladder failed to lower the cost. Whether that
             // is a degenerate system or an optimum pinned against its bounds,
-            // no further step exists from here.
-            termination = Some(LmTermination::Stalled);
+            // no further step exists from here — unless the ladder was cut
+            // short by the evaluation budget, which is a different fact.
+            termination = Some(if evals.get() >= cfg.max_evals {
+                LmTermination::MaxEvaluations
+            } else {
+                LmTermination::Stalled
+            });
             break;
         }
         if termination.is_some() {
@@ -514,7 +583,7 @@ where
             break;
         }
         if evals.get() >= cfg.max_evals {
-            termination = Some(LmTermination::MaxIterations);
+            termination = Some(LmTermination::MaxEvaluations);
             break;
         }
 
@@ -526,7 +595,11 @@ where
         cost,
         iterations: iteration,
         evals: evals.get(),
-        termination: termination.unwrap_or(LmTermination::MaxIterations),
+        termination: termination.unwrap_or(if evals.get() >= cfg.max_evals {
+            LmTermination::MaxEvaluations
+        } else {
+            LmTermination::MaxIterations
+        }),
         gain_ratio,
         analytic_jacobians,
     })

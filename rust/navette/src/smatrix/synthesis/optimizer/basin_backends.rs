@@ -28,15 +28,11 @@ struct ResidualProblem<'a> {
     counts: Arc<Counts>,
 }
 
-impl Residual for ResidualProblem<'_> {
-    type Param = Vec<f64>;
-    type Output = Vec<f64>;
-    type Error = String;
-
-    fn residual(&self, x: &Vec<f64>) -> Result<Vec<f64>, String> {
+impl ResidualProblem<'_> {
+    /// One counted, shape-checked evaluation into a caller's buffer.
+    fn eval_into(&self, x: &[f64], r: &mut Vec<f64>) -> Result<(), String> {
         self.counts.residuals.fetch_add(1, Ordering::Relaxed);
-        let mut r = Vec::new();
-        (self.residuals)(x, &mut r)?;
+        (self.residuals)(x, r)?;
         if r.is_empty() {
             return Err("empty residual vector".into());
         }
@@ -49,6 +45,20 @@ impl Residual for ResidualProblem<'_> {
         }
         // Basin handles non-finite trial values by rejecting the step. Do not
         // turn these into callback errors, which mean the run must abort.
+        Ok(())
+    }
+}
+
+impl Residual for ResidualProblem<'_> {
+    type Param = Vec<f64>;
+    type Output = Vec<f64>;
+    type Error = String;
+
+    // Basin 1.15's `Residual` returns an owned vector, so each call
+    // allocates; there is no in-place variant to implement instead.
+    fn residual(&self, x: &Vec<f64>) -> Result<Vec<f64>, String> {
+        let mut r = Vec::with_capacity(self.counts.rows.load(Ordering::Relaxed));
+        self.eval_into(x, &mut r)?;
         Ok(r)
     }
 }
@@ -67,6 +77,27 @@ struct Problem<'a, J: ?Sized> {
     raw: ResidualProblem<'a>,
     jacobian: Option<&'a J>,
     bounds: Option<(Vec<f64>, Vec<f64>)>,
+    /// Feasible differences for TRF, built once rather than per Jacobian.
+    bounded_fd: Option<BoundedFiniteDiff<ResidualProblem<'a>>>,
+}
+
+impl<'a, J: ?Sized> Problem<'a, J> {
+    fn new(
+        raw: ResidualProblem<'a>,
+        jacobian: Option<&'a J>,
+        bounds: Option<(&[f64], &[f64])>,
+    ) -> Self {
+        let bounded_fd = bounds.map(|(lower, upper)| {
+            BoundedFiniteDiff::new(raw.clone(), lower.to_vec(), upper.to_vec())
+                .jacobian_method(Method::Central)
+        });
+        Problem {
+            raw,
+            jacobian,
+            bounds: bounds.map(|(lower, upper)| (lower.to_vec(), upper.to_vec())),
+            bounded_fd,
+        }
+    }
 }
 
 impl<J: ?Sized> Residual for Problem<'_, J> {
@@ -106,17 +137,12 @@ impl<J: JacobianSource + ?Sized> Jacobian for Problem<'_, J> {
             return Ok(DenseMatrix::from_row_slice(rows, x.len(), &values));
         }
 
-        if let Some((lower, upper)) = &self.bounds {
+        if let Some(fd) = &self.bounded_fd {
             // Ordinary central differences can leave the physical domain at
             // an active bound. This adapter selects feasible one-sided probes.
-            BoundedFiniteDiff::new(self.raw.clone(), lower.clone(), upper.clone())
-                .jacobian_method(Method::Central)
-                .jacobian(x)
+            fd.jacobian(x)
         } else {
-            let residuals = |x: &[f64], out: &mut Vec<f64>| {
-                *out = self.raw.residual(&x.to_vec())?;
-                Ok(())
-            };
+            let residuals = |x: &[f64], out: &mut Vec<f64>| self.raw.eval_into(x, out);
             build_jacobian(&residuals, x, &mut values)?;
             Ok(DenseMatrix::from_row_slice(
                 values.len() / x.len(),
@@ -159,7 +185,10 @@ fn map_termination(
                 | NativeConvergenceTest::RelativeTrustRadius
             )) {
                 Ok(LmTermination::Step)
+            } else if native_tests.contains(&NativeConvergenceTest::NoFreeParameters) {
+                Ok(LmTermination::NoFreeParameters)
             } else {
+                // A native test this adapter does not know yet.
                 Ok(LmTermination::Converged)
             }
         }
@@ -168,7 +197,8 @@ fn map_termination(
         | TerminationReason::ProjectedGradientTolerance => Ok(LmTermination::Gradient),
         TerminationReason::CostTolerance | TerminationReason::RelativeCostTolerance => Ok(LmTermination::Cost),
         TerminationReason::ParamTolerance | TerminationReason::RelativeParamTolerance => Ok(LmTermination::Step),
-        TerminationReason::MaxIter | TerminationReason::MaxEvaluations => Ok(LmTermination::MaxIterations),
+        TerminationReason::MaxIter => Ok(LmTermination::MaxIterations),
+        TerminationReason::MaxEvaluations => Ok(LmTermination::MaxEvaluations),
         TerminationReason::NumericalNoProgress => Ok(LmTermination::Stalled),
         TerminationReason::SolverFailed => Err("solver failed (invalid initial evaluations, non-finite derivatives, or exhausted numerical progress)".into()),
         other => Err(format!("unexpected termination reason: {other:?}")),
@@ -233,14 +263,14 @@ where
             let map = IntervalMap::new(lb, ub)?;
             let mapped_r = |u: &[f64], out: &mut Vec<f64>| residuals(&map.to_bounded(u), out);
             let mapped_j = jacobian.map(|inner| MappedJacobian { inner, map: &map });
-            let problem = Problem {
-                raw: ResidualProblem {
+            let problem = Problem::new(
+                ResidualProblem {
                     residuals: &mapped_r,
                     counts: Arc::clone(&counts),
                 },
-                jacobian: mapped_j.as_ref(),
-                bounds: None,
-            };
+                mapped_j.as_ref(),
+                None,
+            );
             let solver = LevenbergMarquardtQr::<Vec<f64>, DenseMatrix>::new()
                 .with_absolute_gradient_tolerance(cfg.gtol)
                 .with_gradient_orthogonality_tolerance(cfg.gtol_scale_invariant.then_some(cfg.gtol))
@@ -255,14 +285,14 @@ where
             let termination = map_termination(result.reason, result.native_convergence_tests())?;
             (result.into_result(), x, termination)
         } else {
-            let problem = Problem {
-                raw: ResidualProblem {
+            let problem = Problem::new(
+                ResidualProblem {
                     residuals,
                     counts: Arc::clone(&counts),
                 },
                 jacobian,
-                bounds: Some((lb.to_vec(), ub.to_vec())),
-            };
+                Some((lb, ub)),
+            );
             let solver = TrustRegionReflective::new()
                 .with_absolute_scaled_gradient_tolerance(cfg.gtol)
                 .with_relative_cost_change_tolerance(cfg.ftol)
@@ -309,9 +339,10 @@ mod tests {
                 TerminationReason::RelativeParamTolerance,
                 LmTermination::Step,
             ),
+            (TerminationReason::MaxIter, LmTermination::MaxIterations),
             (
                 TerminationReason::MaxEvaluations,
-                LmTermination::MaxIterations,
+                LmTermination::MaxEvaluations,
             ),
             (
                 TerminationReason::NumericalNoProgress,
@@ -335,7 +366,7 @@ mod tests {
             (vec![RelativeModelReduction], LmTermination::Cost),
             (vec![RelativeTrialStep], LmTermination::Step),
             (vec![RelativeTrustRadius], LmTermination::Step),
-            (vec![NoFreeParameters], LmTermination::Converged),
+            (vec![NoFreeParameters], LmTermination::NoFreeParameters),
             (
                 vec![RelativeTrialStep, RelativeModelReduction],
                 LmTermination::Cost,
@@ -367,7 +398,7 @@ mod tests {
             ),
             (
                 TerminationReason::MaxEvaluations,
-                LmTermination::MaxIterations,
+                LmTermination::MaxEvaluations,
             ),
             (
                 TerminationReason::RelativeCostTolerance,

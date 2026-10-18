@@ -55,21 +55,35 @@ because Basin does not expose it. `analytic_jacobians` counts successful
 requests served by `JacobianSource`, including hybrid sources.
 
 The adapter reads Basin's native convergence diagnostics from
-`run_with_solver()`. Absolute, scaled, and orthogonality gradient tests report
-`Gradient`; relative model reduction reports `Cost`; relative trial step and
-trust radius report `Step`. If several tests pass, Navette prefers `Gradient`,
-then `Cost`, then `Step`, independently of the order Basin reports them.
-All-fixed TRF problems report `Converged`, which also remains the fallback for
-native tests that Navette does not recognize. Explicit observed cost and step
-checks report `Cost` and `Step`; either budget reports `MaxIterations`,
-following Navette's existing vocabulary. Numerical no-progress reports
-`Stalled`. `SolverFailed`, invalid inputs, inconsistent callback dimensions, and
-callback errors return an error with the backend name. Non-finite trial
-residuals remain available to Basin's rejection logic.
+`run_with_solver()` and maps them onto Navette's `LmTermination`:
 
-Rust callers that exhaustively match `LmTermination` must handle `Converged`.
-Existing backends retain their previous termination values. Selecting a Basin
-backend without `opt-basin` returns the rebuild hint; it never falls back.
+| Basin outcome | `LmTermination` |
+| --- | --- |
+| absolute, scaled, or orthogonality gradient test | `Gradient` |
+| relative model reduction; explicit observed cost check | `Cost` |
+| relative trial step or trust radius; explicit observed step check | `Step` |
+| no free parameters (all coordinates fixed by equal bounds) | `NoFreeParameters` |
+| converged, native test not recognized by this adapter | `Converged` |
+| `MaxIter` | `MaxIterations` |
+| `MaxEvaluations` (the adapter's own `max_evals` check) | `MaxEvaluations` |
+| `NumericalNoProgress` | `Stalled` |
+
+If several native tests pass, Navette prefers `Gradient`, then `Cost`, then
+`Step`, independently of the order Basin reports them. `SolverFailed`, invalid
+inputs, inconsistent callback dimensions, and callback errors return an error
+with the backend name. Non-finite trial residuals remain available to Basin's
+rejection logic.
+
+`basin_lm_qr` is additionally subject to the check every interval-mapped
+backend gets in `run_optimizer`: after a convergence reason, each coordinate
+within `1e-8` of the box width of a bound is probed once, `√ε` of the width
+back inside. If the cost falls there, the bound is not a constrained optimum
+and the reason becomes `StuckAtBound`. The probes count towards `evals`; `x`
+and `cost` are returned unchanged.
+
+`LmTermination` is `#[non_exhaustive]`, and `is_converged()` / `is_budget()`
+give the groups. Selecting a Basin backend without `opt-basin` returns the
+rebuild hint; it never falls back.
 
 ## Reproducing the comparisons
 
@@ -94,9 +108,11 @@ thickness comparisons, films smaller than the `1e-4 nm` comparison tolerance
 count as zero on both sides. The physical removal sweep is tested separately at
 the usual `2 nm` threshold.
 
-The benchmark warms each case once, measures five fresh-stack runs, and records
-median wall time alongside all samples, solver work, and build provenance.
-Timing is informational and does not gate CI. The argmin Gauss-Newton failure
+The benchmark warms each case once, times 21 fresh-stack runs, and records a
+five-number summary of the wall time (min, quartiles, median, max, in ms)
+alongside solver work and build provenance, one JSON line per row. `--raw`
+also keeps every sample, for local investigation. Timing is informational and
+does not gate CI. The argmin Gauss-Newton failure
 demonstration remains in the review harness.
 
 ## Measured results and limitations
@@ -117,8 +133,10 @@ end-to-end optimization rather than the linear solve alone.
   | One-film interior control | 0.428 / 21                        | 0.431 / 21                          | 0.323 / 17                       |
 
 From a distant `10 nm` start in the one-film interior problem, Basin QR LM
-saturates near the `1000 nm` upper bound and reports `Cost` at `249.17`. Full
-TRF reaches about `103.17 nm` and cost `54.90`. The built-in LM and MINPACK also
+saturates at the `1000 nm` upper bound with cost `249.17`. Moving inward lowers
+the cost there, so the bound is not a constrained optimum: the run is reported
+as `StuckAtBound`, at the price of one extra residual evaluation. Full TRF
+reaches about `103.17 nm` and cost `54.90`. The built-in LM and MINPACK also
 reach different local solutions from that start. From `40 nm`, all four reach
 the same optimum. The benchmark retains both starts.
 

@@ -20,6 +20,12 @@
 //! handle bounds natively and approach active bounds from the interior.
 //! The built-in remains the default.
 //!
+//! The reparametrization has one failure mode worth catching: at a bound the
+//! map's slope vanishes, so an unbounded backend can "converge" on a bound the
+//! physics would leave. [`run_optimizer`] probes inward at every saturated
+//! coordinate after such a run and reports [`LmTermination::StuckAtBound`]
+//! when the cost goes down there.
+//!
 //! # Feature gating
 //!
 //! Backends that need a dependency are declared unconditionally and
@@ -80,10 +86,31 @@ pub enum OptimizerBackend {
     /// convergence test of its own** — see [`OptimizerBackend::runs_to_max_iterations`].
     ArgminTrustRegion,
     /// Basin's pivoted-QR Levenberg-Marquardt, behind `opt-basin`.
-    /// Unbounded: runs on the interior reparametrization.
+    /// Unbounded: runs on the interior reparametrization, so a far start can
+    /// saturate at a bound — reported as [`LmTermination::StuckAtBound`] when
+    /// the physics would leave it.
+    ///
+    /// Tolerances apply in the transformed coordinates: `gtol` to ‖Jᵀr‖∞
+    /// (plus the column-orthogonality test when `gtol_scale_invariant`),
+    /// `ftol` to actual *and* predicted reduction, `xtol` to the attempted
+    /// step. `lambda_init` is Basin's initial relative damping τ; damping is
+    /// Nielsen's, so `damping`, `lambda_up` and `lambda_down` are unused.
+    ///
+    /// Budgets are checked between iterations: `max_evals` (which counts the
+    /// adapter's finite-difference probes) can be overshot by one iteration,
+    /// and `iterations` counts only completed ones. Full mapping:
+    /// `docs/basin-backends.md`.
     BasinLmQr,
-    /// Basin's full dense trust-region reflective solver, behind `opt-basin`.
-    /// Uses native box bounds and a rank-aware SVD subproblem.
+    /// Basin's full dense trust-region reflective solver (Coleman–Li), behind
+    /// `opt-basin`. Native box bounds with a rank-aware SVD subproblem; equal
+    /// bounds fix a coordinate, and all-fixed problems end at once with
+    /// [`LmTermination::NoFreeParameters`]. Finite differences use feasible
+    /// one-sided stencils at a bound.
+    ///
+    /// `gtol` tests the Coleman–Li scaled gradient, `ftol` the *observed*
+    /// relative cost change (no predicted-reduction condition), `xtol` the
+    /// observed relative step. Damping settings and `gtol_scale_invariant`
+    /// are unused. Budgets behave as for [`OptimizerBackend::BasinLmQr`].
     BasinTrf,
 }
 
@@ -412,6 +439,88 @@ where
     if !backend.is_available() {
         return Err(backend.unavailable());
     }
+    let mut result = run_backend(residuals, jacobian, x0, lb, ub, cfg)?;
+    if !backend.bounds_are_native() {
+        flag_stuck_at_bound(residuals, lb, ub, &mut result)?;
+    }
+    Ok(result)
+}
+
+/// A coordinate within this fraction of the box width of a bound counts as
+/// saturated: `tanh(u)` is then within `2e-8` of ±1, so the map's slope —
+/// and with it the transformed gradient — is down by about the same factor.
+const SATURATION_REL: f64 = 1e-8;
+
+/// The interval map's blind spot, checked after the fact.
+///
+/// An interval-mapped backend sees `∂r/∂u = ∂r/∂x · dx/du`, and `dx/du → 0`
+/// at a bound. A coordinate driven onto a bound therefore looks stationary to
+/// the backend whether or not the physics agrees, and its gradient, cost or
+/// step test passes. Here each saturated coordinate gets one residual
+/// evaluation a small step back inside. If the cost goes down there, the
+/// bound is not a constrained optimum (its KKT sign is wrong) and the
+/// convergence reason is replaced by [`LmTermination::StuckAtBound`]. A bound
+/// the cost really wants — a film driven to zero — keeps its reason.
+///
+/// Only convergence reasons are checked: a budget or a stall already says the
+/// run did not converge. The probes count towards `evals`; `x` and `cost` are
+/// left as the backend returned them.
+fn flag_stuck_at_bound<F>(
+    residuals: &F,
+    lb: &[f64],
+    ub: &[f64],
+    result: &mut OptimizerResult,
+) -> Result<(), String>
+where
+    F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
+{
+    if !result.termination.is_converged() || !result.cost.is_finite() {
+        return Ok(());
+    }
+    let mut probe = result.x.clone();
+    let mut r = Vec::new();
+    for k in 0..result.x.len() {
+        let width = ub[k] - lb[k];
+        if !(width > 0.0) {
+            continue; // fixed coordinate: nothing to move
+        }
+        let xk = result.x[k];
+        let (inward, gap) = if xk - lb[k] <= ub[k] - xk {
+            (1.0, xk - lb[k])
+        } else {
+            (-1.0, ub[k] - xk)
+        };
+        if gap > SATURATION_REL * width {
+            continue;
+        }
+        probe[k] = xk + inward * f64::EPSILON.sqrt() * width;
+        residuals(&probe, &mut r)?;
+        result.evals += 1;
+        probe[k] = xk;
+        let cost: f64 = r.iter().map(|v| v * v).sum();
+        // A relative margin far above rounding, far below any real slope:
+        // the probe step is √ε of the box width.
+        if cost.is_finite() && result.cost - cost > 1e-12 * result.cost {
+            result.termination = LmTermination::StuckAtBound;
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn run_backend<F, J>(
+    residuals: &F,
+    jacobian: Option<&J>,
+    x0: &[f64],
+    lb: &[f64],
+    ub: &[f64],
+    cfg: &LmConfig,
+) -> Result<OptimizerResult, String>
+where
+    F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
+    J: JacobianSource + ?Sized,
+{
+    let backend = cfg.backend;
     match backend {
         OptimizerBackend::BuiltinLm => {
             levenberg_marquardt_with(residuals, jacobian, x0, lb, ub, cfg)
@@ -560,7 +669,8 @@ mod minpack {
             TerminationReason::Converged { ftol: true, .. } => Ok(LmTermination::Cost),
             TerminationReason::Converged { xtol: true, .. } => Ok(LmTermination::Step),
             TerminationReason::Converged { .. } => Ok(LmTermination::Cost),
-            TerminationReason::LostPatience => Ok(LmTermination::MaxIterations),
+            // Patience is set from `max_evals` (see `with_patience` below).
+            TerminationReason::LostPatience => Ok(LmTermination::MaxEvaluations),
             TerminationReason::NoImprovementPossible(_) => Ok(LmTermination::Stalled),
             TerminationReason::User(w) => {
                 Err(format!("minpack_lm: problem reported failure ({w})"))
@@ -947,6 +1057,77 @@ mod argmin_backends {
 mod tests {
     use super::super::thick_opt::{NoJacobian, build_jacobian};
     use super::*;
+
+    fn finished_at(x: f64, cost: f64, termination: LmTermination) -> OptimizerResult {
+        OptimizerResult {
+            x: vec![x],
+            cost,
+            iterations: 3,
+            evals: 7,
+            termination,
+            gain_ratio: f64::NAN,
+            analytic_jacobians: 0,
+            backend: OptimizerBackend::MinpackLm,
+        }
+    }
+
+    #[test]
+    fn a_bound_the_cost_would_leave_is_flagged_and_one_it_wants_is_not() {
+        // cost(x) = (x - c)² on [0, 1], reported "converged" at x = 1.
+        for (c, stuck) in [(0.3, true), (2.0, false)] {
+            let r = move |x: &[f64], out: &mut Vec<f64>| {
+                *out = vec![x[0] - c];
+                Ok(())
+            };
+            let mut res = finished_at(1.0, (1.0 - c) * (1.0 - c), LmTermination::Gradient);
+            flag_stuck_at_bound(&r, &[0.0], &[1.0], &mut res).unwrap();
+            let want = if stuck {
+                LmTermination::StuckAtBound
+            } else {
+                LmTermination::Gradient
+            };
+            assert_eq!(res.termination, want, "c = {c}");
+            assert_eq!(res.evals, 8, "one probe, counted");
+            assert_eq!(res.x, [1.0], "the result itself is not moved");
+        }
+    }
+
+    #[test]
+    fn the_bound_check_skips_interior_fixed_and_unconverged_results() {
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let r = |x: &[f64], out: &mut Vec<f64>| {
+            probes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *out = vec![x[0] - 0.3];
+            Ok(())
+        };
+        // Interior point.
+        let mut res = finished_at(0.5, 0.04, LmTermination::Cost);
+        flag_stuck_at_bound(&r, &[0.0], &[1.0], &mut res).unwrap();
+        // Fixed coordinate.
+        let mut fixed = finished_at(1.0, 0.49, LmTermination::Cost);
+        flag_stuck_at_bound(&r, &[1.0], &[1.0], &mut fixed).unwrap();
+        // A budget stop already says "not converged".
+        let mut budget = finished_at(1.0, 0.49, LmTermination::MaxEvaluations);
+        flag_stuck_at_bound(&r, &[0.0], &[1.0], &mut budget).unwrap();
+        assert_eq!(probes.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(res.termination, LmTermination::Cost);
+        assert_eq!(fixed.termination, LmTermination::Cost);
+        assert_eq!(budget.termination, LmTermination::MaxEvaluations);
+    }
+
+    #[test]
+    fn termination_groups_partition_the_reasons() {
+        use LmTermination::*;
+        for t in [Gradient, Step, Cost, Converged, NoFreeParameters] {
+            assert!(t.is_converged() && !t.is_budget(), "{t:?}");
+        }
+        for t in [MaxIterations, MaxEvaluations] {
+            assert!(t.is_budget() && !t.is_converged(), "{t:?}");
+        }
+        for t in [Stalled, StuckAtBound] {
+            assert!(!t.is_budget() && !t.is_converged(), "{t:?}");
+        }
+    }
 
     /// r_i(x) = a_i·x_0 + b_i·x_1 − y_i — an exactly linear least-squares
     /// problem with a unique interior optimum at (1, −2).

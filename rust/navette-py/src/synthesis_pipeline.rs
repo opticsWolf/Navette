@@ -909,9 +909,9 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///
 /// ``optimizer`` selects the solver itself:
 ///
-/// * ``"builtin"`` (default) -- this crate's bounded LM. A thickness may
-///   end up exactly on a
-///   bound, which is how the synthesis loop learns a film wants removing.
+/// * ``"builtin"`` (default) -- this crate's bounded LM. A thickness may end
+///   up exactly on a bound, which is how the synthesis loop learns a film
+///   wants removing.
 /// * ``"minpack_lm"`` -- the ``levenberg-marquardt`` crate (MINPACK
 ///   ``lmdif``-derived), available only if the wheel was built with the
 ///   ``opt-minpack-lm`` cargo feature. Unbounded, so it runs on an interior
@@ -941,26 +941,31 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///   termination reason.
 ///
 /// * ``"basin_lm_qr"`` -- Basin's pivoted-QR LM, behind ``opt-basin``.
-///   Runs in the same interior reparametrization as MINPACK. ``gtol`` tests
-///   the absolute gradient and, when enabled, gradient orthogonality;
-///   ``ftol`` tests actual and predicted reduction, and ``xtol`` the attempted
-///   relative step. ``lambda_init`` sets Basin's initial relative damping.
-///   Basin uses Nielsen damping; ``damping``, ``lambda_up``, and
-///   ``lambda_down`` do not apply.
-/// * ``"basin_trf"`` -- Basin's full dense trust-region reflective solver,
-///   behind ``opt-basin``. Native bounds, including fixed coordinates;
-///   finite-difference probes stay feasible. ``gtol`` tests the Coleman-Li
-///   scaled gradient, ``ftol`` observed relative cost change, and ``xtol``
-///   observed relative step. Damping controls and ``gtol_scale_invariant``
-///   do not apply.
+///   Unbounded, on the same interior reparametrization as MINPACK, so from a
+///   far start it can end saturated at a bound (reported as
+///   ``"StuckAtBound"``, below). ``lambda_init`` is Basin's initial relative
+///   damping; ``damping``, ``lambda_up`` and ``lambda_down`` do not apply.
+/// * ``"basin_trf"`` -- Basin's full trust-region reflective solver, behind
+///   ``opt-basin``. Native bounds, like ``"trf"``; damping settings and
+///   ``gtol_scale_invariant`` do not apply.
 ///
-/// Both Basin backends count residual evaluations including adapter finite
-/// differences. ``max_evals`` is checked after initialization and between
-/// iterations, so an iteration can exceed it. ``iterations`` counts Basin's
-/// fully completed iterations. Native convergence reports ``"Gradient"``,
-/// ``"Cost"``, or ``"Step"``, in that order when several tests pass.
-/// All-fixed TRF problems report ``"Converged"``; numerical no-progress
-/// reports ``"Stalled"`` and preserves the result. Costs remain sum(r**2).
+///   Both Basin backends check ``max_evals`` only between iterations, so a
+///   run can overshoot it by one iteration. Tolerance mappings:
+///   ``docs/basin-backends.md``.
+///
+/// The report's ``termination`` is one of:
+///
+/// * converged -- ``"Gradient"``, ``"Step"``, ``"Cost"``, ``"Converged"``
+///   (the backend did not say which test passed), ``"NoFreeParameters"``
+///   (every thickness fixed by ``lb == ub``);
+/// * budget -- ``"MaxIterations"``, ``"MaxEvaluations"``;
+/// * no progress -- ``"Stalled"`` (no acceptable step; the result is still
+///   the best point found), ``"StuckAtBound"`` (an unbounded backend
+///   saturated at a bound that moving back inside would improve: a false
+///   convergence of the reparametrization, caught by one probe per
+///   saturated thickness). Restart from inside, or use ``"trf"``.
+///
+/// Costs are always sum(r**2).
 ///
 /// Naming a backend the wheel was not built with raises ``ValueError`` with
 /// the rebuild command -- never a silent fall back to a different solver.

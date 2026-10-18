@@ -171,7 +171,7 @@ mod enabled {
         assert_eq!(result.x, [0.5]);
         assert_eq!(result.cost, 4.0);
         assert_eq!(result.evals, 1);
-        assert_eq!(format!("{:?}", result.termination), "Converged");
+        assert_eq!(result.termination, LmTermination::NoFreeParameters);
     }
 
     #[test]
@@ -318,6 +318,62 @@ mod enabled {
     }
 
     #[test]
+    fn lm_saturated_at_a_bound_the_physics_would_leave_is_stuck() {
+        // Starting exactly on a bound saturates the interval map: the
+        // transformed gradient is ~0 there, so QR LM's own test passes at once.
+        // The inward probe sees the cost fall and reports the false
+        // convergence. TRF, with native bounds, leaves the bound.
+        let residual = |x: &[f64], r: &mut Vec<f64>| {
+            *r = vec![x[0] - 0.3, 2.0];
+            Ok(())
+        };
+        let lm = run_optimizer(
+            &residual,
+            None::<&NoJacobian>,
+            &[1.0],
+            &[0.0],
+            &[1.0],
+            &config("basin_lm_qr"),
+        )
+        .unwrap();
+        assert_eq!(lm.termination, LmTermination::StuckAtBound, "{lm:?}");
+        assert!(!lm.termination.is_converged());
+        assert!((lm.x[0] - 1.0).abs() < 1e-6, "{lm:?}");
+
+        let trf = run_optimizer(
+            &residual,
+            None::<&NoJacobian>,
+            &[1.0],
+            &[0.0],
+            &[1.0],
+            &config("basin_trf"),
+        )
+        .unwrap();
+        assert!(trf.termination.is_converged(), "{trf:?}");
+        assert!((trf.x[0] - 0.3).abs() < 1e-6, "{trf:?}");
+    }
+
+    #[test]
+    fn lm_at_a_bound_the_physics_wants_keeps_its_convergence_reason() {
+        // Same start, but the unconstrained optimum is outside the box, so
+        // the bound is a genuine constrained optimum.
+        let result = run_optimizer(
+            &|x: &[f64], r: &mut Vec<f64>| {
+                *r = vec![x[0] - 2.0, 2.0];
+                Ok(())
+            },
+            None::<&NoJacobian>,
+            &[1.0],
+            &[0.0],
+            &[1.0],
+            &config("basin_lm_qr"),
+        )
+        .unwrap();
+        assert!(result.termination.is_converged(), "{result:?}");
+        assert!((result.x[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn budgets_count_probes_and_stop_at_iteration_boundaries() {
         for name in ["basin_lm_qr", "basin_trf"] {
             let residual = |x: &[f64], r: &mut Vec<f64>| {
@@ -329,7 +385,7 @@ mod enabled {
             let result =
                 run_optimizer(&residual, None::<&NoJacobian>, &[0.1], &[0.0], &[5.0], &cfg)
                     .unwrap();
-            assert_eq!(result.termination, LmTermination::MaxIterations);
+            assert_eq!(result.termination, LmTermination::MaxEvaluations);
             assert_eq!(result.iterations, 0);
             assert!(result.evals > cfg.max_evals);
             assert!((result.cost - (result.x[0].exp() - 10.0).powi(2)).abs() < 1e-12);

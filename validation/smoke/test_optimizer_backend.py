@@ -197,7 +197,7 @@ def test_basin_interior_optimum_and_report(interior, backend, jacobian):
         pytest.skip("needs opt-basin")
     mf, report, thicknesses = _run(interior, backend, jacobian)
     assert report["backend"] == backend
-    assert report["termination"] in {"Cost", "Step", "Gradient"}
+    assert report["termination"] in {"Cost", "Step", "Gradient", "Converged"}
     assert report["cost"] < 1e-12
     assert mf < 1e-12
     assert thicknesses == pytest.approx(_REFERENCE, abs=1e-4)

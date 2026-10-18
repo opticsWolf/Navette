@@ -5,6 +5,40 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [Unreleased]
+
+### Added
+- **Optional Basin backends** (issue #2, PR #3): `optimizer="basin_lm_qr"`
+  (pivoted-QR LM on the interval map) and `"basin_trf"` (full
+  Coleman–Li trust-region reflective, native bounds) behind the
+  `opt-basin` feature. Tolerance and budget mappings, the boundary test
+  matrix and the SciPy comparison are in `docs/basin-backends.md`.
+- **False convergence at a bound is now caught** for every
+  interval-mapped backend (`minpack_lm`, the argmin pair,
+  `basin_lm_qr`). At a bound the map's slope vanishes, so these could
+  report `Gradient`/`Cost` while pinned on a bound the cost wants to
+  leave. `run_optimizer` now probes once inward at each saturated
+  coordinate and reports the new `StuckAtBound` when the cost falls. A
+  bound optimum the physics wants (a film driven to zero) keeps its
+  reason. The probes count towards `evals`.
+- `LmTermination::is_converged()` and `is_budget()`.
+
+### Changed
+- **`LmTermination` is `#[non_exhaustive]`** and has four new variants:
+  `Converged` (converged, test not reported), `NoFreeParameters`
+  (every coordinate fixed), `MaxEvaluations` and `StuckAtBound`. A Rust
+  `match` on it needs a wildcard arm.
+- **`MaxEvaluations` is split from `MaxIterations`.** The built-in LM,
+  `trf`, `minpack_lm` (whose patience is `max_evals`) and the Basin
+  backends now report `MaxEvaluations` when the evaluation budget is what
+  stopped them; Python callers testing `termination != "MaxIterations"`
+  for convergence should test membership in the converged group instead.
+  The built-in LM also reports `MaxEvaluations`, not `Stalled`, when the
+  budget runs out inside its damping ladder.
+- `bench_optimizer_backends.py` records a five-number timing summary per
+  row (21 runs by default; `--raw` keeps the samples) instead of every
+  sample.
+
 ## [0.7.27] - the error model had shipped undocumented for eleven releases
 
 0.7.15 through 0.7.26 built, fixed and tested a six-channel fabrication-error
