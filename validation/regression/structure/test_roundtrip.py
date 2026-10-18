@@ -79,9 +79,31 @@ def test_v1_state_fixture_loads_and_expands_bit_identically():
           inh_mode={"RateCapped": {"rate": 0.05, "ref_thickness": 100.0,
                                     "cap": 0.3}}),
   ]
+  live_group = Group("TiO2", n_factor=1.1)
+  # The fixture records the error params that were the library defaults when
+  # it was written, and those defaults have since moved twice (rel_* from
+  # 1.0 to 0.01 at 0.7.17, k's abs_* from 0.01 to 0.0001 at 0.7.18). Restate
+  # the fixture's own values on the live group rather than regenerating the
+  # fixture or hard-coding today's numbers here.
+  #
+  # This is not circular. The error params are an *input* to the comparison;
+  # what is under test is that a v1 document loads and expands identically
+  # to a live object built the same way. Taking them from the fixture keeps
+  # that contract exact while making the test immune to future default
+  # changes -- and keeps it honest about its scope, which is "v1 stays
+  # readable", not "the defaults have never moved". Regenerating the fixture
+  # would be the tempting fix and the wrong one: its whole value is that it
+  # predates the range gate, so one rewritten to match today's defaults
+  # would stop testing anything.
+  fixture_group = state["structures"][0]["groups"]["TiO2"]
+  for channel in ("thickness", "n", "k", "inh_delta", "roughness",
+                  "interface"):
+    live_group.set_error_params(
+      channel, dict(fixture_group[f"{channel}_error_params"]))
+
   live = Navette_Architect(materials=MATS)
   live.add_structure(Navette_Structure(
-    layers, {"TiO2": Group("TiO2", n_factor=1.1)}, MATS))
+    layers, {"TiO2": live_group}, MATS))
 
   assert loaded.get_state() == live.get_state()
   a, b = loaded.get_solver_inputs(), live.get_solver_inputs()

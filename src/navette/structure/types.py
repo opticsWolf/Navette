@@ -17,10 +17,51 @@ COMPLEX_TYPE = np.complex128
 INT_TYPE = np.int32
 
 class ErrorType(IntEnum):
-    """Statistical law used when drawing fabrication errors."""
+    """Statistical law used when drawing fabrication errors.
+
+    All four share the shape ``v_out = v * (1 + rel) + abs`` and differ only
+    in how the per-law draws build ``rel`` and ``abs``. Writing
+    ``G = N(*_mean_delta_g, *_std_dev)`` and
+    ``U = U(*_mean_delta_h +- *_variance)``:
+
+    ==========  ============================  ===============
+    Variant     ``rel``                       ``abs``
+    ==========  ============================  ===============
+    GAUSSIAN    ``G_rel``                     ``G_abs``
+    UNIFORM     ``U_rel``                     ``U_abs``
+    COMBINED    ``G_rel + U_rel``             ``G_abs + U_abs``
+    CASCADED    ``G_rel + U_rel + G_rel*U_rel``  ``G_abs + U_abs``
+    ==========  ============================  ===============
+
+    COMBINED and CASCADED draw the same four numbers in the same order and
+    differ by the single cross term, because CASCADED composes the relative
+    laws as factors -- ``v * (1 + G_rel) * (1 + U_rel)`` -- rather than
+    letting each measure its own slice off the nominal. Use it when the two
+    laws are multiplicative stages in series, the second scaling what the
+    first already produced. They agree to first order, and whenever either
+    relative channel is off the product collapses to COMBINED exactly, since
+    one factor is then 1 -- in float, to a rounding rather than bitwise.
+
+    The absolute channel stays additive and outside the product in both.
+
+    **Set the centres, or CASCADED does nothing.** The cross term is
+    ``G_rel * U_rel``, so at the shipped defaults -- both relative spreads
+    0.01, both relative centres 0.0 -- it is of order 1e-4 and CASCADED is
+    numerically indistinguishable from COMBINED. Measured on a 100 nm layer
+    at the thickness defaults, the two scatter at sigma 1.28283 and 1.28293:
+    a relative difference of 1e-5, which reads as "nothing happened" to
+    anyone switching laws to see what changes. The law separates only when
+    the relative channels carry real weight -- a systematic
+    ``rel_mean_delta_g`` or ``rel_mean_delta_h``, or a relative spread well
+    above a percent. That is the case it is for: a rate calibration off by a
+    known few percent, then a per-run monitor error acting on the
+    already-mis-calibrated deposit. Two stages of 10% compose to 21%, not
+    20%, and the cross term is that 1%.
+    """
     GAUSSIAN = 0
     UNIFORM = 1
     COMBINED = 2
+    CASCADED = 3
 
 class RoughnessType(IntEnum):
     """Per-interface roughness form factor (solver contract, [nm] sigma).

@@ -744,15 +744,26 @@ fn channel_draws(
             gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng),
         ),
         ErrorType::Uniform => (
-            unif_draw(params.abs_variance, rng),
-            unif_draw(params.rel_variance, rng),
+            unif_draw(params.abs_mean_delta_h, params.abs_variance, rng),
+            unif_draw(params.rel_mean_delta_h, params.rel_variance, rng),
         ),
         ErrorType::Combined => (
             gauss_draw(params.abs_mean_delta_g, params.abs_std_dev, rng)
-                + unif_draw(params.abs_variance, rng),
+                + unif_draw(params.abs_mean_delta_h, params.abs_variance, rng),
             gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng)
-                + unif_draw(params.rel_variance, rng),
+                + unif_draw(params.rel_mean_delta_h, params.rel_variance, rng),
         ),
+        // `(1 + g)(1 + u) = 1 + (g + u + g*u)`, so the factored law still
+        // reduces to one scalar `rel` and needs no change at the call sites.
+        ErrorType::Cascaded => {
+            // Drawn in this function's legacy order (abs pair, then rel pair),
+            // matching the Combined arm above rather than `apply_error`'s.
+            let g_abs = gauss_draw(params.abs_mean_delta_g, params.abs_std_dev, rng);
+            let u_abs = unif_draw(params.abs_mean_delta_h, params.abs_variance, rng);
+            let g_rel = gauss_draw(params.rel_mean_delta_g, params.rel_std_dev, rng);
+            let u_rel = unif_draw(params.rel_mean_delta_h, params.rel_variance, rng);
+            (g_abs + u_abs, g_rel + u_rel + g_rel * u_rel)
+        }
     }
 }
 

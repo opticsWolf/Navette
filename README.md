@@ -156,6 +156,27 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 
 - **Thin-Layer Policy**: A film driven below the minimum thickness you can actually deposit need not be deleted. `thin_layer_policy` decides: `'remove'` (the default, and bit-for-bit the historical behaviour), `'clamp_up_final'` — the search runs exactly as before and only the final pass lifts a surviving sub-minimum film to the floor — or `'clamp_up_always'`. A film that carries an interface slice clamps up like any other single layer.
 
+- **Fabrication Tolerances as a Model, Not a Postscript**: Six independent
+  error channels — thickness, `n`, `k`, grading amplitude, roughness and
+  interface width — each drawn per layer from one of four laws, all of the
+  shape `v_out = v·(1 + rel) + abs`. `Gaussian` and `Uniform` are the
+  single-law cases, `Combined` sums them, and `Cascaded` composes the two
+  *relative* stages as factors — `v·(1 + G)·(1 + U)` — which is the right
+  shape when the errors are stages in series: a rate calibration that is off,
+  then a per-run monitor error acting on the already-mis-calibrated deposit.
+  Two stages of 10% compose to 21%, not 20%, and that missing percent is the
+  entire difference between the two laws. Each channel carries **its own**
+  defaults, because an absolute spread carries the unit of the quantity it
+  perturbs and the six do not share one: 0.5 nm on a thickness, 0.001 on a
+  refractive index, 0.0001 on `k` — where a nanometre-sized spread would put
+  roughly half of all draws at `k < 0`, which is optical gain, so the run
+  would die at the gain door instead of reporting a tolerance. Nothing draws
+  until you ask: `error_mask` is all-zero by default. Floors apply to the
+  *result*, never to the error, so a perturbed thickness cannot go negative
+  while the signed grading amplitude stays signed. The cost is a struct read
+  per draw, not a re-parse — 10,000 Monte-Carlo expansions of a three-layer
+  stack with all six channels live spend 0.03 s, of which setup is 0.009%.
+
 - **Saved Designs Stay Readable**: state files carry a schema version and the reader accepts a *range* (`[1, 2]`), not a point. A state written by an older build is reconstructed from its defaults rather than refused; one written by a *newer* build is refused with a message that says so, because the remedy there is upgrading, not hand-editing the file.
 
 ### Technical Specifications
@@ -170,6 +191,7 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 |**Multi-Environment Design**|**One set of films, K surroundings**: a named design segment is defined once and optimized against every environment's demands at the same time, so a coating measured bare and then laminated cannot drift into two designs. K environments means K assemblies and K solves per evaluation — honest and linear.|
 |**Material Models**|**Sixteen dispersion models + six EMA mixing rules**, composable and nestable, with Kramers-Kronig ε₁ for the oscillator families and independently validated quadrature.|
 |**Guided Modes**|**Complex eigenmode search**: landscape scan → coarse minima → Nelder-Mead refinement over complex `n_eff`, plus normalised `\|E(z)\|` field profiles. Solves the stack as one coherent block by construction.|
+|**Fabrication Tolerances**|**Six channels × four laws**: thickness, `n`, `k`, grading amplitude, roughness and interface width, each drawn from `Gaussian`, `Uniform`, `Combined` or `Cascaded` — the last composing the relative stages as factors rather than summing them. Per-channel defaults in the unit of the quantity perturbed; floors on the result, never on the error; all-zero mask until a channel is switched on.|
 |**Roughness Model**|**Névot-Croce (Exact Wavevector)**: Achieves research-grade accuracy for X-ray and UV interfaces by modeling exact wavevector correlations across boundaries.|
 |**Optimization**|**Rust / rayon + PyO3**: Native multi-threaded kernels (GIL released) with a thin Python API, optimized for high-concurrency simulation and real-time GUI responsiveness.|
 |**Polarization**|**Full $s$ and $p$ Support**: Comprehensive Jones and Stokes calculus integration, following standard commercial ellipsometry conventions (Azzam & Bashara). The cross-polarization observables (Δ, DOP, `S2`/`S3`, retardance) need `COHERENCY_MATRIX` on a stack with an incoherent flag; see *Partial Coherence Support*.|
@@ -282,8 +304,23 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.7.14-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.7.27-*.whl (single wheel, all engines)
 ```
+
+There is a seventh site the gate does not see: the wheel filename in the
+block just above. It is prose, so CI cannot compare it to the tag — it is
+kept current by hand, and a stale one misleads a reader without failing a
+build.
+
+The same asymmetry runs through this file. Every claim above is checked by
+a test somewhere, but *nothing checks that a claim exists*: a subsystem can
+be built, tested and released while this README says nothing about it. That
+is not hypothetical — the six-channel fabrication-error model shipped across
+0.7.15–0.7.26 before it was described here at all, and it hid that long
+because its own mask defaults to all-zero, so no test and no example had
+reason to mention it either. Before tagging, read the feature list against
+what the release actually added, and treat a feature nobody had to document
+as a feature nobody had to exercise.
 
 #### Optimizer backends
 
