@@ -350,5 +350,17 @@ maturin develop --release --features opt-argmin
 maturin develop --release --features opt-basin
 ```
 
+The released packages carry none of these. The PyPI wheels are built with
+default features, so after `pip install navette`,
+`available_optimizers()` lists only `"builtin"` and `"trf"`. PyPI has no
+source distribution for pip to rebuild with a feature, so getting one means
+cloning this repository and running the `maturin develop` line above in
+that checkout. The crate on crates.io has the same defaults; a Rust user
+switches a backend on in `Cargo.toml`:
+
+```toml
+navette = { version = "0.8", features = ["opt-basin"] }
+```
+
 Manual fallback: `cargo publish -p navette`;
-`maturin upload target/wheels/navette-0.5.0-*.whl`.
+`maturin upload target/wheels/navette-X.Y.Z-*.whl`.
