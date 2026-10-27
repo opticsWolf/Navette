@@ -909,9 +909,9 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///
 /// ``optimizer`` selects the solver itself:
 ///
-/// * ``"builtin"`` (default) -- this crate's bounded LM. The only backend
-///   with bounds semantics of its own: a thickness may end up exactly on a
-///   bound, which is how the synthesis loop learns a film wants removing.
+/// * ``"builtin"`` (default) -- this crate's bounded LM. A thickness may end
+///   up exactly on a bound, which is how the synthesis loop learns a film
+///   wants removing.
 /// * ``"minpack_lm"`` -- the ``levenberg-marquardt`` crate (MINPACK
 ///   ``lmdif``-derived), available only if the wheel was built with the
 ///   ``opt-minpack-lm`` cargo feature. Unbounded, so it runs on an interior
@@ -939,6 +939,33 @@ pub fn available_optimizers() -> Vec<&'static str> {
 ///   it always runs the full ``max_iterations`` and always reports
 ///   ``MaxIterations``; budget accordingly and read the cost, not the
 ///   termination reason.
+///
+/// * ``"basin_lm_qr"`` -- Basin's pivoted-QR LM, behind ``opt-basin``.
+///   Unbounded, on the same interior reparametrization as MINPACK, so from a
+///   far start it can end saturated at a bound (reported as
+///   ``"StuckAtBound"``, below). ``lambda_init`` is Basin's initial relative
+///   damping; ``damping``, ``lambda_up`` and ``lambda_down`` do not apply.
+/// * ``"basin_trf"`` -- Basin's full trust-region reflective solver, behind
+///   ``opt-basin``. Native bounds, like ``"trf"``; damping settings and
+///   ``gtol_scale_invariant`` do not apply.
+///
+///   Both Basin backends check ``max_evals`` only between iterations, so a
+///   run can overshoot it by one iteration. Tolerance mappings:
+///   ``docs/basin-backends.md``.
+///
+/// The report's ``termination`` is one of:
+///
+/// * converged -- ``"Gradient"``, ``"Step"``, ``"Cost"``, ``"Converged"``
+///   (the backend did not say which test passed), ``"NoFreeParameters"``
+///   (every thickness fixed by ``lb == ub``);
+/// * budget -- ``"MaxIterations"``, ``"MaxEvaluations"``;
+/// * no progress -- ``"Stalled"`` (no acceptable step; the result is still
+///   the best point found), ``"StuckAtBound"`` (an unbounded backend
+///   saturated at a bound that moving back inside would improve: a false
+///   convergence of the reparametrization, caught by one probe per
+///   saturated thickness). Restart from inside, or use ``"trf"``.
+///
+/// Costs are always sum(r**2).
 ///
 /// Naming a backend the wheel was not built with raises ``ValueError`` with
 /// the rebuild command -- never a silent fall back to a different solver.

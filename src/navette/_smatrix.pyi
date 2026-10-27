@@ -464,7 +464,13 @@ class DesignStack:
 
 class LmConfig:
     """Levenberg-Marquardt settings. `optimizer` selects the backend;
-    `available_optimizers()` lists what this build carries."""
+    `available_optimizers()` lists what this build carries. `opt-basin` adds
+    `basin_lm_qr` and `basin_trf`.
+
+    A report's `termination` is one of: converged -- `Gradient`, `Step`,
+    `Cost`, `Converged`, `NoFreeParameters`; budget -- `MaxIterations`,
+    `MaxEvaluations`; no progress -- `Stalled`, `StuckAtBound` (an unbounded
+    backend saturated at a bound it should leave)."""
 
     def __init__(
         self,

@@ -9,7 +9,7 @@ review could not find anywhere it had been reproduced. This is that check,
 run for the first time, against the hardened solver of 0.6.7 (QR step,
 gain-ratio damping, MINPACK ftol/gtol).
 
-Three parts:
+Checks:
 
   A. **The thin-film case.** `SmatrixContext.optimize_thicknesses` drives the
      engine LM over film thicknesses. The same residual system --
@@ -61,6 +61,14 @@ Three parts:
      the step undefined. Both are properties of the algorithms, asserted here
      so a future version changing either is noticed rather than assumed.
 
+  F. **Basin QR LM and full TRF** (issue #2), skipped without ``opt-basin``.
+     Both Jacobian modes are checked near established optima, at active bounds,
+     and from distant starts. From the far start of the interior control, QR
+     LM saturates at the upper bound; F pins that it reports ``StuckAtBound``
+     there rather than a convergence reason, and nowhere else. The Rust matrix
+     additionally covers fixed coordinates, zero columns, and rank-deficient
+     systems.
+
 Run explicitly:  python validation/review/lm_check.py
 Exit code 0 = all comparisons within tolerance.
 """
@@ -72,6 +80,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import numpy as np
 from scipy.optimize import least_squares
+
+# Termination reasons that mean "a convergence test passed" (or there was
+# nothing to optimize). Budget stops and the no-progress reasons -- Stalled,
+# StuckAtBound -- are deliberately absent.
+CONVERGED = {"Gradient", "Step", "Cost", "Converged", "NoFreeParameters"}
 
 from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
@@ -103,6 +116,19 @@ def check(name, ok, detail=""):
 def close(got, want, rel=1e-6, abs_=0.0):
     scale = max(abs(want), abs_)
     return abs(got - want) <= rel * scale if scale else abs(got - want) <= rel
+
+
+def thickness_deviation(actual, expected, zero_tol=1e-6):
+    if not (np.all(np.isfinite(actual)) and np.all(np.isfinite(expected))):
+        return float("inf")
+    # Retained films already correspond, even when their thicknesses straddle
+    # the zero cutoff. Only reconcile zeros when a removal changed the count.
+    if actual.size != expected.size:
+        actual = actual[np.abs(actual) > zero_tol]
+        expected = expected[np.abs(expected) > zero_tol]
+    if actual.size != expected.size:
+        return float("inf")
+    return float(np.max(np.abs(actual - expected), initial=0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -137,10 +163,10 @@ def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
 
 
 def run_engine(spec, wl, angles, layers, names, x0, clamp_max,
-               max_iterations=200, optimizer="builtin"):
+               max_iterations=200, optimizer="builtin", jacobian="analytic"):
     ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max,
                          LmConfig(max_iterations=max_iterations,
-                                  optimizer=optimizer))
+                                  optimizer=optimizer, jacobian=jacobian))
     stack, _ = stack_from_layers(
         [(m, float(d)) for (m, _), d in zip(layers, x0)], wl, {}, names=names)
     cost, report = ctx.optimize_thicknesses_report(stack)
@@ -195,23 +221,10 @@ def part_a():
         check(f"A1/{label}: cost parity",
               close(ecost, scost, rel=1e-6, abs_=1e-12),
               f"{ecost:.10g} vs {scost:.10g}")
-        # A film driven to exactly 0.0 is below any positive minimum, so the
-        # clamp sweep removes it and the engine returns one fewer thickness.
-        # scipy keeps the zero. Same optimum, different bookkeeping: drop the
-        # zeros from scipy'"'"'s answer before comparing, and say so.
-        sx_kept = sx[sx > 1e-6]
-        if sx_kept.size != ex.size:
-            check(f"A1/{label}: optimum parity", False,
-                  f"film counts differ: engine {ex.size}, scipy {sx_kept.size} "
-                  f"non-zero of {sx.size}")
-        else:
-            if sx_kept.size != sx.size:
-                print(f"       (scipy drove {sx.size - sx_kept.size} film(s) to "
-                      f"zero; the engine removed them)")
-            dev = float(np.max(np.abs(ex - sx_kept)))
-            check(f"A1/{label}: optimum parity",
-                  dev < 1e-3 * max(1.0, float(ex.max())),
-                  f"max |dx| = {dev:.3e} nm")
+        dev = thickness_deviation(ex, sx)
+        check(f"A1/{label}: optimum parity",
+              dev < 1e-3 * max(1.0, float(ex.max(initial=0.0))),
+              f"max |dx| = {dev:.3e} nm; engine {ex} vs scipy {sx}")
 
     print("  A2. far starts: each solver's answer is a fixed point of itself")
     for label, films in starts:
@@ -243,7 +256,7 @@ def part_a():
         check(f"A2/{label}: engine improved on its start", ecost < cost0,
               f"{ecost:.6g} < {cost0:.6g}")
         check(f"A2/{label}: engine converged rather than running out of room",
-              erep["termination"] != "MaxIterations", erep["termination"])
+              erep["termination"] in CONVERGED, erep["termination"])
         check(f"A2/{label}: engine answer is stationary",
               ecost2 >= ecost - 1e-6 * max(abs(ecost), 1e-12),
               f"re-run {ecost2:.10g} vs {ecost:.10g}")
@@ -394,14 +407,9 @@ def part_d():
               erep["backend"] == "trf", erep["backend"])
         check(f"D/{label}: cost parity", close(ecost, scost, rel=1e-9, abs_=1e-14),
               f"{ecost:.12g} vs {scost:.12g}")
-        sx_kept = sx[sx > 1e-6]
-        if sx_kept.size != ex.size:
-            check(f"D/{label}: optimum parity", False,
-                  f"film counts differ: engine {ex.size}, scipy {sx_kept.size}")
-        else:
-            dev = float(np.max(np.abs(ex - sx_kept)))
-            check(f"D/{label}: optimum parity", dev < 1e-4,
-                  f"max |dx| = {dev:.3e} nm")
+        dev = thickness_deviation(ex, sx)
+        check(f"D/{label}: optimum parity", dev < 1e-4,
+              f"max |dx| = {dev:.3e} nm; engine {ex} vs scipy {sx}")
 
     print("  D2. a bound-active optimum, which is what TRF is for")
     print("      -- part B could only check scipy against a hand-written pin,")
@@ -532,7 +540,7 @@ def part_e():
             check(f"E4/{label}: the refusal names the cause and a way out",
                   "singular" in msg and "trf" in msg, msg[:80])
         else:
-            converged = grep["termination"] != "MaxIterations"
+            converged = grep["termination"] in CONVERGED
             print(f"    argmin_gn {gcost:.10g} ({grep['evals']} evals, "
                   f"{grep['termination']})")
             check(f"E4/{label}: it does not claim convergence at a worse cost",
@@ -544,12 +552,92 @@ def part_e():
           f"{gn_refusals} of {len(ARGMIN_CASES)} starts refused")
 
 
+def basin_cases():
+    """Shared physical cases for Basin parity and repeatable timing."""
+    wl = np.linspace(450.0, 750.0, 13)
+    angles = np.array([0.0])
+    spec = thin_film_problem(wl, angles)
+    cases = []
+    for label, films, offset in ARGMIN_CASES:
+        layers = [(MaterialSpec("Konstant", dict(n=n)), d) for n, d in films]
+        names = [f"L{i}" for i in range(len(films))]
+        start = np.array([d for _, d in films])
+        anchor, _, _ = run_scipy(spec, wl, angles, layers, names, start, CLAMP_MAX)
+        near = np.clip(anchor + offset, 5.0, CLAMP_MAX - 5.0)
+        for suffix, x0, parity in [("near", near, True), ("far", start, False)]:
+            cases.append(dict(label=f"{label}/{suffix}", spec=spec, wl=wl,
+                              angles=angles, layers=layers, names=names,
+                              x0=x0, clamp_max=CLAMP_MAX, parity=parity))
+    for label, index, clamp, start, parity in [
+        ("upper bound", 1.38, 50.0, 10.0, True),
+        ("lower bound", 2.35, 50.0, 10.0, True),
+        ("interior control", 1.38, 1000.0, 40.0, True),
+        ("interior control/far", 1.38, 1000.0, 10.0, False),
+    ]:
+        cases.append(dict(label=label, spec=spec, wl=wl, angles=angles,
+                          layers=[(MaterialSpec("Konstant", dict(n=index)), start)],
+                          names=["L"], x0=np.array([start]), clamp_max=clamp,
+                          parity=parity))
+    return cases
+
+
+def case_arguments(case):
+    return {key: case[key] for key in
+            ("spec", "wl", "angles", "layers", "names", "x0", "clamp_max")}
+
+
+def part_f():
+    print("--- F. Basin QR LM and full TRF (issue #2) ---")
+    backends = [name for name in ("basin_lm_qr", "basin_trf")
+                if name in available_optimizers()]
+    if not backends:
+        print("  opt-basin not compiled in -- skipping")
+        return
+    for case in basin_cases():
+        args = case_arguments(case)
+        sx, scost, _ = run_scipy(**args)
+        ctx = SmatrixContext(case["spec"], case["angles"], case["wl"])
+        stack, _ = stack_from_layers(case["layers"], case["wl"], {}, names=case["names"])
+        start_r = residual_fn(case["spec"], ctx, stack)(case["x0"])
+        cost0 = float(np.dot(start_r, start_r))
+        for backend in backends:
+            for jacobian in ("analytic", "fd"):
+                label = f"F/{case['label']}/{backend}/{jacobian}"
+                try:
+                    x, cost, report = run_engine(**args, optimizer=backend,
+                                                jacobian=jacobian, max_iterations=FAR_ITERS)
+                except ValueError as error:
+                    check(label, False, str(error))
+                    continue
+                print(f"  {label}: cost={cost:.12g}, x={np.round(x, 7)}, "
+                      f"{report['termination']}, {report['evals']} evals")
+                if case["label"] == "interior control/far" and backend == "basin_lm_qr":
+                    # The interval map saturates at the 1000 nm bound; moving
+                    # inward lowers the cost, so this is a false convergence
+                    # and must not be reported as one.
+                    check(f"{label}: saturation reported as StuckAtBound",
+                          report["termination"] == "StuckAtBound", report["termination"])
+                elif report["termination"] == "StuckAtBound":
+                    check(f"{label}: unexpected StuckAtBound", False, str(x))
+                check(f"{label}: feasible improvement",
+                      np.all(np.isfinite(x)) and np.all(x >= 0.0)
+                      and np.all(x <= case["clamp_max"]) and cost <= cost0 + 1e-12)
+                if case["parity"]:
+                    check(f"{label}: cost parity", close(cost, scost, rel=1e-9, abs_=1e-12),
+                          f"{cost:.12g} vs scipy {scost:.12g}")
+                    dev = thickness_deviation(x, sx, zero_tol=1e-4)
+                    check(f"{label}: thickness parity",
+                          dev <= 1e-4,
+                          f"max |dx| = {dev:.3e} nm; {x} vs scipy {sx}")
+
+
 def main():
     part_a()
     part_b()
     part_c()
     part_d()
     part_e()
+    part_f()
     print("ALL OK" if not FAILURES else f"FAILURES: {FAILURES}")
     return 1 if FAILURES else 0
 
