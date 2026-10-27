@@ -1,0 +1,64 @@
+# Project site: build the figures with the released package, deploy to GitHub Pages.
+#
+# One-time setup (owner action, not in this file): Settings -> Pages ->
+# Build and deployment -> Source: "GitHub Actions".
+#
+# Every chart on the site is drawn from site/data/figures.json, and this
+# workflow regenerates that file from the navette wheel on PyPI before
+# deploying, so the page shows what the released engine computes. The
+# quick-start snippet the page quotes is run too, so it cannot drift from
+# the API it advertises.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "examples/rugate_gradient_vs_discrete.py"
+      - ".github/workflows/pages.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: install the released package
+        run: python -m pip install --upgrade pip navette
+      - name: quick-start snippet still runs
+        run: python site/scripts/snippet_check.py
+      - name: compute the figures
+        run: python site/scripts/build_data.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
