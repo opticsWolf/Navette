@@ -9,7 +9,7 @@ first line of ``DesignStack`` changes, so every later "fingerprint
 unmoved" claim names a test that lives in the tree (F0.1, ground rule 5).
 
 The run is deterministic by construction: fixed design, fixed targets,
-fixed seed materials, no error groups (so `from_design` expands
+fixed needle materials, no error groups (so `from_design` expands
 deterministically), a deterministic P-function scan and deterministic LM.
 The double-run assertion proves that at pin time; the recorded digest is
 what every later item in the plan must hold.
@@ -62,10 +62,11 @@ LAYERS = [
     (np.full(WL.shape, _N_H), 150.0),
 ]
 NAMES = ["film0", "film1", "film2"]
-CONTRAST = {
-    "film0": np.full(WL.shape, _N_L),
-    "film1": np.full(WL.shape, _N_H),
-    "film2": np.full(WL.shape, _N_L),
+# The needle pool: the films' own two materials, so every film accepts
+# the other one, and every needle is a film that accepts needles.
+MATERIALS = {
+    "H": np.full(WL.shape, _N_H),
+    "L": np.full(WL.shape, _N_L),
 }
 
 
@@ -142,8 +143,14 @@ def _strip_keys(obj, drop):
 # Recorded on the 0.6.32 release build BEFORE F0.1 touched DesignStack.
 # Placeholder on first run; the value below is what F0.1 and every later
 # item must reproduce bit-exactly.
+#
+# Re-recorded (Windows) for the needle material pool, a deliberate
+# trajectory change: a needle is now a film of its own that accepts
+# needles (cycle 2 inserts H into an earlier L needle), needles are named
+# "<label>#<n>", and touching layers of one index merge whatever their
+# names. The Linux entry needs the same re-read from CI.
 RECORDED_DIGESTS = {
-    "Windows": "cf753a910c7bf1d2e6c5ea5b9f5c696601ab675abaf497db28bac5340a63044d",
+    "Windows": "13050c437d740eaad52864f643c418ecfbd16616562650b865bd56defc1a0884",
     "Linux": "5c30981320d71b9228a2dbc3b1942599a59a0bcdecd1c921c8b49cc8dbf547da",
 }
 DIGEST = RECORDED_DIGESTS.get(platform.system())
@@ -155,9 +162,9 @@ def test_needle_run_is_deterministic_and_matches_the_recorded_digest():
             f"no recorded needle digest for {platform.system()} - "
             "record one at the current tree before gating it (amendment 3, C1)"
         )
-    res1 = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
+    res1 = run_needle(LAYERS, _targets(), ANGS, WL, MATERIALS,
                       pipeline_config=_cfg(), names=NAMES)
-    res2 = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
+    res2 = run_needle(LAYERS, _targets(), ANGS, WL, MATERIALS,
                       pipeline_config=_cfg(), names=NAMES)
     d1, d2 = _digest(res1), _digest(res2)
     # Determinism first: two runs of the same inputs, one digest. If this
@@ -173,7 +180,7 @@ def test_needle_run_shape():
     # Sanity on the pin's problem: the run must actually exercise the
     # machinery the fingerprint is supposed to cover (insertions happened,
     # cleanup ran, more than one macro cycle).
-    res = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
+    res = run_needle(LAYERS, _targets(), ANGS, WL, MATERIALS,
                      pipeline_config=_cfg(), names=NAMES)
     assert len(res["phases"]) == 3
     assert any(p["needle_results"] for p in res["phases"]), (

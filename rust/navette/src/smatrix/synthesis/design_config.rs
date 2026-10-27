@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-//! synthesis::design_config — typed config → native `(DesignStack, ContrastMap)`.
+//! synthesis::design_config — typed config → native `(DesignStack, MaterialPool)`.
 //!
 //! Rust-first assembly for synthesis designs: a [`DesignRequest`] (the
 //! JSON mirror of the Python pydantic configs) evaluates materials on
@@ -15,7 +15,7 @@ use num_complex::Complex64;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::cycle::ContrastMap;
+use super::cycle::{MaterialPool, dedup_pool, pool_entry, pool_from_layers};
 use super::structure::{DesignStack, LayerSpec};
 use crate::structure::{
     ErrorParams, ErrorType, Group, Layer, LayerType, MaterialSpec, RoughnessType,
@@ -357,8 +357,10 @@ pub struct StructureCfg {
 pub struct DesignRequest {
     pub structure: StructureCfg,
     pub library: Vec<MaterialDef>,
+    /// The needle material pool, as library codes. Absent: one entry per
+    /// distinct index among the design's layers.
     #[serde(default)]
-    pub contrast: BTreeMap<String, String>,
+    pub materials: Option<Vec<String>>,
     #[serde(default)]
     pub film_flags: BTreeMap<String, Value>,
     #[serde(default)]
@@ -573,37 +575,28 @@ fn fixed_spec(name: &str, nk: Vec<Complex64>) -> LayerSpec {
     }
 }
 
-/// Build the needle contrast map: one zero-thickness, coherent,
-/// optimizable seed per host film.
+/// Build the needle material pool from `materials` (library codes), each
+/// entry labelled by its code; a repeated index is swept once. `None`
+/// (no list given) answers `None`: the caller takes the default pool of
+/// its own layers.
 ///
-/// Shared by both doors so the seed's flags cannot drift between them
-/// (a seed that is not `optimize + needle` is not a seed - it is a film
-/// the scan will never touch).
-pub(crate) fn build_contrast(
-    contrast: &BTreeMap<String, String>,
+/// Shared by both doors so the pool cannot drift between them.
+pub(crate) fn build_pool(
+    materials: Option<&[String]>,
     nk: &HashMap<Arc<str>, Vec<Complex64>>,
-) -> Result<ContrastMap, String> {
-    let mut cmap = ContrastMap::new();
-    for (host, seed) in contrast {
+) -> Result<Option<MaterialPool>, String> {
+    let Some(codes) = materials else {
+        return Ok(None);
+    };
+    let mut entries = Vec::with_capacity(codes.len());
+    for code in codes {
         let spectrum = nk
-            .get(seed.as_str())
+            .get(code.as_str())
             .cloned()
-            .ok_or_else(|| format!("material code {seed:?} not found in library"))?;
-        cmap.insert(
-            Arc::from(host.as_str()),
-            LayerSpec {
-                material: Arc::from(format!("{host}_seed")),
-                nk: Arc::from(spectrum),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
+            .ok_or_else(|| format!("needle material code {code:?} not found in library"))?;
+        entries.push(pool_entry(code, Arc::from(spectrum)));
     }
-    Ok(cmap)
+    Ok(Some(dedup_pool(entries)))
 }
 
 /// Everything [`split_and_build_films`] needs besides the rows themselves.
@@ -763,13 +756,13 @@ pub(crate) fn eval_library(
 }
 
 /// Assemble a design: evaluate the library, build films + groups, expand
-/// once via [`DesignStack::from_design`]. Returns `(stack, contrast,
+/// once via [`DesignStack::from_design`]. Returns `(stack, needle pool,
 /// warnings)` — warnings (homogenized graded films) are for the caller
 /// to re-emit; nothing is ever refused or silent.
 pub fn build_design(
     req: &DesignRequest,
     wavelengths: &[f64],
-) -> Result<(DesignStack, ContrastMap, Vec<String>), String> {
+) -> Result<(DesignStack, MaterialPool, Vec<String>), String> {
     // Library → nk on the grid, keyed by code (else name).
     let nk_table = eval_library(&req.library, wavelengths)?;
     // Split + build through the shared assembler. The flat door names
@@ -802,8 +795,7 @@ pub fn build_design(
         },
     )?;
 
-    // Contrast seeds: zero-thickness, coherent, optimizable carriers.
-    let cmap = build_contrast(&req.contrast, &nk_table)?;
+    let pool = build_pool(req.materials.as_deref(), &nk_table)?;
 
     let mut groups = HashMap::new();
     for row in &req.structure.groups {
@@ -827,7 +819,8 @@ pub fn build_design(
         wavelengths,
         &background,
     )?;
-    Ok((stack, cmap, warnings))
+    let pool = pool.unwrap_or_else(|| pool_from_layers(&stack, |_| true));
+    Ok((stack, pool, warnings))
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,7 +1015,7 @@ mod tests {
                 groups: vec![],
             },
             library: lib(),
-            contrast: [("H".to_string(), "L".to_string())].into_iter().collect(),
+            materials: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -1033,13 +1026,29 @@ mod tests {
     #[test]
     fn builds_flat_stack_standalone() {
         let wl = vec![500.0, 600.0];
-        let (stack, cmap, warnings) =
+        let (stack, pool, warnings) =
             build_design(&req(vec![film("L", 100.0), film("H", 60.0)]), &wl).unwrap();
         assert!(warnings.is_empty());
-        assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("H"));
+        // The default pool: the layers' own materials, in stack order.
+        let labels: Vec<&str> = pool.iter().map(|m| m.material.as_ref()).collect();
+        assert_eq!(labels, ["L", "H"]);
         // 2 flat films (half-spaces are not films).
         assert_eq!(stack.films().len(), 2);
+    }
+
+    /// A given pool may hold materials no layer is made of; a code the
+    /// library lacks is refused, and a repeated code is swept once.
+    #[test]
+    fn a_given_pool_overrides_the_layers() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 100.0)]);
+        r.materials = Some(vec!["L".into(), "H".into(), "H".into()]);
+        let (_, pool, _) = build_design(&r, &wl).unwrap();
+        let labels: Vec<&str> = pool.iter().map(|m| m.material.as_ref()).collect();
+        assert_eq!(labels, ["L", "H"]);
+        r.materials = Some(vec!["Q".into()]);
+        let err = build_design(&r, &wl).unwrap_err();
+        assert!(err.contains("\"Q\""), "{err}");
     }
 
     #[test]

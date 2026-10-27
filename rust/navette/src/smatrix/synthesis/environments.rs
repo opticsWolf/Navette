@@ -32,9 +32,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::cycle::ContrastMap;
+use super::cycle::{MaterialPool, pool_from_layers};
 use super::design_config::{
-    DesignRequest, LayerRow, RowAssembly, build_contrast, d_inh_delta, d_layer_type, d_true,
+    DesignRequest, LayerRow, RowAssembly, build_pool, d_inh_delta, d_layer_type, d_true,
     eval_library, split_and_build_films,
 };
 use super::structure::DesignStack;
@@ -478,8 +478,7 @@ impl CompiledEnvironments {
 ///
 /// Surroundings are auto-named only (§8 question 5, answered: auto-only
 /// in v1). A user name there would address nothing — no buckets, no
-/// contrast keys — and inviting one invites a `contrast` entry that
-/// silently never splits.
+/// needle sites — and inviting one invites the belief that it does.
 fn fixed_name(env: &str, seg: usize, i: usize) -> String {
     format!("{env}.fixed[{seg}][{i}]")
 }
@@ -649,7 +648,7 @@ fn compile_env_rows(
 pub fn build_environments(
     req: &DesignRequest,
     wavelengths: &[f64],
-) -> Result<(CompiledEnvironments, ContrastMap, Vec<String>), String> {
+) -> Result<(CompiledEnvironments, MaterialPool, Vec<String>), String> {
     if req.environments.is_empty() {
         if !req.design.is_empty() {
             return Err(
@@ -659,7 +658,7 @@ pub fn build_environments(
                     .to_string(),
             );
         }
-        let (stack, cmap, warnings) = super::design_config::build_design(req, wavelengths)?;
+        let (stack, pool, warnings) = super::design_config::build_design(req, wavelengths)?;
         let slots: Vec<DesignSlot> = stack
             .spans()
             .iter()
@@ -677,7 +676,7 @@ pub fn build_environments(
                 slots,
                 routing,
             },
-            cmap,
+            pool,
             warnings,
         ));
     }
@@ -759,7 +758,7 @@ pub fn build_environments(
         }
     }
 
-    let cmap = build_contrast(&req.contrast, &nk)?;
+    let pool = build_pool(req.materials.as_deref(), &nk)?;
 
     let mut stacks: Vec<DesignStack> = Vec::with_capacity(req.environments.len());
     let mut warnings: Vec<String> = Vec::new();
@@ -816,6 +815,16 @@ pub fn build_environments(
         }
     }
 
+    // The default pool is the shared design's own layers: a surrounding's
+    // material is never a needle unless the request names it.
+    let pool = pool.unwrap_or_else(|| {
+        let design_rows: HashSet<usize> = routing
+            .iter()
+            .map(|per| stacks[0].spans()[per[0]].bulk_start)
+            .collect();
+        pool_from_layers(&stacks[0], |row| design_rows.contains(&row))
+    });
+
     let names = req.environments.iter().map(|e| e.name.clone()).collect();
     Ok((
         CompiledEnvironments {
@@ -824,7 +833,7 @@ pub fn build_environments(
             slots,
             routing,
         },
-        cmap,
+        pool,
         warnings,
     ))
 }
@@ -926,7 +935,7 @@ mod tests {
                 groups: vec![],
             },
             library: lib(),
-            contrast: BTreeMap::new(),
+            materials: Some(vec![]), // no needles unless a test asks
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -947,7 +956,7 @@ mod tests {
                 groups: vec![],
             },
             library: lib(),
-            contrast: BTreeMap::new(),
+            materials: Some(vec![]), // no needles unless a test asks
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -1470,26 +1479,22 @@ mod tests {
 
     // --- F2.3: the joint needle ----------------------------------------
 
-    fn with_contrast(mut r: DesignRequest) -> DesignRequest {
-        r.contrast = [
-            ("L".to_string(), "H".to_string()),
-            ("H".to_string(), "L".to_string()),
-        ]
-        .into_iter()
-        .collect();
+    /// `r` with the default needle pool: the design's own L and H.
+    fn with_pool(mut r: DesignRequest) -> DesignRequest {
+        r.materials = None;
         r
     }
 
-    /// `two_env_req` plus the L <-> H contrast map the needle sweep needs.
+    /// `two_env_req` plus the L, H pool the needle sweep needs.
     fn needle_req(k: usize) -> DesignRequest {
-        with_contrast(two_env_req(k))
+        with_pool(two_env_req(k))
     }
 
     /// Two environments that genuinely DIFFER: the same coat bare, and
     /// behind a laminate. The design rows sit at different depths, so a
     /// locus is only shared through the routing table.
     fn two_cover_req() -> DesignRequest {
-        with_contrast(req(
+        with_pool(req(
             vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
             vec![
                 EnvironmentCfg {
@@ -1650,14 +1655,20 @@ mod tests {
             .slot_of_row(0, ins.film_idx)
             .expect("host is a design row");
         let seed_slot = host_slot + 1;
+        // The needle's own name: fresh, of the winning pool label.
+        let seed_name = &stack.films()[ins.film_idx + 1].material;
+        assert!(
+            seed_name.starts_with(&format!("{}#", ins.material)),
+            "{seed_name}"
+        );
         let mut seed_rows = Vec::new();
         for e in 0..envs.n_envs() {
             let row = envs
                 .host_row(e, seed_slot)
                 .expect("the seed is a parameter");
             assert_eq!(
-                envs.stacks()[e].films()[row].material,
-                ins.material,
+                &envs.stacks()[e].films()[row].material,
+                seed_name,
                 "environment {:?} seed material",
                 envs.names()[e]
             );
@@ -1702,13 +1713,15 @@ mod tests {
         let solver = ctx(spec.clone(), Some(Arc::new(envs)));
         let envs = solver.envs.as_ref().unwrap();
 
-        // The locus: 40 nm into the first design film, seeded with L's
-        // contrast partner.
+        // The locus: 40 nm into the first design film (L), seeded with
+        // the pool's other material.
         const SLOT: usize = 0;
         const DEPTH: f64 = 40.0;
+        let host_nk = &base.films()[envs.host_row(0, SLOT).unwrap()].nk;
         let partner = cmap
-            .get(&base.films()[envs.host_row(0, SLOT).unwrap()].material)
-            .expect("L has a contrast partner")
+            .iter()
+            .find(|m| &m.nk != host_nk)
+            .expect("the pool offers L a needle")
             .clone();
 
         // Reference: per environment, analytically, through the flat doors.
@@ -1795,7 +1808,7 @@ mod tests {
         let mut iface = film("L", 100.0);
         iface.interface = true;
         iface.interface_thickness_nm = 2.0;
-        let r = with_contrast(req(
+        let r = with_pool(req(
             vec![("coat", vec![iface, film("H", 80.0)])],
             vec![
                 // Both covers are non-empty: an interface slice is

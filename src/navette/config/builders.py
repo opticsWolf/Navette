@@ -7,7 +7,7 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 """
 
 import numpy as np
-from typing import List, Dict, Any, Mapping, Optional
+from typing import List, Dict, Any, Mapping, Optional, Sequence
 from navette.structure import (
     MaterialProvider,
     MaterialObjectProvider,
@@ -143,13 +143,13 @@ def pipeline_from_config(
     library: List[MaterialDefinition],
     wavelengths,
     *,
-    contrast: Optional[Mapping[str, str]] = None,
+    materials: Optional[Sequence[str]] = None,
     film_flags: Optional[Dict[str, Any]] = None,
     per_film_flags: Optional[Mapping[str, Dict[str, Any]]] = None,
     ambient_name: str = "air",
     substrate_name: str = "sub",
 ):
-    """Native ``(DesignStack, contrast_map)`` from typed configs.
+    """Native ``(DesignStack, pool)`` from typed configs.
 
     Thin wrapper over the native assembler
     (``DesignStack.design_from_config``): shapes plain dicts here (unvalidated),
@@ -161,8 +161,10 @@ def pipeline_from_config(
     air, n=1.52 substrate). Films are keyed by material code — codes
     must be unique (they key the nk table) and present in ``library``.
     ``per_film_flags`` overrides by code (int index also accepted).
-    ``contrast`` maps host code → seed code. Assembly errors arrive as
-    ``ValueError`` from the core. Returns ``(stack, contrast_map)``.
+    ``materials`` is the needle material pool as library codes; ``None``
+    takes the films' own materials. Assembly errors arrive as
+    ``ValueError`` from the core. Returns ``(stack, pool)``, the pool a
+    list of ``LayerSpec``.
     """
     import json
     from navette._smatrix import DesignStack as NativeDesignStack
@@ -177,7 +179,7 @@ def pipeline_from_config(
     request = {
         "structure": structure.model_dump(mode="json"),
         "library": [m.model_dump(mode="json") for m in library],
-        "contrast": {str(h): str(s) for h, s in (contrast or {}).items()},
+        "materials": None if materials is None else [str(c) for c in materials],
         "film_flags": dict(film_flags or {}),
         "per_film_flags": resolved_flags,
         "ambient_name": ambient_name,

@@ -107,12 +107,11 @@ def test_a_document_and_a_keyword_call_are_the_same_run(tmp_path):
 
     from_file = run_needle(
         targets=_targets(), angles_deg=[0.0], wavelengths=WL,
-        contrast={"L": H, "H": L}, design=design, environments=environments,
+        design=design, environments=environments,
         pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"))
 
     from_kwargs = run_needle(
         targets=_targets(), angles_deg=[0.0], wavelengths=WL,
-        contrast={"L": H, "H": L},
         design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
         environments=[
             {"name": "bare", "stack": [{"design": "coat"}]},
@@ -277,7 +276,6 @@ def _surrounded(**extra):
     """
     base = dict(
         targets=_targets(), angles_deg=[0.0], wavelengths=WL,
-        contrast={"L": H, "H": L},
         design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
         environments=[
             {"name": "bare", "stack": [

@@ -449,7 +449,7 @@ class DesignStack:
     @staticmethod
     def design_from_config(
         request_json: str, wavelengths: FloatArray
-    ) -> tuple[DesignStack, dict[str, Any]]: ...
+    ) -> tuple[DesignStack, list[LayerSpec]]: ...
     def film_count(self) -> int: ...
     def total_thickness(self) -> float: ...
     def films(self) -> list[dict[str, Any]]: ...
@@ -554,8 +554,9 @@ class SmatrixContext:
     ) -> tuple[float, dict[str, Any] | None]: ...
 
 class NeedlePipeline:
-    """Needle synthesis over one contrast pair. `run` reports through
-    `callback`, which may abort by raising."""
+    """Needle synthesis over a material pool (`None`: the stack's layers'
+    own materials). `run` reports through `callback`, which may abort by
+    raising."""
 
     def __init__(
         self,
@@ -563,7 +564,7 @@ class NeedlePipeline:
         spec: MeritSpec,
         angles_deg: FloatArray,
         wavelengths: FloatArray,
-        contrast: Mapping[str, LayerSpec],
+        materials: Sequence[LayerSpec] | None = ...,
         pipeline_config: PipelineConfig | None = ...,
         needle_config: NeedleCycleConfig | None = ...,
         lm: LmConfig | None = ...,
@@ -582,9 +583,9 @@ def assemble_design(
     substrate_name: str,
     films: Sequence[Any],
     groups: Mapping[str, Any],
-    seeds: Sequence[tuple[str, str, Sequence[complex]]],
+    materials: Sequence[tuple[str, Sequence[complex]]] | None,
     wavelengths: FloatArray,
-) -> tuple[DesignStack, dict[str, Any]]: ...
+) -> tuple[DesignStack, list[LayerSpec]]: ...
 def run_design(
     ambient_nk: Sequence[complex],
     ambient_name: str,
@@ -592,7 +593,7 @@ def run_design(
     substrate_name: str,
     films: Sequence[Any],
     groups: Mapping[str, Any],
-    seeds: Sequence[tuple[str, str, Sequence[complex]]],
+    materials: Sequence[tuple[str, Sequence[complex]]] | None,
     wavelengths: FloatArray,
     angles_deg: FloatArray,
     spec: MeritSpec,

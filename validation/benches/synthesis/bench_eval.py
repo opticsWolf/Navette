@@ -83,14 +83,14 @@ N_PAIRS = 6
 
 
 def problem():
-    """(layers, contrast, targets) for the fixed baseline design."""
+    """(layers, names, materials, targets, n_demands): the fixed baseline."""
     layers = []
     for i in range(N_PAIRS):
         layers.append((MaterialSpec("Konstant", dict(n=N_H)), D_H))
         layers.append((MaterialSpec("Konstant", dict(n=N_L)), D_L))
     names = [f"film{i}" for i in range(len(layers))]
-    contrast = {name: MaterialSpec("Konstant", dict(n=N_H if i % 2 else N_L))
-                for i, name in enumerate(names)}
+    materials = {"H": MaterialSpec("Konstant", dict(n=N_H)),
+                 "L": MaterialSpec("Konstant", dict(n=N_L))}
     tc = TargetCollection()
     n_demands = 0
     for ang in ANGLES:
@@ -99,7 +99,7 @@ def problem():
         tc.add(SpectralTarget(WL, np.ones(WL.size), np.full(WL.size, 0.01),
                               float(ang), "p", "T", kind="e"))
         n_demands += 2
-    return layers, names, contrast, tc, n_demands
+    return layers, names, materials, tc, n_demands
 
 
 def timed(fn, repeats, inner):
@@ -127,23 +127,23 @@ def timed(fn, repeats, inner):
 
 
 def measure(repeats=5, inner=50):
-    layers, names, contrast, tc, n_demands = problem()
+    layers, names, materials, tc, n_demands = problem()
     spec = build_merit_spec(tc)
 
-    stack, cmap = stack_from_layers(layers, WL, contrast, names=names)
+    stack, pool = stack_from_layers(layers, WL, materials, names=names)
     ctx = SmatrixContext(spec, ANGLES, WL)
     sim = ctx.simulate(stack)
     merit = float(spec.merit(sim, 1e6))
     n_res = len(np.asarray(spec.residuals(sim)).ravel())
 
     t_assemble = timed(
-        lambda: stack_from_layers(layers, WL, contrast, names=names),
+        lambda: stack_from_layers(layers, WL, materials, names=names),
         repeats, inner)
     t_simulate = timed(lambda: ctx.simulate(stack), repeats, inner)
     t_merit = timed(lambda: spec.merit(ctx.simulate(stack), 1e6), repeats, inner)
 
     def full_eval():
-        st, _ = stack_from_layers(layers, WL, contrast, names=names)
+        st, _ = stack_from_layers(layers, WL, materials, names=names)
         return spec.merit(ctx.simulate(st), 1e6)
 
     t_eval = timed(full_eval, repeats, inner)
@@ -155,7 +155,7 @@ def measure(repeats=5, inner=50):
             "n_angles": int(ANGLES.size),
             "n_demands": n_demands,
             "n_residuals": n_res,
-            "n_contrast_seeds": len(cmap),
+            "n_pool_materials": len(pool),
         },
         "merit": merit,
         "seconds": {

@@ -5,6 +5,70 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- **Needle synthesis draws from a material pool, not a contrast map.**
+  The `contrast` map (film name -> one seed material) is gone. A run now
+  has one pool of needle materials, and the needle scan tries every
+  (position, material) pair and inserts the single best one:
+  - A film can receive a needle when its own `needle` flag is set;
+    `optimize` decides whether its thickness may change. Film names play
+    no part.
+  - A film accepts every pool material whose index differs from its own.
+  - The pool defaults to one entry per distinct index among the design's
+    layers. `materials=` (a `{label: nk}` mapping in Python,
+    `DesignRequest.materials` as library codes in config,
+    `NeedlePipeline(materials=[LayerSpec, ...])`) supplies another, for
+    example SiO2, Al2O3 and HfO2 for a design that starts as SiO2 alone.
+    An empty pool inserts nothing. On the multi-environment door the
+    default pool is the design's films only, never the surroundings.
+  - Each needle is a new film named `"<label>#<n>"` (unique in the
+    stack), with `optimize` and `needle` set, so needles host needles.
+    The `<host>_seed` names are gone.
+  - Passing `contrast=` raises a `TypeError` that names `materials`.
+- **Touching layers of one index merge, whatever their names.** Rows
+  derived from a layer (graded sublayers, interface slices) still merge
+  only on name and index, so they stay apart. The first row's properties
+  win.
+- The needle pin's trajectory moves deliberately (cycle 2 now inserts H
+  into an earlier L needle); the Windows digest is re-recorded and the
+  Linux digest needs the same re-read from CI. `bench_eval` reports
+  `n_pool_materials` in place of its contrast count.
+
+### Fixed
+
+- **A needle could land as an air gap.** The old scan swept each seed
+  material over every needle-flagged film, inserted seeds included,
+  which had no contrast entry; a winning site there fell back to
+  n = 1.0. The pool removes the mechanism: every candidate is a pool
+  material, and there is no lookup to miss.
+
+### Added
+
+- `examples/dual_band_ar.py`: a three-oxide (SiO2, Al2O3, HfO2)
+  dual-band anti-reflection coating on fused silica, with a VIS band
+  (420-680 nm) and a NIR band (1044-1084 nm). Needle synthesis at a 2 nm floor, then a
+  re-optimization with every film at 10 nm or more: 14 films, 1134 nm,
+  0.35 % mean reflectance over the VIS band and 0.003 % at 1064 nm. The
+  site's design section now shows this run in place of the two-material
+  TiO2/SiO2 broadband AR.
+
+### Changed
+
+- `examples/rugate_gradient_vs_discrete.py` is now a realistic rugate:
+  a 1550 nm notch in co-sputtered SiO2:Ta2O5 on BK7, with dispersive
+  materials and Bruggeman mixing. The profile is ln n sinusoidal in
+  optical thickness, apodized and index-matched to the substrate, and
+  built from linear `FixedSpan` spans at 12 per period (converged). It
+  replaces the 8-period triangular profile at fixed indices. Against
+  quarter-wave pairs of the same two mixtures, the stepped stack
+  reflects 100 % at its third-order band (525 nm) where the rugate
+  stays at 3.6 %. The rugate's passband peaks at 5.8 %, against 33 %
+  for the same sinusoid without apodization. The site's
+  graded-versus-stepped figure and `docs/graded-media.md` follow it.
+
 ## [0.8.1] - needle insertions can be timed, and the scan was never the expensive part
 
 `bench_refold` timed the re-fold on a one-film toy and never reached the

@@ -196,8 +196,11 @@ mod tests {
         }
     }
 
+    /// A film whose index follows its name (layers merge by index, so two
+    /// names must mean two indices).
     fn film(name: &str, d: f64) -> LayerSpec {
-        LayerSpec::constant(name, 2.0, 0.0, d, NW)
+        let n = 2.0 + name.bytes().map(f64::from).sum::<f64>() * 1e-3;
+        LayerSpec::constant(name, n, 0.0, d, NW)
     }
 
     #[test]

@@ -13,8 +13,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use super::config::PipelineConfig;
-use super::cycle::ContrastMap;
-use super::cycle::NeedleCycleConfig;
+use super::cycle::{MaterialPool, NeedleCycleConfig, dedup_pool, pool_entry, pool_from_layers};
 use super::evaluator::SmatrixContext;
 use super::merit::MeritSpec;
 use super::pipeline::SpectralInputs;
@@ -48,11 +47,10 @@ pub struct ArrayFilm {
     pub gradient: Option<crate::structure::gradient::GradientJson>,
 }
 
-/// One contrast seed: host name → fresh seed carrier.
+/// One needle pool material: a label and its evaluated nk on the grid.
 #[derive(Clone, Debug)]
-pub struct ArraySeed {
-    pub host: String,
-    pub seed_name: String,
+pub struct ArrayMaterial {
+    pub name: String,
     pub nk: Vec<Complex64>,
 }
 
@@ -191,6 +189,9 @@ pub fn assemble_stack(
 /// End-to-end design run: assemble, fold demands, execute the macro-loop.
 /// `angles_deg` in degrees; `callback` fires per macro-cycle.
 ///
+/// `materials` is the needle pool; `None` takes one entry per distinct
+/// index among the assembled layers ([`pool_from_layers`]).
+///
 /// Returns `(report, stack, warnings)`. The warnings are the assembly's --
 /// a dropped ambient absorption (R3.4), a homogenized graded film -- and they
 /// must be surfaced upstream. They were dropped on the floor here until
@@ -204,7 +205,7 @@ pub fn run_design(
     substrate_nk: Vec<Complex64>,
     films: &[ArrayFilm],
     groups: &HashMap<String, Group>,
-    seeds: &[ArraySeed],
+    materials: Option<&[ArrayMaterial]>,
     wavelengths: &[f64],
     angles_deg: &[f64],
     spec: &MeritSpec,
@@ -222,30 +223,25 @@ pub fn run_design(
         groups,
         wavelengths,
     )?;
-    let mut cmap = ContrastMap::new();
-    for s in seeds {
-        if s.nk.len() != wavelengths.len() {
-            return Err(format!(
-                "contrast '{}': nk length {} != {} wavelengths",
-                s.host,
-                s.nk.len(),
-                wavelengths.len()
-            ));
+    let pool = match materials {
+        None => pool_from_layers(&stack, |_| true),
+        Some(ms) => {
+            for m in ms {
+                if m.nk.len() != wavelengths.len() {
+                    return Err(format!(
+                        "needle material '{}': nk length {} != {} wavelengths",
+                        m.name,
+                        m.nk.len(),
+                        wavelengths.len()
+                    ));
+                }
+            }
+            dedup_pool(
+                ms.iter()
+                    .map(|m| pool_entry(&m.name, Arc::from(m.nk.clone()))),
+            )
         }
-        cmap.insert(
-            Arc::from(s.host.as_str()),
-            LayerSpec {
-                material: Arc::from(s.seed_name.as_str()),
-                nk: Arc::from(s.nk.clone()),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
-    }
+    };
     let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
     let cfg = cfg.validated()?;
     let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();
@@ -260,7 +256,7 @@ pub fn run_design(
         clamp_accumulator: ClampReport::default(),
         envs: None,
     };
-    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, cmap)?;
+    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, pool)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
     Ok((report, pipe.stack, warnings))
 }
@@ -301,7 +297,7 @@ pub fn run_design(
 #[allow(clippy::too_many_arguments)]
 pub fn run_environments(
     envs: super::environments::CompiledEnvironments,
-    contrast: ContrastMap,
+    pool: MaterialPool,
     wavelengths: &[f64],
     angles_deg: &[f64],
     spec: &MeritSpec,
@@ -382,7 +378,7 @@ pub fn run_environments(
         // The branch. One environment keeps the flat path exactly.
         envs: if k == 1 { None } else { Some(Arc::new(envs)) },
     };
-    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, contrast)?;
+    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, pool)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
     Ok((report, pipe.stack, Vec::new()))
 }

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
-"""pipeline_from_config: typed configs -> native (DesignStack, contrast_map)."""
+"""pipeline_from_config: typed configs -> native (DesignStack, pool)."""
 import numpy as np
 import pytest
 
@@ -20,7 +20,7 @@ def _film(code, d, **kw):
 
 LIB = [_mat("air", 1.0), _mat("L", 1.45), _mat("H", 2.1), _mat("sub", 1.52)]
 
-def test_builds_stack_and_contrast():
+def test_builds_stack_and_pool():
     films = [_film("L", 100.0), _film("H", 60.0)]
     # Half-space rows carry a dummy thickness (gt=0 guard); the driver
     # pins them at 0.0 regardless.
@@ -29,9 +29,13 @@ def test_builds_stack_and_contrast():
     sub = LayerConfig(material_code="sub", thickness_nm=1.0, layer_type=2,
                       optimize=False, needle=False)
     s = NamedStructureConfig(label="t", layers=[air, *films, sub])
-    stack, cmap = pipeline_from_config(s, LIB, WL, contrast={"H": "L"})
+    stack, pool = pipeline_from_config(s, LIB, WL)
     assert stack.film_count() == 2
-    assert set(cmap) == {"H"}
+    # Default pool: the films' own materials, in stack order.
+    assert [m.material for m in pool] == ["L", "H"]
+    # A given pool may name materials no film is made of.
+    _, pool = pipeline_from_config(s, LIB, WL, materials=["H", "sub"])
+    assert [m.material for m in pool] == ["H", "sub"]
 
 def test_per_film_flags_land_and_override():
     films = [_film("L", 100.0, optimize=False, needle=False, inhomogen=True),
@@ -71,12 +75,12 @@ def test_native_matches_direct_driver_bitwise():
     from navette.synthesis.pipeline import stack_from_layers
     films = [_film("L", 100.0), _film("H", 60.0, roughness_nm=2.0)]
     s = NamedStructureConfig(label="t", layers=films)
-    stack_cfg, _ = pipeline_from_config(s, LIB, WL, contrast={"H": "L"})
+    stack_cfg, _ = pipeline_from_config(s, LIB, WL)
     specs = {m.code: material_from_config(m, WL) for m in LIB}
     layers = [(specs["L"], 100.0), (specs["H"], 60.0)]
     per = {"L": {}, "H": {"roughness": 2.0}}
     stack_direct, _ = stack_from_layers(
-        layers, WL, {"H": specs["L"]},
+        layers, WL,
         names=["L", "H"], per_film_flags=per)
     import numpy as _np
 

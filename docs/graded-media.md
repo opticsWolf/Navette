@@ -29,13 +29,14 @@ This is the number that matters and the one that is easy to miss. A span
 expands into sublayers at assembly, and everything downstream — the
 solver, the needle operator, a timing — sees **rows**.
 
-`examples/rugate_gradient_vs_discrete.py` measures it: 16 authored spans
-reach the solver as 80 rows (5 sublayers each), against 16 rows for the
-stepped equivalent. Same optical thickness per period, same demands,
-5× the rows. The graded design wins that comparison on merit — no abrupt
-interfaces means no sidelobes where the demand asks for transmission,
-which is the whole reason a rugate is bought — but it wins it at 5× the
-solve cost, and the cost is linear in rows.
+`examples/rugate_gradient_vs_discrete.py` measures it: a 1550 nm rugate
+notch in SiO₂:Ta₂O₅, authored as 504 linear spans, reaches the solver as
+1512 rows (3 sublayers each), against 80 rows for the stepped
+quarter-wave equivalent over the same index range. The graded design is
+the better filter — no third-order band where the stepped stack reflects
+100 % at 525 nm, and no passband ripple above 6 % — which is the whole
+reason a rugate is bought. But it costs 19× the rows, and the solve cost
+is linear in rows.
 
 Two consequences worth stating plainly:
 
@@ -54,8 +55,8 @@ Two consequences worth stating plainly:
 
 Interface roughness type 5 applies a Névot-Croce factor at **every
 boundary it is set on**. A graded span's sublayer boundaries are
-boundaries. Switching rtype 5 on across a 16-span rugate therefore means
-79 interface factors, not the handful the author had in mind.
+boundaries. Switching rtype 5 on across that 504-span rugate therefore
+means 1511 interface factors, not the handful the author had in mind.
 
 That is not merely expensive, it is outside the model. Névot-Croce is a
 small-perturbation result, valid for
@@ -64,8 +65,8 @@ small-perturbation result, valid for
 
 and a sublayer is thin *by construction* — the span's thickness divided by
 its sublayer count — so the second condition is the one that fails first.
-A 78 nm span at 5 sublayers gives 16 nm rows; a σ of 3 nm is already a
-fifth of the row.
+A 37 nm span at 3 sublayers gives 12 nm rows; a σ of 3 nm is already a
+quarter of the row.
 
 The rule that follows: **set interface roughness on the spans you meant,
 not on the expansion.** Roughness belongs on the real boundaries of the
@@ -99,8 +100,9 @@ a gradient.
 
 ## See also
 
-- `examples/rugate_gradient_vs_discrete.py` — the row-count and merit
-  comparison above, runnable.
+- `examples/rugate_gradient_vs_discrete.py` — the rugate notch and the
+  row-count comparison above, runnable; also how to build a smooth
+  profile from linear spans.
 - `examples/multi_environment_ar.py` — one design, several surroundings,
   where the ×K row cost applies.
 - [spectralweave-target-kinds.md](spectralweave-target-kinds.md) — the

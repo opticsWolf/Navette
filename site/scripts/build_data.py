@@ -58,6 +58,16 @@ def solve(n_rows, d, wl, angles, **kw):
                          angles=list(np.atleast_1d(angles)), **kw)
 
 
+def example(name):
+    """Load ``examples/<name>.py`` as a module, without running its main()."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "examples" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"{name}_example", path)
+    ex = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ex)
+    return ex
+
+
 def qw_mirror(pairs, lam0):
     rows = [H, L] * pairs
     ds = [lam0 / 4 / H, lam0 / 4 / L] * pairs
@@ -126,80 +136,65 @@ def coherence():
 
 # --- 4. graded versus stepped, from examples/rugate_gradient_vs_discrete.py --
 def rugate():
-    import importlib.util
-    path = Path(__file__).resolve().parents[2] / "examples" / \
-        "rugate_gradient_vs_discrete.py"
-    spec = importlib.util.spec_from_file_location("rugate_example", path)
-    ex = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ex)
-    wl_dense = np.linspace(450.0, 780.0, 331)
+    ex = example("rugate_gradient_vs_discrete")
+    wl_dense = np.linspace(450.0, 1700.0, 1001)
     ex.WL = wl_dense  # the example's builders read the module grid
-    g = ex.build(*ex.graded())
-    s = ex.build(*ex.stepped())
-    return dict(wl=r(wl_dense, 2), graded=r(ex.spectrum(g), 5),
-                stepped=r(ex.spectrum(s), 5), rows_graded=g.film_count(),
-                rows_stepped=s.film_count(), lam0=ex.LAM0)
+    out = dict(wl=r(wl_dense, 2), lam0=ex.LAM0, periods=ex.PERIODS,
+               n_lo=ex.N_LO, n_hi=ex.N_HI)
+    for label, stack, spans in ex.designs():
+        R = ex.spectrum(stack)
+        # The plain sinusoid is quoted on the page, not drawn: its ripple
+        # would bury the rugate's flat passband.
+        curve = dict(R=r(R, 5)) if label != "sinusoid" else {}
+        out[label] = dict(**curve, spans=spans, rows=stack.film_count(),
+                          um=round(stack.total_thickness() / 1e3, 1),
+                          **{k: round(v, 3) for k, v in ex.figures(R).items()})
+    return out
 
 
-# --- 5. needle synthesis of a broadband AR coating ---------------------------
+# --- 5. needle synthesis, from examples/dual_band_ar.py -----------------------
 def needle():
-    band = (400.0, 700.0)
-    wl = np.linspace(*band, 61)
-    glass = 1.52 + 0j
-    tol = 0.002
-    tc = TargetCollection()
-    tc.add(SpectralTarget(wl, np.zeros_like(wl), np.full_like(wl, tol),
-                          0.0, "s", "R"))
-    hi, lo = np.full(wl.shape, H + 0j), np.full(wl.shape, L + 0j)
-    # A deliberately poor four-layer seed; each film may host the other one.
-    seed = [(lo, 250.0), (hi, 150.0), (lo, 250.0), (hi, 150.0)]
-    cfg = PipelineConfig(max_macro_cycles=30, needles_per_cycle=2)
-    res = run_needle(layers=seed, targets=tc, angles_deg=[0.0],
-                     wavelengths=wl, contrast={0: hi, 1: lo, 2: hi, 3: lo},
-                     pipeline_config=cfg,
-                     substrate=(np.full(wl.shape, glass), "sub"))
-    films = res["stack"].to_dict()["films"]
-    # Films are listed from the ambient side, as stack_from_layers takes them.
-    ns = [complex(np.asarray(f["nk"]).ravel()[0]).real for f in films]
-    ds = [float(f["thickness"]) for f in films]
-    rows = [1.0] + [complex(n) for n in ns] + [glass]
-    # Re-score the finished design on the run grid: if the film order were
-    # read the wrong way round this would not reproduce the run's merit.
-    R_run = np.asarray(solve(rows, [0.0] + ds + [0.0], wl, [0.0]).compute(
-        Request.RS)["Rs"])
-    check = float(np.sum((R_run / tol) ** 2))
-    assert abs(check - res["final_mf"]) <= 1e-6 * max(1.0, res["final_mf"]), \
-        (check, res["final_mf"])
-    wl_dense = np.linspace(380.0, 780.0, 201)
-    R = solve(rows, [0.0] + ds + [0.0], wl_dense, [0.0]).compute(
-        Request.RS)["Rs"]
-    R_bare = solve([1.0, glass], [0.0, 0.0], wl_dense, [0.0]).compute(
-        Request.RS)["Rs"]
-    R_seed = solve([1.0, L, H, L, H, glass],
-                   [0.0, 250.0, 150.0, 250.0, 150.0, 0.0],
-                   wl_dense, [0.0]).compute(Request.RS)["Rs"]
-    phases = res["phases"]
+    ex = example("dual_band_ar")
+    s1 = ex.synthesize()
+    s2 = ex.apply_floor(s1)
+    f1, f2 = ex.films(s1), ex.films(s2)
+    # The example's own re-score: if a film were matched to the wrong
+    # material or read the wrong way round, it would not reproduce the run.
+    ex.check(s1, f1)
+    ex.check(s2, f2)
+    wl_dense = np.linspace(380.0, 1150.0, 771)
+    R = ex.reflectance(f2, wl_dense)
+    R_bare = ex.reflectance([], wl_dense)
+    phases = s1["phases"]
     first = phases[0]["needle_results"][0]["merit_before"]
+    seed_nm = sum(ex.SEED_NM.values())
     # `merit` is the cycle's end (after cleanup); `needle` is the same cycle
     # after its needle pass. Near the optimum either step's re-optimization
-    # can land worse than it began (which one differs by platform). The run
-    # then ends with one more optimization of every thickness: `final` is
-    # that design, the one plotted and stacked above.
-    history = [dict(cycle=0, merit=first, needle=first, layers=len(seed),
-                    thickness=800.0)]
+    # can land worse than it began (which one differs by platform). The
+    # synthesis then ends with one more optimization of every thickness
+    # (`final`), and the floor stage re-optimizes that at 10 nm (`floor`):
+    # the design plotted and stacked above.
+    history = [dict(cycle=0, merit=first, needle=first, layers=len(ex.SEED_NM),
+                    thickness=seed_nm)]
     history += [dict(cycle=int(p["macro_cycle"]), merit=float(p["mf_end"]),
                      needle=float(p["mf_after_needle"]),
                      layers=int(p["layer_count"]),
                      thickness=round(float(p["total_thickness_nm"]), 2))
                 for p in phases]
-    final = dict(merit=float(res["final_mf"]), layers=len(films))
-    return dict(wl=r(wl_dense, 2), R=r(R, 6), R_bare=r(R_bare, 6),
-                R_seed=r(R_seed, 6),
-                layers=[dict(n=round(n, 3), d=round(d, 2)) for n, d in zip(ns, ds)],
-                band=list(band), tol=tol, termination=str(res["termination"]),
-                final_mf=float(res["final_mf"]), history=history, final=final,
-                rms_in_band=float(np.sqrt(np.mean(R_run ** 2))),
-                max_in_band=float(np.max(R_run)))
+    figs = ex.figures(f2)
+    return dict(wl=r(wl_dense, 2), R=r(R, 7), R_bare=r(R_bare, 6),
+                layers=[dict(m=name, d=round(t, 2)) for name, _, t in f2],
+                bands=[[float(ex.VIS[0]), float(ex.VIS[-1])],
+                       [float(ex.NIR[0]), float(ex.NIR[-1])]],
+                tol=[ex.TOL_VIS, ex.TOL_NIR], nir_center=ex.NIR_CENTER, floor_nm=ex.FLOOR_NM,
+                seed=dict(ex.SEED_NM), termination=str(s1["termination"]),
+                history=history,
+                final=dict(merit=float(s1["final_mf"]), layers=len(f1),
+                           thinnest=round(min(t for _, _, t in f1), 2)),
+                floor=dict(merit=float(s2["final_mf"]), layers=len(f2),
+                           thinnest=round(figs["thinnest_nm"], 2)),
+                vis_mean=figs["vis_mean"], vis_max=figs["vis_max"],
+                nir_R=figs["nir_center"], nir_max=figs["nir_max"])
 
 
 # --- 6. surface plasmon resonance (Kretschmann) ------------------------------

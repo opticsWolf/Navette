@@ -255,8 +255,25 @@ def _group_map(groups):
             for name, g in (groups or {}).items()}
 
 
+def _pool(materials, wl):
+    """``materials`` -> ``[(label, nk)]`` for the core, or ``None``.
+
+    ``None`` leaves the pool to the core: one entry per distinct index
+    among the layers. A mapping is ``{label: material}``; the label names
+    the needles (``"<label>#<n>"``). An empty mapping inserts nothing.
+    """
+    if materials is None:
+        return None
+    if not isinstance(materials, Mapping):
+        raise TypeError(
+            "materials must be a mapping {label: material}, or None for the "
+            f"layers' own materials - got {type(materials).__name__}."
+        )
+    return [(str(k), _eval_nk(v, wl)) for k, v in materials.items()]
+
+
 def stack_from_layers(layers: Sequence[Tuple[Any, float]],
-                      wavelengths, contrast: Mapping[Any, Any],
+                      wavelengths, materials: Optional[Mapping[Any, Any]] = None,
                       ambient: Tuple[Any, str] = (1.0, "air"),
                       substrate: Tuple[Any, str] = (1.52, "sub"),
                       names: Optional[Sequence[str]] = None,
@@ -264,12 +281,13 @@ def stack_from_layers(layers: Sequence[Tuple[Any, float]],
                       groups: Optional[Mapping[str, Any]] = None,
                       per_film_flags: Optional[Mapping[str, Dict[str, Any]]] = None,
                       ) -> Tuple[Any, Dict[str, Any]]:
-    """Native ``(DesignStack, contrast_map)`` from ``[(material, d_nm)]`` films.
+    """Native ``(DesignStack, pool)`` from ``[(material, d_nm)]`` films.
 
     Materials are ``MaterialSpec`` / mappings / nk arrays / constants
     (plain names are not resolvable here — pass specs). ``names`` gives
-    the film material names (default ``film0…``); ``contrast`` maps host
-    name *or film index* → seed material. ``ambient``/``substrate`` are
+    the film material names (default ``film0…``); ``materials`` is the
+    needle material pool ``{label: material}`` (``None``: the films' own
+    materials), returned as a list of ``LayerSpec``. ``ambient``/``substrate`` are
     ``(material, name)``; always fixed, non-hosts. ``film_flags`` are
     per-film ``LayerSpec`` defaults (``optimize``/``needle``/…, and the
     F1.1 ``gradient`` mixture profile - see ``_film_dicts``).
@@ -292,11 +310,10 @@ def stack_from_layers(layers: Sequence[Tuple[Any, float]],
     if len(names) != len(layers):
         raise ValueError("names length must match layers length.")
     films = _film_dicts(layers, names, wl, film_flags, per_film_flags)
-    seeds = [(str(k), f"{k}_seed", _eval_nk(v, wl)) for k, v in contrast.items()]
     return _assemble(
         _half_nk(ambient[0], wl), str(ambient[1] if len(ambient) > 1 else "air"),
         _half_nk(substrate[0], wl), str(substrate[1] if len(substrate) > 1 else "sub"),
-        films, _group_map(groups), seeds, wl)
+        films, _group_map(groups), _pool(materials, wl), wl)
 
 
 
@@ -479,7 +496,7 @@ def design_from_program(program, materials=None):
     return design, environments
 
 
-def _environments_request(design, environments, contrast, wl,
+def _environments_request(design, environments, materials, wl,
                           ambient, substrate, film_flags, per_film_flags,
                           groups) -> Dict[str, Any]:
     """The `DesignRequest` a multi-environment run is, as plain JSON data.
@@ -585,24 +602,30 @@ def _environments_request(design, environments, contrast, wl,
             else:
                 env["stack"].append({"layers": [row]})
 
-    # Contrast: host film name -> seed material. The seed becomes a
-    # library entry of its own, the way it does on the flat path.
-    cmap = {}
-    for host, seed in (contrast or {}).items():
-        host = str(host)
-        if host not in library:
-            raise ValueError(
-                f"contrast: {host!r} is not a film in this run "
-                f"(films: {', '.join(sorted(library))})."
+    # The needle pool: each label a library code. A label that is already
+    # a film's code must carry that film's table - one code, one material.
+    pool = None
+    if materials is not None:
+        if not isinstance(materials, Mapping):
+            raise TypeError(
+                "materials must be a mapping {label: material}, or None for "
+                f"the design's own materials - got {type(materials).__name__}."
             )
-        code = f"{host}_seed"
-        library.setdefault(code, _tab(code, seed, wl))
-        cmap[host] = code
+        pool = []
+        for label, material in materials.items():
+            code = str(label)
+            tab = _tab(code, material, wl)
+            if library.setdefault(code, tab) != tab:
+                raise ValueError(
+                    f"materials: {code!r} names a film of another material - "
+                    "give the needle material its own label."
+                )
+            pool.append(code)
 
     return {
         "structure": {"label": "design", "layers": [], "groups": list(groups or ())},
         "library": list(library.values()),
-        "contrast": cmap,
+        "materials": pool,
         "film_flags": dict(film_flags or {}),
         "per_film_flags": {str(k): dict(v) for k, v in (per_film_flags or {}).items()},
         "ambient_name": "air",
@@ -615,7 +638,7 @@ def _environments_request(design, environments, contrast, wl,
 def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                targets: Any = None,
                angles_deg=None, wavelengths=None,
-               contrast: Optional[Mapping[Any, Any]] = None,
+               materials: Optional[Mapping[Any, Any]] = None,
                pipeline_config=None, needle_config=None, lm_config=None,
                callback: Optional[Callable[[int, Dict], None]] = None,
                *,
@@ -631,9 +654,15 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         complex also accepted).
     targets : TargetCollection or MeritSpec (native).
     angles_deg / wavelengths : solver grid (degrees / nm).
-    contrast : {host name, film index, or "film{i}" name: seed material}.
-        Hosts without an entry are never split (empty needle history when
-        nothing matches — check names when a run inserts nothing).
+    materials : {label: material} — the needle material pool. Every film
+        whose ``needle`` flag is set accepts a needle of every pool
+        material of another index; each insertion is the single best
+        (position, material) pair over all of them. A needle is a film of
+        its own, named ``"<label>#<n>"``, and accepts needles in later
+        cycles. ``None`` (the default) pools the films' own materials, one
+        entry per distinct index; give a mapping to add materials no film
+        is made of (an SiO2 start with SiO2, Al2O3 and HfO2 to insert).
+        ``{}`` inserts nothing. Touching films of one index merge.
     pipeline_config / needle_config / lm_config : native configs (or None).
     callback : ``(macro_cycle, phase_dict)``; raising aborts (USER_ABORT).
     stack_kwargs : ambient, substrate, per-film flags (see
@@ -668,8 +697,9 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         keeps the two rosters the same object and remains the simplest
         spelling.
 
-    With ``design``/``environments`` the contrast map is keyed by FILM
-    NAME (the design parameter's identity), not by index.
+    With ``design``/``environments`` the default pool is the design
+    segments' own materials; a surrounding's material is a needle only
+    when ``materials`` names it.
 
     Returns the native result dict (``termination``, ``final_mf``,
     ``phases``, final ``stack``). With environments the returned stack is
@@ -685,20 +715,23 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                         ("wavelengths", wavelengths)):
         if value is None:
             raise ValueError(f"run_needle: `{name}` is required.")
+    if "contrast" in stack_kwargs:
+        raise TypeError(
+            "run_needle: `contrast` (host -> seed) is gone; pass `materials`, "
+            "the needle material pool {label: material}, or leave it out to "
+            "pool the films' own materials."
+        )
     if design is not None:
         return _run_needle_environments(
-            design, environments, targets, angles_deg, wavelengths, contrast,
+            design, environments, targets, angles_deg, wavelengths, materials,
             pipeline_config, needle_config, lm_config, callback, stack_kwargs)
-    if contrast is None:
-        raise ValueError("run_needle: `contrast` is required.")
     if environments is not None:
         raise ValueError(
             "run_needle: `environments` needs `design` - a flat film list has "
             "no named segments for an environment to reference."
         )
-    # Thin over native run_design: evaluate + key/flag shaping here,
-    # assembly + macro-loop in Rust. Contrast-key normalization stays
-    # (presentation over the film order).
+    # Thin over native run_design: evaluate + flag shaping here,
+    # assembly + macro-loop in Rust.
     from navette._smatrix import run_design as _run_design
     wl = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64))
     angs = np.ascontiguousarray(np.asarray(angles_deg, dtype=np.float64))
@@ -708,17 +741,6 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     names = list(names)
     if len(names) != len(layers):
         raise ValueError("names length must match layers length.")
-    def _host_key(k):
-        if isinstance(k, bool):
-            return str(k)
-        if isinstance(k, int) and 0 <= k < len(names):
-            return names[k]
-        s = str(k)
-        if s in names:
-            return s
-        if s.startswith("film") and s[4:].isdigit() and int(s[4:]) < len(names):
-            return names[int(s[4:])]
-        return s
     ambient = stack_kwargs.pop("ambient", (1.0, "air"))
     substrate = stack_kwargs.pop("substrate", (1.52, "sub"))
     film_flags = stack_kwargs.pop("film_flags", None)
@@ -727,9 +749,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     if stack_kwargs:
         raise TypeError(f"run_needle: unknown stack options {sorted(stack_kwargs)}.")
     films = _film_dicts(layers, names, wl, film_flags, per_film_flags)
-    seeds = [(_host_key(k), f"{_host_key(k)}_seed", _eval_nk(v, wl))
-             for k, v in contrast.items()]
-    spec = (_build_merit_spec(targets) if isinstance(targets, TargetCollection)
+    spec =(_build_merit_spec(targets) if isinstance(targets, TargetCollection)
             else targets)
     amb_nk = _half_nk(ambient[0], wl)
     sub_nk = _half_nk(substrate[0], wl)
@@ -737,13 +757,13 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     return _run_design(
         amb_nk, str(ambient[1] if len(ambient) > 1 else "air"),
         sub_nk, str(substrate[1] if len(substrate) > 1 else "sub"),
-        films, gmap, seeds, wl, angs, spec,
+        films, gmap, _pool(materials, wl), wl, angs, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback)
 
 
 def _run_needle_environments(design, environments, targets, angles_deg,
-                             wavelengths, contrast, pipeline_config,
+                             wavelengths, materials, pipeline_config,
                              needle_config, lm_config, callback,
                              stack_kwargs) -> Dict[str, Any]:
     """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
@@ -770,7 +790,7 @@ def _run_needle_environments(design, environments, targets, angles_deg,
     if stack_kwargs:
         raise TypeError(f"run_needle: unknown stack options {sorted(stack_kwargs)}.")
     request = _environments_request(
-        design, environments, contrast, wl, ambient, substrate,
+        design, environments, materials, wl, ambient, substrate,
         film_flags, per_film_flags, groups)
     roster = [e["name"] for e in request["environments"]]
     spec = (_build_merit_spec(targets, environments=roster)

@@ -20,7 +20,7 @@ use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::needle_pass::{
-    NeedlePassInput, build_needle_targets_env, build_scan_sites, run_needle_pass,
+    NeedlePassInput, build_needle_targets_env, build_scan_sites, needle_pass_scan,
 };
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{DesignStack, LayerSpec};
@@ -62,8 +62,8 @@ impl Default for NeedleCycleConfig {
 /// Wall-clock seconds one insertion cycle spent in each step, recorded only
 /// under [`NeedleCycleConfig::record_timing`].
 ///
-/// `scan` is the analytic sweep (site build + one `run_needle_pass` per
-/// contrast material, every environment on the joint arm); `refold` the
+/// `scan` is the analytic sweep (site build + one scan per host
+/// material over that host's sites, every environment on the joint arm); `refold` the
 /// simulate + fold that precedes it; `merit` the convergence test's
 /// `evaluate_merit`; `lm` the re-optimization after the insertion (0 on a
 /// cycle that stopped without inserting). `initial_lm` is the pass's
@@ -111,22 +111,93 @@ pub struct Insertion {
     pub material: Arc<str>,
 }
 
-/// Contrast-material table: film material name → needle LayerSpec template.
-/// (nk arrays must be evaluated on the simulation grid; thickness/flags of
-/// the template are ignored — the seed is built fresh.)
-pub type ContrastMap = HashMap<Arc<str>, LayerSpec>;
+/// The needle material pool: every material a needle may be made of.
+///
+/// A layer whose `needle` flag is set accepts a needle of any entry whose
+/// index differs from its own; the scan scores every (site, material) pair
+/// and inserts the single best. An entry's `material` is its label, and an
+/// inserted needle is named `"<label>#<n>"`, unique in the stack. nk arrays
+/// must be evaluated on the simulation grid; thickness and flags of an
+/// entry are ignored (the needle is built fresh). An empty pool inserts
+/// nothing.
+pub type MaterialPool = Vec<LayerSpec>;
 
-/// Run one full needle pass on `stack`.
+/// Does `host` accept a needle of `m`? Only when the indices differ: a
+/// needle of the host's own index is no needle at all.
+fn accepts(host: &LayerSpec, m: &LayerSpec) -> bool {
+    host.nk != m.nk
+}
+
+/// A film name for a new needle of `label`, used by no film in `films`.
+fn needle_name(films: &[LayerSpec], label: &str) -> Arc<str> {
+    (1usize..)
+        .map(|n| format!("{label}#{n}"))
+        .find(|c| films.iter().all(|f| &*f.material != c.as_str()))
+        .map(Arc::from)
+        .expect("an unused needle name exists")
+}
+
+/// A pool entry: `nk` under `label`, the needle's own fresh flags.
+pub fn pool_entry(label: &str, nk: Arc<[Complex64]>) -> LayerSpec {
+    LayerSpec {
+        material: Arc::from(label),
+        nk,
+        d_nm: 0.0,
+        coherent: true,
+        rough_type: 0,
+        rough_val: 0.0,
+        optimize: true,
+        needle: true,
+    }
+}
+
+/// `entries` with every repeated index dropped (the first label wins):
+/// two entries of one index would sweep the same needle twice.
+pub fn dedup_pool(entries: impl IntoIterator<Item = LayerSpec>) -> MaterialPool {
+    let mut out: MaterialPool = Vec::new();
+    for e in entries {
+        if !out.iter().any(|m| m.nk == e.nk) {
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// A fresh needle of pool entry `m`, `d_nm` thick, named apart from every
+/// film in `films`.
+fn new_needle(films: &[LayerSpec], m: &LayerSpec, d_nm: f64) -> LayerSpec {
+    LayerSpec {
+        material: needle_name(films, &m.material),
+        nk: m.nk.clone(),
+        d_nm,
+        coherent: true,
+        rough_type: 0,
+        rough_val: 0.0,
+        optimize: true,
+        needle: true,
+    }
+}
+
+/// The default pool: one entry per distinct index among the stack's
+/// LAYERS, labelled by the first layer that carries it.
 ///
-/// Mirrors `synth.run(max_needles = cfg.max_needles)`:
-/// initial optimization → [re-fold → scan → select → insert → optimize]×N.
-///
-/// The fold refreshes against the live sim each cycle (when
-/// `cfg.refold_per_cycle` and the context simulates): one-sided/banded
-/// demands mask at the operating point and PD gain shifts go live, so
-/// insertion tracks the merit the optimizer actually sees. Any simulate
-/// or fold failure keeps the previous fold (mock contexts without a
-/// solver run the static conservative fold throughout).
+/// A layer is the bulk row of a singleton-bulk span, so graded sublayers
+/// and interface slices never contribute an index of their own. `keep`
+/// narrows the rows considered: the joint door keeps the shared design's
+/// rows, so a surrounding's material is never a needle by default.
+pub fn pool_from_layers(stack: &DesignStack, keep: impl Fn(usize) -> bool) -> MaterialPool {
+    dedup_pool(
+        stack
+            .spans()
+            .iter()
+            .filter(|sp| sp.is_singleton_bulk() && keep(sp.bulk_start))
+            .map(|sp| {
+                let l = &stack.films()[sp.bulk_start];
+                pool_entry(&l.material, l.nk.clone())
+            }),
+    )
+}
+
 /// F2.3: one candidate locus, agreed on by every environment.
 ///
 /// A locus is a *shared design parameter* plus a step into it, never a row
@@ -137,8 +208,8 @@ struct JointCandidate {
     /// Index into `CompiledEnvironments::slots`.
     slot: usize,
     depth_into_layer_nm: f64,
-    /// Seed material: the contrast partner whose sweep won.
-    material: Arc<str>,
+    /// The needle material: the index into the pool whose sweep won.
+    material: usize,
     /// P summed over environments.
     p: f64,
 }
@@ -166,7 +237,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     ctx: &C,
     stack: &DesignStack,
     spectral: &SpectralInputs,
-    contrast: &ContrastMap,
+    pool: &MaterialPool,
     cfg: &NeedleCycleConfig,
     refold_s: &mut f64,
 ) -> Result<(Option<JointCandidate>, f64, usize), String> {
@@ -176,28 +247,9 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     let k = envs.n_envs();
     let stacks = envs.expand(stack)?;
 
-    // Seed materials come from the DESIGN, not from the assemblies. A cover
-    // material that happens to carry a contrast entry is not a candidate
-    // seed, and sweeping it in the one environment that has it would open a
-    // bucket no other environment can fill.
-    let mats: Vec<&LayerSpec> = {
-        let mut seen: Vec<Arc<str>> = Vec::new();
-        let mut out = Vec::new();
-        for (row, l) in stacks[0].films().iter().enumerate() {
-            if envs.slot_of_row(0, row).is_some()
-                && contrast.contains_key(&l.material)
-                && !seen.contains(&l.material)
-            {
-                seen.push(l.material.clone());
-                out.push(contrast.get(&l.material).unwrap());
-            }
-        }
-        out
-    };
-
     let mut gtot = 0.0f64;
-    // (seed material, slot, step into the host) -> (depth, ΣP, environments seen)
-    let mut buckets: HashMap<(Arc<str>, usize, usize), (f64, f64, usize)> = HashMap::new();
+    // (pool index, slot, step into the host) -> (depth, ΣP, environments seen)
+    let mut buckets: HashMap<(usize, usize, usize), (f64, f64, usize)> = HashMap::new();
     let mut n_sites = 0usize;
 
     for (e, st) in stacks.iter().enumerate() {
@@ -219,7 +271,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
         gtot += fold.phi_gain_shift.iter().sum::<f64>();
 
         let sa = st.solver_arrays();
-        for mat in &mats {
+        for (mi, mat) in pool.iter().enumerate() {
             let input = NeedlePassInput {
                 n_stack_cache: &sa.n_stack_cache,
                 thicknesses: &sa.thicknesses,
@@ -235,7 +287,15 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
                 calc_s: true,
                 calc_p: true,
             };
-            let res = run_needle_pass(&input, st.films(), st.spans(), cfg.scan_step_nm)?;
+            // Only the rows that accept this needle; filtering whole rows
+            // keeps each surviving row's steps intact. A design row has
+            // the same index in every environment, so every environment
+            // keeps the same rows.
+            let sites: Vec<_> = build_scan_sites(st.films(), st.spans(), cfg.scan_step_nm)
+                .into_iter()
+                .filter(|s| accepts(&st.films()[s.film_idx], mat))
+                .collect();
+            let res = needle_pass_scan(&input, &sites)?;
             // `build_scan_sites` walks rows in order and emits steps
             // 1..n_steps inside each admissible row, so the running count
             // per row IS the step index — and it is the same index in
@@ -252,9 +312,11 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
                 if e == 0 {
                     n_sites += 1;
                 }
-                let entry = buckets
-                    .entry((mat.material.clone(), slot, ordinal))
-                    .or_insert((site.depth_into_layer_nm, 0.0, 0));
+                let entry = buckets.entry((mi, slot, ordinal)).or_insert((
+                    site.depth_into_layer_nm,
+                    0.0,
+                    0,
+                ));
                 entry.1 += p;
                 entry.2 += 1;
             }
@@ -266,8 +328,9 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     // bucket is filled exactly K times. A short bucket means the assemblies
     // drifted apart, and summing it would sum over different loci.
     if let Some(((m, slot, ord), (_, _, n))) = buckets.iter().find(|(_, v)| v.2 != k) {
+        let m = &pool[*m].material;
         return Err(format!(
-            "joint needle sweep: the locus (slot {slot}, step {ord}, seed {m:?}) \
+            "joint needle sweep: the locus (slot {slot}, step {ord}, needle {m:?}) \
              appears in {n} of {k} environments - the assemblies no longer \
              share the design's scan grid"
         ));
@@ -276,9 +339,8 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     // Deterministic order before the min: a hash map's iteration order is
     // not stable, and two loci can tie on P exactly (identical
     // environments, mirrored stacks).
-    let mut items: Vec<((Arc<str>, usize, usize), (f64, f64, usize))> =
-        buckets.into_iter().collect();
-    items.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut items: Vec<((usize, usize, usize), (f64, f64, usize))> = buckets.into_iter().collect();
+    items.sort_by_key(|a| a.0);
 
     let mut best: Option<JointCandidate> = None;
     for ((material, slot, _), (depth, p, _)) in items {
@@ -301,11 +363,24 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     Ok((best, gtot, n_sites))
 }
 
+/// Run one full needle pass on `stack`.
+///
+/// Mirrors `synth.run(max_needles = cfg.max_needles)`:
+/// initial optimization → [re-fold → scan → select → insert → optimize]×N.
+/// Each insertion is the single best (site, material) pair over every
+/// needle-flagged layer and every `pool` entry that layer accepts.
+///
+/// The fold refreshes against the live sim each cycle (when
+/// `cfg.refold_per_cycle` and the context simulates): one-sided/banded
+/// demands mask at the operating point and PD gain shifts go live, so
+/// insertion tracks the merit the optimizer actually sees. Any simulate
+/// or fold failure keeps the previous fold (mock contexts without a
+/// solver run the static conservative fold throughout).
 pub fn run_needle_cycles<C: DesignContext + ?Sized>(
     ctx: &mut C,
     stack: &mut DesignStack,
     spectral: &SpectralInputs,
-    contrast: &ContrastMap,
+    pool: &MaterialPool,
     cfg: &NeedleCycleConfig,
 ) -> Result<Vec<NeedleCycleResult>, String> {
     use crate::smatrix::synthesis::needle_pass::build_needle_targets;
@@ -327,7 +402,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 
     for cycle in 0..cfg.max_needles {
         if multi {
-            if joint_cycle(ctx, stack, spectral, contrast, cfg, cycle, &mut history)? {
+            if joint_cycle(ctx, stack, spectral, pool, cfg, cycle, &mut history)? {
                 break;
             }
             continue;
@@ -348,45 +423,34 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         }
         t.refold_s = tock(t0);
         let t0 = tick(cfg.record_timing);
-        // 1. Build candidate sites restricted to films whose material has a
-        //    contrast entry (Python skips layers without a mapping) AND
-        //    that are needle hosts. The flag check is load-bearing:
-        //    interface slices and pinned graded rows share their carrier's
-        //    material (hence a contrast entry) but must never host seeds.
+        // 1. Candidate sites: every step inside a needle-flagged layer.
+        //    `build_scan_sites` reads the flag and skips multi-row spans, so
+        //    interface slices and graded sublayers are never sites.
         let sites = build_scan_sites(stack.films(), stack.spans(), cfg.scan_step_nm);
-        let sites: Vec<_> = sites
-            .into_iter()
-            .filter(|s| {
-                stack
-                    .films()
-                    .get(s.film_idx)
-                    .map(|l| l.needle && contrast.contains_key(&l.material))
-                    .unwrap_or(false)
+
+        // 2. Analytic sweep (both polarizations summed) once per pool
+        //    material, over the sites whose layer accepts it (its index
+        //    differs); the global best (site, material) pair is kept.
+        let per_material: Vec<Vec<_>> = pool
+            .iter()
+            .map(|mat| {
+                sites
+                    .iter()
+                    .filter(|s| accepts(&stack.films()[s.film_idx], mat))
+                    .cloned()
+                    .collect()
             })
             .collect();
-        if sites.is_empty() {
-            break; // "Stack too thin for needle insertion."
+        if per_material.iter().all(Vec::is_empty) {
+            break; // "Stack too thin for needle insertion" (or no pool).
         }
-
-        // 2. Analytic sweep (both polarizations summed) per DISTINCT contrast
-        //    material among admissible hosts; global best kept across sweeps.
         let sa = stack.solver_arrays();
 
-        // Distinct contrast materials among admissible hosts.
-        let mats: Vec<&LayerSpec> = {
-            let mut seen: Vec<Arc<str>> = Vec::new();
-            let mut out = Vec::new();
-            for l in stack.films() {
-                if contrast.contains_key(&l.material) && !seen.contains(&l.material) {
-                    seen.push(l.material.clone());
-                    out.push(contrast.get(&l.material).unwrap());
-                }
+        let mut best: Option<(Insertion, &LayerSpec, f64)> = None;
+        for (mat, mat_sites) in pool.iter().zip(&per_material) {
+            if mat_sites.is_empty() {
+                continue;
             }
-            out
-        };
-
-        let mut best: Option<(Insertion, f64)> = None;
-        for mat in &mats {
             let input = NeedlePassInput {
                 n_stack_cache: &sa.n_stack_cache,
                 thicknesses: &sa.thicknesses,
@@ -402,11 +466,11 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 calc_s: true,
                 calc_p: true,
             };
-            let res = run_needle_pass(&input, stack.films(), stack.spans(), cfg.scan_step_nm)?;
+            let res = needle_pass_scan(&input, mat_sites)?;
             if let Some((site, p)) = res.best() {
                 let better = match &best {
                     None => true,
-                    Some((_, bp)) => p < *bp,
+                    Some((_, _, bp)) => p < *bp,
                 };
                 if better {
                     best = Some((
@@ -415,6 +479,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                             depth_into_layer_nm: site.depth_into_layer_nm,
                             material: mat.material.clone(),
                         },
+                        mat,
                         p,
                     ));
                 }
@@ -443,7 +508,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 });
                 break;
             }
-            Some((ins, p)) => {
+            Some((ins, mat, p)) => {
                 // Inserting a seed of thickness δ also grows the
                 // equivalent-medium reference by δ, so the true slope is
                 // P(z*) + Σ gain_shift (0 for absolute-phase demand sets;
@@ -464,21 +529,10 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                     break; // "Convergence reached — stopping."
                 }
 
-                // 4. Insert the seed (split host, Python `_insert_needle`).
-                let seed_nk: Arc<[Complex64]> = contrast
-                    .get(&stack.films()[ins.film_idx].material)
-                    .map(|m| m.nk.clone())
-                    .unwrap_or_else(|| vec![Complex64::new(1.0, 0.0); wavls.len()].into());
-                let seed = LayerSpec {
-                    material: ins.material.clone(),
-                    nk: seed_nk,
-                    d_nm: cfg.needle_seed_thickness_nm,
-                    coherent: true,
-                    rough_type: 0,
-                    rough_val: 0.0,
-                    optimize: true,
-                    needle: true,
-                };
+                // 4. Insert the needle (split the host, Python
+                //    `_insert_needle`) under a fresh name: a needle is a
+                //    layer of its own and accepts needles in later cycles.
+                let seed = new_needle(stack.films(), mat, cfg.needle_seed_thickness_nm);
                 stack.insert_needle_seed(ins.film_idx, ins.depth_into_layer_nm, seed)?;
 
                 // 5. Re-optimize.
@@ -524,7 +578,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
     ctx: &mut C,
     stack: &mut DesignStack,
     spectral: &SpectralInputs,
-    contrast: &ContrastMap,
+    pool: &MaterialPool,
     cfg: &NeedleCycleConfig,
     cycle: usize,
     history: &mut Vec<NeedleCycleResult>,
@@ -532,7 +586,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
     let mut t = CycleTiming::default();
     let t0 = tick(cfg.record_timing);
     let (best, gtot, n_sites) =
-        joint_needle_sweep(&*ctx, stack, spectral, contrast, cfg, &mut t.refold_s)?;
+        joint_needle_sweep(&*ctx, stack, spectral, pool, cfg, &mut t.refold_s)?;
     // The sweep interleaves K re-folds with K scans; the scan is the rest.
     t.scan_s = tock(t0) - t.refold_s;
     if n_sites == 0 {
@@ -580,20 +634,8 @@ fn joint_cycle<C: DesignContext + ?Sized>(
                 cand.slot
             )
         })?;
-    let seed_nk: Arc<[Complex64]> = contrast
-        .get(&stack.films()[row0].material)
-        .map(|m| m.nk.clone())
-        .unwrap_or_else(|| vec![Complex64::new(1.0, 0.0); spectral.wavls.len()].into());
-    let seed = LayerSpec {
-        material: cand.material.clone(),
-        nk: seed_nk,
-        d_nm: cfg.needle_seed_thickness_nm,
-        coherent: true,
-        rough_type: 0,
-        rough_val: 0.0,
-        optimize: true,
-        needle: true,
-    };
+    let mat = &pool[cand.material];
+    let seed = new_needle(stack.films(), mat, cfg.needle_seed_thickness_nm);
     stack.insert_needle_seed(row0, cand.depth_into_layer_nm, seed.clone())?;
     ctx.environments_mut()
         .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
@@ -612,7 +654,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
         insertion: Some(Insertion {
             film_idx: row0,
             depth_into_layer_nm: cand.depth_into_layer_nm,
-            material: cand.material,
+            material: mat.material.clone(),
         }),
         timing: cfg.record_timing.then_some(t),
     });
@@ -625,7 +667,6 @@ mod tests {
     // Only the tests build NeedleTargets by hand; the pass returns them.
     use crate::smatrix::synthesis::merit::{MeritSpec, SimCurves};
     use crate::smatrix::synthesis::needle_pass::NeedleTargets;
-    use std::sync::Arc;
 
     /// Frozen context: merit constant, optimization a no-op (keeps the
     /// analytic AR condition intact so the scan sees exact zeros).
@@ -687,10 +728,8 @@ mod tests {
         }
     }
 
-    fn contrast_h() -> ContrastMap {
-        let mut m = ContrastMap::new();
-        m.insert(Arc::from("G"), LayerSpec::constant("H", 2.35, 0.0, 0.0, 1));
-        m
+    fn pool_h() -> MaterialPool {
+        vec![pool_entry("H", vec![Complex64::new(2.35, 0.0)].into())]
     }
 
     fn cycle_cfg() -> NeedleCycleConfig {
@@ -716,9 +755,8 @@ mod tests {
         }
     }
 
-    /// Non-host rows (needle=false) are never insertion sites even when
-    /// their material has a contrast entry (interface slices, pinned
-    /// graded spans). The run breaks with the stack untouched.
+    /// Rows with needle=false are never insertion sites, whatever the
+    /// pool holds. The run breaks with the stack untouched.
     #[test]
     fn non_host_rows_never_seed() {
         let nw = 1;
@@ -729,15 +767,81 @@ mod tests {
         substrate.optimize = false;
         substrate.needle = false;
         let mut host = LayerSpec::constant("G", 1.52, 0.0, 200.0, nw);
-        host.needle = false; // contrast entry exists, host flag refuses
+        host.needle = false; // the pool offers H, the flag refuses
         let mut stack = DesignStack::with_films(ambient, substrate, vec![host]).unwrap();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("t", 2.0));
-        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
-            .unwrap();
+        let hist =
+            run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool_h(), &cycle_cfg()).unwrap();
         assert!(hist.is_empty());
         assert_eq!(stack.films().len(), 1);
         assert!((stack.films()[0].d_nm - 200.0).abs() < 1e-12);
+    }
+
+    /// A layer never accepts a needle of its own index. The default pool
+    /// of a one-material stack is that material, so nothing is admissible
+    /// and the run breaks with the stack untouched.
+    #[test]
+    fn same_index_needles_are_never_scored() {
+        let (mut stack, _) = glass_stack();
+        let pool = pool_from_layers(&stack, |_| true);
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool[0].material.as_ref(), "G");
+        let mut ctx = StillCtx;
+        let spectral = spectral_of(fold_with("t", 0.0));
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool, &cycle_cfg()).unwrap();
+        assert!(hist.is_empty());
+        assert_eq!(stack.films().len(), 1);
+    }
+
+    /// Every pool material is a candidate in every layer of another
+    /// index, needles included: a needle is a layer of its own, under a
+    /// fresh name. No row is ever air (the old contrast lookup could fall
+    /// back to n = 1 when a site in a film without an entry won).
+    #[test]
+    fn needles_are_layers_with_fresh_names() {
+        let (mut stack, _) = glass_stack();
+        let mut pool = pool_h();
+        pool.push(pool_entry("L", vec![Complex64::new(1.38, 0.0)].into()));
+        let mut ctx = StillCtx;
+        let spectral = spectral_of(fold_with("t", 0.0));
+        let cfg = NeedleCycleConfig {
+            max_needles: 6,
+            ..cycle_cfg()
+        };
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool, &cfg).unwrap();
+        let n_ins = hist.iter().filter(|h| h.insertion.is_some()).count();
+        assert!(n_ins >= 2, "{n_ins} insertions: degenerate");
+        assert_eq!(stack.films().len(), 1 + 2 * n_ins);
+
+        let names: Vec<&str> = stack.films().iter().map(|l| l.material.as_ref()).collect();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len() - n_ins, "{names:?}"); // a split host keeps its name
+        for h in hist.iter().filter_map(|h| h.insertion.as_ref()) {
+            assert!(["H", "L"].contains(&h.material.as_ref()));
+        }
+        for l in stack.films().iter().filter(|l| l.material.contains('#')) {
+            assert!(l.needle && l.optimize);
+            let label = l.material.split('#').next().unwrap();
+            assert_eq!(
+                l.nk,
+                pool.iter().find(|m| &*m.material == label).unwrap().nk
+            );
+        }
+        assert!(stack.films().iter().all(|l| l.nk[0].re > 1.0));
+    }
+
+    #[test]
+    fn needle_names_skip_taken_ones() {
+        let nw = 1;
+        let films = vec![
+            LayerSpec::constant("H#1", 2.35, 0.0, 5.0, nw),
+            LayerSpec::constant("H#3", 2.35, 0.0, 5.0, nw),
+        ];
+        assert_eq!(needle_name(&films, "H").as_ref(), "H#2");
+        assert_eq!(needle_name(&films, "L").as_ref(), "L#1");
     }
 
     #[test]
@@ -747,8 +851,8 @@ mod tests {
         let (mut stack, r0) = glass_stack();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("r", r0));
-        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
-            .unwrap();
+        let hist =
+            run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool_h(), &cycle_cfg()).unwrap();
         assert_eq!(hist.len(), 1);
         assert!(hist[0].insertion.is_none());
         assert!(hist[0].best_p.map(|p| p > -1e-9).unwrap_or(true));
@@ -813,8 +917,8 @@ mod tests {
         use crate::smatrix::synthesis::merit::ConstraintKind;
         let (mut ctx, spectral) = rs_ctx(ConstraintKind::Above, 0.01);
         let (mut stack, _) = glass_stack();
-        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
-            .unwrap();
+        let hist =
+            run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool_h(), &cycle_cfg()).unwrap();
         assert!(hist.iter().all(|h| h.insertion.is_none()));
         assert_eq!(stack.films().len(), 1);
     }
@@ -834,8 +938,7 @@ mod tests {
                 record_timing,
                 ..cycle_cfg()
             };
-            let hist =
-                run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cfg).unwrap();
+            let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool_h(), &cfg).unwrap();
             (hist, stack)
         };
         let (h_off, s_off) = run(false);
@@ -887,8 +990,8 @@ mod tests {
         let (mut stack, _) = glass_stack();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("t", 0.0));
-        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
-            .unwrap();
+        let hist =
+            run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool_h(), &cycle_cfg()).unwrap();
         // max_needles = 2 and T stays violated → two insertions
         // (1 → 3 → 5 films), both H into the original host lineage.
         assert_eq!(hist.len(), 2);

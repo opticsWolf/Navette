@@ -51,17 +51,17 @@ def check(name, ok, detail=""):
 def problem():
     # Same satisfiable problem as test_pipeline.py (insertions occur).
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
-    contrast = {"film0": MaterialSpec("Konstant", dict(n=2.35))}
+    materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R",
                           kind="e", weight=2.0))
     tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), 0.0, "s", "R",
                           kind="a", integral=True, weight=3.0))
-    return layers, contrast, tc
+    return layers, materials, tc
 
 
 def timed_run(refold, repeats=3):
-    layers, contrast, tc = problem()
+    layers, materials, tc = problem()
     cfg = PipelineConfig(max_macro_cycles=2, needles_per_cycle=2,
                          enable_cleanup=False, enable_inflate=False,
                          stagnation_window=100)
@@ -70,7 +70,7 @@ def timed_run(refold, repeats=3):
     dt_best = float("inf")
     for _ in range(repeats):
         t0 = time.perf_counter()
-        res = run_needle(layers, tc, ANGS, WL, contrast, pipeline_config=cfg,
+        res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
                          needle_config=nc, names=["L"])
         dt = time.perf_counter() - t0
         if dt < dt_best:
@@ -100,7 +100,7 @@ def main():
           "no insertions in either mode — bench is degenerate")
 
     print("--- cost breakdown (one re-fold vs one LM optimize) ---")
-    layers, contrast, tc = problem()
+    layers, materials, tc = problem()
     spec = build_merit_spec(tc)
     stack, _ = stack_from_layers(layers, WL, {}, names=["L"])
     ctx = SmatrixContext(spec, ANGS, WL)

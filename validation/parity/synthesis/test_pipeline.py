@@ -141,7 +141,7 @@ def mixed_collection():
 def test_run():
     print("--- full pipeline run (mixed targets) ---")
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
-    contrast = {"film0": MaterialSpec("Konstant", dict(n=2.35))}
+    materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = mixed_collection()
     seen = []
 
@@ -155,7 +155,7 @@ def test_run():
     from navette._smatrix import SmatrixContext
     stack0, _ = stack_from_layers(layers, WL, {}, names=["L"])
     m_init = SmatrixContext(build_merit_spec(tc), ANGS, WL).evaluate_merit(stack0)
-    res = run_needle(layers, tc, ANGS, WL, contrast, pipeline_config=cfg,
+    res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
                      callback=cb, names=["L"])
     check("termination", res["termination"] in
           ("MAX_ITERATIONS_REACHED", "STAGNATION_PLATEAU", "MERIT_TARGET_REACHED"),
@@ -191,7 +191,7 @@ def test_run():
 def test_abort_and_validation():
     print("--- callback abort + config validation ---")
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
-    contrast = {"film0": MaterialSpec("Konstant", dict(n=2.35))}
+    materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R"))
     cfg = PipelineConfig(max_macro_cycles=3, needles_per_cycle=1,
@@ -201,7 +201,7 @@ def test_abort_and_validation():
         if cycle >= 2:
             raise RuntimeError("stop now")
 
-    res = run_needle(layers, tc, ANGS, WL, contrast, pipeline_config=cfg,
+    res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
                      callback=stop_at_2, names=["L"])
     check("user_abort", res["termination"] == "USER_ABORT"
           and len(res["phases"]) == 2, res["termination"])
@@ -209,7 +209,7 @@ def test_abort_and_validation():
         PipelineConfig(clamp_min_nm=5.0, clamp_max_nm=5.0)
         # constructed fine (validation happens at pipeline construction);
         # the error surfaces on run_needle:
-        run_needle(layers, tc, ANGS, WL, contrast,
+        run_needle(layers, tc, ANGS, WL, materials,
                    pipeline_config=PipelineConfig(clamp_min_nm=5.0, clamp_max_nm=5.0),
                    names=["L"])
         check("bad_clamps_rejected", False)
@@ -217,10 +217,10 @@ def test_abort_and_validation():
         check("bad_clamps_rejected", True)
     # grid mismatch rejected.
     try:
-        stack, cmap = stack_from_layers(
+        stack, pool = stack_from_layers(
             [(MaterialSpec("Konstant", dict(n=1.5)), 10.0)], WL, {}, names=["X"])
         NeedlePipeline(stack, build_merit_spec(tc), ANGS,
-                       np.array([500., 600.]), cmap)
+                       np.array([500., 600.]), pool)
         check("grid_mismatch_rejected", False)
     except ValueError:
         check("grid_mismatch_rejected", True)
@@ -232,12 +232,12 @@ def test_cycle_config_passthrough():
     # NeedleCycleConfig.max_needles inside the pipeline).
     nc = NeedleCycleConfig(scan_step_nm=5.0)
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
-    contrast = {"film0": MaterialSpec("Konstant", dict(n=2.35))}
+    materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R"))
     cfg = PipelineConfig(max_macro_cycles=1, needles_per_cycle=1,
                          stagnation_window=100)
-    res = run_needle(layers, tc, ANGS, WL, contrast, pipeline_config=cfg,
+    res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
                      needle_config=nc, names=["L"])
     n = len(res["phases"][0]["needle_results"])
     check("needles_per_cycle_1", n <= 1, f"{n} cycles")

@@ -824,31 +824,46 @@ impl DesignStack {
         Ok(())
     }
 
-    /// Merge consecutive film layers of identical material AND bit-identical
-    /// nk. The nk key is load-bearing: interface slices, group-scaled rows
-    /// and graded-profile sublayers share material names with their bulk
-    /// but must never collapse into one slab (first-row nk would win).
-    /// Uniform same-material rows carry identical vectors, so they still
-    /// merge. Combined thickness is the sum; the *first* layer's other
-    /// properties (optimize/needle/roughness/…) are preserved. Returns the
+    /// Merge consecutive rows that are one slab of one index. Two rules:
+    ///
+    /// * **Layers merge by index.** A layer (the bulk row of a
+    ///   singleton-bulk span) merges into the next layer when their nk is
+    ///   bit-identical, whatever their names: two touching needles of one
+    ///   material are one film. The next layer must start with its bulk -
+    ///   an interface slice between them is a derived row, not a layer.
+    /// * **Other rows merge by name AND nk**, as before: interface slices,
+    ///   group-scaled rows and graded-profile sublayers share material
+    ///   names with their bulk but must never collapse into one slab
+    ///   (first-row nk would win); a saturated graded tail of identical
+    ///   rows still merges into itself.
+    ///
+    /// Combined thickness is the sum; the *first* row's other properties
+    /// (name/optimize/needle/roughness/…) are preserved. Returns the
     /// number of merges performed.
     pub fn merge_adjacent(&mut self) -> usize {
         if self.films.is_empty() {
             return 0;
         }
-        // Maximal merge runs over the CURRENT rows (same material AND
-        // bit-identical nk), then rebuild films and spans in one pass so
-        // the two cannot disagree (F0.1; N2 — the span vector is what
-        // makes the nk-keyed merge safe to keep running over graded rows).
+        // Maximal merge runs over the CURRENT rows, then rebuild films and
+        // spans in one pass so the two cannot disagree (F0.1; N2 — the
+        // span vector is what makes the nk-keyed merge safe to keep
+        // running over graded rows).
         let old_spans = std::mem::take(&mut self.spans);
         let films = std::mem::take(&mut self.films);
+        // Per row: does it end a layer / begin one?
+        let mut ends_layer = vec![false; films.len()];
+        let mut starts_layer = vec![false; films.len()];
+        for sp in old_spans.iter().filter(|sp| sp.is_singleton_bulk()) {
+            ends_layer[sp.bulk_start] = true;
+            starts_layer[sp.bulk_start] = !sp.slice;
+        }
         let mut runs: Vec<(usize, usize)> = Vec::with_capacity(films.len());
         let mut i = 0usize;
         while i < films.len() {
             let mut j = i + 1;
             while j < films.len()
-                && films[j].material == films[i].material
-                && films[j].nk == films[i].nk
+                && ((films[j].material == films[i].material && films[j].nk == films[i].nk)
+                    || (ends_layer[j - 1] && starts_layer[j] && films[j].nk == films[j - 1].nk))
             {
                 j += 1;
             }
@@ -1976,6 +1991,58 @@ mod tests {
         let mut s = stack(vec![slice, h(46.0)]);
         assert_eq!(s.merge_adjacent(), 0);
         assert!(!s.films()[0].optimize);
+    }
+
+    /// Layers merge by index: two touching films of one nk are one film,
+    /// whatever their names (two needles of one material, a needle and an
+    /// original layer). The first name wins.
+    #[test]
+    fn merge_adjacent_layers_by_index() {
+        let mut n1 = h(5.0);
+        n1.material = Arc::from("H#1");
+        let mut n2 = h(7.0);
+        n2.material = Arc::from("H#2");
+        let mut s = stack(vec![l(30.0), n1, n2, h(10.0), l(20.0)]);
+        assert_eq!(s.merge_adjacent(), 2);
+        let f = s.films();
+        assert_eq!(f.len(), 3);
+        assert_eq!(f[1].material.as_ref(), "H#1");
+        assert!((f[1].d_nm - 22.0).abs() < 1e-12);
+        assert_eq!(s.spans().len(), 3);
+        assert!(s.spans().iter().all(|sp| sp.is_singleton_bulk()));
+    }
+
+    /// Derived rows stay apart from a layer of the same index under
+    /// another name: a graded span's sublayer, and an interface slice.
+    #[test]
+    fn merge_adjacent_keeps_derived_rows_apart() {
+        let span = |start: usize, end: usize, logical: usize, slice: bool| Span {
+            start,
+            end,
+            logical,
+            slice,
+            bulk_start: start + usize::from(slice),
+        };
+        let mut sub_a = h(4.0); // a graded sublayer that is pure H
+        sub_a.material = Arc::from("grad");
+        let mut sub_b = l(4.0);
+        sub_b.material = Arc::from("grad");
+        let films = vec![h(50.0), sub_a, sub_b];
+        let spans = vec![span(0, 1, 0, false), span(1, 3, 1, false)];
+        let mut s =
+            DesignStack::from_parts(air(0.0), sub(0.0), films, spans, vec![None, None]).unwrap();
+        assert_eq!(s.merge_adjacent(), 0, "graded sublayer merged into a layer");
+
+        let mut slice = h(1.0); // an interface slice that happens to be pure H
+        slice.material = Arc::from("coat");
+        let mut bulk = l(40.0);
+        bulk.material = Arc::from("coat");
+        let films = vec![h(50.0), slice, bulk];
+        let spans = vec![span(0, 1, 0, false), span(1, 3, 1, true)];
+        let mut s =
+            DesignStack::from_parts(air(0.0), sub(0.0), films, spans, vec![None, None]).unwrap();
+        assert_eq!(s.merge_adjacent(), 0, "interface slice merged into a layer");
+        assert_eq!(s.films().len(), 3);
     }
 
     #[test]

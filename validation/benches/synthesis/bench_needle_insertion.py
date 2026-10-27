@@ -12,7 +12,7 @@ under `NeedleCycleConfig(record_timing=True)` and reads the engine's own
 per-insertion timers:
 
     refold   simulate + fold against the live operating point
-    scan     scan-site build + one analytic sweep per contrast material
+    scan     scan-site build + one analytic sweep per host material
     merit    the convergence test's evaluate_merit
     lm       the thickness re-optimization after the insertion
 

@@ -10,7 +10,7 @@
 //! ```python
 //! spec = build_merit_spec(collection)          # full target options
 //! stack = DesignStack(ambient, substrate, films)
-//! pipe = NeedlePipeline(stack, spec, angles, wavls, contrast={...})
+//! pipe = NeedlePipeline(stack, spec, angles, wavls)  # pool: the layers' own
 //! result = pipe.run()                          # dict + final "stack"
 //! ```
 
@@ -25,7 +25,9 @@ use pyo3::types::{IntoPyDict, PyAny, PyDict};
 
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
-use navette::smatrix::synthesis::cycle::{ContrastMap, NeedleCycleConfig};
+use navette::smatrix::synthesis::cycle::{
+    dedup_pool, pool_entry, pool_from_layers, NeedleCycleConfig,
+};
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::optimizer::OptimizerBackend;
@@ -378,9 +380,11 @@ fn gradient_json(g: PyGradientInput) -> navette::structure::gradient::GradientJs
 
 /// Assemble evaluated arrays into an expanded stack (thin over
 /// `driver::assemble_stack`): the `stack_from_layers` path without the run.
-/// Returns `(stack, contrast_map)`; warnings re-emit as Python warnings.
+/// Returns `(stack, pool)`: the needle material pool as `LayerSpec`s,
+/// `materials` (label, nk) deduplicated by index, or the layers' own
+/// materials when `None`. Warnings re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, seeds, wavelengths))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble_design(
     py: Python<'_>,
@@ -390,9 +394,9 @@ pub(crate) fn assemble_design(
     substrate_name: String,
     films: Vec<PyFilmInput<'_>>,
     groups: std::collections::HashMap<String, Py<crate::structure::PyGroup>>,
-    seeds: Vec<(String, String, Vec<Complex64>)>,
+    materials: Option<Vec<(String, Vec<Complex64>)>>,
     wavelengths: PyReadonlyArray1<'_, f64>,
-) -> PyResult<(Py<PyDesignStack>, Py<PyDict>)> {
+) -> PyResult<(Py<PyDesignStack>, Vec<PyLayerSpec>)> {
     use navette::smatrix::synthesis::driver::{assemble_stack, ArrayFilm};
     let w = wavelengths.as_slice()?;
     let af: Vec<ArrayFilm> = films
@@ -417,29 +421,17 @@ pub(crate) fn assemble_design(
         .iter()
         .map(|(k, g)| (k.clone(), g.bind(py).borrow().inner_clone()))
         .collect();
-    let mut cmap = navette::smatrix::synthesis::cycle::ContrastMap::new();
-    for (host, seed_name, nk) in &seeds {
-        if nk.len() != w.len() {
-            return Err(PyValueError::new_err(format!(
-                "contrast '{}': nk length {} != {} wavelengths",
-                host,
-                nk.len(),
-                w.len()
-            )));
+    if let Some(ms) = &materials {
+        for (name, nk) in ms {
+            if nk.len() != w.len() {
+                return Err(PyValueError::new_err(format!(
+                    "needle material '{}': nk length {} != {} wavelengths",
+                    name,
+                    nk.len(),
+                    w.len()
+                )));
+            }
         }
-        cmap.insert(
-            std::sync::Arc::from(host.as_str()),
-            navette::smatrix::synthesis::structure::LayerSpec {
-                material: std::sync::Arc::from(seed_name.as_str()),
-                nk: std::sync::Arc::from(nk.as_slice()),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
     }
     let (stack, warnings) = assemble_stack(
         &ambient_name,
@@ -452,21 +444,26 @@ pub(crate) fn assemble_design(
     )
     .map_err(PyValueError::new_err)?;
     crate::structure::emit_warnings(py, "assemble_design", &warnings)?;
-    let dict = PyDict::new(py);
-    for (k, v) in &cmap {
-        dict.set_item(k.to_string(), PyLayerSpec::from_inner(v.clone()))?;
-    }
-    Ok((Py::new(py, PyDesignStack::from_inner(stack))?, dict.into()))
+    let pool = match materials {
+        None => pool_from_layers(&stack, |_| true),
+        Some(ms) => dedup_pool(
+            ms.into_iter()
+                .map(|(name, nk)| pool_entry(&name, std::sync::Arc::from(nk))),
+        ),
+    };
+    let pool = pool.into_iter().map(PyLayerSpec::from_inner).collect();
+    Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
 }
 
 /// End-to-end design run over evaluated arrays (thin over
 /// `driver::run_design`): assemble once, fold demands, macro-loop.
 /// `callback(macro_cycle, phase_dict)` aborts on raise (`USER_ABORT`).
-/// Returns the full report dict including the final `stack`; assembly
-/// warnings (dropped ambient absorption, homogenized graded film) re-emit
-/// as Python warnings.
+/// `materials` is the needle pool as (label, nk); `None` takes the layers'
+/// own materials. Returns the full report dict including the final
+/// `stack`; assembly warnings (dropped ambient absorption, homogenized
+/// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, seeds, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -476,7 +473,7 @@ pub(crate) fn run_design(
     substrate_name: String,
     films: Vec<PyFilmInput<'_>>,
     groups: std::collections::HashMap<String, Py<crate::structure::PyGroup>>,
-    seeds: Vec<(String, String, Vec<Complex64>)>,
+    materials: Option<Vec<(String, Vec<Complex64>)>>,
     wavelengths: PyReadonlyArray1<'_, f64>,
     angles_deg: PyReadonlyArray1<'_, f64>,
     spec: &crate::synthesis_merit::PyMeritSpec,
@@ -485,7 +482,7 @@ pub(crate) fn run_design(
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyDict>> {
-    use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArraySeed};
+    use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
     let w = wavelengths.as_slice()?.to_vec();
     let a = angles_deg.as_slice()?.to_vec();
     let cfg = pipeline_config
@@ -519,14 +516,11 @@ pub(crate) fn run_design(
         .iter()
         .map(|(k, g)| (k.clone(), g.bind(py).borrow().inner_clone()))
         .collect();
-    let sd: Vec<ArraySeed> = seeds
-        .into_iter()
-        .map(|(host, seed_name, nk)| ArraySeed {
-            host,
-            seed_name,
-            nk,
-        })
-        .collect();
+    let pool: Option<Vec<ArrayMaterial>> = materials.map(|ms| {
+        ms.into_iter()
+            .map(|(name, nk)| ArrayMaterial { name, nk })
+            .collect()
+    });
     let (res, stack, warnings) = py
         .detach({
             let spec_inner = spec.inner().clone();
@@ -538,7 +532,7 @@ pub(crate) fn run_design(
                     substrate_nk,
                     &af,
                     &gm,
-                    &sd,
+                    pool.as_deref(),
                     &w,
                     &a,
                     &spec_inner,
@@ -617,7 +611,7 @@ pub(crate) fn run_design_environments(
         .map(|l| l.bind(py).borrow().inner.clone())
         .unwrap_or_default();
 
-    let (envs, cmap, build_warnings) =
+    let (envs, pool, build_warnings) =
         build_environments(&req, &w).map_err(PyValueError::new_err)?;
     crate::structure::emit_warnings(py, "run_design_environments", &build_warnings)?;
 
@@ -627,7 +621,7 @@ pub(crate) fn run_design_environments(
             move || {
                 core_run(
                     envs,
-                    cmap,
+                    pool,
                     &w,
                     &a,
                     &spec_inner,
@@ -764,28 +758,25 @@ impl PyDesignStack {
     /// Rust-first assembly from a typed design request (JSON).
     ///
     /// `request_json` is a serialized `DesignRequest` (structure +
-    /// material library + contrast + flags); assembly — material
+    /// material library + needle materials + flags); assembly — material
     /// evaluation, film/group construction, one `from_design` — runs
-    /// entirely in the core. Returns `(stack, contrast_map)`; core
-    /// warnings re-emit as Python warnings.
+    /// entirely in the core. Returns `(stack, pool)`, the needle material
+    /// pool as `LayerSpec`s; core warnings re-emit as Python warnings.
     #[staticmethod]
     #[pyo3(signature = (request_json, wavelengths))]
     fn design_from_config(
         py: Python<'_>,
         request_json: &str,
         wavelengths: PyReadonlyArray1<f64>,
-    ) -> PyResult<(Py<PyDesignStack>, Py<PyDict>)> {
+    ) -> PyResult<(Py<PyDesignStack>, Vec<PyLayerSpec>)> {
         let req: DesignRequest = serde_json::from_str(request_json).map_err(|e| {
             PyValueError::new_err(format!("design_from_config: invalid request: {e}"))
         })?;
-        let (stack, cmap, warnings) =
+        let (stack, pool, warnings) =
             build_design(&req, wavelengths.as_slice()?).map_err(PyValueError::new_err)?;
         crate::structure::emit_warnings(py, "design_from_config", &warnings)?;
-        let dict = PyDict::new(py);
-        for (k, v) in &cmap {
-            dict.set_item(k.to_string(), PyLayerSpec::from_inner(v.clone()))?;
-        }
-        Ok((Py::new(py, PyDesignStack::from_inner(stack))?, dict.into()))
+        let pool = pool.into_iter().map(PyLayerSpec::from_inner).collect();
+        Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
     }
 
     /// Number of films (excludes ambient + substrate).
@@ -1455,8 +1446,9 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
 /// core). Construct from a `DesignStack` + `MeritSpec` + grid; the needle
 /// demands fold internally (`SpectralInputs::from_spec`, conservative
 /// form — all quantities: R/T/A, back siblings, per-channel phase).
-/// `contrast` maps host material → seed `LayerSpec` template (its nk on
-/// the grid; thickness/flags ignored — the seed is built fresh).
+/// `materials` is the needle material pool as `LayerSpec`s (label = its
+/// `material`, nk on the grid; thickness/flags ignored — each needle is
+/// built fresh). `None` takes the stack's layers' own materials.
 pub struct PyNeedlePipeline {
     inner: NeedlePipeline,
     spec: navette::smatrix::synthesis::merit::MeritSpec,
@@ -1470,7 +1462,7 @@ pub struct PyNeedlePipeline {
 #[pymethods]
 impl PyNeedlePipeline {
     #[new]
-    #[pyo3(signature = (stack, spec, angles_deg, wavelengths, contrast,
+    #[pyo3(signature = (stack, spec, angles_deg, wavelengths, materials=None,
                         pipeline_config=None, needle_config=None, lm=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1479,7 +1471,7 @@ impl PyNeedlePipeline {
         spec: &PyMeritSpec,
         angles_deg: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
-        contrast: HashMap<String, Py<PyLayerSpec>>,
+        materials: Option<Vec<Py<PyLayerSpec>>>,
         pipeline_config: Option<Py<PyPipelineConfig>>,
         needle_config: Option<Py<PyNeedleCycleConfig>>,
         lm: Option<Py<PyLmConfig>>,
@@ -1508,18 +1500,25 @@ impl PyNeedlePipeline {
         let lm_cfg = lm
             .map(|l| l.bind(py).borrow().inner.clone())
             .unwrap_or_default();
-        let mut cmap = ContrastMap::new();
-        for (mat, tmpl) in &contrast {
-            let t = tmpl.bind(py).borrow().inner.clone();
-            if t.nk.len() != nw {
-                return Err(PyValueError::new_err(format!(
-                    "contrast '{mat}': nk length {} != {} wavelengths",
-                    t.nk.len(),
-                    nw
-                )));
+        let pool = match materials {
+            None => pool_from_layers(&stack.inner, |_| true),
+            Some(ms) => {
+                let mut entries = Vec::with_capacity(ms.len());
+                for m in &ms {
+                    let t = m.bind(py).borrow().inner.clone();
+                    if t.nk.len() != nw {
+                        return Err(PyValueError::new_err(format!(
+                            "needle material '{}': nk length {} != {} wavelengths",
+                            t.material,
+                            t.nk.len(),
+                            nw
+                        )));
+                    }
+                    entries.push(pool_entry(&t.material, t.nk));
+                }
+                dedup_pool(entries)
             }
-            cmap.insert(Arc::from(mat.as_str()), t);
-        }
+        };
         let spectral =
             SpectralInputs::from_spec(spec.inner(), a, w).map_err(PyValueError::new_err)?;
         let inner = NeedlePipeline::new(
@@ -1527,7 +1526,7 @@ impl PyNeedlePipeline {
             spectral,
             cfg.clone().validated().map_err(PyValueError::new_err)?,
             needle_cfg,
-            cmap,
+            pool,
         )
         .map_err(PyValueError::new_err)?;
         Ok(PyNeedlePipeline {

@@ -859,7 +859,7 @@ pub struct NeedlePassResult {
     pub sites: Vec<ScanSite>,
     /// P accumulated over spectral points and enabled polarizations,
     /// aligned with `sites`. Negative ⇒ predicted merit decrease when a
-    /// seed of the contrast material is inserted there.
+    /// seed of the scanned material is inserted there.
     pub p_profile: Vec<f64>,
 }
 
@@ -896,7 +896,7 @@ pub struct NeedlePassInput<'a> {
     /// `build_needle_targets`. All-zero buckets cost nothing (skipped
     /// point-wise) and contribute nothing.
     pub fold: &'a NeedleTargets,
-    /// Complex index of the contrast material, per wavelength.
+    /// Complex index of the scanned needle material, per wavelength.
     pub needle_n_per_wav: &'a [Complex64],
     /// Coherent sub-block `[start_idx, end_idx)` (absolute indices);
     /// hosts are the interior layers. Fully-coherent stacks: (0, nl−1).

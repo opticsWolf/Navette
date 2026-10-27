@@ -25,7 +25,7 @@ use crate::smatrix::synthesis::cleanup::{CleanupResult, cleanup_design};
 use crate::smatrix::synthesis::config::{PipelineConfig, TerminationReason, ThinLayerPolicy};
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::cycle::{
-    ContrastMap, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
+    MaterialPool, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
 };
 use crate::smatrix::synthesis::inflate::{InflateResult, inflate_design};
 use crate::smatrix::synthesis::merit::MeritSpec;
@@ -73,7 +73,8 @@ pub struct NeedlePipeline {
     pub stack: DesignStack,
     pub cfg: PipelineConfig,
     pub needle_cfg: NeedleCycleConfig,
-    pub contrast: ContrastMap,
+    /// The needle material pool (empty: the needle pass inserts nothing).
+    pub pool: MaterialPool,
     /// Fixed spectral problem definition for the needle pass.
     pub spectral: SpectralInputs,
     detector: StagnationDetector,
@@ -85,7 +86,7 @@ impl NeedlePipeline {
         spectral: SpectralInputs,
         cfg: PipelineConfig,
         needle_cfg: NeedleCycleConfig,
-        contrast: ContrastMap,
+        pool: MaterialPool,
     ) -> Result<Self, String> {
         let cfg = cfg.validated()?;
         // F0.2 (licence item 2) narrowed by F1.6: a PINNED profile above
@@ -136,7 +137,7 @@ impl NeedlePipeline {
             spectral,
             cfg,
             needle_cfg,
-            contrast,
+            pool,
             detector,
         })
     }
@@ -212,7 +213,7 @@ impl NeedlePipeline {
                 ctx,
                 &mut self.stack,
                 &self.spectral,
-                &self.contrast,
+                &self.pool,
                 &needle_cfg,
             )?;
             let mf_needle = ctx.evaluate_merit(&self.stack)?;
@@ -522,7 +523,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(), // no contrast → needle pass inserts nothing
+            MaterialPool::new(), // empty pool → needle pass inserts nothing
         )
         .unwrap()
     }
@@ -674,7 +675,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
@@ -722,7 +723,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("expected the ceiling refusal"),
@@ -758,7 +759,7 @@ mod tests {
                 dummy_spectral(),
                 cfg2,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .is_ok()
         );
@@ -807,7 +808,7 @@ mod tests {
                 dummy_spectral(),
                 cfg,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .is_ok(),
             "a scalable span gets the ceiling as a bound, not a refusal"
@@ -905,7 +906,7 @@ mod tests {
                 ..Default::default()
             },
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let mut ctx = ScalingCtx {
@@ -979,7 +980,7 @@ mod tests {
                 ..Default::default()
             },
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let mut ctx = SnapshotCtx {
@@ -1040,7 +1041,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
@@ -1109,7 +1110,7 @@ mod tests {
                 dummy_spectral(),
                 cfg,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .unwrap();
             let mut ctx = ThinningCtx;
@@ -1153,7 +1154,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("expected the conflict refusal"),
@@ -1178,7 +1179,7 @@ mod tests {
                 dummy_spectral(),
                 cfg,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .map(|_| ())
             .is_ok()
