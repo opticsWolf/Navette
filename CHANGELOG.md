@@ -93,6 +93,23 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed
 
+- **Roughness is capped by film thickness.** Each interface is solved
+  with `min(sigma, d / roughness_cap)` over the films on both sides
+  (half-spaces never cap; default `roughness_cap = 2.0`, 0 turns it
+  off). A film thinner than its roughness cannot carry two separate
+  rough faces, and without the cap a film thinned to zero still left a
+  sharp-plus-rough interface pair behind: inside a 10 nm rough host it
+  moved R by about as much as a 1 nm needle does. The stored roughness
+  is kept as given; only the values the solver reads are capped, once,
+  at the `Solver` constructor and in `DesignStack.solver_arrays`, so
+  every solve path reads the same array. Stacks whose films are at
+  least twice their roughness are bit-identical.
+  - `ScatterMatrix(..., roughness_cap=2.0)`, `Solver(...,
+    roughness_cap=)`, and a `roughness_cap` property on `Solver` and
+    `DesignStack`.
+  - Within the capped range the merit's dependence on thickness through
+    sigma is not in the analytic Jacobian; the finite-difference
+    Jacobian sees it.
 - `examples/rugate_gradient_vs_discrete.py` is now a realistic rugate:
   a 1550 nm notch in co-sputtered SiO2:Ta2O5 on BK7, with dispersive
   materials and Bruggeman mixing. The profile is ln n sinusoidal in

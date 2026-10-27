@@ -227,6 +227,9 @@ pub struct DesignStack {
     num_wavs: usize,
     /// Allowed edge materials; free unless `set_edge_materials` is called.
     edges: EdgeMaterials,
+    /// Ratio of the roughness cap `solver_arrays` applies
+    /// (`effective_roughness`); 0 is off.
+    roughness_cap: f64,
 }
 
 impl DesignStack {
@@ -325,9 +328,25 @@ impl DesignStack {
             recipes,
             num_wavs,
             edges: EdgeMaterials::default(),
+            roughness_cap: crate::smatrix::optics_core::ROUGHNESS_CAP_RATIO,
         };
         s.assert_spans_partition();
         Ok(s)
+    }
+
+    // -- roughness cap ------------------------------------------------------
+
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off. The
+    /// films keep their stored roughness either way.
+    pub fn roughness_cap(&self) -> f64 {
+        self.roughness_cap
+    }
+
+    pub fn set_roughness_cap(&mut self, ratio: f64) -> Result<(), String> {
+        crate::smatrix::optics_core::check_roughness_cap(ratio)?;
+        self.roughness_cap = ratio;
+        Ok(())
     }
 
     // -- edge materials -----------------------------------------------------
@@ -1641,6 +1660,11 @@ impl DesignStack {
             }
         }
 
+        let rough_vals = crate::smatrix::optics_core::effective_roughness(
+            &thicknesses,
+            &rough_vals,
+            self.roughness_cap,
+        );
         SolverArrays {
             n_stack_cache,
             thicknesses,
@@ -2432,6 +2456,20 @@ mod tests {
         // A synthesis stack is coherent by construction (C1), so the flag
         // column is all-zero and `solver_arrays` has nothing else to carry.
         assert_eq!(sa.incoherent_flags, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn solver_arrays_cap_roughness_and_keep_the_stored_value() {
+        let mut thin = h(3.0);
+        thin.rough_type = 5;
+        thin.rough_val = 4.0;
+        let mut s = stack(vec![l(50.0), thin]);
+        // Interface L|thin sits on row 2 and caps at 3 / 2.
+        assert_eq!(s.solver_arrays().rough_vals[2], 1.5);
+        assert_eq!(s.films()[1].rough_val, 4.0);
+        s.set_roughness_cap(0.0).unwrap();
+        assert_eq!(s.solver_arrays().rough_vals[2], 4.0);
+        assert!(s.set_roughness_cap(f64::INFINITY).is_err());
     }
 
     /// C1. The flag used to ride through `solver_arrays` into a solve that

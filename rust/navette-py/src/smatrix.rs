@@ -156,7 +156,7 @@ pub struct PySolver {
 #[pymethods]
 impl PySolver {
     #[new]
-    #[pyo3(signature = (wavelengths, angles, indices, n_layers, thicknesses=None, incoherent_flags=None, roughness_types=None, roughness_values=None, coherence_mode=0, angles_in_radians=false))]
+    #[pyo3(signature = (wavelengths, angles, indices, n_layers, thicknesses=None, incoherent_flags=None, roughness_types=None, roughness_values=None, coherence_mode=0, angles_in_radians=false, roughness_cap=navette::smatrix::optics_core::ROUGHNESS_CAP_RATIO))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         wavelengths: PyReadonlyArray1<f64>,
@@ -169,6 +169,7 @@ impl PySolver {
         roughness_values: Option<PyReadonlyArray1<f64>>,
         coherence_mode: i32,
         angles_in_radians: bool,
+        roughness_cap: f64,
     ) -> PyResult<Self> {
         let opt_f =
             |o: &Option<PyReadonlyArray1<f64>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
@@ -190,8 +191,20 @@ impl PySolver {
             rv.as_deref(),
             coherence_mode,
         )
-        .map(|inner| PySolver { inner })
+        .and_then(|mut inner| {
+            if roughness_cap != inner.roughness_cap() {
+                inner.set_roughness_cap(roughness_cap)?;
+            }
+            Ok(PySolver { inner })
+        })
         .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off.
+    #[getter]
+    fn roughness_cap(&self) -> f64 {
+        self.inner.roughness_cap()
     }
 
     fn solve(&self, py: Python<'_>, requested: u64) -> PyResult<Py<PyDict>> {

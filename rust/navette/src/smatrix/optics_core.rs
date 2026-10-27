@@ -432,6 +432,58 @@ pub fn nevot_croce_factors(kz1: Complex64, kz2: Complex64, sigma: f64) -> (Compl
     (f, ga)
 }
 
+/// Default for [`effective_roughness`]: an interface's sigma is used up to
+/// half the thickness of each film that touches it.
+pub const ROUGHNESS_CAP_RATIO: f64 = 2.0;
+
+/// The roughness each interface is solved with: the stored sigma, capped
+/// by the films on both sides, `sigma_eff = min(sigma, d / ratio)`.
+///
+/// `rough_vals[k]` is the interface between rows `k - 1` and `k` (the
+/// solver reads `rv[i + 1]`), and rows `0` and `n - 1` are the half-spaces,
+/// which never cap. A film thinner than its own roughness is no layer with
+/// two separate rough faces: the faces' transition zones overlap, and
+/// Névot-Croce applied to both is outside its model. The cap is what makes
+/// a film that thins to zero vanish from the result, instead of leaving a
+/// sharp-plus-rough interface pair behind.
+///
+/// The stored values are never changed; every constructor that turns them
+/// into solver input calls this, so all solve paths read the same array.
+/// `ratio <= 0` turns the cap off. When no cap binds, the result is
+/// bit-identical to `rough_vals`.
+pub fn effective_roughness(thicknesses: &[f64], rough_vals: &[f64], ratio: f64) -> Vec<f64> {
+    let mut out = rough_vals.to_vec();
+    let n = out.len().min(thicknesses.len());
+    if ratio <= 0.0 || n < 3 {
+        return out;
+    }
+    for k in 1..n {
+        let mut limit = f64::INFINITY;
+        if k >= 2 {
+            limit = limit.min(thicknesses[k - 1]);
+        }
+        if k + 1 < n {
+            limit = limit.min(thicknesses[k]);
+        }
+        let cap = limit / ratio;
+        if out[k] > cap {
+            out[k] = cap;
+        }
+    }
+    out
+}
+
+/// Refuse a cap ratio that is not a finite number.
+pub fn check_roughness_cap(ratio: f64) -> Result<(), String> {
+    if ratio.is_finite() {
+        Ok(())
+    } else {
+        Err(format!(
+            "roughness_cap must be finite (got {ratio}); use 0 to turn the cap off"
+        ))
+    }
+}
+
 /// Roughness form factor W(q). No Python/PyO3 overhead so it can be called
 /// millions of times from hot loops and inlined by the compiler.
 #[inline(always)]
@@ -571,6 +623,28 @@ pub fn grad_nonuniform(y: &[f64], x: &[f64]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_roughness_cap_follows_the_thinner_film() {
+        // ambient | 100 | 4 | 50 | substrate; rv[k] sits between k-1 and k.
+        let d = [0.0, 100.0, 4.0, 50.0, 0.0];
+        let rv = [9.0, 9.0, 9.0, 9.0, 9.0];
+        let eff = effective_roughness(&d, &rv, 2.0);
+        // rv[0] is no interface; ambient|100 caps at 50 -> 9 stays;
+        // 100|4 and 4|50 cap at 2; 50|substrate caps at 25 -> 9 stays.
+        assert_eq!(eff, vec![9.0, 9.0, 2.0, 2.0, 9.0]);
+        // Off, and nothing binding: the input comes back bit for bit.
+        assert_eq!(effective_roughness(&d, &rv, 0.0), rv.to_vec());
+        let small = [0.0, 0.5, 0.25, 0.0, 0.0];
+        assert_eq!(effective_roughness(&d, &small, 2.0), small.to_vec());
+        // Half-spaces alone never cap.
+        assert_eq!(
+            effective_roughness(&[0.0, 0.0], &[3.0, 3.0], 2.0),
+            vec![3.0, 3.0]
+        );
+        assert!(check_roughness_cap(f64::NAN).is_err());
+        assert!(check_roughness_cap(0.0).is_ok());
+    }
 
     #[test]
     fn reference_phase_hand_calc() {

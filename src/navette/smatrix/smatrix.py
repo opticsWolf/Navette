@@ -627,6 +627,12 @@ class ScatterMatrix:
         :class:`~navette.structure.types.RoughnessType` for the full caveat.
     roughness_values : float array, shape (n_layers,), optional
         Per-interface roughness sigma (same unit as ``wavelengths``). Default 0.
+    roughness_cap : float, optional
+        Each interface is solved with ``min(sigma, d / roughness_cap)`` over
+        the films on both sides (half-spaces never cap): a film thinner than
+        its roughness cannot carry two separate rough faces. The stored
+        ``roughness_values`` are kept as given. Default 2.0; 0 turns the cap
+        off.
     coherence_mode : CoherenceMode, optional
         Default ``FRONT_BLOCK``.
     angles_in_radians : bool, optional
@@ -675,6 +681,7 @@ class ScatterMatrix:
         roughness_values: Optional[Sequence[float]] = None,
         coherence_mode: Union[CoherenceMode, int] = CoherenceMode.FRONT_BLOCK,
         angles_in_radians: bool = False,
+        roughness_cap: float = 2.0,
     ):
         # Thin over the native Solver: validation, normalization and the
         # solve itself live in Rust. Array views below stay for the
@@ -707,7 +714,9 @@ class ScatterMatrix:
             roughness_values=None if roughness_values is None else np.ascontiguousarray(roughness_values, dtype=np.float64).ravel(),
             coherence_mode=int(coherence_mode),
             angles_in_radians=bool(angles_in_radians),
+            roughness_cap=float(roughness_cap),
         )
+        self.roughness_cap = self._native.roughness_cap
         self.wavls = wavls
         self.n_wavs = wavls.size
         self.n_angles = theta.size

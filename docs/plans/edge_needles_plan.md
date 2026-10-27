@@ -207,7 +207,9 @@ multi-environment runs. Order of work at the end.
 
 ### Order
 
-1. Roughness cap.
+1. Roughness cap. Built: `optics_core::effective_roughness`, applied at
+   the `Solver` constructor and in `DesignStack::solver_arrays`;
+   `roughness_cap` on `ScatterMatrix`, `Solver` and `DesignStack`.
 2. Start-thickness scoring for rough boundary sites.
 3. F1-F4, with F5 in the docs.
 4. J1: per-segment edge lists.

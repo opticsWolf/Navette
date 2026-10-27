@@ -855,6 +855,20 @@ impl PyDesignStack {
             .map_err(PyValueError::new_err)
     }
 
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off.
+    #[getter]
+    fn roughness_cap(&self) -> f64 {
+        self.inner.roughness_cap()
+    }
+
+    #[setter]
+    fn set_roughness_cap(&mut self, ratio: f64) -> PyResult<()> {
+        self.inner
+            .set_roughness_cap(ratio)
+            .map_err(PyValueError::new_err)
+    }
+
     /// Merge consecutive same-material films; returns merge count.
     fn merge_adjacent(&mut self) -> usize {
         self.inner.merge_adjacent()

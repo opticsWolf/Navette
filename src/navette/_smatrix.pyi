@@ -241,7 +241,13 @@ class Solver:
         roughness_values: FloatArray | None = ...,
         coherence_mode: int = ...,
         angles_in_radians: bool = ...,
+        roughness_cap: float = ...,
     ) -> None: ...
+    @property
+    def roughness_cap(self) -> float:
+        """Each interface is solved with `min(sigma, d / roughness_cap)` over
+        the films touching it; 0 is off. Default 2.0."""
+        ...
     @property
     def n_angles(self) -> int: ...
     @property
@@ -462,6 +468,14 @@ class DesignStack:
     def merge_adjacent(self) -> int: ...
     def remove_film(self, film_idx: int) -> LayerSpec: ...
     def clamp_all(self, min_nm: float, max_nm: float) -> tuple[int, int]: ...
+    @property
+    def roughness_cap(self) -> float:
+        """Each interface is solved with `min(sigma, d / roughness_cap)` over
+        the films touching it; 0 is off. Default 2.0. The films keep their
+        stored roughness."""
+        ...
+    @roughness_cap.setter
+    def roughness_cap(self, ratio: float) -> None: ...
 
 class LmConfig:
     """Levenberg-Marquardt settings. `optimizer` selects the backend;

@@ -55,7 +55,13 @@ pub struct Solver {
     thicknesses: Vec<f64>,
     incoherent_flags: Vec<i32>,
     rough_types: Vec<i32>,
+    /// The roughness every solve path reads: `rough_vals_raw` capped by
+    /// the films on both sides of each interface (`effective_roughness`).
     rough_vals: Vec<f64>,
+    /// Roughness as the caller gave it; `set_roughness_cap` re-derives
+    /// `rough_vals` from it.
+    rough_vals_raw: Vec<f64>,
+    roughness_cap: f64,
     coherence_mode: i32,
     n_layers: usize,
 }
@@ -392,10 +398,36 @@ impl Solver {
                 .map(|&f| i32::from(f != 0))
                 .collect(),
             rough_types: rough_types.to_vec(),
-            rough_vals: rough_vals.to_vec(),
+            rough_vals: crate::smatrix::optics_core::effective_roughness(
+                thicknesses,
+                rough_vals,
+                crate::smatrix::optics_core::ROUGHNESS_CAP_RATIO,
+            ),
+            rough_vals_raw: rough_vals.to_vec(),
+            roughness_cap: crate::smatrix::optics_core::ROUGHNESS_CAP_RATIO,
             coherence_mode,
             n_layers,
         })
+    }
+
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off.
+    pub fn roughness_cap(&self) -> f64 {
+        self.roughness_cap
+    }
+
+    /// Change the roughness cap ratio (`ROUGHNESS_CAP_RATIO` by default;
+    /// 0 turns it off). The stored roughness is kept; only the values the
+    /// solve paths read are re-derived.
+    pub fn set_roughness_cap(&mut self, ratio: f64) -> Result<(), String> {
+        crate::smatrix::optics_core::check_roughness_cap(ratio)?;
+        self.roughness_cap = ratio;
+        self.rough_vals = crate::smatrix::optics_core::effective_roughness(
+            &self.thicknesses,
+            &self.rough_vals_raw,
+            ratio,
+        );
+        Ok(())
     }
 
     /// Layer indices for wavelength `w`.
@@ -3056,6 +3088,63 @@ mod tests {
 
         // Control: the same call with no gain anywhere gets past the gate.
         assert!(call(&good_cache, Complex64::new(2.35, 0.0)).is_ok());
+    }
+
+    /// Rs of air | rows | glass at normal incidence, Névot-Croce roughness.
+    fn rough_rs(rows: &[(f64, f64, f64)], cap: f64) -> Vec<f64> {
+        let wl = vec![400.0, 550.0, 700.0];
+        let mut n = vec![Complex64::new(1.0, 0.0)];
+        let (mut d, mut rv) = (vec![0.0], vec![0.0]);
+        for &(ni, di, si) in rows {
+            n.push(Complex64::new(ni, 0.0));
+            d.push(di);
+            rv.push(si);
+        }
+        n.push(Complex64::new(1.52, 0.0));
+        d.push(0.0);
+        rv.push(0.0);
+        let nl = n.len();
+        let rt: Vec<i32> = rv.iter().map(|&s| if s > 0.0 { 5 } else { 0 }).collect();
+        let mut s = super::Solver::from_raw(
+            &wl,
+            &[0.0],
+            false,
+            &n,
+            nl,
+            Some(&d),
+            None,
+            Some(&rt),
+            Some(&rv),
+            2,
+        )
+        .unwrap();
+        s.set_roughness_cap(cap).unwrap();
+        let r = s.solve(super::super::core_engine::REQ_RS).unwrap();
+        r.f64maps.into_iter().find(|(k, _)| k == "Rs").unwrap().1
+    }
+
+    #[test]
+    fn a_vanishing_film_in_a_rough_host_leaves_no_trace() {
+        // A zero-thickness film inside a rough host, both halves keeping the
+        // host's roughness (the interior needle split): with the cap the film
+        // is gone from the answer; without it, a sharp-plus-rough interface
+        // pair stays behind and moves R by about as much as a 1 nm needle.
+        let base = [(1.46, 100.0, 0.0), (2.35, 80.0, 10.0)];
+        let split = [
+            (1.46, 100.0, 0.0),
+            (2.35, 40.0, 10.0),
+            (1.8, 0.0, 0.0),
+            (2.35, 40.0, 10.0),
+        ];
+        let (r0, r1) = (rough_rs(&base, 2.0), rough_rs(&split, 2.0));
+        for (a, b) in r0.iter().zip(&r1) {
+            assert!((a - b).abs() < 1e-12, "capped: {a} vs {b}");
+        }
+        let (r0, r1) = (rough_rs(&base, 0.0), rough_rs(&split, 0.0));
+        assert!(
+            r0.iter().zip(&r1).any(|(a, b)| (a - b).abs() > 1e-4),
+            "uncapped, the split should leave a trace"
+        );
     }
 
     #[test]
