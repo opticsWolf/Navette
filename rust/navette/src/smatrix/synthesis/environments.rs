@@ -1568,9 +1568,20 @@ mod tests {
     /// the insertion rounds differently (the same reason F2.2's run twin is
     /// not bitwise). What must be identical is the STRUCTURE: same rows,
     /// same materials, same order.
+    ///
+    /// The LM gets room to converge. At the default 200 iterations both
+    /// runs stop about 1 nm short of the minimum, partway down a slow
+    /// valley, and where each stops depends on rounding: an optimized
+    /// build put K = 1 and K = 2 0.09 nm apart (74.496 vs 74.404 nm). Both
+    /// reach the same minimum (73.445 nm, 1e-6 apart) when they converge.
     #[test]
     fn a_joint_needle_over_identical_environments_lands_where_one_does() {
         use crate::smatrix::synthesis::driver::run_environments;
+        use crate::smatrix::synthesis::thick_opt::LmConfig;
+        let lm = LmConfig {
+            max_iterations: 2000,
+            ..LmConfig::default()
+        };
         let run = |k: usize| {
             let (envs, cmap, _) = build_environments(&needle_req(k), &WL).unwrap();
             run_environments(
@@ -1581,7 +1592,7 @@ mod tests {
                 &env_spec(k),
                 one_needle_cfg(),
                 Default::default(),
-                Default::default(),
+                lm.clone(),
                 |_, _| Ok(()),
             )
             .unwrap()
@@ -1600,16 +1611,17 @@ mod tests {
         );
         for (i, (a, b)) in s1.films().iter().zip(s2.films()).enumerate() {
             assert_eq!(a.material, b.material, "row {i}");
-            // Relative, and loose on purpose. The two runs insert the same
-            // seed at the same place and then descend differently - K = 2
-            // differences the Jacobian and carries twice the residuals, so
-            // the LM that follows the insertion rounds its way to a
-            // slightly different point on the same minimum (F2.2's
-            // CORRECTION 8, one insertion further along). A real
-            // disagreement about WHERE to put the needle shows up in the
-            // material sequence above, not in the fourth decimal.
+            // Relative. The two runs insert the same seed at the same place
+            // and then descend differently - K = 2 differences the
+            // Jacobian and carries twice the residuals, so the LM that
+            // follows the insertion rounds its way to a slightly different
+            // point on the same minimum (F2.2's CORRECTION 8, one insertion
+            // further along). Converged, that is about 1e-6; 1e-5 leaves
+            // room for other platforms' rounding. A real disagreement about
+            // WHERE to put the needle shows up in the material sequence
+            // above.
             assert!(
-                (a.d_nm - b.d_nm).abs() <= 1e-3 * a.d_nm.max(1.0),
+                (a.d_nm - b.d_nm).abs() <= 1e-5 * a.d_nm.max(1.0),
                 "row {i}: {} vs {} nm",
                 a.d_nm,
                 b.d_nm
