@@ -2,7 +2,8 @@
 
 Status: `NeedleCycleConfig(boundary_needles=True)` is built for flat
 (single-environment) runs. A multi-environment run refuses the option.
-§B5 is the remaining step.
+§B5 is the remaining step; §B7 records the agreed follow-up work and
+its order.
 
 This replaces the earlier "edge needles" plan (a site at the top of the
 outer film and at the bottom of the inner film only): every span
@@ -82,8 +83,12 @@ every environment. A boundary needle needs:
   design stack's own insertion kept in step (the alignment check catches
   any drift);
 - on a segment edge, the neighbour outside the design differs per
-  environment and is no design parameter, so only the edge lists and the
-  inside neighbour apply; no index exclusion against the surrounding.
+  environment and is no design parameter, so it brings no insertion
+  rules. The needle must differ from the inside neighbour and be on the
+  segment's edge list. The outside neighbour excludes it only when the
+  needle has its index in every environment (it would do nothing
+  anywhere); an insertion that matters in at least one environment is
+  allowed. §B7 lists the cases.
 
 Tests to add then: over two identical environments a boundary needle
 lands where the single-environment run lands it; the alignment check
@@ -102,3 +107,109 @@ holds after a boundary insertion; the refusal test turns into a run.
   (off is bit-identical, a pinned 3 nm film reached on its boundaries,
   edge lists, rules, the environments refusal).
 - Off by default: every existing test and the needle pin are unchanged.
+
+## B7. Agreed next steps (2026-10-27)
+
+Decisions from the review of edge insertion, `outer`/`inner` and
+multi-environment runs. Order of work at the end.
+
+### Roughness
+
+- **Interior split stays.** Both halves of a split host keep the host's
+  roughness. That is the intended behaviour, not a defect.
+- **Boundary insertion keeps the interface with the film below.** The
+  existing rough interface keeps its sigma and moves down with the lower
+  film; the needle's top interface takes the needle material's own
+  roughness (0 for pool materials). Same pattern as the interior split.
+- **Roughness cap (missing today).** No code caps sigma against
+  thickness: `Layer::property_issues` refuses only negative and
+  non-finite values, and the solver reads `rv[i + 1]` as stored. Store
+  sigma as given; at solve entry build one effective array,
+  `sigma_eff = min(sigma, d / c)` over the two films that touch each
+  interface (half-spaces do not cap, `c` configurable, default 2), and
+  have every solve path read it (solver, needle kernels, coherent
+  blocks). Designs without films thin against their roughness do not
+  move.
+- **Rough boundary sites.** Névot-Croce depends on both media at an
+  interface, so `A | N | B` never reduces to the rough `A | B` as the
+  needle thins: the first-order prediction misses a jump about the size
+  of a 1 nm needle's own effect (scratch probe, sigma 3-10 nm). Score
+  these sites, and only these, by a merit evaluation at a start
+  thickness `d0 = max(min thickness, c * sigma)` and insert at `d0`.
+
+### Flat runs
+
+- **F1** Report edge films the clamp holds at the floor (`edges_held` in
+  `ClampReport`); optionally let a held edge go when the film behind it
+  is also on the list.
+- **F2** Skip boundary sites that can accept nothing (an edge list that
+  holds only the current edge material, which the index rule excludes).
+- **F3** Match edge-list materials by label (the `#n` suffix stripped),
+  nk equality as the fallback: bit-exact nk fails under scaled or
+  re-evaluated spectra.
+- **F4** Optional `seed_edges`: a starting design off its edge lists
+  gets a floor-thickness film of the first listed material at the
+  boundary (`insert_film_at_boundary`), instead of an error.
+- **F5** Document for later: graded and interface-sliced edge films can
+  never be on an edge list (`edge_allows` wants a singleton bulk).
+
+### Environments
+
+- **J1 Edge lists per segment.** `outer` faces the incoming light,
+  `inner` faces away; the names stay. The joint check today takes the
+  first and last design slots of the whole env-0 assembly, which mixes
+  segments once there is more than one. Lists become per segment,
+  checked on each segment's own top and bottom.
+- **Segments reuse the Architect.** A segment reference gains `inverted`
+  and `repeat`, with the Architect block's meaning. Each environment's
+  entries come from the Architect's block composition
+  (`Architect::iter_entries`) and its expansion, so inverted copies move
+  roughness with the interface (`owner_of`), reverse grading and carve
+  interface slices the way blocks already do. `CompiledEnvironments`
+  keeps the routing, `insert_seed`, the thickness copy and the alignment
+  check; the Architect lives at compile time only (its handles are
+  `Rc<RefCell>`).
+  - `DesignStack::from_design` asserts `inv = false` because an inverted
+    slice reaches into the previous span. Each inverted copy expands as
+    its own unit, and the per-span refresh respects that.
+  - Edge lists stay with the segment: inverting a copy inverts its
+    `outer`/`inner` with it.
+  - Repeated use relaxes the exact-once rule to at-least-once; routing
+    becomes one slot to a list of spans per environment.
+- **Needles land in every environment.** One insertion edits the shared
+  design and appears at every place the segment is used; the gain is
+  summed over all of them. In an inverted copy depth `z` becomes
+  `d - z`, the split lands in reverse order, and "before slot s" becomes
+  "after slot s".
+- **Segment-edge cases** (N needle, I inside design film, O_k the
+  medium outside in environment k):
+
+  | Case | Rule |
+  |---|---|
+  | O is the same half-space in every environment | exclude N of O's index |
+  | O is a fixed film | allow (N thickens it there only) |
+  | O differs per environment | allow |
+  | O has N's index in every environment | exclude |
+  | two segments touch in some environment | score both owners; the other segment's film counts as O |
+  | O a half-space here, a film there | per environment, as above |
+  | repeated or inverted copies | over every placement |
+  | O incoherent | read the fields at the bottom of I, not in O |
+
+  Always: N differs from I, I's insertion rules apply, the segment's
+  edge list applies. Fixed films are never hosts.
+- **No fusing across segments.** Touching films of the same material in
+  neighbouring segments stay two layers unless the user collapses the
+  segments. Joint runs refuse cleanup today, so nothing merges; if joint
+  cleanup is allowed later, merging stops at segment and slot
+  boundaries.
+- If joint removal is ever allowed, `removal_keeps_edges` checks segment
+  edges, not assembly edges.
+
+### Order
+
+1. Roughness cap.
+2. Start-thickness scoring for rough boundary sites.
+3. F1-F4, with F5 in the docs.
+4. J1: per-segment edge lists.
+5. Segment `inverted` and `repeat` through the Architect.
+6. Joint boundary needles (§B5 with the cases above).
