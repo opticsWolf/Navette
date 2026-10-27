@@ -195,13 +195,30 @@ $("#data-version").textContent = v;
     ],
     spectrumStrip: true, tipX: nm, tipY: (t) => t.toFixed(3) + " %",
   });
+  // Late needle passes can end worse than they began (an insertion the
+  // re-optimization cannot use), and cleanup's merge usually takes it back.
+  // The run ends with one more optimization of every thickness; that final
+  // design sits one step past the last cycle, so the chart ends where the
+  // spectrum and stack come from.
   const H = N.history;
+  const last = H[H.length - 1].cycle, fin = last + 1;
+  const cyc = H.map((h) => h.cycle);
   lineChart($("#needle-merit"), {
-    x: { min: 0, max: H[H.length - 1].cycle, label: "Macro cycle", ticks: H.map((h) => h.cycle).filter((c) => c % 2 === 0) },
+    x: {
+      min: 0, max: fin, label: "Macro cycle",
+      ticks: [...cyc.filter((c) => c % 2 === 0 && c < last), last, fin],
+      fmt: (c) => (c === fin ? "final" : String(c)),
+    },
     y: { min: 1, max: 1e6, log: true, label: "Merit" },
-    series: [{ name: "merit", x: H.map((h) => h.cycle), y: H.map((h) => h.merit), color: "var(--s1)", width: 2.2, points: 3.2 }],
-    legend: false, tipX: (c) => `cycle ${c} · ${H[c].layers} films`, tipY: (t) => t.toPrecision(4),
+    series: [
+      { name: "after needle pass", x: cyc, y: H.map((h) => h.needle), color: "var(--s5)", width: 1.5, dash: "4 3" },
+      { name: "after cleanup", x: cyc, y: H.map((h) => h.merit), color: "var(--s1)", width: 2.2, points: 3.2 },
+      { name: "final design", x: [last, fin], y: [H[H.length - 1].merit, N.final.merit], color: "var(--s2)", width: 1.5, dash: "2 3", points: 4.5 },
+    ],
+    tipX: (c) => (c === fin ? `final optimization · ${N.final.layers} films` : `cycle ${c} · ${H[c].layers} films`),
+    tipY: (t) => t.toPrecision(4),
   });
+  $("#needle-rms").textContent = (N.rms_in_band * 100).toFixed(2);
   const box = $("#needle-stack");
   const total = N.layers.reduce((s, l) => s + l.d, 0);
   for (const l of N.layers) {

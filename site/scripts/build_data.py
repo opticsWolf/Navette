@@ -180,17 +180,24 @@ def needle():
                    wl_dense, [0.0]).compute(Request.RS)["Rs"]
     phases = res["phases"]
     first = phases[0]["needle_results"][0]["merit_before"]
-    history = [dict(cycle=0, merit=first, layers=len(seed),
+    # `merit` is the cycle's end (after cleanup); `needle` is the same cycle
+    # after its needle pass, which near the optimum can end worse than it
+    # began, until cleanup merges the stray films back. The run then ends
+    # with one more optimization of every thickness: `final` is that
+    # design, the one plotted and stacked above.
+    history = [dict(cycle=0, merit=first, needle=first, layers=len(seed),
                     thickness=800.0)]
     history += [dict(cycle=int(p["macro_cycle"]), merit=float(p["mf_end"]),
+                     needle=float(p["mf_after_needle"]),
                      layers=int(p["layer_count"]),
                      thickness=round(float(p["total_thickness_nm"]), 2))
                 for p in phases]
+    final = dict(merit=float(res["final_mf"]), layers=len(films))
     return dict(wl=r(wl_dense, 2), R=r(R, 6), R_bare=r(R_bare, 6),
                 R_seed=r(R_seed, 6),
                 layers=[dict(n=round(n, 3), d=round(d, 2)) for n, d in zip(ns, ds)],
                 band=list(band), tol=tol, termination=str(res["termination"]),
-                final_mf=float(res["final_mf"]), history=history,
+                final_mf=float(res["final_mf"]), history=history, final=final,
                 rms_in_band=float(np.sqrt(np.mean(R_run ** 2))),
                 max_in_band=float(np.max(R_run)))
 

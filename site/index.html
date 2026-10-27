@@ -221,7 +221,7 @@
       <div class="wrap">
         <header class="section-head">
           <p class="kicker">02 · Design</p>
-          <h2>From a poor guess to a 0.06 % coating</h2>
+          <h2>From a poor guess to a <span id="needle-rms">0.06</span> % coating</h2>
           <p>Navette runs Tikhonravov's needle method natively. The optimizer probes every depth
             in the stack with an infinitesimal layer of the other material, inserts one where the merit
             gradient is most negative, and re-optimises all thicknesses with bounded Levenberg–Marquardt.</p>
@@ -235,6 +235,10 @@
           <figure class="card">
             <figcaption><span class="fig-title">Merit by macro cycle</span><span class="fig-sub">log scale · hover for the film count</span></figcaption>
             <div id="needle-merit" class="chart-box"></div>
+            <p class="note">Near the optimum, a needle can be inserted that the re-optimization cannot use, so
+              the merit after the needle pass rises (dashed). Cleanup merges such films back and usually
+              recovers the merit. The run ends by re-optimizing every thickness once more; that final design
+              is the one in the spectrum and the stack.</p>
           </figure>
           <figure class="card">
             <figcaption><span class="fig-title">The finished stack</span><span class="fig-sub" id="stack-sub">22 films · ambient on the left</span></figcaption>

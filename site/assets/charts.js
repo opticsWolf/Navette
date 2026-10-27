@@ -217,7 +217,8 @@ export function lineChart(container, opts) {
         const it = document.createElement("span");
         const sw = document.createElement("i");
         sw.style.background = s.spectral ? "linear-gradient(90deg,#7a3cff,#2fb8ff,#3ddc84,#ffd23f,#ff4d4d)" : s.color;
-        if (s.dash) sw.className = "dash";
+        // A dashed swatch is a border drawn in currentColor; give it the series'.
+        if (s.dash) { sw.className = "dash"; sw.style.color = s.color; }
         it.append(sw, document.createTextNode(s.name));
         lg.appendChild(it);
       }
