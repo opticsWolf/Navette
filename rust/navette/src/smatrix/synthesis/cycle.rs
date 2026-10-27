@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use num_complex::Complex64;
 
@@ -39,6 +40,10 @@ pub struct NeedleCycleConfig {
     /// masking for one-sided/banded/integral kinds + live PD gain shift).
     /// `false` keeps the static conservative fold (A/B benchmark switch).
     pub refold_per_cycle: bool,
+    /// Record per-step wall time in each [`NeedleCycleResult::timing`]
+    /// (bench switch). Off, no clock is read at all; on or off, the run
+    /// itself is the same — the timers observe and never steer.
+    pub record_timing: bool,
 }
 
 impl Default for NeedleCycleConfig {
@@ -49,8 +54,37 @@ impl Default for NeedleCycleConfig {
             needle_seed_thickness_nm: 5.0,
             scan_step_nm: 2.0,
             refold_per_cycle: true,
+            record_timing: false,
         }
     }
+}
+
+/// Wall-clock seconds one insertion cycle spent in each step, recorded only
+/// under [`NeedleCycleConfig::record_timing`].
+///
+/// `scan` is the analytic sweep (site build + one `run_needle_pass` per
+/// contrast material, every environment on the joint arm); `refold` the
+/// simulate + fold that precedes it; `merit` the convergence test's
+/// `evaluate_merit`; `lm` the re-optimization after the insertion (0 on a
+/// cycle that stopped without inserting). `initial_lm` is the pass's
+/// opening optimization, carried on the pass's first record only.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CycleTiming {
+    pub refold_s: f64,
+    pub scan_s: f64,
+    pub merit_s: f64,
+    pub lm_s: f64,
+    pub initial_lm_s: f64,
+}
+
+/// `Some(now)` only when timing is on: an untimed run reads no clock.
+fn tick(on: bool) -> Option<Instant> {
+    on.then(Instant::now)
+}
+
+/// Seconds since [`tick`], or 0 for an untimed run.
+fn tock(t0: Option<Instant>) -> f64 {
+    t0.map_or(0.0, |t| t.elapsed().as_secs_f64())
 }
 
 /// Record of one insertion cycle — mirrors Python `NeedleCycleResult`
@@ -66,6 +100,8 @@ pub struct NeedleCycleResult {
     pub predicted_improvement: Option<f64>,
     pub layer_count: usize,
     pub insertion: Option<Insertion>,
+    /// Per-step wall time; `None` unless `record_timing` was set.
+    pub timing: Option<CycleTiming>,
 }
 
 #[derive(Clone, Debug)]
@@ -124,12 +160,15 @@ struct JointCandidate {
 /// Returns the winner (most negative ΣP, `None` when nothing improves), the
 /// gain shift summed over the K folds for the convergence test, and the
 /// number of admissible design sites — zero means "stack too thin".
+/// Under `record_timing` the K re-folds' wall time is added to `refold_s`,
+/// so the caller can split it out of the sweep's total.
 fn joint_needle_sweep<C: DesignContext + ?Sized>(
     ctx: &C,
     stack: &DesignStack,
     spectral: &SpectralInputs,
     contrast: &ContrastMap,
     cfg: &NeedleCycleConfig,
+    refold_s: &mut f64,
 ) -> Result<(Option<JointCandidate>, f64, usize), String> {
     let envs = ctx
         .environments()
@@ -163,6 +202,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
 
     for (e, st) in stacks.iter().enumerate() {
         let mut fold = spectral.folds[e].clone();
+        let t0 = tick(cfg.record_timing);
         if cfg.refold_per_cycle
             && let Ok(sim) = ctx.simulate(st)
             && let Ok(f) = build_needle_targets_env(
@@ -175,6 +215,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
         {
             fold = f;
         }
+        *refold_s += tock(t0);
         gtot += fold.phi_gain_shift.iter().sum::<f64>();
 
         let sa = st.solver_arrays();
@@ -280,7 +321,9 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
     let multi = ctx.environments().is_some();
 
     // Initial optimization.
+    let t0 = tick(cfg.record_timing);
     ctx.optimize_thicknesses(stack)?;
+    let initial_lm_s = tock(t0);
 
     for cycle in 0..cfg.max_needles {
         if multi {
@@ -289,7 +332,9 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
             }
             continue;
         }
+        let mut t = CycleTiming::default();
         // Refresh the fold against the live operating point.
+        let t0 = tick(cfg.record_timing);
         if cfg.refold_per_cycle
             && let Ok(sim) = ctx.simulate(stack)
             && let Ok(f) = build_needle_targets(
@@ -301,6 +346,8 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         {
             fold = f;
         }
+        t.refold_s = tock(t0);
+        let t0 = tick(cfg.record_timing);
         // 1. Build candidate sites restricted to films whose material has a
         //    contrast entry (Python skips layers without a mapping) AND
         //    that are needle hosts. The flag check is load-bearing:
@@ -374,8 +421,13 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
             }
         }
 
+        t.scan_s = tock(t0);
+
         // 3. Convergence check on the predicted improvement.
+        let t0 = tick(cfg.record_timing);
         let current_mf = ctx.evaluate_merit(stack)?;
+        t.merit_s = tock(t0);
+        let timing = cfg.record_timing.then_some(t);
         let result = match best {
             None => {
                 // No improving site anywhere.
@@ -387,6 +439,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                     predicted_improvement: None,
                     layer_count: stack.films().len(),
                     insertion: None,
+                    timing,
                 });
                 break;
             }
@@ -406,6 +459,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                         predicted_improvement: Some(predicted),
                         layer_count: stack.films().len(),
                         insertion: None,
+                        timing,
                     });
                     break; // "Convergence reached — stopping."
                 }
@@ -428,7 +482,9 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 stack.insert_needle_seed(ins.film_idx, ins.depth_into_layer_nm, seed)?;
 
                 // 5. Re-optimize.
+                let t0 = tick(cfg.record_timing);
                 let new_mf = ctx.optimize_thicknesses(stack)?;
+                t.lm_s = tock(t0);
 
                 NeedleCycleResult {
                     cycle: cycle + 1,
@@ -438,10 +494,17 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                     predicted_improvement: Some(predicted),
                     layer_count: stack.films().len(),
                     insertion: Some(ins),
+                    timing: cfg.record_timing.then_some(t),
                 }
             }
         };
         history.push(result);
+    }
+
+    // The opening optimization belongs to no insertion; it rides on the
+    // pass's first record (lost only when the stack was too thin to scan).
+    if let Some(t) = history.first_mut().and_then(|h| h.timing.as_mut()) {
+        t.initial_lm_s = initial_lm_s;
     }
 
     Ok(history)
@@ -466,11 +529,19 @@ fn joint_cycle<C: DesignContext + ?Sized>(
     cycle: usize,
     history: &mut Vec<NeedleCycleResult>,
 ) -> Result<bool, String> {
-    let (best, gtot, n_sites) = joint_needle_sweep(&*ctx, stack, spectral, contrast, cfg)?;
+    let mut t = CycleTiming::default();
+    let t0 = tick(cfg.record_timing);
+    let (best, gtot, n_sites) =
+        joint_needle_sweep(&*ctx, stack, spectral, contrast, cfg, &mut t.refold_s)?;
+    // The sweep interleaves K re-folds with K scans; the scan is the rest.
+    t.scan_s = tock(t0) - t.refold_s;
     if n_sites == 0 {
         return Ok(true); // "Stack too thin for needle insertion."
     }
+    let t0 = tick(cfg.record_timing);
     let current_mf = ctx.evaluate_merit(stack)?;
+    t.merit_s = tock(t0);
+    let timing = cfg.record_timing.then_some(t);
     let stalled = |history: &mut Vec<NeedleCycleResult>, p, predicted| {
         history.push(NeedleCycleResult {
             cycle: cycle + 1,
@@ -480,6 +551,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
             predicted_improvement: predicted,
             layer_count: stack.films().len(),
             insertion: None,
+            timing,
         });
     };
 
@@ -527,7 +599,9 @@ fn joint_cycle<C: DesignContext + ?Sized>(
         .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
         .insert_seed(cand.slot, cand.depth_into_layer_nm, &seed)?;
 
+    let t0 = tick(cfg.record_timing);
     let new_mf = ctx.optimize_thicknesses(stack)?;
+    t.lm_s = tock(t0);
     history.push(NeedleCycleResult {
         cycle: cycle + 1,
         merit_before: current_mf,
@@ -540,6 +614,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
             depth_into_layer_nm: cand.depth_into_layer_nm,
             material: cand.material,
         }),
+        timing: cfg.record_timing.then_some(t),
     });
     Ok(false)
 }
@@ -625,6 +700,7 @@ mod tests {
             needle_seed_thickness_nm: 5.0,
             scan_step_nm: 2.0,
             refold_per_cycle: true,
+            record_timing: false,
         }
     }
 
@@ -679,16 +755,16 @@ mod tests {
         assert_eq!(stack.films().len(), 1);
     }
 
-    #[test]
-    fn live_refold_masks_satisfied_above_demand() {
-        // Glass R ≈ 0.0426 against Above 0.01: satisfied (sim ≥ target)
-        // at the operating point. The static conservative fold would
-        // insert (Above folds active without a sim); the per-cycle live
-        // re-fold masks it, so nothing is inserted. Real solver context.
+    /// Real solver context over one Rs demand at 1000 nm, normal incidence.
+    fn rs_ctx(
+        kind: crate::smatrix::synthesis::merit::ConstraintKind,
+        target: f64,
+    ) -> (
+        crate::smatrix::synthesis::evaluator::SmatrixContext,
+        SpectralInputs,
+    ) {
         use crate::smatrix::synthesis::evaluator::SmatrixContext;
-        use crate::smatrix::synthesis::merit::{
-            ConstraintKind, MeritKey, MeritTarget, SimTransform,
-        };
+        use crate::smatrix::synthesis::merit::{MeritKey, MeritTarget, SimTransform};
         use crate::smatrix::synthesis::thick_opt::LmConfig;
 
         let mut spec = MeritSpec::new();
@@ -700,10 +776,10 @@ mod tests {
             key_idx: k as u32,
             env_idx: 0,
             wavelengths: vec![1000.0].into(),
-            kind: ConstraintKind::Above,
+            kind,
             transform: SimTransform::Linear,
             norm_factor: 1.0,
-            normalized_targets: vec![0.01].into(),
+            normalized_targets: vec![target].into(),
             tolerances: vec![0.05].into(),
             band: vec![].into(),
             phase: false,
@@ -713,7 +789,7 @@ mod tests {
             count_norm: None,
         })
         .unwrap();
-        let mut ctx = SmatrixContext {
+        let ctx = SmatrixContext {
             wavls: vec![1000.0],
             sin_theta: vec![0.0],
             spec: spec.clone(),
@@ -725,11 +801,82 @@ mod tests {
             thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
         let spectral = SpectralInputs::from_spec(&spec, &[0.0], &[1000.0]).unwrap();
+        (ctx, spectral)
+    }
+
+    #[test]
+    fn live_refold_masks_satisfied_above_demand() {
+        // Glass R ≈ 0.0426 against Above 0.01: satisfied (sim ≥ target)
+        // at the operating point. The static conservative fold would
+        // insert (Above folds active without a sim); the per-cycle live
+        // re-fold masks it, so nothing is inserted. Real solver context.
+        use crate::smatrix::synthesis::merit::ConstraintKind;
+        let (mut ctx, spectral) = rs_ctx(ConstraintKind::Above, 0.01);
         let (mut stack, _) = glass_stack();
         let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cycle_cfg())
             .unwrap();
         assert!(hist.iter().all(|h| h.insertion.is_none()));
         assert_eq!(stack.films().len(), 1);
+    }
+
+    /// The timers observe and never steer: the same pass with
+    /// `record_timing` on ends in the same stack, bit for bit, with the
+    /// same history — and only the timed run carries timings.
+    #[test]
+    fn record_timing_changes_nothing_but_the_timing() {
+        use crate::smatrix::synthesis::merit::ConstraintKind;
+        let run = |record_timing: bool| {
+            // Glass R ≈ 0.0426 against R = 0: violated, so the pass
+            // inserts and re-optimizes through the real LM.
+            let (mut ctx, spectral) = rs_ctx(ConstraintKind::Exact, 0.0);
+            let (mut stack, _) = glass_stack();
+            let cfg = NeedleCycleConfig {
+                record_timing,
+                ..cycle_cfg()
+            };
+            let hist =
+                run_needle_cycles(&mut ctx, &mut stack, &spectral, &contrast_h(), &cfg).unwrap();
+            (hist, stack)
+        };
+        let (h_off, s_off) = run(false);
+        let (h_on, s_on) = run(true);
+
+        assert!(
+            h_off.iter().any(|h| h.insertion.is_some()),
+            "no insertion: degenerate"
+        );
+        let bits =
+            |s: &DesignStack| -> Vec<u64> { s.films().iter().map(|l| l.d_nm.to_bits()).collect() };
+        assert_eq!(bits(&s_off), bits(&s_on));
+        assert_eq!(h_off.len(), h_on.len());
+        for (a, b) in h_off.iter().zip(&h_on) {
+            assert_eq!(a.merit_before.to_bits(), b.merit_before.to_bits());
+            assert_eq!(a.merit_after.to_bits(), b.merit_after.to_bits());
+            assert_eq!(a.best_p.map(f64::to_bits), b.best_p.map(f64::to_bits));
+            assert_eq!(a.layer_count, b.layer_count);
+            assert_eq!(
+                a.insertion
+                    .as_ref()
+                    .map(|i| (i.film_idx, i.depth_into_layer_nm.to_bits())),
+                b.insertion
+                    .as_ref()
+                    .map(|i| (i.film_idx, i.depth_into_layer_nm.to_bits())),
+            );
+            assert!(a.timing.is_none());
+            let t = b.timing.expect("timed run must carry timings");
+            for v in [t.refold_s, t.scan_s, t.merit_s, t.lm_s, t.initial_lm_s] {
+                assert!(v.is_finite() && v >= 0.0, "{t:?}");
+            }
+            if b.insertion.is_some() {
+                assert!(t.scan_s > 0.0 && t.lm_s > 0.0, "{t:?}");
+            }
+        }
+        assert!(h_on[0].timing.unwrap().initial_lm_s > 0.0);
+        assert!(
+            h_on[1..]
+                .iter()
+                .all(|h| h.timing.unwrap().initial_lm_s == 0.0)
+        );
     }
 
     #[test]

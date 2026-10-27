@@ -513,6 +513,15 @@ class PipelineConfig:
     ) -> None: ...
 
 class NeedleCycleConfig:
+    """Inner insertion-loop knobs.
+
+    `record_timing=True` adds a `timing` dict to every `needle_results`
+    record: wall seconds in `refold`, `scan`, `merit` and `lm` for that
+    insertion, plus `initial_lm` (the pass's opening optimization, on its
+    first record only). Off (the default), no clock is read and the records
+    carry no `timing` key; on or off, the run itself is bit-identical.
+    """
+
     def __init__(
         self,
         max_needles: int = ...,
@@ -520,6 +529,7 @@ class NeedleCycleConfig:
         needle_seed_thickness_nm: float = ...,
         scan_step_nm: float = ...,
         refold_per_cycle: bool = ...,
+        record_timing: bool = ...,
     ) -> None: ...
 
 class SmatrixContext:

@@ -1173,13 +1173,14 @@ impl PyNeedleCycleConfig {
     #[new]
     #[pyo3(signature = (max_needles=10, convergence_threshold=1e-4,
                         needle_seed_thickness_nm=5.0, scan_step_nm=2.0,
-                        refold_per_cycle=true))]
+                        refold_per_cycle=true, record_timing=false))]
     fn new(
         max_needles: usize,
         convergence_threshold: f64,
         needle_seed_thickness_nm: f64,
         scan_step_nm: f64,
         refold_per_cycle: bool,
+        record_timing: bool,
     ) -> PyResult<Self> {
         if scan_step_nm <= 0.0 || !scan_step_nm.is_finite() {
             return Err(PyValueError::new_err("scan_step_nm must be finite and > 0"));
@@ -1196,17 +1197,19 @@ impl PyNeedleCycleConfig {
                 needle_seed_thickness_nm,
                 scan_step_nm,
                 refold_per_cycle,
+                record_timing,
             },
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "NeedleCycleConfig(max_needles={}, seed={}nm, step={}nm, refold={})",
+            "NeedleCycleConfig(max_needles={}, seed={}nm, step={}nm, refold={}, timing={})",
             self.inner.max_needles,
             self.inner.needle_seed_thickness_nm,
             self.inner.scan_step_nm,
             self.inner.refold_per_cycle,
+            self.inner.record_timing,
         )
     }
 }
@@ -1397,6 +1400,17 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
                 )?,
             )?,
             None => rd.set_item("insertion", py.None())?,
+        }
+        // Only a `record_timing` run has the key: an untimed record is
+        // exactly what it was before the timers existed.
+        if let Some(t) = &r.timing {
+            let td = PyDict::new(py);
+            td.set_item("refold", t.refold_s)?;
+            td.set_item("scan", t.scan_s)?;
+            td.set_item("merit", t.merit_s)?;
+            td.set_item("lm", t.lm_s)?;
+            td.set_item("initial_lm", t.initial_lm_s)?;
+            rd.set_item("timing", td)?;
         }
         cycles.push(rd.unbind());
     }

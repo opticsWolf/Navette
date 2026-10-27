@@ -40,11 +40,13 @@ against the numba reference implementation this engine replaced.
 | Weaver `set_data` / `get_weaved` / `unweave_cached` | **1.5-7.8x** the Python reference across small and mid grids | `navette_spectral_bench` |
 | Batch `unweave_collection` | **1.15-2.29x** faster than before R5.1; still the one path that can trail the reference at extreme key counts | `navette_spectral_bench` |
 | One LM thickness optimize (synthesis), with needle re-fold | **2.1 ms**, re-fold **9.1 %** overhead | `bench_refold` |
+| One needle insertion, AR coating, 61 lambda, 4 -> 26 films | scan **2.2-2.6 ms**; LM re-optimize **19-66 ms** -- the scan is ~4 % of an insertion | `bench_needle_insertion` |
 | Structure grid assert | **0.9 us** | `bench_grid_assert` |
 
 Two caveats kept deliberately visible: small grids (under ~2 000 points) are
-dispatch-bound and still behind the numba kernel, and `bench_refold` does not
-exercise the needle *insertion* path, which is the expensive part of synthesis.
+dispatch-bound and still behind the numba kernel; and in needle synthesis the
+time goes to the thickness re-optimization after each insertion, not to the
+needle scan, so a faster scan would barely move a design run.
 
 ### 3. Partial Coherence Support
 
@@ -304,7 +306,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.8.0-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.8.1-*.whl (single wheel, all engines)
 ```
 
 There is a seventh site the gate does not see: the wheel filename in the

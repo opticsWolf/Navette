@@ -5,6 +5,50 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.8.1] - needle insertions can be timed, and the scan was never the expensive part
+
+`bench_refold` timed the re-fold on a one-film toy and never reached the
+insertion scan. The README called that scan "the expensive part of
+synthesis" and code_review.md said the same. Measured now, it is not.
+
+### Added
+- **`NeedleCycleConfig(record_timing=True)`**: each `needle_results`
+  record gains a `timing` dict with wall seconds for `refold`, `scan`,
+  `merit` and `lm` (the re-optimization after the insertion), plus
+  `initial_lm` (the pass's opening optimization) on its first record only.
+  Covers both the single- and multi-environment cycles. Off by default;
+  off, no clock is read and the records carry no `timing` key. On or off,
+  the run is bit-identical: the timers never steer it.
+- `validation/benches/synthesis/bench_needle_insertion.py`: the site's AR
+  problem (61 wavelengths, 400–700 nm, 4-film seed) grown to ~26 films with
+  the stagnation stop off, best of 3, trajectories asserted identical first.
+- Tests: `record_timing_changes_nothing_but_the_timing` (Rust, real LM,
+  bit-compares stack and history) and
+  `validation/regression/synthesis/test_needle_timing.py` (the same promise
+  through `run_needle`, plus "no `timing` key unless asked").
+
+### Measured
+Per insertion, by film count at the scan (mean of the fastest repeat):
+
+| films | insertions | scan | LM re-optimize | scan / LM |
+|---:|---:|---:|---:|---:|
+| 4–10 | 4 | 2.23 ms | 19.1 ms | 0.12 |
+| 11–20 | 5 | 2.42 ms | 46.6 ms | 0.05 |
+| 21–26 | 51 | 2.56 ms | 65.7 ms | 0.04 |
+
+Over the whole 7.2 s run: LM after insertions 51 %, the passes' opening LM
+22 %, scan 2.1 %, re-fold and the merit check under 0.2 % together. The
+remaining 25 % is cleanup, inflate, the final optimize and glue, none of it
+timed. The scan barely grows with the design (2.2 → 2.6 ms) while LM grows
+3.4×. That fits the shapes of the two (not profiled further): the number of
+scan sites follows the total thickness, while every LM Jacobian gains a
+column per film.
+
+### Changed
+- README and site performance caveat: the second caveat now says the time
+  goes to the thickness re-optimization after each insertion, not to the
+  scan, and the table has a `bench_needle_insertion` row.
+
 ## [0.8.0] - optional Basin backends, and termination reasons that say what stopped the run
 
 Merges PR #3 (jolars). The minor bump is for the `LmTermination` changes
