@@ -47,6 +47,29 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Added
 
+- **Needle rules: which materials go where, and the edge layers.** Two
+  options narrow a needle run without changing an unconstrained one (no
+  rules is the old run bit for bit):
+  - `insert_rules` maps a host label to the needle labels it accepts,
+    for example `{"SiO2": ["HfO2"], "HfO2": ["SiO2", "Al2O3"]}`. A host
+    with no key keeps the default (every pool material of another
+    index); `[]` closes a host. A film is matched to its pool entry by
+    index. The `"*"` key is the rule for films whose index is no pool
+    entry's; with rules set, such a film without a `"*"` rule refuses.
+    A host that lists itself, or any label outside the pool, refuses.
+  - `outer` (ambient side) and `inner` (substrate side) list the pool
+    materials the first and last film may be. The starting design must
+    comply. Insertion never changes an edge film; cleanup skips a
+    removal that would expose a disallowed one, and the thin-layer clamp
+    holds such a film at the floor instead of removing it. On the
+    multi-environment door the edges are the shared design's.
+  - Every door takes them: `run_needle(insert_rules=, outer=, inner=)`
+    (flat and multi-environment), `NeedlePipeline(...)`,
+    `run_design(...)` and `DesignRequest` in the core; config's
+    `pipeline_from_config` takes `outer` / `inner`.
+  - Edge needles (a scan site at the very top of the outer film and the
+    bottom of the inner film, creating a new edge film) are planned in
+    `docs/plans/edge_needles_plan.md`, not built.
 - `examples/dual_band_ar.py`: a three-oxide (SiO2, Al2O3, HfO2)
   dual-band anti-reflection coating on fused silica, with a VIS band
   (420-680 nm) and a NIR band (1044-1084 nm). Needle synthesis at a 2 nm floor, then a

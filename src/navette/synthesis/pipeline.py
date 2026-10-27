@@ -635,6 +635,29 @@ def _environments_request(design, environments, materials, wl,
     }
 
 
+def _needle_rules(insert_rules, outer, inner):
+    """``(insert_rules, outer, inner)`` as plain data for the core.
+
+    Labels become strings; a single label where a list is expected (an
+    edge, or one host's needles) is a list of one.
+    """
+    def labels(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return [value]
+        return [str(v) for v in value]
+
+    if insert_rules is not None and not isinstance(insert_rules, Mapping):
+        raise TypeError(
+            "insert_rules must be a mapping {host label: [needle labels]} - "
+            f"got {type(insert_rules).__name__}."
+        )
+    rules = (None if insert_rules is None
+             else {str(h): labels(ns) for h, ns in insert_rules.items()})
+    return rules, labels(outer), labels(inner)
+
+
 def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                targets: Any = None,
                angles_deg=None, wavelengths=None,
@@ -644,6 +667,9 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                *,
                design: Optional[Mapping[str, Any]] = None,
                environments: Optional[Sequence[Mapping[str, Any]]] = None,
+               insert_rules: Optional[Mapping[Any, Any]] = None,
+               outer: Any = None,
+               inner: Any = None,
                **stack_kwargs) -> Dict[str, Any]:
     """Design a coating with the needle pipeline, end to end.
 
@@ -663,6 +689,21 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         entry per distinct index; give a mapping to add materials no film
         is made of (an SiO2 start with SiO2, Al2O3 and HfO2 to insert).
         ``{}`` inserts nothing. Touching films of one index merge.
+    insert_rules : {host label: [needle labels]} — which pool materials
+        may go into which. A film is matched to the pool entry of its own
+        index, so needles follow the rules too. A host with no key accepts
+        every pool material of another index; ``[]`` accepts nothing. The
+        key ``"*"`` is the rule for a needle-flagged film whose index is
+        in no pool entry; without it such a film is an error once any rule
+        is given.
+    outer / inner : pool label, or a list of them — the materials allowed
+        for the film facing the ambient (``outer``) and the film on the
+        substrate (``inner``). The starting design must already comply.
+        Needles land strictly inside a film, so only removal can change an
+        edge: cleanup skips a removal that would expose a disallowed film,
+        and the thickness floor holds such a film rather than remove it.
+        Labels are pool labels: the keys of ``materials``, or, with
+        ``materials=None``, the film names.
     pipeline_config / needle_config / lm_config : native configs (or None).
     callback : ``(macro_cycle, phase_dict)``; raising aborts (USER_ABORT).
     stack_kwargs : ambient, substrate, per-film flags (see
@@ -721,10 +762,12 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
             "the needle material pool {label: material}, or leave it out to "
             "pool the films' own materials."
         )
+    rules, outer, inner = _needle_rules(insert_rules, outer, inner)
     if design is not None:
         return _run_needle_environments(
             design, environments, targets, angles_deg, wavelengths, materials,
-            pipeline_config, needle_config, lm_config, callback, stack_kwargs)
+            pipeline_config, needle_config, lm_config, callback, stack_kwargs,
+            rules, outer, inner)
     if environments is not None:
         raise ValueError(
             "run_needle: `environments` needs `design` - a flat film list has "
@@ -759,13 +802,15 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         sub_nk, str(substrate[1] if len(substrate) > 1 else "sub"),
         films, gmap, _pool(materials, wl), wl, angs, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
-        lm=lm_config, callback=callback)
+        lm=lm_config, callback=callback,
+        insert_rules=rules, outer=outer, inner=inner)
 
 
 def _run_needle_environments(design, environments, targets, angles_deg,
                              wavelengths, materials, pipeline_config,
                              needle_config, lm_config, callback,
-                             stack_kwargs) -> Dict[str, Any]:
+                             stack_kwargs, insert_rules=None, outer=None,
+                             inner=None) -> Dict[str, Any]:
     """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
 
     Shapes the request document and hands it to the core in one call. The
@@ -792,6 +837,7 @@ def _run_needle_environments(design, environments, targets, angles_deg,
     request = _environments_request(
         design, environments, materials, wl, ambient, substrate,
         film_flags, per_film_flags, groups)
+    request.update(insert_rules=insert_rules, outer=outer, inner=inner)
     roster = [e["name"] for e in request["environments"]]
     spec = (_build_merit_spec(targets, environments=roster)
             if isinstance(targets, TargetCollection) else targets)

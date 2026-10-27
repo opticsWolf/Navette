@@ -13,7 +13,9 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use super::config::PipelineConfig;
-use super::cycle::{MaterialPool, NeedleCycleConfig, dedup_pool, pool_entry, pool_from_layers};
+use super::cycle::{
+    MaterialPool, NeedleCycleConfig, NeedleRules, dedup_pool, pool_entry, pool_from_layers,
+};
 use super::evaluator::SmatrixContext;
 use super::merit::MeritSpec;
 use super::pipeline::SpectralInputs;
@@ -190,7 +192,9 @@ pub fn assemble_stack(
 /// `angles_deg` in degrees; `callback` fires per macro-cycle.
 ///
 /// `materials` is the needle pool; `None` takes one entry per distinct
-/// index among the assembled layers ([`pool_from_layers`]).
+/// index among the assembled layers ([`pool_from_layers`]). `rules` narrow
+/// which needles go into which materials and which materials may form the
+/// edge layers ([`NeedleRules`]); their labels are pool labels.
 ///
 /// Returns `(report, stack, warnings)`. The warnings are the assembly's --
 /// a dropped ambient absorption (R3.4), a homogenized graded film -- and they
@@ -206,6 +210,7 @@ pub fn run_design(
     films: &[ArrayFilm],
     groups: &HashMap<String, Group>,
     materials: Option<&[ArrayMaterial]>,
+    rules: &NeedleRules,
     wavelengths: &[f64],
     angles_deg: &[f64],
     spec: &MeritSpec,
@@ -214,7 +219,7 @@ pub fn run_design(
     lm: LmConfig,
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
-    let (stack, warnings) = assemble_stack(
+    let (mut stack, warnings) = assemble_stack(
         ambient_name,
         ambient_nk,
         substrate_name,
@@ -242,6 +247,7 @@ pub fn run_design(
             )
         }
     };
+    let pool = rules.apply(&mut stack, pool)?;
     let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
     let cfg = cfg.validated()?;
     let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();

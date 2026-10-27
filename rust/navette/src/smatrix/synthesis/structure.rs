@@ -122,6 +122,86 @@ impl ClampReport {
     }
 }
 
+// ---------------------------------------------------------------------------
+// EdgeMaterials
+// ---------------------------------------------------------------------------
+
+/// One allowed edge material: its label (for messages) and its nk.
+pub type EdgeMaterial = (Arc<str>, Arc<[Complex64]>);
+
+/// Which materials may form the stack's edge layers: `outer` faces the
+/// ambient (film 0), `inner` sits on the substrate (the last film).
+/// `None` leaves that edge free.
+///
+/// A material is matched by index, bit for bit, like the layer merge. An
+/// edge must be a layer (a singleton-bulk span, an interface slice
+/// allowed); its material is the bulk row's. Needles land strictly inside
+/// a host, so insertion never changes an edge; only removal can, and every
+/// removal path consults this: cleanup skips a removal that would expose a
+/// disallowed layer, and the clamp sweep holds such a layer at the floor
+/// instead of removing it.
+#[derive(Clone, Debug, Default)]
+pub struct EdgeMaterials {
+    pub outer: Option<Vec<EdgeMaterial>>,
+    pub inner: Option<Vec<EdgeMaterial>>,
+}
+
+impl EdgeMaterials {
+    pub fn is_free(&self) -> bool {
+        self.outer.is_none() && self.inner.is_none()
+    }
+
+    /// Do the edge spans `first` (outer) and `last` (inner) over `films`
+    /// comply? `None` is a stack with no films.
+    pub(crate) fn check(
+        &self,
+        films: &[LayerSpec],
+        first: Option<&Span>,
+        last: Option<&Span>,
+    ) -> Result<(), String> {
+        for (list, which, sp) in [
+            (&self.outer, "outer (ambient side)", first),
+            (&self.inner, "inner (substrate side)", last),
+        ] {
+            let Some(l) = list else { continue };
+            let Some(sp) = sp else {
+                return Err(format!(
+                    "edge materials: the {which} edge is constrained but the design has no films"
+                ));
+            };
+            if !edge_allows(list, films, sp) {
+                let what = if sp.is_singleton_bulk() {
+                    "a material outside the list"
+                } else {
+                    "a graded profile, not a layer"
+                };
+                return Err(format!(
+                    "edge materials: the {which} edge film {:?} is {what}; allowed: [{}]. \
+                     Start from a design whose edge layer is one of them.",
+                    films[sp.bulk_start].material,
+                    edge_labels(l)
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Is `sp` (a span over `films`) an allowed edge under `list`?
+fn edge_allows(list: &Option<Vec<EdgeMaterial>>, films: &[LayerSpec], sp: &Span) -> bool {
+    match list {
+        None => true,
+        Some(l) => sp.is_singleton_bulk() && l.iter().any(|(_, nk)| *nk == films[sp.bulk_start].nk),
+    }
+}
+
+fn edge_labels(l: &[EdgeMaterial]) -> String {
+    l.iter()
+        .map(|(m, _)| format!("{m:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // DesignStack
 // ---------------------------------------------------------------------------
 
@@ -145,6 +225,8 @@ pub struct DesignStack {
     spans: Vec<Span>,
     recipes: Vec<Option<SpanRecipe>>,
     num_wavs: usize,
+    /// Allowed edge materials; free unless `set_edge_materials` is called.
+    edges: EdgeMaterials,
 }
 
 impl DesignStack {
@@ -242,9 +324,44 @@ impl DesignStack {
             spans,
             recipes,
             num_wavs,
+            edges: EdgeMaterials::default(),
         };
         s.assert_spans_partition();
         Ok(s)
+    }
+
+    // -- edge materials -----------------------------------------------------
+
+    pub fn edge_materials(&self) -> &EdgeMaterials {
+        &self.edges
+    }
+
+    /// Constrain the edge layers' materials (see [`EdgeMaterials`]). The
+    /// stack's current edges must already comply: the constraint is held
+    /// from here on, never repaired.
+    pub fn set_edge_materials(&mut self, edges: EdgeMaterials) -> Result<(), String> {
+        edges.check(&self.films, self.spans.first(), self.spans.last())?;
+        self.edges = edges;
+        Ok(())
+    }
+
+    /// Would removing span `sid` leave both edges allowed? Only the edge
+    /// spans can expose a new edge; the layer behind them becomes it.
+    pub(crate) fn removal_keeps_edges(&self, sid: usize) -> bool {
+        let n = self.spans.len();
+        let ok = |list: &Option<Vec<EdgeMaterial>>, next: Option<usize>| {
+            list.is_none() || next.is_some_and(|j| edge_allows(list, &self.films, &self.spans[j]))
+        };
+        (sid != 0 || ok(&self.edges.outer, (n > 1).then_some(1)))
+            && (sid + 1 != n || ok(&self.edges.inner, sid.checked_sub(1)))
+    }
+
+    /// Index of the span holding `row`.
+    pub(crate) fn span_index_of_row(&self, row: usize) -> usize {
+        self.spans
+            .iter()
+            .position(|sp| sp.start <= row && row < sp.end)
+            .expect("every row belongs to a span")
     }
 
     // -- properties ---------------------------------------------------------
@@ -1117,6 +1234,47 @@ impl DesignStack {
             }
         }
 
+        // Edge materials: an edge span the sweep would remove is held at
+        // the floor instead when the first survivor behind it is not an
+        // allowed edge. The edge itself complies (the constraint is held
+        // from `set_edge_materials` on), so holding it keeps it complying.
+        let removed = |sp: &Span| {
+            let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            d < min_nm
+                && !(clamp_up_rows
+                    && (sp.is_singleton_bulk()
+                        || (sp.end - sp.start > 1 && self.span_is_scalable(sp))))
+        };
+        let n_spans = self.spans.len();
+        let mut held = [None, None];
+        for (k, list) in [&self.edges.outer, &self.edges.inner]
+            .into_iter()
+            .enumerate()
+        {
+            let edge = if k == 0 { 0 } else { n_spans.wrapping_sub(1) };
+            if list.is_none() || n_spans == 0 || !removed(&self.spans[edge]) {
+                continue;
+            }
+            let survives = |&j: &usize| !removed(&self.spans[j]);
+            let survivor = if k == 0 {
+                (0..n_spans).find(survives)
+            } else {
+                (0..n_spans).rev().find(survives)
+            };
+            if survivor.is_some_and(|j| edge_allows(list, &self.films, &self.spans[j])) {
+                continue;
+            }
+            if !self.spans[edge].is_singleton_bulk() {
+                return Err(format!(
+                    "clamp_all: the edge span '{}' is below the floor and cannot be held \
+                     there (it is not a layer), but removing it would leave a disallowed \
+                     edge",
+                    self.films[self.spans[edge].start].material
+                ));
+            }
+            held[k] = Some(edge);
+        }
+
         let old = std::mem::take(&mut self.films);
         let old_spans = std::mem::take(&mut self.spans);
         let old_recipes = std::mem::take(&mut self.recipes);
@@ -1166,7 +1324,7 @@ impl DesignStack {
                     p = e;
                     continue;
                 }
-                if clamp_up_rows && sp.is_singleton_bulk() {
+                if (clamp_up_rows || held.contains(&Some(sid))) && sp.is_singleton_bulk() {
                     let mut thin = old[sp.start..sp.end].to_vec();
                     let slice_rows = usize::from(sp.slice);
                     let slice_total: f64 = thin[..slice_rows].iter().map(|l| l.d_nm).sum();
@@ -2062,6 +2220,63 @@ mod tests {
         assert_eq!(f.len(), 2);
         assert!((f[0].d_nm - 1000.0).abs() < 1e-12);
         assert!((f[1].d_nm - 50.0).abs() < 1e-12);
+    }
+
+    fn edges(outer: &[&LayerSpec], inner: &[&LayerSpec]) -> EdgeMaterials {
+        let list = |l: &[&LayerSpec]| {
+            (!l.is_empty()).then(|| {
+                l.iter()
+                    .map(|f| (f.material.clone(), f.nk.clone()))
+                    .collect()
+            })
+        };
+        EdgeMaterials {
+            outer: list(outer),
+            inner: list(inner),
+        }
+    }
+
+    #[test]
+    fn edge_materials_are_checked_when_set() {
+        let mut s = stack(vec![h(100.0), l(50.0)]);
+        let e = s.set_edge_materials(edges(&[&l(0.0)], &[])).unwrap_err();
+        assert!(e.contains("outer") && e.contains("\"L\""), "{e}");
+        let e = s.set_edge_materials(edges(&[], &[&h(0.0)])).unwrap_err();
+        assert!(e.contains("inner"), "{e}");
+        assert!(s.edge_materials().is_free());
+        s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
+        assert!(!s.edge_materials().is_free());
+    }
+
+    /// A thin edge layer the sweep would remove is held at the floor when
+    /// the layer behind it is no allowed edge, and removed when it is.
+    #[test]
+    fn clamp_holds_an_edge_rather_than_expose_a_disallowed_one() {
+        let films = || vec![h(1.0), l(100.0), h(100.0), l(1.0)];
+
+        let mut s = stack(films());
+        s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 0);
+        let f = s.films();
+        assert_eq!(f.len(), 4);
+        assert_eq!((f[0].d_nm, f[3].d_nm), (2.0, 2.0));
+
+        let mut s = stack(films());
+        let (hh, ll) = (h(0.0), l(0.0));
+        s.set_edge_materials(edges(&[&hh, &ll], &[&ll, &hh]))
+            .unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 2);
+        assert_eq!(s.films().len(), 2);
+
+        // The first SURVIVOR decides: two thin layers go together when the
+        // one behind them is allowed.
+        let mut s = stack(vec![h(1.0), l(1.0), h(100.0)]);
+        s.set_edge_materials(edges(&[&h(0.0)], &[])).unwrap();
+        s.clamp_all(2.0, 1000.0, false).unwrap();
+        assert_eq!(s.films().len(), 1);
+        assert_eq!(s.films()[0].d_nm, 100.0);
     }
 
     #[test]

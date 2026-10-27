@@ -26,7 +26,7 @@ use pyo3::types::{IntoPyDict, PyAny, PyDict};
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
 use navette::smatrix::synthesis::cycle::{
-    dedup_pool, pool_entry, pool_from_layers, NeedleCycleConfig,
+    dedup_pool, pool_entry, pool_from_layers, InsertRules, NeedleCycleConfig, NeedleRules,
 };
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
@@ -451,7 +451,7 @@ pub(crate) fn assemble_design(
                 .map(|(name, nk)| pool_entry(&name, std::sync::Arc::from(nk))),
         ),
     };
-    let pool = pool.into_iter().map(PyLayerSpec::from_inner).collect();
+    let pool = pool.iter().cloned().map(PyLayerSpec::from_inner).collect();
     Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
 }
 
@@ -459,11 +459,13 @@ pub(crate) fn assemble_design(
 /// `driver::run_design`): assemble once, fold demands, macro-loop.
 /// `callback(macro_cycle, phase_dict)` aborts on raise (`USER_ABORT`).
 /// `materials` is the needle pool as (label, nk); `None` takes the layers'
-/// own materials. Returns the full report dict including the final
+/// own materials. `insert_rules` ({host label: [needle labels]}), `outer`
+/// and `inner` (allowed edge materials) are the `NeedleRules`, in pool
+/// labels. Returns the full report dict including the final
 /// `stack`; assembly warnings (dropped ambient absorption, homogenized
 /// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -481,8 +483,16 @@ pub(crate) fn run_design(
     needle_config: Option<Py<PyNeedleCycleConfig>>,
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
+    insert_rules: Option<InsertRules>,
+    outer: Option<Vec<String>>,
+    inner: Option<Vec<String>>,
 ) -> PyResult<Py<PyDict>> {
     use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
+    let rules = NeedleRules {
+        insert: insert_rules,
+        outer,
+        inner,
+    };
     let w = wavelengths.as_slice()?.to_vec();
     let a = angles_deg.as_slice()?.to_vec();
     let cfg = pipeline_config
@@ -533,6 +543,7 @@ pub(crate) fn run_design(
                     &af,
                     &gm,
                     pool.as_deref(),
+                    &rules,
                     &w,
                     &a,
                     &spec_inner,
@@ -775,7 +786,7 @@ impl PyDesignStack {
         let (stack, pool, warnings) =
             build_design(&req, wavelengths.as_slice()?).map_err(PyValueError::new_err)?;
         crate::structure::emit_warnings(py, "design_from_config", &warnings)?;
-        let pool = pool.into_iter().map(PyLayerSpec::from_inner).collect();
+        let pool = pool.iter().cloned().map(PyLayerSpec::from_inner).collect();
         Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
     }
 
@@ -1449,6 +1460,9 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
 /// `materials` is the needle material pool as `LayerSpec`s (label = its
 /// `material`, nk on the grid; thickness/flags ignored — each needle is
 /// built fresh). `None` takes the stack's layers' own materials.
+/// `insert_rules` ({host label: [needle labels]}), `outer` and `inner`
+/// (allowed edge materials) are the `NeedleRules`, in pool labels; the
+/// stack's current edges must comply.
 pub struct PyNeedlePipeline {
     inner: NeedlePipeline,
     spec: navette::smatrix::synthesis::merit::MeritSpec,
@@ -1463,7 +1477,8 @@ pub struct PyNeedlePipeline {
 impl PyNeedlePipeline {
     #[new]
     #[pyo3(signature = (stack, spec, angles_deg, wavelengths, materials=None,
-                        pipeline_config=None, needle_config=None, lm=None))]
+                        pipeline_config=None, needle_config=None, lm=None,
+                        insert_rules=None, outer=None, inner=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1475,6 +1490,9 @@ impl PyNeedlePipeline {
         pipeline_config: Option<Py<PyPipelineConfig>>,
         needle_config: Option<Py<PyNeedleCycleConfig>>,
         lm: Option<Py<PyLmConfig>>,
+        insert_rules: Option<InsertRules>,
+        outer: Option<Vec<String>>,
+        inner: Option<Vec<String>>,
     ) -> PyResult<Self> {
         let a = angles_deg.as_slice()?;
         let w = wavelengths.as_slice()?;
@@ -1519,10 +1537,18 @@ impl PyNeedlePipeline {
                 dedup_pool(entries)
             }
         };
+        let mut design = stack.inner.clone();
+        let pool = NeedleRules {
+            insert: insert_rules,
+            outer,
+            inner,
+        }
+        .apply(&mut design, pool)
+        .map_err(PyValueError::new_err)?;
         let spectral =
             SpectralInputs::from_spec(spec.inner(), a, w).map_err(PyValueError::new_err)?;
         let inner = NeedlePipeline::new(
-            stack.inner.clone(),
+            design,
             spectral,
             cfg.clone().validated().map_err(PyValueError::new_err)?,
             needle_cfg,

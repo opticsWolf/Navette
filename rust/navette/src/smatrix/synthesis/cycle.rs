@@ -12,7 +12,7 @@
 //! and stop when it falls below `convergence_threshold`. Thresholds are in
 //! merit-units-per-nm-of-seed — recalibrate when porting configs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,10 +20,10 @@ use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::needle_pass::{
-    NeedlePassInput, build_needle_targets_env, build_scan_sites, needle_pass_scan,
+    NeedlePassInput, ScanSite, build_needle_targets_env, build_scan_sites, needle_pass_scan,
 };
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
-use crate::smatrix::synthesis::structure::{DesignStack, LayerSpec};
+use crate::smatrix::synthesis::structure::{DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec};
 
 /// Knobs for the inner insertion loop (Python `NeedleConfig` subset).
 #[derive(Clone, Debug)]
@@ -120,12 +120,206 @@ pub struct Insertion {
 /// must be evaluated on the simulation grid; thickness and flags of an
 /// entry are ignored (the needle is built fresh). An empty pool inserts
 /// nothing.
-pub type MaterialPool = Vec<LayerSpec>;
+///
+/// [`Self::with_insert_rules`] narrows which entries go into which: a film
+/// is matched to the entry of its own index (bit for bit, like the layer
+/// merge), so needles, being pool materials, follow the rules too.
+#[derive(Clone, Debug, Default)]
+pub struct MaterialPool {
+    materials: Vec<LayerSpec>,
+    /// `allowed[h][m]`: may a film of entry `h` take a needle of entry
+    /// `m`? `None`: every pair of different index.
+    allowed: Option<Vec<Vec<bool>>>,
+    /// Under rules, the row for a film whose index no entry carries (the
+    /// `"*"` rule); `None` makes such a film an error.
+    unmatched: Option<Vec<bool>>,
+}
 
-/// Does `host` accept a needle of `m`? Only when the indices differ: a
-/// needle of the host's own index is no needle at all.
-fn accepts(host: &LayerSpec, m: &LayerSpec) -> bool {
-    host.nk != m.nk
+/// Insertion rules: host label -> the labels of the needles it accepts.
+/// A host label with no key keeps the default (every entry of another
+/// index); an empty list accepts nothing. The key `"*"` is the rule for a
+/// needle-flagged film whose index matches no pool entry.
+pub type InsertRules = BTreeMap<String, Vec<String>>;
+
+impl std::ops::Deref for MaterialPool {
+    type Target = [LayerSpec];
+    fn deref(&self) -> &[LayerSpec] {
+        &self.materials
+    }
+}
+
+impl From<Vec<LayerSpec>> for MaterialPool {
+    fn from(materials: Vec<LayerSpec>) -> Self {
+        MaterialPool {
+            materials,
+            ..Default::default()
+        }
+    }
+}
+
+impl MaterialPool {
+    /// The empty pool: the needle pass inserts nothing.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The entry whose index is `nk`, bit for bit.
+    pub fn entry_of(&self, nk: &[Complex64]) -> Option<usize> {
+        self.materials.iter().position(|m| *m.nk == *nk)
+    }
+
+    fn label_index(&self, label: &str, what: &str) -> Result<usize, String> {
+        let mut hits = self
+            .materials
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| &*m.material == label);
+        match (hits.next(), hits.next()) {
+            (Some((i, _)), None) => Ok(i),
+            (None, _) => Err(format!(
+                "{what}: {label:?} is not a pool material; the pool holds [{}]",
+                self.labels().join(", ")
+            )),
+            (Some(_), Some(_)) => Err(format!(
+                "{what}: two pool materials are labelled {label:?}; give them distinct labels"
+            )),
+        }
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.materials
+            .iter()
+            .map(|m| format!("{:?}", m.material))
+            .collect()
+    }
+
+    /// This pool with `rules` applied (see [`InsertRules`]). Empty rules
+    /// leave it as it is. A label the pool does not hold is an error, and
+    /// so is a host listed as its own needle: that is no needle at all.
+    pub fn with_insert_rules(mut self, rules: &InsertRules) -> Result<Self, String> {
+        if rules.is_empty() {
+            return Ok(self);
+        }
+        let n = self.materials.len();
+        let mut allowed: Vec<Vec<bool>> =
+            (0..n).map(|h| (0..n).map(|m| m != h).collect()).collect();
+        let mut unmatched = None;
+        for (host, needles) in rules {
+            let h = if host == "*" {
+                None
+            } else {
+                Some(self.label_index(host, "insert rules (host)")?)
+            };
+            let mut row = vec![false; n];
+            for needle in needles {
+                let m = self.label_index(needle, "insert rules (needle)")?;
+                if Some(m) == h {
+                    return Err(format!(
+                        "insert rules: {host:?} lists itself; a needle of a film's own \
+                         index is no needle"
+                    ));
+                }
+                row[m] = true;
+            }
+            match h {
+                Some(h) => allowed[h] = row,
+                None => unmatched = Some(row),
+            }
+        }
+        self.allowed = Some(allowed);
+        self.unmatched = unmatched;
+        Ok(self)
+    }
+
+    /// The edge materials named by `outer` and `inner` (pool labels).
+    pub fn edge_materials(
+        &self,
+        outer: Option<&[String]>,
+        inner: Option<&[String]>,
+    ) -> Result<EdgeMaterials, String> {
+        let resolve =
+            |l: Option<&[String]>, what: &str| -> Result<Option<Vec<EdgeMaterial>>, String> {
+                l.map(|l| {
+                    l.iter()
+                        .map(|label| {
+                            let m = &self.materials[self.label_index(label, what)?];
+                            Ok((m.material.clone(), m.nk.clone()))
+                        })
+                        .collect()
+                })
+                .transpose()
+            };
+        Ok(EdgeMaterials {
+            outer: resolve(outer, "outer edge")?,
+            inner: resolve(inner, "inner edge")?,
+        })
+    }
+
+    /// Does `host` accept a needle of entry `m`? Without rules, exactly when
+    /// the indices differ.
+    fn accepts(&self, host: &LayerSpec, m: usize) -> Result<bool, String> {
+        let Some(allowed) = &self.allowed else {
+            return Ok(host.nk != self.materials[m].nk);
+        };
+        match (self.entry_of(&host.nk), &self.unmatched) {
+            (Some(h), _) => Ok(allowed[h][m]),
+            (None, Some(row)) => Ok(row[m]),
+            (None, None) => Err(format!(
+                "insert rules: film {:?} accepts needles but its index is no pool \
+                 material's, so no rule names it. Add its material to the pool, add a \
+                 \"*\" rule, or clear its needle flag.",
+                host.material
+            )),
+        }
+    }
+
+    /// The `sites` whose film accepts a needle of entry `m`. Filtering
+    /// whole rows keeps each surviving row's steps intact.
+    fn sites_for(
+        &self,
+        m: usize,
+        films: &[LayerSpec],
+        sites: &[ScanSite],
+    ) -> Result<Vec<ScanSite>, String> {
+        let mut out = Vec::new();
+        for s in sites {
+            if self.accepts(&films[s.film_idx], m)? {
+                out.push(*s);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Rules for one needle run beyond the pool itself: which needles go into
+/// which materials, and which materials may form the edge layers.
+#[derive(Clone, Debug, Default)]
+pub struct NeedleRules {
+    pub insert: Option<InsertRules>,
+    /// Allowed materials (pool labels) of the layer facing the ambient.
+    pub outer: Option<Vec<String>>,
+    /// Allowed materials (pool labels) of the layer on the substrate.
+    pub inner: Option<Vec<String>>,
+}
+
+impl NeedleRules {
+    /// Apply to a run: the pool takes the insertion rules, the stack the
+    /// edge materials (its current edges must comply).
+    pub fn apply(
+        &self,
+        stack: &mut DesignStack,
+        pool: MaterialPool,
+    ) -> Result<MaterialPool, String> {
+        let pool = match &self.insert {
+            Some(r) => pool.with_insert_rules(r)?,
+            None => pool,
+        };
+        if self.outer.is_some() || self.inner.is_some() {
+            let edges = pool.edge_materials(self.outer.as_deref(), self.inner.as_deref())?;
+            stack.set_edge_materials(edges)?;
+        }
+        Ok(pool)
+    }
 }
 
 /// A film name for a new needle of `label`, used by no film in `films`.
@@ -154,13 +348,13 @@ pub fn pool_entry(label: &str, nk: Arc<[Complex64]>) -> LayerSpec {
 /// `entries` with every repeated index dropped (the first label wins):
 /// two entries of one index would sweep the same needle twice.
 pub fn dedup_pool(entries: impl IntoIterator<Item = LayerSpec>) -> MaterialPool {
-    let mut out: MaterialPool = Vec::new();
+    let mut out: Vec<LayerSpec> = Vec::new();
     for e in entries {
         if !out.iter().any(|m| m.nk == e.nk) {
             out.push(e);
         }
     }
-    out
+    out.into()
 }
 
 /// A fresh needle of pool entry `m`, `d_nm` thick, named apart from every
@@ -287,14 +481,11 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
                 calc_s: true,
                 calc_p: true,
             };
-            // Only the rows that accept this needle; filtering whole rows
-            // keeps each surviving row's steps intact. A design row has
-            // the same index in every environment, so every environment
-            // keeps the same rows.
-            let sites: Vec<_> = build_scan_sites(st.films(), st.spans(), cfg.scan_step_nm)
-                .into_iter()
-                .filter(|s| accepts(&st.films()[s.film_idx], mat))
-                .collect();
+            // Only the rows that accept this needle. A design row has the
+            // same index in every environment, so every environment keeps
+            // the same rows.
+            let all = build_scan_sites(st.films(), st.spans(), cfg.scan_step_nm);
+            let sites = pool.sites_for(mi, st.films(), &all)?;
             let res = needle_pass_scan(&input, &sites)?;
             // `build_scan_sites` walks rows in order and emits steps
             // 1..n_steps inside each admissible row, so the running count
@@ -431,16 +622,10 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         // 2. Analytic sweep (both polarizations summed) once per pool
         //    material, over the sites whose layer accepts it (its index
         //    differs); the global best (site, material) pair is kept.
-        let per_material: Vec<Vec<_>> = pool
-            .iter()
-            .map(|mat| {
-                sites
-                    .iter()
-                    .filter(|s| accepts(&stack.films()[s.film_idx], mat))
-                    .cloned()
-                    .collect()
-            })
-            .collect();
+        //    Insertion rules narrow the pairs further.
+        let per_material: Vec<Vec<_>> = (0..pool.len())
+            .map(|m| pool.sites_for(m, stack.films(), &sites))
+            .collect::<Result<_, _>>()?;
         if per_material.iter().all(Vec::is_empty) {
             break; // "Stack too thin for needle insertion" (or no pool).
         }
@@ -728,8 +913,12 @@ mod tests {
         }
     }
 
+    fn entry(label: &str, n: f64) -> LayerSpec {
+        pool_entry(label, vec![Complex64::new(n, 0.0)].into())
+    }
+
     fn pool_h() -> MaterialPool {
-        vec![pool_entry("H", vec![Complex64::new(2.35, 0.0)].into())]
+        vec![entry("H", 2.35)].into()
     }
 
     fn cycle_cfg() -> NeedleCycleConfig {
@@ -801,8 +990,7 @@ mod tests {
     #[test]
     fn needles_are_layers_with_fresh_names() {
         let (mut stack, _) = glass_stack();
-        let mut pool = pool_h();
-        pool.push(pool_entry("L", vec![Complex64::new(1.38, 0.0)].into()));
+        let pool: MaterialPool = vec![entry("H", 2.35), entry("L", 1.38)].into();
         let mut ctx = StillCtx;
         let spectral = spectral_of(fold_with("t", 0.0));
         let cfg = NeedleCycleConfig {
@@ -842,6 +1030,122 @@ mod tests {
         ];
         assert_eq!(needle_name(&films, "H").as_ref(), "H#2");
         assert_eq!(needle_name(&films, "L").as_ref(), "L#1");
+    }
+
+    fn rules(pairs: &[(&str, &[&str])]) -> InsertRules {
+        pairs
+            .iter()
+            .map(|(h, ns)| (h.to_string(), ns.iter().map(|n| n.to_string()).collect()))
+            .collect()
+    }
+
+    /// The glass host G takes only L, and L takes nothing: every needle is
+    /// L, and H, though in the pool, never lands.
+    #[test]
+    fn insert_rules_narrow_the_scan() {
+        let (mut stack, _) = glass_stack();
+        let pool = MaterialPool::from(vec![entry("G", 1.52), entry("H", 2.35), entry("L", 1.38)])
+            .with_insert_rules(&rules(&[("G", &["L"]), ("L", &[])]))
+            .unwrap();
+        let mut ctx = StillCtx;
+        let spectral = spectral_of(fold_with("t", 0.0));
+        let cfg = NeedleCycleConfig {
+            max_needles: 4,
+            ..cycle_cfg()
+        };
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool, &cfg).unwrap();
+        let ins: Vec<&str> = hist
+            .iter()
+            .filter_map(|h| h.insertion.as_ref().map(|i| i.material.as_ref()))
+            .collect();
+        assert!(!ins.is_empty(), "the rule left L admissible in G");
+        assert!(ins.iter().all(|m| *m == "L"), "{ins:?}");
+        assert!(stack.films().iter().all(|l| l.nk[0].re != 2.35));
+    }
+
+    /// An empty list closes a host: with G closed there is no site at all.
+    #[test]
+    fn an_empty_rule_closes_a_host() {
+        let (mut stack, _) = glass_stack();
+        let pool = MaterialPool::from(vec![entry("G", 1.52), entry("H", 2.35)])
+            .with_insert_rules(&rules(&[("G", &[])]))
+            .unwrap();
+        let mut ctx = StillCtx;
+        let spectral = spectral_of(fold_with("t", 0.0));
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &pool, &cycle_cfg()).unwrap();
+        assert!(hist.is_empty());
+        assert_eq!(stack.films().len(), 1);
+    }
+
+    /// Under rules, a host whose index is in no pool entry needs the "*"
+    /// rule; without it the run refuses rather than guessing.
+    #[test]
+    fn a_film_outside_the_pool_needs_the_star_rule() {
+        let pool = || MaterialPool::from(vec![entry("H", 2.35), entry("L", 1.38)]);
+        let mut ctx = StillCtx;
+        let spectral = spectral_of(fold_with("t", 0.0));
+
+        let (mut stack, _) = glass_stack();
+        let strict = pool().with_insert_rules(&rules(&[("H", &["L"])])).unwrap();
+        let e =
+            run_needle_cycles(&mut ctx, &mut stack, &spectral, &strict, &cycle_cfg()).unwrap_err();
+        assert!(e.contains("\"*\"") && e.contains("\"G\""), "{e}");
+
+        let (mut stack, _) = glass_stack();
+        let star = pool()
+            .with_insert_rules(&rules(&[("*", &["H"]), ("H", &[])]))
+            .unwrap();
+        let hist = run_needle_cycles(&mut ctx, &mut stack, &spectral, &star, &cycle_cfg()).unwrap();
+        assert!(
+            hist.iter()
+                .filter_map(|h| h.insertion.as_ref())
+                .all(|i| i.material.as_ref() == "H")
+        );
+    }
+
+    #[test]
+    fn insert_rules_refuse_bad_labels() {
+        let pool = || MaterialPool::from(vec![entry("H", 2.35), entry("L", 1.38)]);
+        let e = pool()
+            .with_insert_rules(&rules(&[("X", &["L"])]))
+            .unwrap_err();
+        assert!(e.contains("\"X\" is not a pool material"), "{e}");
+        let e = pool()
+            .with_insert_rules(&rules(&[("H", &["Y"])]))
+            .unwrap_err();
+        assert!(e.contains("\"Y\" is not a pool material"), "{e}");
+        let e = pool()
+            .with_insert_rules(&rules(&[("H", &["H"])]))
+            .unwrap_err();
+        assert!(e.contains("lists itself"), "{e}");
+        // Empty rules are no rules: the pool is unchanged.
+        let p = pool().with_insert_rules(&InsertRules::new()).unwrap();
+        assert!(p.allowed.is_none());
+    }
+
+    /// The edge lists resolve pool labels to their indices, and the stack
+    /// refuses an edge already outside its list.
+    #[test]
+    fn needle_rules_set_the_edges() {
+        let (mut stack, _) = glass_stack();
+        let pool = MaterialPool::from(vec![entry("G", 1.52), entry("H", 2.35)]);
+        let bad = NeedleRules {
+            outer: Some(vec!["H".into()]),
+            ..Default::default()
+        };
+        let e = bad.apply(&mut stack, pool.clone()).unwrap_err();
+        assert!(e.contains("outer") && e.contains("\"H\""), "{e}");
+        assert!(stack.edge_materials().is_free());
+
+        let good = NeedleRules {
+            outer: Some(vec!["G".into(), "H".into()]),
+            inner: Some(vec!["G".into()]),
+            ..Default::default()
+        };
+        good.apply(&mut stack, pool).unwrap();
+        let edges = stack.edge_materials();
+        assert_eq!(edges.outer.as_ref().unwrap().len(), 2);
+        assert_eq!(&*edges.inner.as_ref().unwrap()[0].0, "G");
     }
 
     #[test]

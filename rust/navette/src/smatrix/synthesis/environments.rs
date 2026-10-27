@@ -824,6 +824,24 @@ pub fn build_environments(
             .collect();
         pool_from_layers(&stacks[0], |row| design_rows.contains(&row))
     });
+    let pool = match &req.insert_rules {
+        Some(r) => pool.with_insert_rules(r)?,
+        None => pool,
+    };
+    // The edge materials are the shared design's, checked once here: a
+    // joint run never removes a layer (removal is refused while K > 1,
+    // and the floor is an LM bound), and a needle lands strictly inside
+    // its host, so the design's edges hold for the whole run.
+    if req.outer.is_some() || req.inner.is_some() {
+        let edges = pool.edge_materials(req.outer.as_deref(), req.inner.as_deref())?;
+        let design_spans = routing.iter().map(|per| per[0]);
+        let spans = stacks[0].spans();
+        edges.check(
+            stacks[0].films(),
+            design_spans.clone().min().map(|i| &spans[i]),
+            design_spans.max().map(|i| &spans[i]),
+        )?;
+    }
 
     let names = req.environments.iter().map(|e| e.name.clone()).collect();
     Ok((
@@ -936,6 +954,9 @@ mod tests {
             },
             library: lib(),
             materials: Some(vec![]), // no needles unless a test asks
+            insert_rules: None,
+            outer: None,
+            inner: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -957,6 +978,9 @@ mod tests {
             },
             library: lib(),
             materials: Some(vec![]), // no needles unless a test asks
+            insert_rules: None,
+            outer: None,
+            inner: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -1598,6 +1622,30 @@ mod tests {
     /// in the design segment everywhere — at DIFFERENT rows, because the
     /// laminate sits above it, under the SAME name, because a design
     /// parameter is identified by name and not by position.
+    #[test]
+    fn joint_rules_check_the_design_edges_and_narrow_the_pool() {
+        // The coat is L over H, behind nothing in one environment and a
+        // laminate in the other: the edges are the DESIGN's, not env 0's
+        // outermost row.
+        let mut r = two_cover_req();
+        r.outer = Some(vec!["L".into()]);
+        r.inner = Some(vec!["H".into()]);
+        build_environments(&r, &WL).unwrap();
+
+        r.outer = Some(vec!["H".into()]);
+        let e = build_environments(&r, &WL).err().unwrap();
+        assert!(e.contains("outer") && e.contains("\"L\""), "{e}");
+
+        r.outer = None;
+        r.insert_rules = Some(
+            [("L".to_string(), vec!["Z".to_string()])]
+                .into_iter()
+                .collect(),
+        );
+        let e = build_environments(&r, &WL).err().unwrap();
+        assert!(e.contains("\"Z\" is not a pool material"), "{e}");
+    }
+
     #[test]
     fn the_joint_needle_lands_in_the_design_of_every_environment() {
         use crate::smatrix::synthesis::cycle::{NeedleCycleConfig, run_needle_cycles};

@@ -15,7 +15,9 @@ use num_complex::Complex64;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::cycle::{MaterialPool, dedup_pool, pool_entry, pool_from_layers};
+use super::cycle::{
+    InsertRules, MaterialPool, NeedleRules, dedup_pool, pool_entry, pool_from_layers,
+};
 use super::structure::{DesignStack, LayerSpec};
 use crate::structure::{
     ErrorParams, ErrorType, Group, Layer, LayerType, MaterialSpec, RoughnessType,
@@ -361,6 +363,17 @@ pub struct DesignRequest {
     /// distinct index among the design's layers.
     #[serde(default)]
     pub materials: Option<Vec<String>>,
+    /// Which needles go into which materials: host label -> needle labels
+    /// (pool labels, see [`InsertRules`]). Absent: every pair of
+    /// different index.
+    #[serde(default)]
+    pub insert_rules: Option<InsertRules>,
+    /// Allowed materials (pool labels) of the layer facing the ambient.
+    #[serde(default)]
+    pub outer: Option<Vec<String>>,
+    /// Allowed materials (pool labels) of the layer on the substrate.
+    #[serde(default)]
+    pub inner: Option<Vec<String>>,
     #[serde(default)]
     pub film_flags: BTreeMap<String, Value>,
     #[serde(default)]
@@ -378,6 +391,17 @@ pub struct DesignRequest {
     /// named `"default"` holding the flat films.
     #[serde(default)]
     pub environments: Vec<super::environments::EnvironmentCfg>,
+}
+
+impl DesignRequest {
+    /// The request's insertion rules and edge materials.
+    pub fn needle_rules(&self) -> NeedleRules {
+        NeedleRules {
+            insert: self.insert_rules.clone(),
+            outer: self.outer.clone(),
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -810,7 +834,7 @@ pub fn build_design(
         .map(|l| l.material.clone())
         .collect();
 
-    let (stack, warnings) = DesignStack::from_design(
+    let (mut stack, warnings) = DesignStack::from_design(
         amb,
         sub,
         &films,
@@ -820,6 +844,7 @@ pub fn build_design(
         &background,
     )?;
     let pool = pool.unwrap_or_else(|| pool_from_layers(&stack, |_| true));
+    let pool = req.needle_rules().apply(&mut stack, pool)?;
     Ok((stack, pool, warnings))
 }
 
@@ -1016,6 +1041,9 @@ mod tests {
             },
             library: lib(),
             materials: None,
+            insert_rules: None,
+            outer: None,
+            inner: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -1049,6 +1077,29 @@ mod tests {
         r.materials = Some(vec!["Q".into()]);
         let err = build_design(&r, &wl).unwrap_err();
         assert!(err.contains("\"Q\""), "{err}");
+    }
+
+    /// The request's rules reach the pool (an empty list closes L) and the
+    /// stack (the edges are set and checked against the design).
+    #[test]
+    fn request_rules_reach_pool_and_stack() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 100.0), film("H", 50.0)]);
+        r.insert_rules = Some([("L".to_string(), vec![])].into_iter().collect());
+        r.outer = Some(vec!["L".into()]);
+        r.inner = Some(vec!["H".into(), "L".into()]);
+        let (stack, _, _) = build_design(&r, &wl).unwrap();
+        let edges = stack.edge_materials();
+        assert_eq!(edges.outer.as_ref().unwrap().len(), 1);
+        assert_eq!(edges.inner.as_ref().unwrap().len(), 2);
+
+        r.outer = Some(vec!["H".into()]);
+        let err = build_design(&r, &wl).unwrap_err();
+        assert!(err.contains("outer") && err.contains("\"L\""), "{err}");
+        r.outer = None;
+        r.insert_rules = Some([("Q".to_string(), vec![])].into_iter().collect());
+        let err = build_design(&r, &wl).unwrap_err();
+        assert!(err.contains("\"Q\" is not a pool material"), "{err}");
     }
 
     #[test]
