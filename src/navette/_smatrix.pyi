@@ -541,6 +541,13 @@ class NeedleCycleConfig:
     index must differ from both neighbours', every neighbouring needle
     host must accept it under the insertion rules, and on an outer edge it
     must be on that edge's list. Such insertions carry `boundary: True`.
+    A boundary on a rough interface is not scored by P, which cannot see
+    the jump a film slipped into a rough interface makes: the merit is
+    evaluated with the needle in place at its start thickness
+    `max(needle_seed_thickness_nm, roughness_cap * sigma)`, and the needle
+    goes in at that thickness. Such a record has `best_p: None` and the
+    measured gain as `predicted_improvement`. Every insertion record
+    carries `seed_nm`, the thickness the needle went in at.
     Off (the default), the run is exactly what it was. Flat runs only: a
     multi-environment run refuses it.
     """

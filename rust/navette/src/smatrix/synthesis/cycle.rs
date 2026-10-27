@@ -120,6 +120,34 @@ pub struct Insertion {
     pub depth_into_layer_nm: f64,
     pub material: Arc<str>,
     pub boundary: bool,
+    /// Thickness the needle went in at: the seed thickness, or a rough
+    /// boundary's start thickness (see [`rough_boundary_start_nm`]).
+    pub seed_nm: f64,
+}
+
+/// A boundary needle on a rough interface, and the thickness it starts at.
+///
+/// Névot-Croce depends on the media on both sides of an interface, so a
+/// film slipped into a rough boundary never thins back to the rough
+/// `A | B` it came from: `A | N` sharp plus `N | B` rough is a different
+/// interface pair at any thickness. The merit jumps on insertion, and P,
+/// which is first order in the thickness, cannot see the jump. These sites
+/// are scored by evaluating the merit with the needle in place instead.
+///
+/// The needle starts where the roughness cap leaves the interface alone,
+/// `d0 = max(seed, cap * sigma)`, so it is a layer that can carry the
+/// roughness it sits on. Returns `None` for a smooth boundary. `b` is the
+/// boundary above row `b` (`films.len()`: the substrate side); its
+/// interface is solver slot `b + 1`, read from the capped arrays.
+fn rough_boundary_start_nm(
+    sa: &crate::smatrix::synthesis::structure::SolverArrays,
+    b: usize,
+    seed_nm: f64,
+    cap: f64,
+) -> Option<f64> {
+    let k = b + 1;
+    let sigma = sa.rough_vals[k];
+    (sa.rough_types[k] != 0 && sigma > 0.0).then(|| seed_nm.max(cap * sigma))
 }
 
 /// The needle material pool: every material a needle may be made of.
@@ -686,9 +714,19 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         //    interface slices and graded sublayers are never sites.
         //    Boundary sites follow the interior ones, so an exact tie goes
         //    to the interior site.
+        //    Boundary sites on a rough interface are set aside: P cannot
+        //    score them (see `rough_boundary_start_nm`), a trial does.
+        let sa = stack.solver_arrays();
         let mut sites = build_scan_sites(stack.films(), stack.spans(), cfg.scan_step_nm);
+        let mut rough_sites = Vec::new();
         if cfg.boundary_needles {
-            sites.extend(build_boundary_sites(stack.films(), stack.spans()));
+            for s in build_boundary_sites(stack.films(), stack.spans()) {
+                if rough_boundary_start_nm(&sa, s.film_idx, 0.0, 0.0).is_some() {
+                    rough_sites.push(s);
+                } else {
+                    sites.push(s);
+                }
+            }
         }
 
         // 2. Analytic sweep (both polarizations summed) once per pool
@@ -698,10 +736,16 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         let per_material: Vec<Vec<_>> = (0..pool.len())
             .map(|m| pool.sites_for(m, stack, &sites))
             .collect::<Result<_, _>>()?;
-        if per_material.iter().all(Vec::is_empty) {
+        let rough_per_material: Vec<Vec<_>> = (0..pool.len())
+            .map(|m| pool.sites_for(m, stack, &rough_sites))
+            .collect::<Result<_, _>>()?;
+        if per_material
+            .iter()
+            .chain(&rough_per_material)
+            .all(Vec::is_empty)
+        {
             break; // "Stack too thin for needle insertion" (or no pool).
         }
-        let sa = stack.solver_arrays();
 
         let mut best: Option<(Insertion, &LayerSpec, f64)> = None;
         for (mat, mat_sites) in pool.iter().zip(&per_material) {
@@ -736,6 +780,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                             depth_into_layer_nm: site.depth_into_layer_nm,
                             material: mat.material.clone(),
                             boundary: site.boundary,
+                            seed_nm: cfg.needle_seed_thickness_nm,
                         },
                         mat,
                         p,
@@ -750,6 +795,56 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         let t0 = tick(cfg.record_timing);
         let current_mf = ctx.evaluate_merit(stack)?;
         t.merit_s = tock(t0);
+
+        // Inserting a seed of thickness δ also grows the equivalent-medium
+        // reference by δ, so the true slope is P(z*) + Σ gain_shift (0 for
+        // absolute-phase demand sets; the site itself is unaffected, only
+        // this bookkeeping).
+        let gtot: f64 = fold.phi_gain_shift.iter().sum();
+        // (insertion, material, P if scored by P, improvement it promises)
+        let mut best: Option<(Insertion, &LayerSpec, Option<f64>, f64)> =
+            best.map(|(ins, mat, p)| {
+                (
+                    ins,
+                    mat,
+                    Some(p),
+                    -(p + gtot) * cfg.needle_seed_thickness_nm,
+                )
+            });
+
+        // Rough boundary sites: the merit with the needle in place, at its
+        // start thickness. The trials count to the scan's time.
+        let t0 = tick(cfg.record_timing);
+        for (mat, mat_sites) in pool.iter().zip(&rough_per_material) {
+            for site in mat_sites {
+                let d0 = rough_boundary_start_nm(
+                    &sa,
+                    site.film_idx,
+                    cfg.needle_seed_thickness_nm,
+                    stack.roughness_cap(),
+                )
+                .expect("rough sites were picked by the same test");
+                let mut trial = stack.clone();
+                trial.insert_film_at_boundary(site.film_idx, new_needle(stack.films(), mat, d0))?;
+                let gain = current_mf - ctx.evaluate_merit(&trial)?;
+                if best.as_ref().is_none_or(|b| gain > b.3) {
+                    best = Some((
+                        Insertion {
+                            film_idx: site.film_idx,
+                            depth_into_layer_nm: 0.0,
+                            material: mat.material.clone(),
+                            boundary: true,
+                            seed_nm: d0,
+                        },
+                        mat,
+                        None,
+                        gain,
+                    ));
+                }
+            }
+        }
+        t.scan_s += tock(t0);
+
         let timing = cfg.record_timing.then_some(t);
         let result = match best {
             None => {
@@ -766,19 +861,13 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 });
                 break;
             }
-            Some((ins, mat, p)) => {
-                // Inserting a seed of thickness δ also grows the
-                // equivalent-medium reference by δ, so the true slope is
-                // P(z*) + Σ gain_shift (0 for absolute-phase demand sets;
-                // the site itself is unaffected, only this bookkeeping).
-                let gtot: f64 = fold.phi_gain_shift.iter().sum();
-                let predicted = -(p + gtot) * cfg.needle_seed_thickness_nm;
+            Some((ins, mat, p, predicted)) => {
                 if predicted < cfg.convergence_threshold {
                     history.push(NeedleCycleResult {
                         cycle: cycle + 1,
                         merit_before: current_mf,
                         merit_after: current_mf,
-                        best_p: Some(p),
+                        best_p: p,
                         predicted_improvement: Some(predicted),
                         layer_count: stack.films().len(),
                         insertion: None,
@@ -790,8 +879,9 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 // 4. Insert the needle (split the host, Python
                 //    `_insert_needle`) under a fresh name: a needle is a
                 //    layer of its own and accepts needles in later cycles.
-                //    A boundary needle splits nothing: it is a new film.
-                let seed = new_needle(stack.films(), mat, cfg.needle_seed_thickness_nm);
+                //    A boundary needle splits nothing: it is a new film. A
+                //    trial-scored one goes in at its start thickness.
+                let seed = new_needle(stack.films(), mat, ins.seed_nm);
                 if ins.boundary {
                     stack.insert_film_at_boundary(ins.film_idx, seed)?;
                 } else {
@@ -807,7 +897,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                     cycle: cycle + 1,
                     merit_before: current_mf,
                     merit_after: new_mf,
-                    best_p: Some(p),
+                    best_p: p,
                     predicted_improvement: Some(predicted),
                     layer_count: stack.films().len(),
                     insertion: Some(ins),
@@ -919,6 +1009,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
             depth_into_layer_nm: cand.depth_into_layer_nm,
             material: mat.material.clone(),
             boundary: false,
+            seed_nm: cfg.needle_seed_thickness_nm,
         }),
         timing: cfg.record_timing.then_some(t),
     });
@@ -1228,6 +1319,61 @@ mod tests {
             f.windows(2).all(|w| w[0].nk != w[1].nk),
             "touching films share an index"
         );
+    }
+
+    /// Every film lowers the merit by 0.1: a trial with a needle in place
+    /// sees a gain, whatever P says.
+    struct CountCtx;
+    impl DesignContext for CountCtx {
+        fn evaluate_merit(&self, s: &DesignStack) -> Result<f64, String> {
+            Ok(1.0 - 0.1 * s.films().len() as f64)
+        }
+        fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
+            Err("mock context has no simulator".into())
+        }
+        fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+            self.evaluate_merit(s)
+        }
+    }
+
+    /// A 3 nm film with rough faces: both its boundaries are rough, so the
+    /// needle is trial-scored and goes in at `max(seed, cap * sigma_eff)`.
+    /// sigma 4 is capped to 1.5 by the 3 nm film: d0 = 3 at cap 2; with the
+    /// cap off, sigma stays 4 and d0 is the seed.
+    #[test]
+    fn a_rough_boundary_needle_starts_at_its_start_thickness() {
+        let rough = |cap: f64| {
+            let (s, _) = glass_stack();
+            let mut g = LayerSpec::constant("G", 1.52, 0.0, 3.0, 1);
+            (g.rough_type, g.rough_val) = (5, 4.0);
+            let mut sub = s.substrate().clone();
+            (sub.rough_type, sub.rough_val) = (5, 4.0);
+            let mut st = DesignStack::with_films(s.ambient().clone(), sub, vec![g]).unwrap();
+            st.set_roughness_cap(cap).unwrap();
+            st
+        };
+        let spectral = spectral_of(fold_with("t", 0.0));
+        let cfg = NeedleCycleConfig {
+            boundary_needles: true,
+            max_needles: 1,
+            needle_seed_thickness_nm: 2.0,
+            ..cycle_cfg()
+        };
+        for (cap, d0) in [(2.0, 3.0), (0.0, 2.0)] {
+            let mut stack = rough(cap);
+            let hist =
+                run_needle_cycles(&mut CountCtx, &mut stack, &spectral, &pool_h(), &cfg).unwrap();
+            let h = &hist[0];
+            let ins = h.insertion.as_ref().expect("no rough boundary needle");
+            assert!(ins.boundary);
+            assert_eq!(ins.seed_nm, d0);
+            assert_eq!(h.best_p, None);
+            assert!((h.predicted_improvement.unwrap() - 0.1).abs() < 1e-12);
+            assert_eq!(stack.films()[ins.film_idx].d_nm, d0);
+            // The rough interface stays with the film below.
+            assert_eq!(stack.films()[ins.film_idx].rough_val, 0.0);
+            assert_eq!(stack.films()[ins.film_idx + 1].rough_val, 4.0);
+        }
     }
 
     /// The glass host G takes only L, and L takes nothing: every needle is

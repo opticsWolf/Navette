@@ -11,6 +11,8 @@ these are the seams:
   * on, a film too thin to split is reached through its boundaries, and
     the report says which insertions were boundary needles;
   * the edge lists and the insertion rules hold on boundaries too;
+  * a rough boundary is scored by a trial and its needle goes in at the
+    start thickness, a smooth one at the seed;
   * the multi-environment door refuses the option rather than ignore it.
 """
 import numpy as np
@@ -96,6 +98,42 @@ def test_the_insertion_rules_hold_on_boundaries():
     # M is closed, so nothing goes next to it: its two boundaries are the
     # only sites a 3 nm film has.
     assert not _insertions(_run(*THIN, boundary=True, insert_rules={"M": []}, **PIN))
+
+
+def _first_on_l_m(sigma):
+    # L 3 nm | M 3 nm, both held, M's top face rough. The edge lists close
+    # the outer edges, so L|M is the only site; H there raises R, which the
+    # target asks for. M's sigma 4 is capped to 1.5 by the 3 nm films.
+    tc = TargetCollection()
+    tc.add(SpectralTarget(WL, np.ones_like(WL), np.full_like(WL, 0.01),
+                          0.0, "s", "R"))
+    flags = {"L": {"optimize": False},
+             "M": {"optimize": False, "rough_type": 5, "rough_val": sigma}}
+    res = run_needle(
+        layers=[(MATERIALS["L"], 3.0), (MATERIALS["M"], 3.0)], names=["L", "M"],
+        targets=tc, angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
+        substrate=(1.52, "sub"), outer=["L"], inner=["M"], per_film_flags=flags,
+        pipeline_config=PipelineConfig(max_macro_cycles=1, needles_per_cycle=1),
+        needle_config=NeedleCycleConfig(boundary_needles=True,
+                                        needle_seed_thickness_nm=1.0))
+    return next(nr for p in res["phases"] for nr in p["needle_results"]
+                if nr["insertion"])
+
+
+def test_a_rough_boundary_needle_goes_in_at_its_start_thickness():
+    # Scored by a trial at max(seed, 2 * 1.5) = 3 nm, not by P.
+    rec = _first_on_l_m(4.0)
+    ins = rec["insertion"]
+    assert (ins["material"], ins["film_idx"], ins["boundary"]) == ("H", 1, True)
+    assert ins["seed_nm"] == 3.0
+    assert rec["best_p"] is None
+    assert rec["predicted_improvement"] > 0.0
+
+
+def test_a_smooth_boundary_needle_goes_in_at_the_seed():
+    rec = _first_on_l_m(0.0)
+    assert rec["insertion"]["seed_nm"] == 1.0
+    assert rec["best_p"] < 0.0
 
 
 def test_the_environments_door_refuses_the_option():

@@ -40,8 +40,8 @@ approached from either film, P reaches the boundary value.
 Roughness sits on each row's top interface (`sigma = rv[i + 1]`). On a
 rough boundary the locator's side is below the rough interface, while
 the inserted film takes no roughness and the interface stays on the row
-below it. So the prediction there is first order in a slightly different
-model; the re-optimization sees the real stack.
+below it. The resulting jump is not first order, so rough boundaries are
+scored by a merit trial instead (§B7, step 2).
 
 ## B3. What a boundary site may insert
 
@@ -210,7 +210,10 @@ multi-environment runs. Order of work at the end.
 1. Roughness cap. Built: `optics_core::effective_roughness`, applied at
    the `Solver` constructor and in `DesignStack::solver_arrays`;
    `roughness_cap` on `ScatterMatrix`, `Solver` and `DesignStack`.
-2. Start-thickness scoring for rough boundary sites.
+2. Start-thickness scoring for rough boundary sites. Built:
+   `rough_boundary_start_nm` and the trial loop in `run_needle_cycles`;
+   records carry `seed_nm`. The cap that sets `d0` is the stack's
+   `roughness_cap` (0: `d0` is the seed).
 3. F1-F4, with F5 in the docs.
 4. J1: per-segment edge lists.
 5. Segment `inverted` and `repeat` through the Architect.

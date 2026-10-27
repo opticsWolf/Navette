@@ -26,7 +26,8 @@ use pyo3::types::{IntoPyDict, PyAny, PyDict};
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
 use navette::smatrix::synthesis::cycle::{
-    dedup_pool, pool_entry, pool_from_layers, InsertRules, NeedleCycleConfig, NeedleRules,
+    dedup_pool, pool_entry, pool_from_layers, InsertRules, Insertion, NeedleCycleConfig,
+    NeedleRules,
 };
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
@@ -1384,18 +1385,13 @@ impl PySmatrixContext {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-fn insertion_dict(
-    py: Python<'_>,
-    film_idx: usize,
-    depth_nm: f64,
-    material: &str,
-    boundary: bool,
-) -> PyResult<Py<PyDict>> {
+fn insertion_dict(py: Python<'_>, ins: &Insertion) -> PyResult<Py<PyDict>> {
     let d = PyDict::new(py);
-    d.set_item("film_idx", film_idx)?;
-    d.set_item("depth_into_layer_nm", depth_nm)?;
-    d.set_item("material", material)?;
-    d.set_item("boundary", boundary)?;
+    d.set_item("film_idx", ins.film_idx)?;
+    d.set_item("depth_into_layer_nm", ins.depth_into_layer_nm)?;
+    d.set_item("material", ins.material.as_ref())?;
+    d.set_item("boundary", ins.boundary)?;
+    d.set_item("seed_nm", ins.seed_nm)?;
     Ok(d.unbind())
 }
 
@@ -1427,16 +1423,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
         rd.set_item("predicted_improvement", r.predicted_improvement)?;
         rd.set_item("layer_count", r.layer_count)?;
         match &r.insertion {
-            Some(ins) => rd.set_item(
-                "insertion",
-                insertion_dict(
-                    py,
-                    ins.film_idx,
-                    ins.depth_into_layer_nm,
-                    ins.material.as_ref(),
-                    ins.boundary,
-                )?,
-            )?,
+            Some(ins) => rd.set_item("insertion", insertion_dict(py, ins)?)?,
             None => rd.set_item("insertion", py.None())?,
         }
         // Only a `record_timing` run has the key: an untimed record is

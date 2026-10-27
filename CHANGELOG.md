@@ -79,8 +79,19 @@ All notable changes to Navette are recorded here. Work items reference
     under `insert_rules`, and on an outer edge it must be on `outer` /
     `inner`.
   - Insertion records carry `boundary` (true for a boundary needle; its
-    `film_idx` is the row the new film occupies).
+    `film_idx` is the row the new film occupies) and `seed_nm`, the
+    thickness the needle went in at.
     `DesignStack.insert_film_at_boundary(row, film)` is the move.
+  - A boundary on a rough interface is scored by a trial, not by P. A
+    film slipped into a rough interface never thins back to it
+    (Névot-Croce reads both media), so the merit jumps on insertion, by
+    about a 1 nm needle's effect, and a first-order score cannot see
+    that. The merit is evaluated with the needle in place at
+    `max(needle_seed_thickness_nm, roughness_cap * sigma)`, where the cap
+    leaves the interface's roughness whole, and a winner goes in at that
+    thickness. Its record has `best_p: None` and the measured gain as
+    `predicted_improvement`. Smooth boundaries and interior sites are
+    scored by P as before.
   - Flat runs only: a multi-environment run refuses the option. The
     joint step is planned in `docs/plans/edge_needles_plan.md`.
 - `examples/dual_band_ar.py`: a three-oxide (SiO2, Al2O3, HfO2)
