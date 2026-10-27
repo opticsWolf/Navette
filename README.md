@@ -304,7 +304,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.7.27-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.8.0-*.whl (single wheel, all engines)
 ```
 
 There is a seventh site the gate does not see: the wheel filename in the

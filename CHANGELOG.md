@@ -5,7 +5,12 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
-## [Unreleased]
+## [0.8.0] - optional Basin backends, and termination reasons that say what stopped the run
+
+Merges PR #3 (jolars). The minor bump is for the `LmTermination` changes
+below: Rust matches need a wildcard arm, and some runs that used to report
+`MaxIterations`, `Gradient` or `Cost` now report `MaxEvaluations` or
+`StuckAtBound`. Default builds pull no new dependencies.
 
 ### Added
 - **Optional Basin backends** (issue #2, PR #3): `optimizer="basin_lm_qr"`
