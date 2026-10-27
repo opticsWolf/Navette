@@ -235,10 +235,11 @@
           <figure class="card">
             <figcaption><span class="fig-title">Merit by macro cycle</span><span class="fig-sub">log scale · hover for the film count</span></figcaption>
             <div id="needle-merit" class="chart-box"></div>
-            <p class="note">Near the optimum, a needle can be inserted that the re-optimization cannot use, so
-              the merit after the needle pass rises (dashed). Cleanup merges such films back and usually
-              recovers the merit. The run ends by re-optimizing every thickness once more; that final design
-              is the one in the spectrum and the stack.</p>
+            <p class="note">Near the optimum, the merit is no longer monotone. The needle pass and the cleanup each
+              end by re-optimizing all thicknesses, and either can land in a worse local minimum, so a cycle
+              can jump up before the next one recovers. Which step jumps, and in which cycle, depends on
+              floating-point detail and differs between platforms. The run ends by re-optimizing every
+              thickness once more; that final design is the one in the spectrum and the stack.</p>
           </figure>
           <figure class="card">
             <figcaption><span class="fig-title">The finished stack</span><span class="fig-sub" id="stack-sub">22 films · ambient on the left</span></figcaption>

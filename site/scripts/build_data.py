@@ -181,10 +181,10 @@ def needle():
     phases = res["phases"]
     first = phases[0]["needle_results"][0]["merit_before"]
     # `merit` is the cycle's end (after cleanup); `needle` is the same cycle
-    # after its needle pass, which near the optimum can end worse than it
-    # began, until cleanup merges the stray films back. The run then ends
-    # with one more optimization of every thickness: `final` is that
-    # design, the one plotted and stacked above.
+    # after its needle pass. Near the optimum either step's re-optimization
+    # can land worse than it began (which one differs by platform). The run
+    # then ends with one more optimization of every thickness: `final` is
+    # that design, the one plotted and stacked above.
     history = [dict(cycle=0, merit=first, needle=first, layers=len(seed),
                     thickness=800.0)]
     history += [dict(cycle=int(p["macro_cycle"]), merit=float(p["mf_end"]),

@@ -48,6 +48,16 @@ jobs:
         run: python site/scripts/snippet_check.py
       - name: compute the figures
         run: python site/scripts/build_data.py
+      # Pages serves every file with a 10-minute cache, each on its own clock,
+      # so a fresh main.js could meet a stale figures.json and fail on a key
+      # the old data lacks. Stamping the commit onto each URL keeps them one set.
+      - name: stamp the asset URLs with the commit
+        run: |
+          v="${GITHUB_SHA::7}"
+          sed -i "s|assets/style.css\"|assets/style.css?v=$v\"|; s|assets/main.js\"|assets/main.js?v=$v\"|" site/index.html
+          sed -i "s|\"./charts.js\"|\"./charts.js?v=$v\"|; s|\"data/figures.json\"|\"data/figures.json?v=$v\"|" site/assets/main.js
+          test "$(grep -c "?v=$v" site/index.html)" -eq 2
+          test "$(grep -c "?v=$v" site/assets/main.js)" -eq 2
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
