@@ -1,5 +1,6 @@
 # Navette - Weaving thin-film systems that perform
 
+[![Navette](https://img.shields.io/badge/navette-website-blue)](https://opticsWolf.github.io/Navette/)
 [![crates.io](https://img.shields.io/crates/v/navette?logo=rust&label=crates.io)](https://crates.io/crates/navette)
 [![PyPI](https://img.shields.io/pypi/v/navette?logo=pypi&logoColor=white&label=PyPI)](https://pypi.org/project/navette/)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust)](rust/navette/Cargo.toml)
