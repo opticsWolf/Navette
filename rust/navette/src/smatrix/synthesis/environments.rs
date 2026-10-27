@@ -832,6 +832,13 @@ pub fn build_environments(
     // joint run never removes a layer (removal is refused while K > 1,
     // and the floor is an LM bound), and a needle lands strictly inside
     // its host, so the design's edges hold for the whole run.
+    if req.seed_edges.is_some() {
+        return Err(
+            "seed_edges: a multi-environment design cannot seed its edges yet; \
+                    start from a design whose edge layers are on the lists"
+                .into(),
+        );
+    }
     if req.outer.is_some() || req.inner.is_some() {
         let edges = pool.edge_materials(req.outer.as_deref(), req.inner.as_deref())?;
         let design_spans = routing.iter().map(|per| per[0]);
@@ -957,6 +964,7 @@ mod tests {
             insert_rules: None,
             outer: None,
             inner: None,
+            seed_edges: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -981,6 +989,7 @@ mod tests {
             insert_rules: None,
             outer: None,
             inner: None,
+            seed_edges: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),

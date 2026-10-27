@@ -374,6 +374,11 @@ pub struct DesignRequest {
     /// Allowed materials (pool labels) of the layer on the substrate.
     #[serde(default)]
     pub inner: Option<Vec<String>>,
+    /// Seed an edge off its list with a film this thick (nm) of the
+    /// list's first material (see [`NeedleRules::seed_edges`]). Flat
+    /// designs only.
+    #[serde(default)]
+    pub seed_edges: Option<f64>,
     #[serde(default)]
     pub film_flags: BTreeMap<String, Value>,
     #[serde(default)]
@@ -400,6 +405,7 @@ impl DesignRequest {
             insert: self.insert_rules.clone(),
             outer: self.outer.clone(),
             inner: self.inner.clone(),
+            seed_edges: self.seed_edges,
         }
     }
 }
@@ -1044,6 +1050,7 @@ mod tests {
             insert_rules: None,
             outer: None,
             inner: None,
+            seed_edges: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),

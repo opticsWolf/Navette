@@ -1568,6 +1568,7 @@ mod tests {
                     spans_removed: vec!["H (1.0 nm)".to_string()],
                     spans_capped: 0,
                     rows_removed: 1,
+                    edges_held: Vec::new(),
                 });
             let rep = ctx.take_clamp_report().unwrap();
             assert_eq!(rep.rows_removed, 1);

@@ -104,11 +104,18 @@ pub struct ClampReport {
     pub spans_removed: Vec<String>,
     pub spans_capped: usize,
     pub rows_removed: usize,
+    /// Edge layers the sweep would have removed and held at the floor
+    /// instead, because the film behind them is not on the edge's list:
+    /// "outer: material (D nm)" / "inner: ...", D the thickness before.
+    pub edges_held: Vec<String>,
 }
 
 impl ClampReport {
     pub fn is_empty(&self) -> bool {
-        self.spans_removed.is_empty() && self.spans_capped == 0 && self.rows_removed == 0
+        self.spans_removed.is_empty()
+            && self.spans_capped == 0
+            && self.rows_removed == 0
+            && self.edges_held.is_empty()
     }
 
     /// One phase can run several clamp passes (post-cleanup, post-inflate,
@@ -119,6 +126,7 @@ impl ClampReport {
         self.spans_removed.extend(other.spans_removed);
         self.spans_capped += other.spans_capped;
         self.rows_removed += other.rows_removed;
+        self.edges_held.extend(other.edges_held);
     }
 }
 
@@ -133,13 +141,17 @@ pub type EdgeMaterial = (Arc<str>, Arc<[Complex64]>);
 /// ambient (film 0), `inner` sits on the substrate (the last film).
 /// `None` leaves that edge free.
 ///
-/// A material is matched by index, bit for bit, like the layer merge. An
-/// edge must be a layer (a singleton-bulk span, an interface slice
-/// allowed); its material is the bulk row's. Needles land strictly inside
-/// a host, so insertion never changes an edge; only removal can, and every
-/// removal path consults this: cleanup skips a removal that would expose a
-/// disallowed layer, and the clamp sweep holds such a layer at the floor
-/// instead of removing it.
+/// A film is matched to a listed material by label (a needle's `#n`
+/// suffix stripped), or failing that by index, bit for bit. An edge must
+/// be a layer (a singleton-bulk span, an interface slice allowed); its
+/// material is the bulk row's. A graded or gradient span is never an
+/// allowed edge; `NeedleRules::seed_edges` puts a listed layer in front of
+/// one. An interior needle never changes an edge, and a boundary film on
+/// an edge is checked against its list at the door
+/// (`insert_film_at_boundary`). Every removal path consults this too:
+/// cleanup skips a removal that would expose a disallowed layer, and the
+/// clamp sweep holds such a layer at the floor instead of removing it
+/// (`ClampReport::edges_held`).
 #[derive(Clone, Debug, Default)]
 pub struct EdgeMaterials {
     pub outer: Option<Vec<EdgeMaterial>>,
@@ -188,10 +200,31 @@ impl EdgeMaterials {
 }
 
 /// Is `sp` (a span over `films`) an allowed edge under `list`?
-fn edge_allows(list: &Option<Vec<EdgeMaterial>>, films: &[LayerSpec], sp: &Span) -> bool {
+pub(crate) fn edge_allows(
+    list: &Option<Vec<EdgeMaterial>>,
+    films: &[LayerSpec],
+    sp: &Span,
+) -> bool {
     match list {
         None => true,
-        Some(l) => sp.is_singleton_bulk() && l.iter().any(|(_, nk)| *nk == films[sp.bulk_start].nk),
+        Some(l) => {
+            sp.is_singleton_bulk() && l.iter().any(|e| is_edge_material(e, &films[sp.bulk_start]))
+        }
+    }
+}
+
+/// Is `film` of the edge material `e`? By label, a needle's `#n` suffix
+/// stripped (`"H#3"` is `"H"`), so a re-evaluated or scaled spectrum still
+/// matches; bit-exact nk is the fallback for a film named otherwise.
+pub(crate) fn is_edge_material(e: &EdgeMaterial, film: &LayerSpec) -> bool {
+    *e.0 == *base_label(&film.material) || e.1 == film.nk
+}
+
+/// A material label without a needle's `#n` suffix.
+fn base_label(label: &str) -> &str {
+    match label.rsplit_once('#') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => label,
     }
 }
 
@@ -1410,6 +1443,13 @@ impl DesignStack {
                     continue;
                 }
                 if (clamp_up_rows || held.contains(&Some(sid))) && sp.is_singleton_bulk() {
+                    if let Some(k) = held.iter().position(|h| *h == Some(sid)) {
+                        let side = if k == 0 { "outer" } else { "inner" };
+                        report.edges_held.push(format!(
+                            "{side}: {} ({d:.1} nm)",
+                            old[sp.bulk_start].material
+                        ));
+                    }
                     let mut thin = old[sp.start..sp.end].to_vec();
                     let slice_rows = usize::from(sp.slice);
                     let slice_total: f64 = thin[..slice_rows].iter().map(|l| l.d_nm).sum();
@@ -2338,6 +2378,26 @@ mod tests {
         assert!(!s.edge_materials().is_free());
     }
 
+    /// An edge film matches a listed material by label, a needle's `#n`
+    /// suffix stripped, so a spectrum off by the last bit still matches;
+    /// a film named otherwise falls back to bit-exact nk.
+    #[test]
+    fn edge_materials_match_by_label_then_by_index() {
+        let e: EdgeMaterial = (Arc::from("H"), h(0.0).nk.clone());
+        let film = |name: &str, n: f64| LayerSpec::constant(name, n, 0.0, 10.0, NW);
+        let off = f64::from_bits(2.35f64.to_bits() + 1);
+        assert!(is_edge_material(&e, &film("H#2", off)));
+        assert!(is_edge_material(&e, &film("H", off)));
+        assert!(is_edge_material(&e, &film("X", h(0.0).nk[0].re)));
+        assert!(!is_edge_material(&e, &film("X", off)));
+        assert!(!is_edge_material(&e, &film("H#", off)));
+        assert!(!is_edge_material(&e, &film("H#b", off)));
+        assert!(!is_edge_material(&e, &film("HH#1", off)));
+
+        let mut s = stack(vec![film("H#1", off), l(50.0)]);
+        s.set_edge_materials(edges(&[&h(0.0)], &[])).unwrap();
+    }
+
     /// A film on a boundary is a span of its own; everything below moves
     /// down one row, and nothing is split.
     #[test]
@@ -2381,6 +2441,8 @@ mod tests {
         s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
         let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
         assert_eq!(rep.rows_removed, 0);
+        assert_eq!(rep.edges_held, ["outer: H (1.0 nm)", "inner: L (1.0 nm)"]);
+        assert!(!rep.is_empty());
         let f = s.films();
         assert_eq!(f.len(), 4);
         assert_eq!((f[0].d_nm, f[3].d_nm), (2.0, 2.0));
@@ -2391,6 +2453,7 @@ mod tests {
             .unwrap();
         let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
         assert_eq!(rep.rows_removed, 2);
+        assert!(rep.edges_held.is_empty());
         assert_eq!(s.films().len(), 2);
 
         // The first SURVIVOR decides: two thin layers go together when the

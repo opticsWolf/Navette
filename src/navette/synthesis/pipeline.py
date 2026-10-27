@@ -670,6 +670,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                insert_rules: Optional[Mapping[Any, Any]] = None,
                outer: Any = None,
                inner: Any = None,
+               seed_edges: Optional[float] = None,
                **stack_kwargs) -> Dict[str, Any]:
     """Design a coating with the needle pipeline, end to end.
 
@@ -699,11 +700,21 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     outer / inner : pool label, or a list of them — the materials allowed
         for the film facing the ambient (``outer``) and the film on the
         substrate (``inner``). The starting design must already comply.
-        Needles land strictly inside a film, so only removal can change an
-        edge: cleanup skips a removal that would expose a disallowed film,
-        and the thickness floor holds such a film rather than remove it.
+        An interior needle never changes an edge, and a boundary needle
+        on an edge must be on its list. Cleanup skips a removal that would
+        expose a disallowed film, and the thickness floor holds such a
+        film rather than remove it (the phase's ``clamp_report`` lists it
+        under ``edges_held``). An edge must be a layer: a film with an
+        interface slice qualifies (its bulk is matched), a graded or
+        gradient film never does.
         Labels are pool labels: the keys of ``materials``, or, with
-        ``materials=None``, the film names.
+        ``materials=None``, the film names. An edge film matches by label
+        (a needle's ``#n`` suffix stripped), or else by index.
+    seed_edges : float (nm), optional — a starting design whose edge film
+        is off its list gets a film of the list's first material, this
+        thick, on that edge instead of an error; the old edge film stays
+        behind it. The clamp floor (``clamp_min_nm``) is the natural
+        value. Flat runs only: with ``environments`` it refuses.
     pipeline_config / needle_config / lm_config : native configs (or None).
     callback : ``(macro_cycle, phase_dict)``; raising aborts (USER_ABORT).
     stack_kwargs : ambient, substrate, per-film flags (see
@@ -767,7 +778,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         return _run_needle_environments(
             design, environments, targets, angles_deg, wavelengths, materials,
             pipeline_config, needle_config, lm_config, callback, stack_kwargs,
-            rules, outer, inner)
+            rules, outer, inner, seed_edges)
     if environments is not None:
         raise ValueError(
             "run_needle: `environments` needs `design` - a flat film list has "
@@ -803,14 +814,14 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         films, gmap, _pool(materials, wl), wl, angs, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback,
-        insert_rules=rules, outer=outer, inner=inner)
+        insert_rules=rules, outer=outer, inner=inner, seed_edges=seed_edges)
 
 
 def _run_needle_environments(design, environments, targets, angles_deg,
                              wavelengths, materials, pipeline_config,
                              needle_config, lm_config, callback,
                              stack_kwargs, insert_rules=None, outer=None,
-                             inner=None) -> Dict[str, Any]:
+                             inner=None, seed_edges=None) -> Dict[str, Any]:
     """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
 
     Shapes the request document and hands it to the core in one call. The
@@ -837,7 +848,8 @@ def _run_needle_environments(design, environments, targets, angles_deg,
     request = _environments_request(
         design, environments, materials, wl, ambient, substrate,
         film_flags, per_film_flags, groups)
-    request.update(insert_rules=insert_rules, outer=outer, inner=inner)
+    request.update(insert_rules=insert_rules, outer=outer, inner=inner,
+                   seed_edges=seed_edges)
     roster = [e["name"] for e in request["environments"]]
     spec = (_build_merit_spec(targets, environments=roster)
             if isinstance(targets, TargetCollection) else targets)

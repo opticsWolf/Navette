@@ -462,11 +462,12 @@ pub(crate) fn assemble_design(
 /// `materials` is the needle pool as (label, nk); `None` takes the layers'
 /// own materials. `insert_rules` ({host label: [needle labels]}), `outer`
 /// and `inner` (allowed edge materials) are the `NeedleRules`, in pool
-/// labels. Returns the full report dict including the final
+/// labels; `seed_edges` (nm) seeds an edge off its list. Returns the
+/// full report dict including the final
 /// `stack`; assembly warnings (dropped ambient absorption, homogenized
 /// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -487,12 +488,14 @@ pub(crate) fn run_design(
     insert_rules: Option<InsertRules>,
     outer: Option<Vec<String>>,
     inner: Option<Vec<String>>,
+    seed_edges: Option<f64>,
 ) -> PyResult<Py<PyDict>> {
     use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
     let rules = NeedleRules {
         insert: insert_rules,
         outer,
         inner,
+        seed_edges,
     };
     let w = wavelengths.as_slice()?.to_vec();
     let a = angles_deg.as_slice()?.to_vec();
@@ -1401,6 +1404,8 @@ fn clamp_report_dict<'a>(py: Python<'a>, rep: &'a ClampReport) -> PyResult<Bound
     d.set_item("spans_removed", spans)?;
     d.set_item("spans_capped", rep.spans_capped)?;
     d.set_item("rows_removed", rep.rows_removed)?;
+    let held: Vec<&str> = rep.edges_held.iter().map(|s| s.as_str()).collect();
+    d.set_item("edges_held", held)?;
     Ok(d)
 }
 
@@ -1485,7 +1490,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
 /// built fresh). `None` takes the stack's layers' own materials.
 /// `insert_rules` ({host label: [needle labels]}), `outer` and `inner`
 /// (allowed edge materials) are the `NeedleRules`, in pool labels; the
-/// stack's current edges must comply.
+/// stack's current edges must comply, or `seed_edges` (nm) seeds them.
 pub struct PyNeedlePipeline {
     inner: NeedlePipeline,
     spec: navette::smatrix::synthesis::merit::MeritSpec,
@@ -1501,7 +1506,7 @@ impl PyNeedlePipeline {
     #[new]
     #[pyo3(signature = (stack, spec, angles_deg, wavelengths, materials=None,
                         pipeline_config=None, needle_config=None, lm=None,
-                        insert_rules=None, outer=None, inner=None))]
+                        insert_rules=None, outer=None, inner=None, seed_edges=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1516,6 +1521,7 @@ impl PyNeedlePipeline {
         insert_rules: Option<InsertRules>,
         outer: Option<Vec<String>>,
         inner: Option<Vec<String>>,
+        seed_edges: Option<f64>,
     ) -> PyResult<Self> {
         let a = angles_deg.as_slice()?;
         let w = wavelengths.as_slice()?;
@@ -1565,6 +1571,7 @@ impl PyNeedlePipeline {
             insert: insert_rules,
             outer,
             inner,
+            seed_edges,
         }
         .apply(&mut design, pool)
         .map_err(PyValueError::new_err)?;

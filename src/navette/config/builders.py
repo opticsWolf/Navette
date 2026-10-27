@@ -150,6 +150,7 @@ def pipeline_from_config(
     substrate_name: str = "sub",
     outer: Optional[Sequence[str]] = None,
     inner: Optional[Sequence[str]] = None,
+    seed_edges: Optional[float] = None,
 ):
     """Native ``(DesignStack, pool)`` from typed configs.
 
@@ -166,7 +167,8 @@ def pipeline_from_config(
     ``materials`` is the needle material pool as library codes; ``None``
     takes the films' own materials. ``outer`` / ``inner`` (pool labels)
     are the materials allowed for the films facing the ambient and on the
-    substrate; the stack carries them, and its edges must comply.
+    substrate; the stack carries them, and its edges must comply, or,
+    with ``seed_edges`` (nm), get a film of the list's first material.
     Insertion rules go to ``NeedlePipeline(insert_rules=...)``, which takes
     the pool. Assembly errors arrive as ``ValueError`` from the core.
     Returns ``(stack, pool)``, the pool a list of ``LayerSpec``.
@@ -187,6 +189,7 @@ def pipeline_from_config(
         "materials": None if materials is None else [str(c) for c in materials],
         "outer": None if outer is None else [str(c) for c in outer],
         "inner": None if inner is None else [str(c) for c in inner],
+        "seed_edges": None if seed_edges is None else float(seed_edges),
         "film_flags": dict(film_flags or {}),
         "per_film_flags": resolved_flags,
         "ambient_name": ambient_name,

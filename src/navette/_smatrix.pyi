@@ -587,8 +587,10 @@ class SmatrixContext:
 class NeedlePipeline:
     """Needle synthesis over a material pool (`None`: the stack's layers'
     own materials). `insert_rules` ({host label: [needle labels]}),
-    `outer` and `inner` (allowed edge materials) take pool labels. `run`
-    reports through `callback`, which may abort by raising."""
+    `outer` and `inner` (allowed edge materials) take pool labels;
+    `seed_edges` (nm) puts a film of the list's first material on an edge
+    off its list instead of refusing. `run` reports through `callback`,
+    which may abort by raising."""
 
     def __init__(
         self,
@@ -603,6 +605,7 @@ class NeedlePipeline:
         insert_rules: Mapping[str, Sequence[str]] | None = ...,
         outer: Sequence[str] | None = ...,
         inner: Sequence[str] | None = ...,
+        seed_edges: float | None = ...,
     ) -> None: ...
     def run(self, callback: Callable[..., Any] | None = ...) -> dict[str, Any]: ...
 
@@ -639,6 +642,7 @@ def run_design(
     insert_rules: Mapping[str, Sequence[str]] | None = ...,
     outer: Sequence[str] | None = ...,
     inner: Sequence[str] | None = ...,
+    seed_edges: float | None = ...,
 ) -> dict[str, Any]: ...
 def run_design_environments(
     request_json: str,

@@ -214,7 +214,16 @@ multi-environment runs. Order of work at the end.
    `rough_boundary_start_nm` and the trial loop in `run_needle_cycles`;
    records carry `seed_nm`. The cap that sets `d0` is the stack's
    `roughness_cap` (0: `d0` is the seed).
-3. F1-F4, with F5 in the docs.
+3. F1-F4, with F5 in the docs. Built: `ClampReport::edges_held` (F1;
+   its optional half already held: an edge goes when the film behind it
+   is on the list); F2 already held (`sites_for` drops every pair
+   `boundary_accepts` refuses), now pinned by a test; `is_edge_material`
+   matches by label, then nk (F3); `NeedleRules::seed_edges` and
+   `seed_edges=` on the flat doors, refused on the environments door
+   until J1 (F4); F5 in the `EdgeMaterials` and `run_needle` docs, with
+   one correction to the item: an interface-sliced plain film is
+   singleton-bulk and can be an edge, only graded and gradient spans
+   cannot.
 4. J1: per-segment edge lists.
 5. Segment `inverted` and `repeat` through the Architect.
 6. Joint boundary needles (§B5 with the cases above).

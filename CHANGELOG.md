@@ -67,6 +67,23 @@ All notable changes to Navette are recorded here. Work items reference
     (flat and multi-environment), `NeedlePipeline(...)`,
     `run_design(...)` and `DesignRequest` in the core; config's
     `pipeline_from_config` takes `outer` / `inner`.
+  - An edge film matches a listed material by label, a needle's `#n`
+    suffix stripped (`"H#3"` is `"H"`), with bit-exact nk as the
+    fallback. Matching by nk alone failed once a spectrum was rescaled or
+    re-evaluated.
+  - The floor reports an edge it holds: the phase's `clamp_report` gains
+    `edges_held`, e.g. `["outer: L (1.0 nm)"]`. An edge is held only when
+    the film behind it is not on the list; otherwise it goes like any
+    thin film.
+  - `seed_edges=` (nm) on `run_needle`, `NeedlePipeline`, `run_design`,
+    `pipeline_from_config` and `DesignRequest`: a starting design whose
+    edge film is off its list gets a film of the list's first material,
+    this thick, on that edge instead of an error, and the old edge film
+    stays behind it. The clamp floor is the natural value. Flat runs
+    only; the multi-environment door refuses it.
+  - An edge must be a layer. A film with an interface slice qualifies
+    (its bulk row is matched); a graded or gradient film never does, and
+    `seed_edges` is the way past one.
 - **Boundary needles.** `NeedleCycleConfig(boundary_needles=True)` also
   scans every span boundary, the outer edges included. A needle there is
   a new film between two layers, so it reaches films too thin for an

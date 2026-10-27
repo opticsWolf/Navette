@@ -8,7 +8,9 @@ config builder. The mechanics (scan filter, cleanup and clamp guards)
 are pinned in the core; these are the seams:
 
   * a rule is obeyed end to end, and no rules is the old run bit for bit;
-  * the edges the caller named are the edges the run ends with;
+  * the edges the caller named are the edges the run ends with; an edge
+    film matches by label, the floor reports an edge it holds, and
+    `seed_edges` puts a listed film on an edge that starts off its list;
   * every refusal is raised at the door, naming what was wrong.
 """
 import numpy as np
@@ -107,6 +109,56 @@ def test_bad_rules_refuse_at_the_door(kw, match):
         _run(**kw)
 
 
+def test_the_clamp_reports_an_edge_it_holds():
+    # A pinned 1 nm L on top, under the 2 nm floor: removing it would put H
+    # outside, so the floor holds it and says so.
+    seed = [(MATERIALS["L"], 1.0), (MATERIALS["H"], 100.0), (MATERIALS["M"], 200.0)]
+    res = run_needle(layers=seed, names=["L", "H", "M"], targets=_targets(),
+                     angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
+                     pipeline_config=_cfg(), substrate=(1.52, "sub"), outer="L",
+                     per_film_flags={"L": {"optimize": False}})
+    held = [h for p in res["phases"] if p.get("clamp_report")
+            for h in p["clamp_report"]["edges_held"]]
+    assert held and held[0] == "outer: L (1.0 nm)", held
+    assert _labels(res)[0] == "L"
+
+
+def test_an_edge_film_matches_by_label():
+    # The film's index is off by a part in 1e12 (a rescaled spectrum): it
+    # is still "L", so the edge list takes it.
+    seed = [(MATERIALS["L"] * (1 + 1e-12), 300.0), (MATERIALS["M"], 200.0)]
+    res = run_needle(layers=seed, names=NAMES, targets=_targets(),
+                     angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
+                     pipeline_config=_cfg(), substrate=(1.52, "sub"), outer="L")
+    assert _labels_near(res)[0] == "L"
+
+
+def _labels_near(res):
+    out = []
+    for f in res["stack"].films():
+        n = complex(np.asarray(f["nk"])[0])
+        out.append(min(N, key=lambda k: abs(N[k] - n)))
+    return out
+
+
+def test_seed_edges_put_a_listed_film_on_an_edge_off_its_list():
+    with pytest.raises(ValueError, match="outer"):
+        _run(outer="H")
+    res = _run(outer="H", seed_edges=2.0)
+    assert res["stack"].films()[0]["material"] == "H#1"
+    assert _labels(res)[0] == "H"
+    assert "M" in _labels(res)
+    with pytest.raises(ValueError, match="seed_edges"):
+        _run(outer="H", seed_edges=0.0)
+
+
+def test_the_pipeline_class_seeds_edges_too():
+    stack, pool = stack_from_layers(SEED, WL, MATERIALS, names=NAMES)
+    pipe = NeedlePipeline(stack, build_merit_spec(_targets()), np.array([0.0]),
+                          WL, pool, _cfg(), outer=["H"], seed_edges=2.0)
+    assert _labels(pipe.run())[0] == "H"
+
+
 def test_insert_rules_must_be_a_mapping():
     with pytest.raises(TypeError, match="insert_rules must be a mapping"):
         _run(insert_rules=[("L", "H")])
@@ -136,3 +188,5 @@ def test_the_environments_door_takes_the_rules():
     assert not _inserted(run_needle(insert_rules={"L": ["H"], "H": []}, **kw))
     with pytest.raises(ValueError, match="outer"):
         run_needle(outer="H", **kw)
+    with pytest.raises(ValueError, match="seed_edges"):
+        run_needle(outer="H", seed_edges=2.0, **kw)

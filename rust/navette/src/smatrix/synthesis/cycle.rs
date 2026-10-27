@@ -24,7 +24,9 @@ use crate::smatrix::synthesis::needle_pass::{
     needle_pass_scan,
 };
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
-use crate::smatrix::synthesis::structure::{DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec};
+use crate::smatrix::synthesis::structure::{
+    DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec, edge_allows, is_edge_material,
+};
 
 /// Knobs for the inner insertion loop (Python `NeedleConfig` subset).
 #[derive(Clone, Debug)]
@@ -370,8 +372,10 @@ impl MaterialPool {
             }
         }
         let edges = stack.edge_materials();
+        let needle = &self.materials[m];
         let listed = |l: &Option<Vec<EdgeMaterial>>| {
-            l.as_ref().is_none_or(|l| l.iter().any(|(_, e)| *e == *nk))
+            l.as_ref()
+                .is_none_or(|l| l.iter().any(|e| is_edge_material(e, needle)))
         };
         Ok((b != 0 || listed(&edges.outer)) && (b != n || listed(&edges.inner)))
     }
@@ -386,11 +390,16 @@ pub struct NeedleRules {
     pub outer: Option<Vec<String>>,
     /// Allowed materials (pool labels) of the layer on the substrate.
     pub inner: Option<Vec<String>>,
+    /// A starting design off an edge list gets a film of the list's first
+    /// material, this thick (nm), on that edge instead of an error.
+    /// `None`: the design must comply as given.
+    pub seed_edges: Option<f64>,
 }
 
 impl NeedleRules {
     /// Apply to a run: the pool takes the insertion rules, the stack the
-    /// edge materials (its current edges must comply).
+    /// edge materials. Its current edges must comply, or be seeded
+    /// (`seed_edges`).
     pub fn apply(
         &self,
         stack: &mut DesignStack,
@@ -402,10 +411,39 @@ impl NeedleRules {
         };
         if self.outer.is_some() || self.inner.is_some() {
             let edges = pool.edge_materials(self.outer.as_deref(), self.inner.as_deref())?;
+            if let Some(d) = self.seed_edges {
+                seed_edges(stack, &edges, d)?;
+            }
             stack.set_edge_materials(edges)?;
         }
         Ok(pool)
     }
+}
+
+/// Put a `d_nm` film of the list's first material on each edge whose
+/// current layer is off its list. The film is a needle like any other
+/// (named `"<label>#<n>"`, optimized, a host), and the old edge layer is
+/// kept behind it.
+fn seed_edges(stack: &mut DesignStack, edges: &EdgeMaterials, d_nm: f64) -> Result<(), String> {
+    if !(d_nm.is_finite() && d_nm > 0.0) {
+        return Err(format!(
+            "seed_edges: the seed film's thickness must be positive and finite (got {d_nm} nm)"
+        ));
+    }
+    for (list, outer) in [(&edges.outer, true), (&edges.inner, false)] {
+        let Some(first) = list.as_ref().and_then(|l| l.first()) else {
+            continue;
+        };
+        let spans = stack.spans();
+        let edge = if outer { spans.first() } else { spans.last() };
+        if edge.is_some_and(|sp| edge_allows(list, stack.films(), sp)) {
+            continue;
+        }
+        let film = new_needle(stack.films(), &pool_entry(&first.0, first.1.clone()), d_nm);
+        let b = if outer { 0 } else { stack.films().len() };
+        stack.insert_film_at_boundary(b, film)?;
+    }
+    Ok(())
 }
 
 /// A film name for a new needle of `label`, used by no film in `films`.
@@ -1277,6 +1315,15 @@ mod tests {
         assert_eq!(on_boundary(&pool, &s, 0), ["M"]);
         assert!(on_boundary(&pool, &s, 3).is_empty()); // G is the only inner, and the edge already
         assert_eq!(on_boundary(&pool, &s, 1), ["G", "A", "M"]); // inside: no list
+
+        // A site that accepts nothing is in no material's site list, so
+        // neither the scan nor a trial ever visits it.
+        let sites = build_boundary_sites(s.films(), s.spans());
+        assert!(sites.iter().any(|x| x.film_idx == 3));
+        for m in 0..pool.len() {
+            let kept = pool.sites_for(m, &s, &sites).unwrap();
+            assert!(kept.iter().all(|x| x.film_idx != 3), "{}", pool[m].material);
+        }
     }
 
     /// A film too thin for an interior site is reached only through its
@@ -1483,6 +1530,36 @@ mod tests {
         let edges = stack.edge_materials();
         assert_eq!(edges.outer.as_ref().unwrap().len(), 2);
         assert_eq!(&*edges.inner.as_ref().unwrap()[0].0, "G");
+    }
+
+    /// `seed_edges` puts a film of the list's first material on each edge
+    /// off its list and keeps the old layer behind it; an edge already on
+    /// its list is left alone, and the thickness must be positive.
+    #[test]
+    fn seed_edges_put_the_first_listed_material_on_an_edge_off_its_list() {
+        let pool = MaterialPool::from(vec![entry("G", 1.52), entry("H", 2.35), entry("L", 1.38)]);
+        let rules = |d| NeedleRules {
+            outer: Some(vec!["H".into(), "L".into()]),
+            inner: Some(vec!["G".into()]),
+            seed_edges: Some(d),
+            ..Default::default()
+        };
+        let (mut stack, _) = glass_stack();
+        rules(2.0).apply(&mut stack, pool.clone()).unwrap();
+        let f: Vec<(&str, f64)> = stack
+            .films()
+            .iter()
+            .map(|l| (l.material.as_ref(), l.d_nm))
+            .collect();
+        assert_eq!(f, [("H#1", 2.0), ("G", 200.0)]);
+        assert!(stack.films()[0].needle && stack.films()[0].optimize);
+        assert!(stack.edge_materials().outer.is_some());
+
+        for d in [0.0, -1.0, f64::NAN] {
+            let (mut stack, _) = glass_stack();
+            let e = rules(d).apply(&mut stack, pool.clone()).unwrap_err();
+            assert!(e.contains("seed_edges"), "{e}");
+        }
     }
 
     #[test]
