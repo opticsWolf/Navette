@@ -20,7 +20,8 @@ use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::needle_pass::{
-    NeedlePassInput, ScanSite, build_needle_targets_env, build_scan_sites, needle_pass_scan,
+    NeedlePassInput, ScanSite, build_boundary_sites, build_needle_targets_env, build_scan_sites,
+    needle_pass_scan,
 };
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec};
@@ -44,6 +45,11 @@ pub struct NeedleCycleConfig {
     /// (bench switch). Off, no clock is read at all; on or off, the run
     /// itself is the same — the timers observe and never steer.
     pub record_timing: bool,
+    /// Also scan every span boundary, the outer edges included (see
+    /// `build_boundary_sites`): a needle there is a new film between two
+    /// layers, and reaches films too thin for an interior site. Off, the
+    /// scan and the run are exactly what they were. Flat runs only.
+    pub boundary_needles: bool,
 }
 
 impl Default for NeedleCycleConfig {
@@ -55,6 +61,7 @@ impl Default for NeedleCycleConfig {
             scan_step_nm: 2.0,
             refold_per_cycle: true,
             record_timing: false,
+            boundary_needles: false,
         }
     }
 }
@@ -104,11 +111,15 @@ pub struct NeedleCycleResult {
     pub timing: Option<CycleTiming>,
 }
 
+/// Where a needle landed. Inside a film, `film_idx` is the host it split.
+/// On a `boundary`, it is the row the new film now occupies (the old row
+/// there moved down one), and the depth is 0.
 #[derive(Clone, Debug)]
 pub struct Insertion {
     pub film_idx: usize,
     pub depth_into_layer_nm: f64,
     pub material: Arc<str>,
+    pub boundary: bool,
 }
 
 /// The needle material pool: every material a needle may be made of.
@@ -273,21 +284,68 @@ impl MaterialPool {
         }
     }
 
-    /// The `sites` whose film accepts a needle of entry `m`. Filtering
+    /// The `sites` of `stack` that accept a needle of entry `m`. Filtering
     /// whole rows keeps each surviving row's steps intact.
     fn sites_for(
         &self,
         m: usize,
-        films: &[LayerSpec],
+        stack: &DesignStack,
         sites: &[ScanSite],
     ) -> Result<Vec<ScanSite>, String> {
         let mut out = Vec::new();
         for s in sites {
-            if self.accepts(&films[s.film_idx], m)? {
+            let ok = if s.boundary {
+                self.boundary_accepts(stack, s.film_idx, m)?
+            } else {
+                self.accepts(&stack.films()[s.film_idx], m)?
+            };
+            if ok {
                 out.push(*s);
             }
         }
         Ok(out)
+    }
+
+    /// May a needle of entry `m` go on the boundary above row `b` (`b ==
+    /// films.len()`: on the substrate)?
+    ///
+    /// The needle becomes a film between the two neighbours, so it is
+    /// checked against both:
+    ///  * its index differs from either neighbour's, the adjacent row's
+    ///    and a layer's own bulk row's (the ambient and the substrate
+    ///    count): a needle of a neighbour's index is that neighbour grown
+    ///    thicker, which the optimizer already covers;
+    ///  * every neighbour that is a needle host accepts it under the
+    ///    insertion rules (a closed host closes its boundaries too);
+    ///  * on an outer edge it becomes the edge layer, so it must be on
+    ///    that edge's list when one is set.
+    fn boundary_accepts(&self, stack: &DesignStack, b: usize, m: usize) -> Result<bool, String> {
+        let films = stack.films();
+        let n = films.len();
+        let nk = &self.materials[m].nk;
+        let adjacent = [
+            b.checked_sub(1).map_or(stack.ambient(), |r| &films[r]),
+            films.get(b).unwrap_or(stack.substrate()),
+        ];
+        if adjacent.iter().any(|f| f.nk == *nk) {
+            return Ok(false);
+        }
+        let neighbours = [b.checked_sub(1), (b < n).then_some(b)];
+        for row in neighbours.into_iter().flatten() {
+            let sp = stack.spans()[stack.span_index_of_row(row)];
+            if !sp.is_singleton_bulk() {
+                continue; // a graded profile: excluded by its adjacent row only
+            }
+            let layer = &films[sp.bulk_start];
+            if layer.nk == *nk || (layer.needle && !self.accepts(layer, m)?) {
+                return Ok(false);
+            }
+        }
+        let edges = stack.edge_materials();
+        let listed = |l: &Option<Vec<EdgeMaterial>>| {
+            l.as_ref().is_none_or(|l| l.iter().any(|(_, e)| *e == *nk))
+        };
+        Ok((b != 0 || listed(&edges.outer)) && (b != n || listed(&edges.inner)))
     }
 }
 
@@ -485,7 +543,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             // same index in every environment, so every environment keeps
             // the same rows.
             let all = build_scan_sites(st.films(), st.spans(), cfg.scan_step_nm);
-            let sites = pool.sites_for(mi, st.films(), &all)?;
+            let sites = pool.sites_for(mi, st, &all)?;
             let res = needle_pass_scan(&input, &sites)?;
             // `build_scan_sites` walks rows in order and emits steps
             // 1..n_steps inside each admissible row, so the running count
@@ -585,6 +643,15 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
     // the shared design object and IS environment 0's assembly; the other
     // K-1 are re-expressed from it inside the sweep.
     let multi = ctx.environments().is_some();
+    if multi && cfg.boundary_needles {
+        // A boundary needle adds a design film between two slots, which
+        // the compiled environments have no move for yet (`insert_seed`
+        // only splits a slot). Refuse rather than scan what cannot land.
+        return Err("boundary_needles is not available with environments yet: \
+                    the joint run inserts only inside the shared design's films. \
+                    Turn it off for this run."
+            .into());
+    }
 
     // Initial optimization.
     let t0 = tick(cfg.record_timing);
@@ -617,14 +684,19 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         // 1. Candidate sites: every step inside a needle-flagged layer.
         //    `build_scan_sites` reads the flag and skips multi-row spans, so
         //    interface slices and graded sublayers are never sites.
-        let sites = build_scan_sites(stack.films(), stack.spans(), cfg.scan_step_nm);
+        //    Boundary sites follow the interior ones, so an exact tie goes
+        //    to the interior site.
+        let mut sites = build_scan_sites(stack.films(), stack.spans(), cfg.scan_step_nm);
+        if cfg.boundary_needles {
+            sites.extend(build_boundary_sites(stack.films(), stack.spans()));
+        }
 
         // 2. Analytic sweep (both polarizations summed) once per pool
         //    material, over the sites whose layer accepts it (its index
         //    differs); the global best (site, material) pair is kept.
         //    Insertion rules narrow the pairs further.
         let per_material: Vec<Vec<_>> = (0..pool.len())
-            .map(|m| pool.sites_for(m, stack.films(), &sites))
+            .map(|m| pool.sites_for(m, stack, &sites))
             .collect::<Result<_, _>>()?;
         if per_material.iter().all(Vec::is_empty) {
             break; // "Stack too thin for needle insertion" (or no pool).
@@ -663,6 +735,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                             film_idx: site.film_idx,
                             depth_into_layer_nm: site.depth_into_layer_nm,
                             material: mat.material.clone(),
+                            boundary: site.boundary,
                         },
                         mat,
                         p,
@@ -717,8 +790,13 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 // 4. Insert the needle (split the host, Python
                 //    `_insert_needle`) under a fresh name: a needle is a
                 //    layer of its own and accepts needles in later cycles.
+                //    A boundary needle splits nothing: it is a new film.
                 let seed = new_needle(stack.films(), mat, cfg.needle_seed_thickness_nm);
-                stack.insert_needle_seed(ins.film_idx, ins.depth_into_layer_nm, seed)?;
+                if ins.boundary {
+                    stack.insert_film_at_boundary(ins.film_idx, seed)?;
+                } else {
+                    stack.insert_needle_seed(ins.film_idx, ins.depth_into_layer_nm, seed)?;
+                }
 
                 // 5. Re-optimize.
                 let t0 = tick(cfg.record_timing);
@@ -840,6 +918,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
             film_idx: row0,
             depth_into_layer_nm: cand.depth_into_layer_nm,
             material: mat.material.clone(),
+            boundary: false,
         }),
         timing: cfg.record_timing.then_some(t),
     });
@@ -929,6 +1008,7 @@ mod tests {
             scan_step_nm: 2.0,
             refold_per_cycle: true,
             record_timing: false,
+            boundary_needles: false,
         }
     }
 
@@ -1037,6 +1117,117 @@ mod tests {
             .iter()
             .map(|(h, ns)| (h.to_string(), ns.iter().map(|n| n.to_string()).collect()))
             .collect()
+    }
+
+    /// air | L(30) H(3) G(30) | glass (1.52).
+    fn boundary_stack() -> DesignStack {
+        let (s, _) = glass_stack();
+        let films = vec![
+            LayerSpec::constant("L", 1.38, 0.0, 30.0, 1),
+            LayerSpec::constant("H", 2.35, 0.0, 3.0, 1),
+            LayerSpec::constant("G", 1.52, 0.0, 30.0, 1),
+        ];
+        DesignStack::with_films(s.ambient().clone(), s.substrate().clone(), films).unwrap()
+    }
+
+    /// The labels a boundary above row `b` accepts.
+    fn on_boundary(pool: &MaterialPool, stack: &DesignStack, b: usize) -> Vec<String> {
+        (0..pool.len())
+            .filter(|&m| pool.boundary_accepts(stack, b, m).unwrap())
+            .map(|m| pool[m].material.to_string())
+            .collect()
+    }
+
+    fn boundary_pool() -> MaterialPool {
+        vec![
+            entry("L", 1.38),
+            entry("H", 2.35),
+            entry("G", 1.52),
+            entry("A", 1.0),
+            entry("M", 1.7),
+        ]
+        .into()
+    }
+
+    /// A boundary needle differs in index from both neighbours, the ambient
+    /// and the substrate included.
+    #[test]
+    fn a_boundary_needle_differs_from_both_neighbours() {
+        let (s, pool) = (boundary_stack(), boundary_pool());
+        assert_eq!(on_boundary(&pool, &s, 0), ["H", "G", "M"]); // air | L
+        assert_eq!(on_boundary(&pool, &s, 1), ["G", "A", "M"]); // L | H
+        assert_eq!(on_boundary(&pool, &s, 3), ["L", "H", "A", "M"]); // G | glass
+    }
+
+    /// Every neighbouring host must accept the needle: a closed host
+    /// closes its boundaries too.
+    #[test]
+    fn a_boundary_needle_needs_both_hosts_rules() {
+        let s = boundary_stack();
+        let pool = boundary_pool()
+            .with_insert_rules(&rules(&[("H", &[]), ("L", &["M", "A"])]))
+            .unwrap();
+        assert_eq!(on_boundary(&pool, &s, 0), ["M"]); // A is the ambient's index
+        assert!(on_boundary(&pool, &s, 1).is_empty()); // H closed
+        assert!(on_boundary(&pool, &s, 2).is_empty());
+        assert_eq!(on_boundary(&pool, &s, 3), ["L", "H", "A", "M"]); // G: default
+    }
+
+    /// On an outer edge the needle becomes the edge layer: the list decides.
+    #[test]
+    fn a_boundary_needle_on_an_edge_is_on_its_list() {
+        let mut s = boundary_stack();
+        let pool = boundary_pool();
+        let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let edges = pool
+            .edge_materials(Some(&labels(&["L", "M"])), Some(&labels(&["G"])))
+            .unwrap();
+        s.set_edge_materials(edges).unwrap();
+        assert_eq!(on_boundary(&pool, &s, 0), ["M"]);
+        assert!(on_boundary(&pool, &s, 3).is_empty()); // G is the only inner, and the edge already
+        assert_eq!(on_boundary(&pool, &s, 1), ["G", "A", "M"]); // inside: no list
+    }
+
+    /// A film too thin for an interior site is reached only through its
+    /// boundaries: off, the pass has no site; on, every needle is a new
+    /// film on a boundary, and no two touching films share an index.
+    #[test]
+    fn boundary_needles_reach_films_too_thin_to_split() {
+        let thin = || {
+            let (s, _) = glass_stack();
+            let g = LayerSpec::constant("G", 1.52, 0.0, 3.0, 1);
+            DesignStack::with_films(s.ambient().clone(), s.substrate().clone(), vec![g]).unwrap()
+        };
+        // H only: an H needle never takes an H needle, so every later
+        // site is a boundary too.
+        let pool = pool_h();
+        let spectral = spectral_of(fold_with("t", 0.0));
+
+        let mut stack = thin();
+        let hist =
+            run_needle_cycles(&mut StillCtx, &mut stack, &spectral, &pool, &cycle_cfg()).unwrap();
+        assert!(hist.is_empty());
+
+        let mut stack = thin();
+        let cfg = NeedleCycleConfig {
+            boundary_needles: true,
+            max_needles: 3,
+            ..cycle_cfg()
+        };
+        let hist = run_needle_cycles(&mut StillCtx, &mut stack, &spectral, &pool, &cfg).unwrap();
+        let ins: Vec<&Insertion> = hist.iter().filter_map(|h| h.insertion.as_ref()).collect();
+        assert!(!ins.is_empty(), "nothing landed on a boundary");
+        assert!(
+            ins.iter()
+                .all(|i| i.boundary && i.depth_into_layer_nm == 0.0)
+        );
+        let f = stack.films();
+        assert_eq!(f.len(), 1 + ins.len());
+        assert!(f.iter().any(|l| &*l.material == "G" && l.d_nm == 3.0));
+        assert!(
+            f.windows(2).all(|w| w[0].nk != w[1].nk),
+            "touching films share an index"
+        );
     }
 
     /// The glass host G takes only L, and L takes nothing: every needle is

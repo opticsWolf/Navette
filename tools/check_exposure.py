@@ -98,7 +98,7 @@ ALLOWLIST = {
     "char_func", "char_func_xy", "reflection_coefficient_helper", "n_eff_bound",
     # pipeline stages (via NeedlePipeline::run / run_design)
     "run_needle_cycles", "run_needle_pass", "needle_pass_scan",
-    "build_scan_sites", "cleanup_design", "remove_thin_layers",
+    "build_scan_sites", "build_boundary_sites", "cleanup_design", "remove_thin_layers",
     "inflate_design", "qwot_nm", "qwot_to_thickness", "round_to_qwot",
     "thickness_to_qwot", "levenberg_marquardt",
     # analytic-Jacobian internals (R4.5): reachable from Python through the

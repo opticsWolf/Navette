@@ -458,6 +458,7 @@ class DesignStack:
     def insert_needle_seed(
         self, film_idx: int, depth_into_layer_nm: float, seed: LayerSpec
     ) -> None: ...
+    def insert_film_at_boundary(self, row: int, film: LayerSpec) -> None: ...
     def merge_adjacent(self) -> int: ...
     def remove_film(self, film_idx: int) -> LayerSpec: ...
     def clamp_all(self, min_nm: float, max_nm: float) -> tuple[int, int]: ...
@@ -520,6 +521,14 @@ class NeedleCycleConfig:
     insertion, plus `initial_lm` (the pass's opening optimization, on its
     first record only). Off (the default), no clock is read and the records
     carry no `timing` key; on or off, the run itself is bit-identical.
+
+    `boundary_needles=True` also scans every span boundary, the outer
+    edges included: a needle there is a new film between two layers. Its
+    index must differ from both neighbours', every neighbouring needle
+    host must accept it under the insertion rules, and on an outer edge it
+    must be on that edge's list. Such insertions carry `boundary: True`.
+    Off (the default), the run is exactly what it was. Flat runs only: a
+    multi-environment run refuses it.
     """
 
     def __init__(
@@ -530,6 +539,7 @@ class NeedleCycleConfig:
         scan_step_nm: float = ...,
         refold_per_cycle: bool = ...,
         record_timing: bool = ...,
+        boundary_needles: bool = ...,
     ) -> None: ...
 
 class SmatrixContext:

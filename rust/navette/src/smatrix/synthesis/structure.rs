@@ -777,6 +777,72 @@ impl DesignStack {
 
     // -- mutation primitives -------------------------------------------------
 
+    /// Insert `film` as a new layer on the span boundary above row `row`
+    /// (`row == films.len()`: on the substrate). Nothing is split: the film
+    /// becomes a singleton span of its own and every later row and span
+    /// moves down by one, keeping its recipe.
+    ///
+    /// `row` must be a span boundary, never a row inside a span. On an
+    /// outer edge the film becomes the edge layer, so it must be on that
+    /// edge's list when one is set. The film takes no roughness from its
+    /// neighbours: the boundary's interface stays on the row below.
+    pub fn insert_film_at_boundary(&mut self, row: usize, film: LayerSpec) -> Result<(), String> {
+        let n = self.films.len();
+        let at = if row == n {
+            self.spans.len()
+        } else {
+            self.spans
+                .iter()
+                .position(|sp| sp.start == row)
+                .ok_or_else(|| {
+                    format!(
+                        "row {row} is not a span boundary ({n} films); a film goes between spans"
+                    )
+                })?
+        };
+        if film.nk.len() != self.num_wavs {
+            return Err(format!(
+                "film '{}' nk length {} != the stack's {}",
+                film.material,
+                film.nk.len(),
+                self.num_wavs
+            ));
+        }
+        for (list, which, edge) in [
+            (&self.edges.outer, "outer (ambient side)", row == 0),
+            (&self.edges.inner, "inner (substrate side)", row == n),
+        ] {
+            if let Some(l) = list.as_ref().filter(|_| edge)
+                && !l.iter().any(|(_, nk)| *nk == film.nk)
+            {
+                return Err(format!(
+                    "edge materials: film {:?} would become the {which} edge; allowed: [{}]",
+                    film.material,
+                    edge_labels(l)
+                ));
+            }
+        }
+        self.films.insert(row, film);
+        for sp in &mut self.spans[at..] {
+            sp.start += 1;
+            sp.end += 1;
+            sp.bulk_start += 1;
+        }
+        self.spans.insert(
+            at,
+            Span {
+                start: row,
+                end: row + 1,
+                logical: row,
+                slice: false,
+                bulk_start: row,
+            },
+        );
+        self.recipes.insert(at, None);
+        self.assert_spans_partition();
+        Ok(())
+    }
+
     /// Split the film at `film_idx` and insert a seed layer.
     ///
     /// Verbatim port of Python `_insert_needle`: replaces films[film_idx]
@@ -2246,6 +2312,39 @@ mod tests {
         assert!(s.edge_materials().is_free());
         s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
         assert!(!s.edge_materials().is_free());
+    }
+
+    /// A film on a boundary is a span of its own; everything below moves
+    /// down one row, and nothing is split.
+    #[test]
+    fn a_boundary_film_splits_nothing() {
+        let mut s = stack(vec![h(100.0), l(50.0), h(80.0)]);
+        s.insert_film_at_boundary(1, l(5.0)).unwrap();
+        s.insert_film_at_boundary(4, h(3.0)).unwrap(); // on the substrate
+        let d: Vec<f64> = s.films().iter().map(|f| f.d_nm).collect();
+        assert_eq!(d, vec![100.0, 5.0, 50.0, 80.0, 3.0]);
+        let starts: Vec<usize> = s.spans().iter().map(|sp| sp.start).collect();
+        assert_eq!(starts, vec![0, 1, 2, 3, 4]);
+        assert!(s.spans().iter().all(Span::is_singleton_bulk));
+
+        let e = s.insert_film_at_boundary(9, l(5.0)).unwrap_err();
+        assert!(e.contains("not a span boundary"), "{e}");
+    }
+
+    /// On an outer edge the new film becomes the edge layer, so the edge's
+    /// list decides; inside the stack it does not apply.
+    #[test]
+    fn a_boundary_film_obeys_the_edge_lists() {
+        let mut s = stack(vec![h(100.0), l(50.0)]);
+        s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
+        let e = s.insert_film_at_boundary(0, l(5.0)).unwrap_err();
+        assert!(e.contains("outer"), "{e}");
+        let e = s.insert_film_at_boundary(2, h(5.0)).unwrap_err();
+        assert!(e.contains("inner"), "{e}");
+        assert_eq!(s.films().len(), 2);
+        s.insert_film_at_boundary(1, h(5.0)).unwrap();
+        s.insert_film_at_boundary(0, h(5.0)).unwrap();
+        assert_eq!(s.films().len(), 4);
     }
 
     /// A thin edge layer the sweep would remove is held at the floor when

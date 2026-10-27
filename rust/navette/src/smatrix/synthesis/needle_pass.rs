@@ -47,6 +47,11 @@ use crate::structure::Span;
 // ---------------------------------------------------------------------------
 
 /// One candidate insertion site.
+///
+/// An interior site splits film `film_idx` at `depth_into_layer_nm`. A
+/// `boundary` site sits between two spans: `film_idx` is the first row
+/// below it (`films.len()` on the substrate side), the depth is 0, and a
+/// needle there is a new film of its own, splitting nothing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScanSite {
     /// Film index (0-based within `DesignStack::films`).
@@ -55,6 +60,8 @@ pub struct ScanSite {
     pub depth_into_layer_nm: f64,
     /// Cumulative physical depth from the top of the first host-range film.
     pub z_nm: f64,
+    /// A site on a span boundary rather than inside a film.
+    pub boundary: bool,
 }
 
 /// Build the candidate list exactly like `compute_p_function`: interior
@@ -84,10 +91,74 @@ pub fn build_scan_sites(
                     film_idx,
                     depth_into_layer_nm: pos_in_layer,
                     z_nm: cumulative + pos_in_layer,
+                    boundary: false,
                 });
             }
         }
         cumulative += d;
+    }
+    sites
+}
+
+/// The boundary sites: one per span boundary, the outer edges included,
+/// wherever at least one neighbouring span is a needle host (a
+/// singleton-bulk span whose film has `needle` set). The ambient and the
+/// substrate are never hosts. A boundary touching a span of zero thickness
+/// is skipped: it is the same plane as the next one.
+///
+/// P is single-valued on a boundary: a needle adds a slab without thinning
+/// either neighbour and the tangential fields are continuous, so the
+/// scan's own depth locator (which puts an exact boundary depth in the row
+/// below, at depth 0; the substrate edge in the last row, at its
+/// thickness) evaluates it with no new kernel. With roughness on the
+/// boundary the locator's side is below the rough interface, so the
+/// prediction there is first order in a model the insertion only
+/// approximates; the re-optimization sees the real stack.
+///
+/// `z_nm` sums the rows in the order the locator does, so an exact
+/// boundary lands exactly. Sites run top to bottom. An unbooked row list
+/// (empty `spans`) is one span per row, as in `build_scan_sites`.
+pub fn build_boundary_sites(
+    films: &[crate::smatrix::synthesis::structure::LayerSpec],
+    spans: &[Span],
+) -> Vec<ScanSite> {
+    let singletons: Vec<Span>;
+    let spans = if spans.is_empty() {
+        singletons = (0..films.len())
+            .map(|i| Span {
+                start: i,
+                end: i + 1,
+                logical: i,
+                slice: false,
+                bulk_start: i,
+            })
+            .collect();
+        &singletons
+    } else {
+        spans
+    };
+    let thick = |sp: &Span| films[sp.start..sp.end].iter().any(|f| f.d_nm > 0.0);
+    let host = |sp: &Span| sp.is_singleton_bulk() && films[sp.bulk_start].needle && thick(sp);
+    let mut sites = Vec::new();
+    let mut cumulative = 0.0f64;
+    for i in 0..=spans.len() {
+        let above = i.checked_sub(1).map(|j| &spans[j]);
+        let below = spans.get(i);
+        if above.is_some_and(|sp| !thick(sp)) || below.is_some_and(|sp| !thick(sp)) {
+            // Degenerate: this plane is also the next boundary's.
+        } else if above.is_some_and(host) || below.is_some_and(host) {
+            sites.push(ScanSite {
+                film_idx: below.map_or(films.len(), |sp| sp.start),
+                depth_into_layer_nm: 0.0,
+                z_nm: cumulative,
+                boundary: true,
+            });
+        }
+        if let Some(sp) = below {
+            for f in &films[sp.start..sp.end] {
+                cumulative += f.d_nm;
+            }
+        }
     }
     sites
 }
@@ -1284,6 +1355,80 @@ mod tests {
                 (2, 2.0, 19.0), // cumulative 10+7 → z = 17+2
             ]
         );
+    }
+
+    /// One site per boundary, the edges included, wherever a neighbour is
+    /// a host; the depth locator's own sum gives each boundary's depth.
+    #[test]
+    fn boundary_sites_sit_on_every_host_boundary() {
+        let off = |mut l: LayerSpec| {
+            l.needle = false;
+            l
+        };
+        let films = vec![
+            LayerSpec::constant("H", 2.35, 0.0, 3.0, NW), // too thin for an interior site
+            off(LayerSpec::constant("X", 1.7, 0.0, 7.0, NW)),
+            off(LayerSpec::constant("Y", 1.8, 0.0, 4.0, NW)),
+            LayerSpec::constant("Z", 1.9, 0.0, 0.0, NW), // zero: skipped
+            LayerSpec::constant("L", 1.46, 0.0, 5.0, NW),
+        ];
+        assert!(build_scan_sites(&films[..1], &[], 2.0).is_empty());
+        let got: Vec<(usize, f64, f64, bool)> = build_boundary_sites(&films, &[])
+            .iter()
+            .map(|s| (s.film_idx, s.depth_into_layer_nm, s.z_nm, s.boundary))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, 0.0, 0.0, true),  // ambient | H
+                (1, 0.0, 3.0, true),  // H | X
+                (5, 0.0, 19.0, true), // L | substrate
+            ]
+        );
+        // X | Y has no host on either side; Y | Z and Z | L touch the
+        // zero-thickness Z.
+        assert!(build_boundary_sites(&films[1..3], &[]).is_empty());
+    }
+
+    /// P is single-valued on a boundary: approached from the film above and
+    /// from the film below it reaches the value the scan reports there.
+    #[test]
+    fn p_is_continuous_across_a_boundary() {
+        let (cache, d, rt, rv) = test_stack_arrays();
+        let fold = fold_r(&[0.05; NW], &[100.0; NW]);
+        let needle_n = nk_const(1.9);
+        let films = vec![
+            LayerSpec::constant("H", 2.35, 0.0, 40.0, NW),
+            LayerSpec::constant("L", 1.46, 0.0, 30.0, NW),
+            LayerSpec::constant("H", 2.35, 0.0, 50.0, NW),
+        ];
+        let sites = build_boundary_sites(&films, &[]);
+        assert_eq!(sites.len(), 4);
+        let at = needle_pass_scan(&pass_input(&cache, &d, &rt, &rv, &fold, &needle_n), &sites)
+            .unwrap()
+            .p_profile;
+        let eps = 1e-7;
+        for (s, p) in sites.iter().zip(&at) {
+            for z in [s.z_nm - eps, s.z_nm + eps] {
+                if !(0.0..=120.0).contains(&z) {
+                    continue; // beyond an outer edge: no film to approach from
+                }
+                let near = ScanSite {
+                    z_nm: z,
+                    boundary: false,
+                    ..*s
+                };
+                let q =
+                    needle_pass_scan(&pass_input(&cache, &d, &rt, &rv, &fold, &needle_n), &[near])
+                        .unwrap()
+                        .p_profile[0];
+                assert!(
+                    (q - p).abs() <= 1e-6 * p.abs().max(1e-12),
+                    "z = {z}: P = {q} against {p} on the boundary"
+                );
+            }
+        }
+        assert!(at.iter().any(|p| *p != 0.0));
     }
 
     #[test]

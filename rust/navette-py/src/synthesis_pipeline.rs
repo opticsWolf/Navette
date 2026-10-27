@@ -841,6 +841,20 @@ impl PyDesignStack {
             .map_err(PyValueError::new_err)
     }
 
+    /// Insert `film` as a new layer on the span boundary above row `row`
+    /// (`row == len(films)`: on the substrate); nothing is split.
+    fn insert_film_at_boundary(
+        &mut self,
+        py: Python<'_>,
+        row: usize,
+        film: Py<PyLayerSpec>,
+    ) -> PyResult<()> {
+        let f = film.bind(py).borrow().inner.clone();
+        self.inner
+            .insert_film_at_boundary(row, f)
+            .map_err(PyValueError::new_err)
+    }
+
     /// Merge consecutive same-material films; returns merge count.
     fn merge_adjacent(&mut self) -> usize {
         self.inner.merge_adjacent()
@@ -1175,7 +1189,8 @@ impl PyNeedleCycleConfig {
     #[new]
     #[pyo3(signature = (max_needles=10, convergence_threshold=1e-4,
                         needle_seed_thickness_nm=5.0, scan_step_nm=2.0,
-                        refold_per_cycle=true, record_timing=false))]
+                        refold_per_cycle=true, record_timing=false,
+                        boundary_needles=false))]
     fn new(
         max_needles: usize,
         convergence_threshold: f64,
@@ -1183,6 +1198,7 @@ impl PyNeedleCycleConfig {
         scan_step_nm: f64,
         refold_per_cycle: bool,
         record_timing: bool,
+        boundary_needles: bool,
     ) -> PyResult<Self> {
         if scan_step_nm <= 0.0 || !scan_step_nm.is_finite() {
             return Err(PyValueError::new_err("scan_step_nm must be finite and > 0"));
@@ -1200,18 +1216,21 @@ impl PyNeedleCycleConfig {
                 scan_step_nm,
                 refold_per_cycle,
                 record_timing,
+                boundary_needles,
             },
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "NeedleCycleConfig(max_needles={}, seed={}nm, step={}nm, refold={}, timing={})",
+            "NeedleCycleConfig(max_needles={}, seed={}nm, step={}nm, refold={}, timing={}, \
+             boundary={})",
             self.inner.max_needles,
             self.inner.needle_seed_thickness_nm,
             self.inner.scan_step_nm,
             self.inner.refold_per_cycle,
             self.inner.record_timing,
+            self.inner.boundary_needles,
         )
     }
 }
@@ -1356,11 +1375,13 @@ fn insertion_dict(
     film_idx: usize,
     depth_nm: f64,
     material: &str,
+    boundary: bool,
 ) -> PyResult<Py<PyDict>> {
     let d = PyDict::new(py);
     d.set_item("film_idx", film_idx)?;
     d.set_item("depth_into_layer_nm", depth_nm)?;
     d.set_item("material", material)?;
+    d.set_item("boundary", boundary)?;
     Ok(d.unbind())
 }
 
@@ -1399,6 +1420,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
                     ins.film_idx,
                     ins.depth_into_layer_nm,
                     ins.material.as_ref(),
+                    ins.boundary,
                 )?,
             )?,
             None => rd.set_item("insertion", py.None())?,

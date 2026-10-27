@@ -1,119 +1,104 @@
-# Edge needles — plan (not built)
+# Boundary needles — built for flat runs; joint runs to do
 
-Status: proposed as a later step after the needle rules (`insert_rules`,
-`outer`, `inner`). Nothing here is implemented.
+Status: `NeedleCycleConfig(boundary_needles=True)` is built for flat
+(single-environment) runs. A multi-environment run refuses the option.
+§B5 is the remaining step.
 
-## E0. What it adds
+This replaces the earlier "edge needles" plan (a site at the top of the
+outer film and at the bottom of the inner film only): every span
+boundary is a site, and the two outer edges are two of them.
 
-Today every scan site is strictly inside a film: `build_scan_sites`
-(`synthesis/needle_pass.rs`) emits `k * scan_step_nm` for `k >= 1` and
-stops before the film's far boundary. A needle therefore always lands
-between two halves of a host, and the edge films of a design (the one
-facing the ambient, the one on the substrate) can never change by
-insertion. The needle rules rely on that: `outer` / `inner` are only
-guarded where removal could expose a new edge (cleanup, the clamp).
+## B1. What it adds
 
-Edge needles add two scan sites per run:
+Interior sites are `k * scan_step_nm` for `k = 1 .. floor(d / step) - 1`
+inside each host. The range leaves out both film boundaries, so a film
+thinner than `2 * scan_step_nm` has no site at all, a fresh 5 nm needle
+has one, and the outer edges can never change by insertion.
 
-- the **top of the outer film**, the boundary between the ambient and
-  the first film;
-- the **bottom of the inner film**, the boundary between the last film
-  and the substrate.
+With the option on, `build_boundary_sites` (`synthesis/needle_pass.rs`)
+adds one site per span boundary, the ambient and substrate sides
+included, wherever at least one neighbouring span is a needle host
+(singleton-bulk, `needle` set). A boundary touching a zero-thickness span
+is skipped. A needle chosen there is a new film between the two
+neighbours; nothing is split
+(`DesignStack::insert_film_at_boundary`). Boundary sites follow the
+interior ones in the site list, so an exact tie goes to the interior site.
 
-A needle chosen at one of these sites is not a split. It creates a new
-film of the needle material, outside the current edge film, which then
-becomes the new edge.
+## B2. Why one site per boundary, and no new kernel
 
-## E1. Why the method supports it
+The needle kernel adds a slab without thinning the host, and the
+tangential fields are continuous across an interface, so P has one value
+on a boundary: the bottom of film i and the top of film i+1 are the same
+site. The scan's own depth locator puts an exact boundary depth in the
+row below at depth 0 (the substrate edge: in the last row, at its
+thickness), so boundary sites run through the existing kernels.
+`build_boundary_sites` sums the rows in the locator's order, so the depth
+lands exactly. `p_is_continuous_across_a_boundary` pins the claim:
+approached from either film, P reaches the boundary value.
 
-The needle function P(z) is the merit change per unit thickness of an
-infinitesimal layer at z. At an outer boundary it is as well defined as
-inside a film: the fields on both sides are known from the same solve,
-and the perturbation is a thin slab between two half-spaces' worth of
-known fields. No new physics, only two more evaluation points in the
-existing sweep. The value at the boundary is the limit of the interior
-value from the film side when the needle sits on the film's side, which
-gives a direct test (E5).
+Roughness sits on each row's top interface (`sigma = rv[i + 1]`). On a
+rough boundary the locator's side is below the rough interface, while
+the inserted film takes no roughness and the interface stays on the row
+below it. So the prediction there is first order in a slightly different
+model; the re-optimization sees the real stack.
 
-## E2. Scope and switch
+## B3. What a boundary site may insert
 
-- One option, off by default: `edge_needles: bool` on the needle cycle
-  config (names to settle with the rest of the config). Off means the
-  scan grid, every candidate, and the run are bit-identical to today.
-- Which edges: both, when on. A side whose edge film is pinned
-  (`needle = false` on that film and the run's policy says the edge is
-  fixed) gets no site. Whether `needle = false` on the edge film alone
-  should close the edge site is an open question (E6).
-- Sites go at the end of the site list (outer first, inner second), so
-  the interior sites keep their indices and tie-breaking among interior
-  sites is unchanged.
+`MaterialPool::boundary_accepts` (`synthesis/cycle.rs`):
 
-## E3. What a site may insert
+- **Index:** the needle differs from both neighbours, the adjacent row's
+  index and a layer's own bulk-row index. The ambient and the substrate
+  count. A needle of a neighbour's index is that neighbour grown thicker,
+  which the optimizer already covers (and the layers would merge).
+- **Insertion rules:** every neighbour that is a needle host must accept
+  the needle. A closed host (`[]`) closes its boundaries too. Non-host
+  neighbours (`needle = false`, graded spans, ambient, substrate) only
+  exclude by index.
+- **Edge lists:** on the ambient side the needle becomes the edge layer,
+  so it must be on `outer` when that is set; on the substrate side, on
+  `inner`. `insert_film_at_boundary` checks the same at the door.
 
-- The candidate materials at an edge site are the pool, filtered by:
-  - `outer` (for the top site) or `inner` (for the bottom site), when
-    set: the new film becomes the edge, so it must be on that list;
-  - the index rule: a material equal in index to the current edge film
-    is skipped (it would merge into it and is a thickness change, which
-    the optimizer already covers).
-- `insert_rules` do not apply as written: there is no host on the far
-  side. Two choices:
-  1. edge sites ignore `insert_rules` and only `outer` / `inner` filter
-     (simplest, and the edge lists already say what may go there);
-  2. a reserved key per side (`"^"` ambient, `"$"` substrate) in
-     `insert_rules` names the materials allowed there.
-  Proposal: 1. Revisit if a real design needs edge rules that differ
-  from the edge lists.
-- After an edge insertion the old edge film is interior. The edge check
-  (`EdgeMaterials::check`) runs again on the new stack; by construction
-  it passes.
+## B4. Cost
 
-## E4. Mechanics to touch
+The sweep builds the stack fields once per (material, wavelength, angle,
+polarization), at a cost linear in the row count. That part is
+unchanged. Each site then costs a small fixed amount per spectral point.
+A design with L films gains at most L + 1 sites against roughly
+total thickness / step interior ones: about +3 % of the scan for a
+14-film, 1134 nm design at the 2 nm default, more for a stack of many
+thin films. The scan is a few percent of an insertion, the
+re-optimization the rest. To be measured with `bench_needle_insertion`.
 
-- `needle_pass.rs`: `ScanSite` needs a kind (interior, top, bottom), or
-  a sentinel `film_idx`; `build_scan_sites` emits the two edge sites
-  when the option is on; the sweep evaluates P there.
-- `structure.rs`: an insertion entry point that prepends or appends a
-  film (span bookkeeping: a new singleton-bulk span at the front or the
-  back; every later span index shifts by one when prepending).
-- `cycle.rs`: `MaterialPool::sites_for` learns the edge filter; the
-  candidate record carries the site kind so the report says "outer
-  edge" rather than a film index.
-- Multi-environment (`environments.rs`): the edges are the shared
-  design's. Each environment's assembly sees the design's top and bottom
-  at different depths; the edge site is routed to the design segment by
-  parameter, like any interior design site. An edge that touches an
-  environment's own surrounding layer (not the ambient) is still the
-  design's edge, so the same lists apply.
-- Reports: the insertion record names the site kind; `needle_results`
-  gains nothing else.
+## B5. Remaining: joint (multi-environment) runs
 
-## E5. Tests
+The joint sweep routes each site to a shared design parameter (slot) and
+a step ordinal, and `CompiledEnvironments::insert_seed` splits one slot in
+every environment. A boundary needle needs:
 
-- Off by default: the needle pin digest and every existing synthesis
-  test unchanged (bit identity, not tolerance).
-- P at the edge: equals the limit of interior P at the boundary from the
-  film side (finite-difference check, a few points approaching it).
-- Merit check: inserting a thin edge film of thickness s changes the
-  merit by about P(edge) * s, as for interior needles.
-- Edge lists: with `outer = [A]` and an edge site that would win with
-  B, the run inserts A or nothing at the top, never B.
-- Index skip: a material of the edge film's index is never a candidate
-  at that edge.
-- Multi-environment: over two identical environments, an edge needle
-  lands where a single environment's run lands it.
-- Span bookkeeping: prepend and append keep `spans` consistent
-  (`DesignStack` invariants), and graded edge films are not split
-  (they are not hosts here; the new film goes outside them).
+- a boundary locus key: "before slot s" inside a segment, plus the
+  segment's outer edges, agreed on by every environment;
+- `CompiledEnvironments::insert_film_at_boundary`: insert a new slot in
+  every environment's template (routing shifts by one, not two), with the
+  design stack's own insertion kept in step (the alignment check catches
+  any drift);
+- on a segment edge, the neighbour outside the design differs per
+  environment and is no design parameter, so only the edge lists and the
+  inside neighbour apply; no index exclusion against the surrounding.
 
-## E6. Open questions
+Tests to add then: over two identical environments a boundary needle
+lands where the single-environment run lands it; the alignment check
+holds after a boundary insertion; the refusal test turns into a run.
 
-- Should `needle = false` on an edge film close the edge site next to
-  it? The film flag says "do not split me"; adding a neighbour outside
-  it is a different act. Proposal: no, the site belongs to the boundary,
-  and only the option and the edge lists decide.
-- Does an edge needle on a design with no `outer` / `inner` set need any
-  extra guard? Without lists any pool material may become the edge,
-  which matches how removal already behaves.
-- Incoherent or thick edge films: the site is still well defined, but
-  check the scan's coherent assumptions before enabling there.
+## B6. Tests in place
+
+- Core: `boundary_sites_sit_on_every_host_boundary`,
+  `p_is_continuous_across_a_boundary`,
+  `a_boundary_needle_differs_from_both_neighbours`,
+  `a_boundary_needle_needs_both_hosts_rules`,
+  `a_boundary_needle_on_an_edge_is_on_its_list`,
+  `boundary_needles_reach_films_too_thin_to_split`,
+  `a_boundary_film_splits_nothing`, `a_boundary_film_obeys_the_edge_lists`.
+- Python: `validation/regression/synthesis/test_boundary_needles.py`
+  (off is bit-identical, a pinned 3 nm film reached on its boundaries,
+  edge lists, rules, the environments refusal).
+- Off by default: every existing test and the needle pin are unchanged.

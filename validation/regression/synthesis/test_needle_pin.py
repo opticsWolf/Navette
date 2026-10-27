@@ -127,7 +127,11 @@ def _digest(res):
     # cannot move it, which is also what makes the pin prove the
     # trajectory itself is bit-identical across F0.2. The report's own
     # behaviour is pinned by its deletion-report twin, not by this file.
-    payload = _strip_keys(payload, {"clamp_report"})
+    # Insertion records gained `boundary` with boundary needles (always
+    # False here: the option is off); stripping it keeps the pin a
+    # trajectory fingerprint, and the recorded digests stand. The key's
+    # own behaviour is pinned by test_boundary_needles.py.
+    payload = _strip_keys(payload, {"clamp_report", "boundary"})
     blob = repr(_canon(payload)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 

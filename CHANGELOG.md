@@ -67,9 +67,22 @@ All notable changes to Navette are recorded here. Work items reference
     (flat and multi-environment), `NeedlePipeline(...)`,
     `run_design(...)` and `DesignRequest` in the core; config's
     `pipeline_from_config` takes `outer` / `inner`.
-  - Edge needles (a scan site at the very top of the outer film and the
-    bottom of the inner film, creating a new edge film) are planned in
-    `docs/plans/edge_needles_plan.md`, not built.
+- **Boundary needles.** `NeedleCycleConfig(boundary_needles=True)` also
+  scans every span boundary, the outer edges included. A needle there is
+  a new film between two layers, so it reaches films too thin for an
+  interior site (under `2 * scan_step_nm`) and can change the edge
+  layers. Off by default; off, the run is bit-identical.
+  - One site per boundary: P is single-valued there (the needle adds a
+    slab and the fields are continuous), so no new kernel is needed.
+  - The needle's index differs from both neighbours', the ambient and
+    substrate included. Every neighbouring needle host must accept it
+    under `insert_rules`, and on an outer edge it must be on `outer` /
+    `inner`.
+  - Insertion records carry `boundary` (true for a boundary needle; its
+    `film_idx` is the row the new film occupies).
+    `DesignStack.insert_film_at_boundary(row, film)` is the move.
+  - Flat runs only: a multi-environment run refuses the option. The
+    joint step is planned in `docs/plans/edge_needles_plan.md`.
 - `examples/dual_band_ar.py`: a three-oxide (SiO2, Al2O3, HfO2)
   dual-band anti-reflection coating on fused silica, with a VIS band
   (420-680 nm) and a NIR band (1044-1084 nm). Needle synthesis at a 2 nm floor, then a
