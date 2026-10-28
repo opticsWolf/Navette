@@ -131,10 +131,16 @@ flips it. Drop the mark and regenerate in the same change.
    non-zero angle scored against the last angle's curves. Keys and the
    axis are now both `Radians` (`docs/plans/angle_units_plan.md`); the
    solver still runs on sin(theta).
-2. **Synthesis T into an absorbing substrate.** `SmatrixContext.simulate`'s
-   `Ts`/`Tp` disagree with the Poynting transmittance the engine returns
-   (and `1 - R`): T = 84 on bare Ag at 400 nm, 1e-5 off on Si. R and the
-   forward-t phases agree to 1e-16.
+2. **Synthesis T into an absorbing substrate (fixed).**
+   `SmatrixContext.simulate`'s `Ts`/`Tp` disagreed with the Poynting
+   transmittance the engine returns: T = 84 on bare Ag at 400 nm, 1e-5 off
+   on Si. The evaluator took the backward channel, |t_back|²·Re(y_0)/Re(y_exit),
+   which matches the forward one only when both half-spaces are
+   transparent; into an absorbing substrate it divides by a near-zero
+   Re(y_exit). It now takes the forward |t_fwd|²·Re(y_exit)/Re(y_0), like the
+   engine and the needle gradient, and so does its thickness gradient. On
+   transparent substrates every `sim_T*` moved by up to 1.1e-14, so the
+   baseline was regenerated.
 3. **Transmitted Stokes S2/S3 lack the exit-medium factor.** `S2_T`/`S3_T`
    come from `tp ts*` while `S0_T`/`S1_T` carry the admittance ratio, so
    `DOP_T` of a coherent stack is below 1 whenever the exit index differs

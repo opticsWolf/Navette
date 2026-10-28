@@ -126,9 +126,11 @@ impl SmatrixContext {
 
         // Per-point intensities + forward-transmission amplitudes via the
         // dual solver. BlockResult order is (rf, tb, tf, rb, R, Tb, T, Rb):
-        // `.2` is the complex forward t (front incidence) — `.1`/`.5` are
-        // the BACKWARD (reciprocal) quantities, equal in intensity by
-        // reciprocity but NOT in phase. PDts/PDtp need `.2`.
+        // `.2` is the complex forward t (front incidence) and `.6` its
+        // intensity |t_fwd|²·Re(y_last)/Re(y_first), the engine's Ts. The
+        // BACKWARD `.1`/`.5` agree with them only when both half-spaces are
+        // transparent: into an absorbing substrate `.5` divides by its
+        // near-zero Re(y_last) (T = 84 on bare Ag at 400 nm).
         struct Pt {
             rs: f64,
             rp: f64,
@@ -169,8 +171,8 @@ impl SmatrixContext {
                 let pt = Pt {
                     rs: s_res.4,
                     rp: p_res.4,
-                    ts: s_res.5,
-                    tp: p_res.5,
+                    ts: s_res.6,
+                    tp: p_res.6,
                     tfs: s_res.2,
                     tfp: p_res.2,
                 };
@@ -282,7 +284,7 @@ impl SmatrixContext {
 /// product the forward solver uses, which is why this cannot drift from it.
 ///
 /// The intensities follow the solver's own `finalize`: R = |r_f|² and the
-/// stored T is |t_back|²·f_back, with `f_back` the boundary-admittance ratio.
+/// stored T is |t_fwd|²·f_fwd, with `f_fwd` the boundary-admittance ratio.
 /// That factor depends only on the block's two half-spaces, so it is
 /// constant under a film thickness and rides outside the derivative.
 #[allow(clippy::too_many_arguments)]
@@ -311,16 +313,16 @@ fn deposit_row(
             pol,
         );
         let m = fields.s_left[fields.end];
-        let f_back = block_flux_factors(&fields, pol)[1];
+        let f_fwd = block_flux_factors(&fields, pol)[2];
         let r_conj = m.0.conj();
-        let t_conj = m.1.conj();
+        let t_conj = m.2.conj();
         for (kp, &fi) in par_films.iter().enumerate() {
             // Film `fi` is solver slot `fi + 1` (ambient occupies slot 0).
             let j = fi + 1;
             let s4 = needle_slopes4_ddz(&fields, nsin_fi, j, 0.0, fields.n[j], pol, lam);
             // d|z|²/dd = 2·Re(conj(z)·dz/dd).
             row[pi * n_par + kp] = 2.0 * (r_conj * s4[0]).re;
-            row[(2 + pi) * n_par + kp] = 2.0 * f_back * (t_conj * s4[1]).re;
+            row[(2 + pi) * n_par + kp] = 2.0 * f_fwd * (t_conj * s4[2]).re;
         }
     }
     row

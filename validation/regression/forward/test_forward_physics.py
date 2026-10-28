@@ -25,8 +25,8 @@ cos(theta_0); Psi is in radians; Delta_R = arg(-rp/rs), Delta_T =
 arg(tp/ts); S0 = Rs + Rp, S1 = Rp - Rs, S2_R = -2 Re(cross_R), S3_R =
 -2 Im(cross_R) with cross_R = rp rs*; GD = +d(phi)/d(omega) in fs.
 
-Two known defects are pinned as strict xfails (and by the baseline, which
-pins today's numbers); fixing one flips its xfail and needs a regenerate.
+One known defect is pinned as a strict xfail (and by the baseline, which
+pins today's numbers); fixing it flips the xfail and needs a regenerate.
 """
 from __future__ import annotations
 
@@ -356,10 +356,7 @@ def test_synthesis_evaluator_matches_the_engine(name, evaluated):
   """Two solvers, one answer: the dual block solve vs the engine (R, phases)."""
   for rng in C.RANGES:
     flat = evaluated[name]
-    absorbing = np.any(flat[f"{rng}.in.indices"][-1].imag > 0.0)
     for c in C.SIM_CURVES:
-      if absorbing and c.startswith("T"):
-        continue  # known defect, see the xfail below
       dev = np.max(np.abs(flat[f"{rng}.sim.sim_{c}"] - flat[f"{rng}.out.{c}"]))
       assert dev < 1e-13, (rng, c, dev)
     for p in ("ts", "tp"):
@@ -389,11 +386,10 @@ def test_multi_angle_synthesis_reads_each_angle():
   assert np.max(np.abs(got.reshape(want.shape) - want)) < 1e-13
 
 
-@pytest.mark.xfail(strict=True, reason=(
-  "SmatrixContext.simulate's Ts/Tp into an absorbing substrate disagree with the "
-  "Poynting transmittance the engine returns (T = 84 on bare Ag at 400 nm)."))
 @pytest.mark.parametrize("sub", ["Ag", "Si"])
 def test_synthesis_transmittance_into_absorbing_substrate(sub):
+  """Fixed defect: synthesis T was the backward |t_back|^2 Re(y0)/Re(y_exit),
+  which divides by the absorbing exit's near-zero Re(y) (T = 84 on bare Ag)."""
   wl = C.grid("vis")
   case = {"layers": [{"material": "air", "thickness": 0.0, "layer_type": 0},
                      {"material": sub, "thickness": 0.0, "layer_type": 2}]}

@@ -7,7 +7,7 @@
     "n_residuals": 244,
     "n_contrast_seeds": 12
   },
-  "merit": 62003.29065983792,
+  "merit": 62003.290659837934,
   "seconds": {
     "assemble": 0.00012623599963262677,
     "simulate": 3.887599916197359e-05,

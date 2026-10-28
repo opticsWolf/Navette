@@ -71,6 +71,18 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Fixed
 
+- **Synthesis T into an absorbing substrate was wrong.** The synthesis
+  forward model (`SmatrixContext.simulate`, every needle and LM run) took
+  Ts/Tp from the backward channel, |t_back|²·Re(y_0)/Re(y_exit). That
+  equals the forward transmittance only when both half-spaces are
+  transparent; into an absorbing substrate it divides by a near-zero
+  Re(y_exit) (T = 84 on bare Ag at 400 nm, 1e-5 off on Si). It now takes
+  the forward |t_fwd|²·Re(y_exit)/Re(y_0), the value the engine reports
+  and the needle gradient already used, and the thickness gradient
+  follows it. On transparent substrates T moves by up to 1.1e-14: the
+  forward golden baseline is regenerated, the Windows needle digest is
+  re-recorded (the Linux one needs the same re-read from CI), and the
+  bench merit moves by 2 ulps (`46dc154d6946ee40`).
 - **A needle could land as an air gap.** The old scan swept each seed
   material over every needle-flagged film, inserted seeds included,
   which had no contrast entry; a winning site there fell back to
