@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 use num_complex::{Complex64, ComplexFloat};
 use rayon::prelude::*;
 
+use super::angle::Radians;
+
 use super::core_engine::*;
 use super::needle_engine::*;
 use super::needle_operator::*;
@@ -454,15 +456,14 @@ impl Solver {
         })
     }
 
-    /// Raw-input constructor mirroring the Python driver: angles in degrees
-    /// unless `radians` is set; `indices` is either per-layer (len ==
+    /// Raw-input constructor mirroring the Python driver; `indices` is
+    /// either per-layer (len ==
     /// `n_layers`, broadcast over wavelengths) or full `(n_layers, n_wavs)`
     /// row-major; per-layer option slices default when `None`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_raw(
         wavelengths: &[f64],
-        angles: &[f64],
-        radians: bool,
+        angles: &[Radians],
         indices: &[Complex64],
         n_layers: usize,
         thicknesses: Option<&[f64]>,
@@ -491,11 +492,7 @@ impl Solver {
         } else {
             return Err("`indices` must be per-layer or (n_layers, n_wavs).".to_string());
         };
-        let theta: Vec<f64> = angles
-            .iter()
-            .map(|a| if radians { *a } else { a.to_radians() })
-            .collect();
-        let sin_theta: Vec<f64> = theta.iter().map(|t| t.sin()).collect();
+        let sin_theta = crate::smatrix::angle::sines(angles);
         let zero_f = vec![0.0; n_layers];
         let zero_i = vec![0; n_layers];
         Self::new(
@@ -1195,8 +1192,7 @@ pub fn solve_arrays(
     rough_types: &[i32],
     rough_vals: &[f64],
     wavelengths: &[f64],
-    angles: &[f64],
-    radians: bool,
+    angles: &[Radians],
     requested: u64,
     coherence_mode: i32,
 ) -> Result<(Solution, Vec<String>), String> {
@@ -1293,7 +1289,6 @@ pub fn solve_arrays(
     let solver = Solver::from_raw(
         wavelengths,
         angles,
-        radians,
         indices,
         n_rows,
         Some(thicknesses),
@@ -2994,8 +2989,7 @@ mod tests {
         assert!(
             Solver::from_raw(
                 &wavls,
-                &[0.0],
-                false,
+                &[Radians::ZERO],
                 &per_layer,
                 3,
                 Some(&d),
@@ -3019,8 +3013,7 @@ mod tests {
         assert!(
             Solver::from_raw(
                 &wavls,
-                &[0.0],
-                false,
+                &[Radians::ZERO],
                 &loss,
                 3,
                 Some(&d),
@@ -3107,8 +3100,7 @@ mod tests {
         let rt: Vec<i32> = rv.iter().map(|&s| if s > 0.0 { 5 } else { 0 }).collect();
         let mut s = super::Solver::from_raw(
             &wl,
-            &[0.0],
-            false,
+            &[Radians::ZERO],
             &n,
             nl,
             Some(&d),
@@ -3151,9 +3143,18 @@ mod tests {
     fn from_raw_broadcast_matches_explicit() {
         let wl = vec![500.0, 600.0];
         let per_layer = vec![Complex64::new(1.0, 0.0), Complex64::new(1.5, 0.0)];
-        let a =
-            super::Solver::from_raw(&wl, &[0.0], false, &per_layer, 2, None, None, None, None, 2)
-                .unwrap();
+        let a = super::Solver::from_raw(
+            &wl,
+            &[Radians::ZERO],
+            &per_layer,
+            2,
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
         let full = vec![
             Complex64::new(1.0, 0.0),
             Complex64::new(1.0, 0.0),
@@ -3300,8 +3301,7 @@ mod tests {
                 &[0, 0],
                 &[0.0, 0.0],
                 &[500.0],
-                &[0.0],
-                false,
+                &[Radians::ZERO],
                 REQ_RS,
                 2
             )
@@ -3315,8 +3315,7 @@ mod tests {
             &[0, 0],
             &[0.0, 0.0],
             &wl,
-            &[0.0],
-            false,
+            &[Radians::ZERO],
             REQ_RS,
             2,
         )
@@ -3338,8 +3337,7 @@ mod tests {
             &[0, 0],
             &[0.0, 0.0],
             &wl,
-            &[0.0],
-            false,
+            &[Radians::ZERO],
             REQ_RS,
             2,
         )

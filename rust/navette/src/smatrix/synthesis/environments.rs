@@ -1966,6 +1966,8 @@ pub fn resolve_env(tag: Option<&str>, names: &[String], demand: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     use serde_json::Value;
 
     use super::super::design_config::DesignRequest;
@@ -2111,7 +2113,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(k).unwrap();
         let key = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         for e in 0..k {
@@ -2464,7 +2466,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(k),
                 thickness_only_cfg(),
                 Default::default(),
@@ -2521,7 +2523,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec_named(&["e1", "e0"]),
             thickness_only_cfg(),
             Default::default(),
@@ -2552,7 +2554,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 spec,
                 thickness_only_cfg(),
                 Default::default(),
@@ -2583,7 +2585,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(1),
             thickness_only_cfg(),
             Default::default(),
@@ -2682,7 +2684,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(k),
                 one_needle_cfg(),
                 Default::default(),
@@ -2853,7 +2855,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(1),
             one_needle_cfg(),
             Default::default(),
@@ -3152,7 +3154,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(1),
                 one_needle_cfg(),
                 Default::default(),
@@ -3348,7 +3350,7 @@ mod tests {
                 envs,
                 pool,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(k),
                 one_needle_cfg(),
                 // A step longer than any film: no interior site anywhere.
@@ -3583,7 +3585,7 @@ mod tests {
         let before: Vec<usize> = envs.stacks().iter().map(|s| s.films().len()).collect();
         let mut stack = envs.stacks()[0].clone();
         let mut solver = ctx(env_spec(2), Some(Arc::new(envs)));
-        let spectral = SpectralInputs::from_spec(&env_spec(2), &[0.0], &WL).unwrap();
+        let spectral = SpectralInputs::from_spec(&env_spec(2), &[Radians::ZERO], &WL).unwrap();
         let hist = run_needle_cycles(
             &mut solver,
             &mut stack,
@@ -3705,7 +3707,8 @@ mod tests {
         let mut analytic = 0.0f64;
         for (e, st) in stacks.iter().enumerate() {
             let sim = solver.simulate(st).unwrap();
-            let fold = build_needle_targets_env(&spec, &[0.0], &WL, Some(&sim), e as u32).unwrap();
+            let fold = build_needle_targets_env(&spec, &[Radians::ZERO], &WL, Some(&sim), e as u32)
+                .unwrap();
             let sa = st.solver_arrays();
             let res = run_needle_pass(
                 &NeedlePassInput {
@@ -3841,7 +3844,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(2),
             thickness_only_cfg(),
             Default::default(),
@@ -3856,7 +3859,7 @@ mod tests {
             solo_envs,
             solo_cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(1),
             thickness_only_cfg(),
             Default::default(),
@@ -3905,7 +3908,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(2),
             cfg,
             Default::default(),
@@ -4009,7 +4012,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(2),
                 cfg,
                 Default::default(),
@@ -4027,7 +4030,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(1),
                 crate::smatrix::synthesis::config::PipelineConfig {
                     max_macro_cycles: 1,

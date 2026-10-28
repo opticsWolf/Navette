@@ -27,7 +27,7 @@ use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::environments::CompiledEnvironments;
 use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::jacobian::assemble_jacobian_mapped;
-use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, SimCurves};
+use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, Radians, SimCurves};
 use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
 use crate::smatrix::synthesis::thick_opt::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
@@ -251,13 +251,12 @@ impl SmatrixContext {
 
         Ok((
             SimCurves {
-                // Merit keys name angles in degrees (`angle_row`), so the
-                // axis goes back from the solver's sines to degrees.
+                // The angle axis, rebuilt from the solver's sines.
                 angles: self
                     .sin_theta
                     .iter()
-                    .map(|s| s.asin().to_degrees())
-                    .collect::<Vec<f64>>()
+                    .map(|&s| Radians::from_checked_sin(s))
+                    .collect::<Vec<Radians>>()
                     .into(),
                 wavelengths: self.wavls.clone().into(),
                 total_d,
@@ -667,13 +666,15 @@ impl JacobianSource for DepositJacobian {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
     use crate::smatrix::synthesis::structure::LayerSpec;
 
     fn ar_spec(angle: f64, wl: f64) -> MeritSpec {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle,
+            angle: deg(angle),
             curve: CurveId::Rs,
         });
         spec.add_target(MeritTarget {
@@ -733,7 +734,7 @@ mod tests {
     fn ar_ctx_pd() -> SmatrixContext {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(MeritTarget {
@@ -861,7 +862,7 @@ mod tests {
         // calibration context carries a (value-irrelevant) phase demand.
         let mut pd_spec = MeritSpec::new();
         let pk = pd_spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         pd_spec
@@ -902,7 +903,7 @@ mod tests {
         );
         // `reference_phase` is unwrapped (2.5π here) while `arg()` wraps:
         // compare in wrapped space, exactly as the merit kernel does.
-        let r = crate::smatrix::optics_core::reference_phase(400.0, 1.0, 0.0, 500.0, 1.0);
+        let r = crate::smatrix::optics_core::reference_phase(400.0, 1.0, Radians::ZERO, 500.0, 1.0);
         let rw = r - std::f64::consts::TAU * (r / std::f64::consts::TAU).round();
         assert!((rw - tf.arg()).abs() < 1e-9, "ref={r} arg={}", tf.arg());
     }
@@ -968,7 +969,7 @@ mod tests {
         let sim = ctx.simulate(&stack).unwrap();
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let wl = vec![900.0, 1000.0, 1100.0];
@@ -1015,7 +1016,7 @@ mod tests {
         let ref_qw = 2.0 * std::f64::consts::PI * d_qw / 1000.0;
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(MeritTarget {
@@ -1045,6 +1046,8 @@ mod tests {
     // -- R4.5 increment ii: thickness deposits ---------------------------------
     mod deposits {
         use super::*;
+        #[allow(unused_imports)]
+        use crate::smatrix::angle::{Radians, deg, degs};
         use crate::smatrix::synthesis::jacobian::{
             CurveDeposits, DEPOSIT_CHANNELS, assemble_jacobian, deposit_channel,
         };
@@ -1052,9 +1055,9 @@ mod tests {
         const WLS: [f64; 5] = [480.0, 520.0, 560.0, 600.0, 640.0];
         const SINS: [f64; 2] = [0.0, 0.45];
 
-        /// Merit keys name the incidence angle in degrees.
-        fn deg(sin_theta: f64) -> f64 {
-            sin_theta.asin().to_degrees()
+        /// The incidence angle whose sine the context holds.
+        fn angle_of(sin_theta: f64) -> Radians {
+            Radians::from_sin(sin_theta).unwrap()
         }
 
         /// air | H(n=2.30) | L(n=1.46) | H(n=2.30, k=0.004) | glass(1.52).
@@ -1097,12 +1100,12 @@ mod tests {
         }
 
         /// A pointwise Exact demand on `curve` over the whole grid at `angle`.
-        fn demand(spec: &mut MeritSpec, angle: f64, curve: CurveId, target: f64) {
+        fn demand(spec: &mut MeritSpec, angle: Radians, curve: CurveId, target: f64) {
             demand_at(spec, angle, curve, vec![target; WLS.len()]);
         }
 
         /// As `demand`, with a per-wavelength target vector.
-        fn demand_at(spec: &mut MeritSpec, angle: f64, curve: CurveId, targets: Vec<f64>) {
+        fn demand_at(spec: &mut MeritSpec, angle: Radians, curve: CurveId, targets: Vec<f64>) {
             let k = spec.add_key(MeritKey { angle, curve });
             spec.add_target(MeritTarget {
                 key_idx: k as u32,
@@ -1124,16 +1127,16 @@ mod tests {
         }
 
         #[test]
-        fn the_angle_axis_is_in_degrees_so_each_key_reads_its_own_row() {
-            // Merit keys are in degrees; an axis left in sines sends every
-            // key at a non-zero angle to the last row.
+        fn the_angle_axis_matches_the_keys_so_each_key_reads_its_own_row() {
+            // An axis left in sines would send every key at a non-zero
+            // angle to the last row.
             let ctx = ctx3(ar_spec(0.0, 560.0));
             let (sim, _) = ctx
                 .simulate_with_deposits(&stack3(118.0, 203.0, 64.0), &[0])
                 .unwrap();
             for (i, &s) in SINS.iter().enumerate() {
-                assert!((sim.angles[i] - deg(s)).abs() < 1e-12);
-                assert_eq!(sim.angle_row(deg(s)), i);
+                assert!((sim.angles[i].get() - angle_of(s).get()).abs() < 1e-15);
+                assert_eq!(sim.angle_row(angle_of(s)), i);
             }
         }
 
@@ -1193,10 +1196,10 @@ mod tests {
             // central differences of the whole residual vector in thickness space.
             // R, T and A demands at two angles, both polarizations.
             let mut spec = MeritSpec::new();
-            demand(&mut spec, deg(SINS[0]), CurveId::Rs, 0.01);
-            demand(&mut spec, deg(SINS[1]), CurveId::Rp, 0.02);
-            demand(&mut spec, deg(SINS[1]), CurveId::Ts, 0.95);
-            demand(&mut spec, deg(SINS[0]), CurveId::As, 0.0);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::Rs, 0.01);
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Rp, 0.02);
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Ts, 0.95);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::As, 0.0);
             let ctx = ctx3(spec);
 
             let d = [118.0, 203.0, 64.0];
@@ -1255,7 +1258,7 @@ mod tests {
             // from either channel alone -- a single-channel bug would look
             // plausible and be wrong.
             let mut spec = MeritSpec::new();
-            demand(&mut spec, deg(SINS[0]), CurveId::As, 0.0);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::As, 0.0);
             let ctx = ctx3(spec);
             let stack = stack3(118.0, 203.0, 64.0);
             let par = [2usize];
@@ -1327,7 +1330,7 @@ mod tests {
             };
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_target(MeritTarget {
@@ -1425,7 +1428,7 @@ mod tests {
             };
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_target(MeritTarget {
@@ -1624,8 +1627,8 @@ mod tests {
             let x = [118.0, 203.0, 64.0];
 
             let mut spec = MeritSpec::new();
-            demand(&mut spec, deg(SINS[0]), CurveId::Rs, 0.0);
-            demand(&mut spec, deg(SINS[1]), CurveId::As, 0.0);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::Rs, 0.0);
+            demand(&mut spec, angle_of(SINS[1]), CurveId::As, 0.0);
             let covered = DepositJacobian {
                 ctx: ctx3(spec),
                 base_stack: stack.clone(),
@@ -1674,8 +1677,18 @@ mod tests {
             let rp0 = sim0.curve(CurveId::Rp).unwrap().to_vec();
             let nw = WLS.len();
             let mut spec = MeritSpec::new();
-            demand_at(&mut spec, deg(SINS[0]), CurveId::Rs, rs0[..nw].to_vec());
-            demand_at(&mut spec, deg(SINS[1]), CurveId::Rp, rp0[nw..].to_vec());
+            demand_at(
+                &mut spec,
+                angle_of(SINS[0]),
+                CurveId::Rs,
+                rs0[..nw].to_vec(),
+            );
+            demand_at(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Rp,
+                rp0[nw..].to_vec(),
+            );
 
             let mut analytic = ctx3(spec.clone());
             analytic.lm.jacobian = JacobianMode::Analytic;

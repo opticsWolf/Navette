@@ -83,16 +83,6 @@ fn reference_row_len(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usize>
     }
 }
 
-/// Angle labels in degrees, the merit-key convention: radians convert,
-/// degrees pass through unchanged.
-fn angles_as_degrees(angles: &[f64], angles_in_radians: bool) -> Vec<f64> {
-    if angles_in_radians {
-        angles.iter().map(|a| a.to_degrees()).collect()
-    } else {
-        angles.to_vec()
-    }
-}
-
 #[pyclass(name = "SimCurves")]
 /// Simulated rows on the solver grid (see `SimCurves` in the core).
 pub struct PySimCurves {
@@ -125,7 +115,7 @@ impl PySimCurves {
         n_back: Option<&Bound<'_, PyAny>>,
         angles_in_radians: bool,
     ) -> PyResult<Self> {
-        let a = angles_as_degrees(angles.as_slice()?, angles_in_radians);
+        let a = crate::angles::grid(angles.as_slice()?, angles_in_radians)?;
         let w = wavelengths.as_slice()?;
         let nf = reference_row(n_front, 1.0)?;
         let nb = reference_row(n_back, 1.0)?;
@@ -210,12 +200,16 @@ impl PyMeritSpec {
     }
 
     /// Register a `(angle, curve)` demand group; returns its key index.
-    /// `angle` is degrees, or radians with `angles_in_radians` (stored in
-    /// degrees, the key convention).
+    /// `angle` is degrees, or radians with `angles_in_radians`.
     #[pyo3(signature = (angle, curve_id, angles_in_radians=false))]
-    fn add_key(&mut self, angle: f64, curve_id: String, angles_in_radians: bool) -> PyResult<usize> {
+    fn add_key(
+        &mut self,
+        angle: f64,
+        curve_id: String,
+        angles_in_radians: bool,
+    ) -> PyResult<usize> {
         let id = parse_curve(&curve_id)?;
-        let angle = if angles_in_radians { angle.to_degrees() } else { angle };
+        let angle = crate::angles::one(angle, angles_in_radians)?;
         Ok(self.inner.add_key(MeritKey { angle, curve: id }))
     }
 
@@ -311,7 +305,7 @@ impl PyMeritSpec {
 /// index on a differential rotation warns (ground rule 6 - announced,
 /// never silent; the engine cannot know the medium it was not given),
 /// once per call site via Python's warning dedup. `angle_deg` is degrees,
-/// or radians (used directly) with `angles_in_radians`.
+/// or radians with `angles_in_radians`.
 #[pyfunction]
 #[pyo3(signature = (wavelengths, angle_deg, n_inc=None, total_d=0.0, passes=1.0, angles_in_radians=false))]
 pub fn reference_rotation(
@@ -323,10 +317,8 @@ pub fn reference_rotation(
     passes: f64,
     angles_in_radians: bool,
 ) -> PyResult<Py<PyArray1<Complex64>>> {
-    use navette::smatrix::synthesis::merit::{
-        reference_rotation as rot_deg, reference_rotation_radians as rot_rad,
-    };
-    let core_rot = if angles_in_radians { rot_rad } else { rot_deg };
+    use navette::smatrix::synthesis::merit::reference_rotation as core_rot;
+    let angle = crate::angles::one(angle_deg, angles_in_radians)?;
     let row = reference_row(n_inc, 1.0)?;
     let n_wl = wavelengths.as_slice()?.len();
     if passes != 0.0 {
@@ -354,7 +346,7 @@ dispersive, pass the per-wavelength array (length {})",
             }
         }
     }
-    let rot = core_rot(wavelengths.as_slice()?, angle_deg, &row, total_d, passes)
+    let rot = core_rot(wavelengths.as_slice()?, angle, &row, total_d, passes)
         .map_err(PyValueError::new_err)?;
     Ok(PyArray::from_vec(py, rot).into())
 }
@@ -439,7 +431,7 @@ pub fn build_needle_targets(
     sim: Option<&PySimCurves>,
     angles_in_radians: bool,
 ) -> PyResult<Py<PyDict>> {
-    let a = angles_as_degrees(angles.as_slice()?, angles_in_radians);
+    let a = crate::angles::grid(angles.as_slice()?, angles_in_radians)?;
     let w = wavelengths.as_slice()?.to_vec();
     if let Some(s) = sim {
         warn_scalar_reference(py, &spec.inner, &s.inner)?;

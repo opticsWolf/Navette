@@ -14,6 +14,8 @@
 use num_complex::Complex64;
 use num_complex::ComplexFloat;
 
+use crate::smatrix::angle::Radians;
+
 /// √3 (roughness/field-profile closed forms).
 pub const SQRT3: f64 = 1.73205080757;
 /// Denominator regularization floor shared by the field-amplitude star product.
@@ -28,7 +30,7 @@ pub const C_NM_PER_FS: f64 = 299.792458;
 /// Propagation phase of the differential-phase reference: the phase a plane
 /// wave accumulates crossing an equivalent layer of incidence medium —
 /// thickness `total_d`, real index `n_inc_re` — at incidence angle
-/// `theta_inc_deg` (degrees, in the incidence medium, so no Snell step):
+/// `theta_inc` (in the incidence medium, so no Snell step):
 /// `passes · 2π · n · d · cosθ / λ`.
 ///
 /// `wavelength` and `total_d` must share length units (nm in this crate).
@@ -49,11 +51,11 @@ pub const C_NM_PER_FS: f64 = 299.792458;
 pub fn reference_phase(
     wavelength: f64,
     n_inc_re: f64,
-    theta_inc_deg: f64,
+    theta_inc: Radians,
     total_d: f64,
     passes: f64,
 ) -> f64 {
-    passes * reference_wavenumber(wavelength, n_inc_re, theta_inc_deg) * total_d
+    passes * reference_wavenumber(wavelength, n_inc_re, theta_inc) * total_d
 }
 
 /// Axial wavenumber part of [`reference_phase`]: `2π · n · cosθ / λ`
@@ -63,8 +65,8 @@ pub fn reference_phase(
 /// (exact pre-fold data), a position-independent shift of `P(z)` that never
 /// moves the needle site `argmax` — only the predicted-gain bookkeeping.
 #[inline]
-pub fn reference_wavenumber(wavelength: f64, n_inc_re: f64, theta_inc_deg: f64) -> f64 {
-    2.0 * std::f64::consts::PI * n_inc_re * theta_inc_deg.to_radians().cos() / wavelength
+pub fn reference_wavenumber(wavelength: f64, n_inc_re: f64, theta_inc: Radians) -> f64 {
+    2.0 * std::f64::consts::PI * n_inc_re * theta_inc.cos() / wavelength
 }
 
 #[inline(always)]
@@ -650,20 +652,23 @@ mod tests {
     fn reference_phase_hand_calc() {
         // λ = 500 nm, n = 1, θ = 0°, D = 100 nm, 1 pass:
         // 2π·1·100·1/500 = 2π/5 = 1.2566370614...
-        let p = reference_phase(500.0, 1.0, 0.0, 100.0, 1.0);
+        let deg = |d: f64| Radians::from_degrees(d).unwrap();
+        let p = reference_phase(500.0, 1.0, Radians::ZERO, 100.0, 1.0);
         assert!(
             (p - 2.0 * std::f64::consts::PI / 5.0).abs() < 1e-12,
             "p={p}"
         );
         // Oblique: θ = 60° halves the axial projection.
-        let po = reference_phase(500.0, 1.0, 60.0, 100.0, 1.0);
+        let po = reference_phase(500.0, 1.0, deg(60.0), 100.0, 1.0);
         assert!((po - p / 2.0).abs() < 1e-12, "po={po}");
         // Two passes double; zero thickness kills the reference.
-        assert!((reference_phase(500.0, 1.0, 0.0, 100.0, 2.0) - 2.0 * p).abs() < 1e-12);
-        assert_eq!(reference_phase(500.0, 1.5, 10.0, 0.0, 1.0), 0.0);
+        assert!((reference_phase(500.0, 1.0, Radians::ZERO, 100.0, 2.0) - 2.0 * p).abs() < 1e-12);
+        assert_eq!(reference_phase(500.0, 1.5, deg(10.0), 0.0, 1.0), 0.0);
         // Wavenumber × D × passes reconstructs the phase.
-        let kz = reference_wavenumber(500.0, 1.5, 10.0);
-        assert!((1.0 * kz * 100.0 - reference_phase(500.0, 1.5, 10.0, 100.0, 1.0)).abs() < 1e-15);
+        let kz = reference_wavenumber(500.0, 1.5, deg(10.0));
+        assert!(
+            (1.0 * kz * 100.0 - reference_phase(500.0, 1.5, deg(10.0), 100.0, 1.0)).abs() < 1e-15
+        );
     }
 
     /// The exact expression the five call sites carried before R3.4

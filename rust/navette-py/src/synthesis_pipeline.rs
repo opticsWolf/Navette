@@ -38,22 +38,6 @@ use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
 
-fn deg_to_sin(angles_deg: &[f64]) -> Vec<f64> {
-    angles_deg
-        .iter()
-        .map(|a| (a * std::f64::consts::PI / 180.0).sin())
-        .collect()
-}
-
-/// Solver sines for a grid in degrees, or in radians (used directly).
-fn angles_to_sin(angles: &[f64], angles_in_radians: bool) -> Vec<f64> {
-    if angles_in_radians {
-        angles.iter().map(|a| a.sin()).collect()
-    } else {
-        deg_to_sin(angles)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // LayerSpec / DesignStack
 // ---------------------------------------------------------------------------
@@ -508,7 +492,7 @@ pub(crate) fn run_design(
         seed_edges,
     };
     let w = wavelengths.as_slice()?.to_vec();
-    let a = angles_deg.as_slice()?.to_vec();
+    let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
     let cfg = pipeline_config
         .map(|c| c.bind(py).borrow().inner.clone())
         .unwrap_or_default();
@@ -560,7 +544,6 @@ pub(crate) fn run_design(
                     &rules,
                     &w,
                     &a,
-                    angles_in_radians,
                     &spec_inner,
                     cfg,
                     needle_cfg,
@@ -620,14 +603,14 @@ pub(crate) fn run_design_environments(
     callback: Option<Py<PyAny>>,
     angles_in_radians: bool,
 ) -> PyResult<Py<PyDict>> {
-    use navette::smatrix::synthesis::driver::run_environments_angles as core_run;
+    use navette::smatrix::synthesis::driver::run_environments as core_run;
     use navette::smatrix::synthesis::environments::build_environments;
 
     let req: DesignRequest = serde_json::from_str(request_json).map_err(|e| {
         PyValueError::new_err(format!("run_design_environments: invalid request: {e}"))
     })?;
     let w = wavelengths.as_slice()?.to_vec();
-    let a = angles_deg.as_slice()?.to_vec();
+    let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
     let cfg = pipeline_config
         .map(|c| c.bind(py).borrow().inner.clone())
         .unwrap_or_default();
@@ -651,7 +634,6 @@ pub(crate) fn run_design_environments(
                     pool,
                     &w,
                     &a,
-                    angles_in_radians,
                     &spec_inner,
                     cfg,
                     needle_cfg,
@@ -1283,8 +1265,7 @@ impl PySmatrixContext {
     #[new]
     #[pyo3(signature = (spec, angles_deg, wavelengths, clamp_min=2.0, clamp_max=1000.0,
                         lm=None, thin_layer_policy="remove", angles_in_radians=false))]
-    /// `angles_deg`: degrees (spec-key convention), or radians with
-    /// `angles_in_radians`; converted to sines (radians directly).
+    /// `angles_deg`: degrees, or radians with `angles_in_radians`.
     /// `thin_layer_policy`: 'remove' (default), 'clamp_up_final' or
     /// 'clamp_up_always' (F0.3; the last one moves the LM lower bound).
     fn new(
@@ -1298,7 +1279,7 @@ impl PySmatrixContext {
         angles_in_radians: bool,
         py: Python<'_>,
     ) -> PyResult<Self> {
-        let a = angles_deg.as_slice()?;
+        let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
             return Err(PyValueError::new_err(
@@ -1311,7 +1292,7 @@ impl PySmatrixContext {
         Ok(PySmatrixContext {
             inner: SmatrixContext {
                 wavls: w.to_vec(),
-                sin_theta: angles_to_sin(a, angles_in_radians),
+                sin_theta: navette::smatrix::angle::sines(&a),
                 spec: spec.inner().clone(),
                 clamp_min_nm: clamp_min,
                 clamp_max_nm: clamp_max,
@@ -1540,7 +1521,7 @@ impl PyNeedlePipeline {
         seed_edges: Option<f64>,
         angles_in_radians: bool,
     ) -> PyResult<Self> {
-        let a = angles_deg.as_slice()?;
+        let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
             return Err(PyValueError::new_err(
@@ -1592,12 +1573,9 @@ impl PyNeedlePipeline {
         }
         .apply(&mut design, pool)
         .map_err(PyValueError::new_err)?;
-        let spectral = if angles_in_radians {
-            SpectralInputs::from_spec_radians(spec.inner(), a, w)
-        } else {
-            SpectralInputs::from_spec(spec.inner(), a, w)
-        }
-        .map_err(PyValueError::new_err)?;
+        let spectral =
+            SpectralInputs::from_spec(spec.inner(), &a, w).map_err(PyValueError::new_err)?;
+        let spectral_sines = spectral.sin_theta.clone();
         let inner = NeedlePipeline::new(
             design,
             spectral,
@@ -1609,7 +1587,7 @@ impl PyNeedlePipeline {
         Ok(PyNeedlePipeline {
             inner,
             spec: spec.inner().clone(),
-            sin_theta: angles_to_sin(a, angles_in_radians),
+            sin_theta: spectral_sines,
             wavls: w.to_vec(),
             clamp_min: cfg.clamp_min_nm,
             clamp_max: cfg.clamp_max_nm,

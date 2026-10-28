@@ -43,6 +43,7 @@
 // crate does not use.
 #![allow(clippy::should_implement_trait)]
 
+mod angles;
 mod color;
 mod config;
 mod interpolate;

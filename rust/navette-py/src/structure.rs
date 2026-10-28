@@ -1688,6 +1688,7 @@ fn solve_arrays_fn(
     radians: bool,
     coherence_mode: i32,
 ) -> pyo3::PyResult<(pyo3::Py<pyo3::types::PyDict>, Vec<String>)> {
+    let a = crate::angles::grid(angles.as_slice()?, radians)?;
     let (sol, warnings) = navette::smatrix::solver::solve_arrays(
         &sa.inner.indices,
         &sa.inner.thicknesses,
@@ -1695,8 +1696,7 @@ fn solve_arrays_fn(
         &sa.inner.rough_types,
         &sa.inner.rough_vals,
         wavelengths.as_slice()?,
-        angles.as_slice()?,
-        radians,
+        &a,
         requested,
         coherence_mode,
     )

@@ -179,10 +179,10 @@ impl PySolver {
         let cf = opt_i(&incoherent_flags);
         let rt = opt_i(&roughness_types);
         let rv = opt_f(&roughness_values);
+        let a = crate::angles::grid(angles.as_slice()?, angles_in_radians)?;
         navette::smatrix::solver::Solver::from_raw(
             wavelengths.as_slice()?,
-            angles.as_slice()?,
-            angles_in_radians,
+            &a,
             indices.as_slice()?,
             n_layers,
             tf.as_deref(),

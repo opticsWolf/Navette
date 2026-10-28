@@ -2,6 +2,7 @@
 // Navette S-matrix engine — pure-Rust core (no Python, no I/O).
 //
 // Module map:
+//   angle            — `Radians`, the one incidence-angle type
 //   optics_core      — shared primitives (stars, roughness, complex kernels)
 //   solver           — configured solver: validation + parallel solve + derives
 //   coherent_block   — s/p/dual coherent-block solvers
@@ -12,6 +13,7 @@
 //   optimizer        — landscape/minimize helpers (char_func et al.)
 //   synthesis        — automated design synthesis (pure Rust core)
 
+pub mod angle;
 pub mod coherent_block;
 pub mod core_engine;
 pub mod needle_engine;

@@ -33,6 +33,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use super::color_merit::{ColorDemand, eval_color};
+pub use crate::smatrix::angle::Radians;
 
 // ---------------------------------------------------------------------------
 // Vocabulary types
@@ -310,7 +311,7 @@ impl SimTransform {
 /// refusal (`reference_length_issue`), naming both numbers.
 #[derive(Clone, Debug)]
 pub struct SimCurves {
-    pub angles: Arc<[f64]>,
+    pub angles: Arc<[Radians]>,
     pub wavelengths: Arc<[f64]>,
     pub total_d: f64,
     /// Real incidence index per wavelength (differential-phase reference).
@@ -490,11 +491,11 @@ impl SimCurves {
     /// Row index for an angle value: argmin(|angles − a|), first minimum
     /// wins — identical to numpy argmin semantics used by
     /// `_simulate_to_weaver`.
-    pub fn angle_row(&self, a: f64) -> usize {
+    pub fn angle_row(&self, a: Radians) -> usize {
         let mut best = 0usize;
         let mut best_d = f64::INFINITY;
         for (i, &ang) in self.angles.iter().enumerate() {
-            let d = (ang - a).abs();
+            let d = (ang.get() - a.get()).abs();
             if d < best_d {
                 best_d = d;
                 best = i;
@@ -546,7 +547,7 @@ fn kind_residual(kind: ConstraintKind, scaled_diff: f64, tol: f64, bw: f64) -> f
 /// One unique (angle, curve) demand — mirrors an `OpticalKey`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct MeritKey {
-    pub angle: f64,
+    pub angle: Radians,
     pub curve: CurveId,
 }
 
@@ -1206,8 +1207,7 @@ impl MeritSpec {
             };
             // Differential-phase reference for this key (front/back medium
             // + total thickness from the sim metadata; None = absolute).
-            // `key.angle` is degrees (converter convention); the reference
-            // helper converts internally. The medium lookup stays INSIDE
+            // The medium lookup stays INSIDE
             // the `if let` below so non-differential keys pay nothing.
             let diff_passes = t.differential_passes;
             // Weight + count normalization at the residual level (once per
@@ -1743,33 +1743,13 @@ fn push_terms(
 /// kernel when the row is constant — same `f64` operand, same order.
 pub fn reference_rotation(
     wavelengths: &[f64],
-    angle_deg: f64,
-    n_inc: &[f64],
-    total_d: f64,
-    passes: f64,
-) -> Result<Vec<num_complex::Complex64>, String> {
-    rotation_from_cos(wavelengths, angle_deg.to_radians().cos(), n_inc, total_d, passes)
-}
-
-/// [`reference_rotation`] with the angle in radians, used directly.
-pub fn reference_rotation_radians(
-    wavelengths: &[f64],
-    angle_rad: f64,
-    n_inc: &[f64],
-    total_d: f64,
-    passes: f64,
-) -> Result<Vec<num_complex::Complex64>, String> {
-    rotation_from_cos(wavelengths, angle_rad.cos(), n_inc, total_d, passes)
-}
-
-fn rotation_from_cos(
-    wavelengths: &[f64],
-    cos_t: f64,
+    angle: Radians,
     n_inc: &[f64],
     total_d: f64,
     passes: f64,
 ) -> Result<Vec<num_complex::Complex64>, String> {
     use std::f64::consts::PI;
+    let cos_t = angle.cos();
     if n_inc.is_empty() {
         return Err("reference_rotation: n_inc is empty - supply length 1 \
              (constant medium) or one value per wavelength"
@@ -1817,13 +1797,15 @@ pub fn rotate_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
 
     const NW: usize = 5;
 
     /// Sim grid 400..800 step 100 nm, single angle row, R_s supplied.
     fn sim_one_angle(vals: &[f64; NW]) -> SimCurves {
         SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -1929,7 +1911,7 @@ mod tests {
         // (broadcast); anything else is a refusal naming both numbers.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry(
@@ -1986,7 +1968,7 @@ mod tests {
         // targets [0.5, 1.0]: avg = 0.75 → nf = 4/3 (register_metadata math)
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let nf = 1.0 / 0.75;
@@ -2009,7 +1991,7 @@ mod tests {
     fn exact_residual_hand_computed() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2033,7 +2015,7 @@ mod tests {
         let mk = |kind| {
             let mut s = MeritSpec::new();
             let k = s.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             s.add_target(entry(
@@ -2064,7 +2046,7 @@ mod tests {
     fn residual_vector_zeros_inactive_but_fixed_length() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2096,7 +2078,7 @@ mod tests {
 
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2122,7 +2104,7 @@ mod tests {
     fn phase_wrap_no_trig() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2146,7 +2128,7 @@ mod tests {
         // Coarse target grid over a fine sim ramp — linear interp hits exactly.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2167,7 +2149,7 @@ mod tests {
     fn extrapolation_clamps_and_overlap_skips() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         // Below sim range → overlap holds (sim covers [400,800]) → clamps to first val 0.3.
@@ -2203,7 +2185,7 @@ mod tests {
     fn missing_curve_penalty_once_per_key() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Tp,
         }); // not supplied
         spec.add_target(entry(
@@ -2227,7 +2209,7 @@ mod tests {
         ))
         .unwrap();
         let k2 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }); // supplied
         spec.add_target(entry(
@@ -2253,7 +2235,7 @@ mod tests {
     #[test]
     fn angle_row_argmin_semantics() {
         let mut sim = SimCurves {
-            angles: vec![0.0, 30.0, 60.0].into(),
+            angles: degs(&[0.0, 30.0, 60.0]).into(),
             wavelengths: vec![500.0].into(),
             curves: [None, None, None, None, None, None, None, None, None],
             back: [None, None, None, None, None, None],
@@ -2265,7 +2247,7 @@ mod tests {
 
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 25.0,
+            angle: deg(25.0),
             curve: CurveId::Ru,
         }); // → row 30°
         spec.add_target(entry(
@@ -2292,7 +2274,7 @@ mod tests {
         // Aligned: target wl exactly on the sim grid (bit-equal).
         let mut spec_a = MeritSpec::new();
         let ka = spec_a.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec_a
@@ -2328,7 +2310,7 @@ mod tests {
         };
         let mut spec_u = MeritSpec::new();
         let ku = spec_u.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec_u
@@ -2369,7 +2351,7 @@ mod tests {
         let mk = |band: Vec<f64>| {
             let mut s = MeritSpec::new();
             let k = s.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             s.add_target(entry_banded(
@@ -2409,7 +2391,7 @@ mod tests {
         let mk = |band: Vec<f64>| {
             let mut s = MeritSpec::new();
             let k = s.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             s.add_target(entry_banded(
@@ -2444,7 +2426,7 @@ mod tests {
         // over-counting every key after the first.
         let mut spec = MeritSpec::new();
         let k0 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2458,7 +2440,7 @@ mod tests {
         ))
         .unwrap();
         let k1 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp,
         });
         spec.add_target(entry(
@@ -2482,7 +2464,7 @@ mod tests {
         // R row 0.6, T row 0.3 → A = 0.1; demand A = 0.1, tol 0.05 → 0.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::As,
         });
         spec.add_target(entry(
@@ -2496,7 +2478,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2524,7 +2506,7 @@ mod tests {
         // Unpolarized demand derives from the Ru/Tu companions the same way.
         let mut spec_u = MeritSpec::new();
         let ku = spec_u.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Au,
         });
         spec_u
@@ -2553,7 +2535,7 @@ mod tests {
         // Complex row 0.5·e^{i·0.3}; demand phase 0.3 (nf=1) → zero.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry_phase(
@@ -2567,7 +2549,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2600,7 +2582,7 @@ mod tests {
         // Sim phase 0.3 + 2π − 0.01 vs target 0.3: wrapped diff −0.01.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry_phase(
@@ -2614,7 +2596,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2640,7 +2622,7 @@ mod tests {
     fn phase_on_absorption_rejected() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::As,
         });
         let mut tgt = entry_phase(
@@ -2655,7 +2637,7 @@ mod tests {
         tgt.key_idx = k as u32;
         assert!(spec.add_target(tgt).is_err());
         let k2 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ru,
         });
         let tgt2 = entry_phase(
@@ -2688,7 +2670,7 @@ mod tests {
         // One angle (0°), NW wavelengths from 400 nm; Ts complex row
         // 0.7·e^{i·0.3} at 400 nm; stack D = 100 nm of air (n = 1).
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2717,7 +2699,7 @@ mod tests {
         // Δφ = 0.3 − π/2; demanding exactly that with tol 0.05 → zero.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let delta = 0.3 - std::f64::consts::PI / 2.0;
@@ -2736,7 +2718,7 @@ mod tests {
         // (−π/2/0.05)² ≈ 986.96 — the reference is doing the work.
         let mut abs_spec = MeritSpec::new();
         let ka = abs_spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         abs_spec
@@ -2763,7 +2745,7 @@ mod tests {
         // D = 0 kills the reference: differential ≡ absolute bit-for-bit.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry_pd(
@@ -2785,7 +2767,7 @@ mod tests {
         // passes = 2 doubles the subtracted reference (round-trip).
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let delta = 0.3 - std::f64::consts::PI; // 2 × π/2
@@ -2806,7 +2788,7 @@ mod tests {
         // Without phase → Err; negative/NaN passes → Err.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let mut t = entry(
@@ -2840,7 +2822,7 @@ mod tests {
         // r = ±1/point → merit 2.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2858,7 +2840,7 @@ mod tests {
         // weight 2 → merit 4 (residuals scale by √2).
         let mut sw = MeritSpec::new();
         let kw = sw.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tw = entry(
@@ -2879,7 +2861,7 @@ mod tests {
         // count 2 → merit 1 (mean, not sum).
         let mut sc = MeritSpec::new();
         let kc = sc.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tc = entry(
@@ -2897,7 +2879,7 @@ mod tests {
         // weight 3 + count 2 → 3.
         let mut sb = MeritSpec::new();
         let kb = sb.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tb = entry(
@@ -2922,7 +2904,7 @@ mod tests {
         ] {
             let mut sx = MeritSpec::new();
             let kx = sx.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let mut tx = entry(
@@ -2966,7 +2948,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(2).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         // Two demands in env 0 (so insertion order is observable), one in
@@ -2997,7 +2979,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(2).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp, // sim_one_angle fills Rs only
         }) as u32;
         spec.add_target(env_entry(k, 0)).unwrap();
@@ -3010,11 +2992,11 @@ mod tests {
         let mut half = MeritSpec::new();
         half.set_n_envs(2).unwrap();
         let ok = half.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         let bad = half.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp,
         }) as u32;
         half.add_target(env_entry(ok, 0)).unwrap();
@@ -3037,7 +3019,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(3).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         spec.add_target(env_entry(k, 1)).unwrap();
@@ -3055,7 +3037,7 @@ mod tests {
     fn the_single_environment_doors_delegate() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         spec.add_target(env_entry(k, 0)).unwrap();
@@ -3079,7 +3061,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(2).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         spec.add_target(env_entry(k, 1)).unwrap();
@@ -3106,7 +3088,7 @@ mod tests {
         // Sim [0.6, 0.5, 0.4] vs 0.5: mean diff 0 → merit 0, ONE residual.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry_integral(k as u32, ConstraintKind::Exact))
@@ -3126,7 +3108,7 @@ mod tests {
         // Above: mean above target → silent; mean below → active.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry_integral(k as u32, ConstraintKind::Above))
@@ -3140,7 +3122,7 @@ mod tests {
         // Range with band 0.05 (raw, nf = 1): mean inside → 0.
         let mut spec_r = MeritSpec::new();
         let kr = spec_r.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tr = entry_integral(kr as u32, ConstraintKind::Range);
@@ -3157,7 +3139,7 @@ mod tests {
     fn integral_rejects_count_norm() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut t = entry_integral(k as u32, ConstraintKind::Exact);
@@ -3170,7 +3152,7 @@ mod tests {
         // RBs row 0.4, TBs row 0.5: R demand 0.4 → 0; ABs demand 0.1 → 0.
         let mut spec = MeritSpec::new();
         let kr = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::RBs,
         });
         spec.add_target(entry(
@@ -3184,7 +3166,7 @@ mod tests {
         ))
         .unwrap();
         let ka = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::ABs,
         });
         spec.add_target(entry(
@@ -3198,7 +3180,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -3218,7 +3200,7 @@ mod tests {
     fn band_length_mismatch_rejected() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         assert!(
@@ -3239,7 +3221,7 @@ mod tests {
     #[test]
     fn rotation_kernel_values() {
         // λ=1000, θ=0, n=1, d=250, passes=1: ref = 2π·250/1000 = π/2.
-        let rot = super::reference_rotation(&[1000.0], 0.0, &[1.0], 250.0, 1.0).unwrap();
+        let rot = super::reference_rotation(&[1000.0], Radians::ZERO, &[1.0], 250.0, 1.0).unwrap();
         assert!((rot[0].re - 0.0).abs() < 1e-15);
         assert!((rot[0].im + 1.0).abs() < 1e-15);
         let mut rows = vec![num_complex::Complex64::new(1.0, 0.0); 3];
@@ -3248,7 +3230,8 @@ mod tests {
         assert!(super::rotate_rows(&mut rows[..2], &rot).is_ok());
         let mut bad = vec![num_complex::Complex64::new(1.0, 0.0); 2];
         let rot2 =
-            super::reference_rotation(&[1000.0, 500.0, 250.0], 0.0, &[1.0], 0.0, 1.0).unwrap();
+            super::reference_rotation(&[1000.0, 500.0, 250.0], Radians::ZERO, &[1.0], 0.0, 1.0)
+                .unwrap();
         assert!(super::rotate_rows(&mut bad, &rot2).is_err());
     }
 
@@ -3261,8 +3244,9 @@ mod tests {
         let n_col = [1.5_f64, 1.7, 1.9];
         // Broadcast (length 1) == the pre-PD2 scalar kernel, bitwise:
         // identical f64 operand, identical order (exp(-i*r) itself).
-        let rot_b = super::reference_rotation(&wls, 0.0, &[1.7], 100.0, 1.0).unwrap();
-        let rot_x = super::reference_rotation(&wls, 0.0, &[1.7, 1.7, 1.7], 100.0, 1.0).unwrap();
+        let rot_b = super::reference_rotation(&wls, Radians::ZERO, &[1.7], 100.0, 1.0).unwrap();
+        let rot_x =
+            super::reference_rotation(&wls, Radians::ZERO, &[1.7, 1.7, 1.7], 100.0, 1.0).unwrap();
         assert_eq!(rot_b.to_vec(), rot_x);
         // Hand: arg(exp(-i*r)) = -r (wrapped to (-pi, pi]).
         let wrapped = |x: f64| x - TAU * (x / TAU + 0.5).floor();
@@ -3273,7 +3257,7 @@ mod tests {
             rot_b[0]
         );
         // Dispersive row: per-lambda values.
-        let rot_d = super::reference_rotation(&wls, 0.0, &n_col, 200.0, 1.0).unwrap();
+        let rot_d = super::reference_rotation(&wls, Radians::ZERO, &n_col, 200.0, 1.0).unwrap();
         let expect_args: Vec<f64> = n_col
             .iter()
             .zip(wls)
@@ -3283,12 +3267,13 @@ mod tests {
             assert!((r.arg() - e).abs() < 1e-12, "arg={r:?} expect={e}");
         }
         // Refusals: length 2 against a 3-wavelength grid (both named), empty.
-        let err = super::reference_rotation(&wls, 0.0, &[1.5, 1.7], 200.0, 1.0).unwrap_err();
+        let err =
+            super::reference_rotation(&wls, Radians::ZERO, &[1.5, 1.7], 200.0, 1.0).unwrap_err();
         assert!(
             err.contains("length 2") && err.contains("3 wavelengths"),
             "err={err}"
         );
-        let err = super::reference_rotation(&wls, 0.0, &[], 200.0, 1.0).unwrap_err();
+        let err = super::reference_rotation(&wls, Radians::ZERO, &[], 200.0, 1.0).unwrap_err();
         assert!(err.contains("empty"), "err={err}");
     }
 
@@ -3301,7 +3286,7 @@ mod tests {
     fn demanded_reference_sides_tracks_the_labels() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry_pd(
@@ -3317,7 +3302,7 @@ mod tests {
         // A back curve (hypothetical label, decision 6) flips the side.
         let mut spec_b = MeritSpec::new();
         let kb = spec_b.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::TBs,
         });
         spec_b
@@ -3334,7 +3319,7 @@ mod tests {
         // A non-differential spec demands nothing.
         let mut spec_p = MeritSpec::new();
         let kp = spec_p.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec_p
@@ -3356,7 +3341,7 @@ mod tests {
         use super::{CurveId, SimCurves};
         use std::sync::Arc;
         let mut sim = SimCurves {
-            angles: Arc::from([0.0]),
+            angles: Arc::from([Radians::ZERO]),
             wavelengths: Arc::from([500.0, 600.0]),
             total_d: 0.0,
             n_front_re: Arc::from([1.0_f64]),
@@ -3389,7 +3374,7 @@ mod tests {
     fn length_mismatch_and_bad_key_rejected() {
         let mut spec = MeritSpec::new();
         let _k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         assert!(
@@ -3453,7 +3438,7 @@ mod tests {
         let s = white[0] + white[1] + white[2];
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_color_demand(
@@ -3499,7 +3484,7 @@ mod tests {
         assert!(spec.residuals(&full, &mut out).is_ok());
         assert_eq!(out.len(), 2);
         let empty = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -3552,6 +3537,8 @@ mod tests {
 
     mod sensitivity {
         use super::*;
+        #[allow(unused_imports)]
+        use crate::smatrix::angle::{Radians, deg, degs};
         use std::sync::Arc;
 
         const NW: usize = 9;
@@ -3564,7 +3551,7 @@ mod tests {
         /// Two angle rows of smooth, distinguishable curves.
         fn sim_of(rs: &[f64], ts: &[f64]) -> SimCurves {
             let mut s = SimCurves {
-                angles: vec![0.0, 30.0].into(),
+                angles: degs(&[0.0, 30.0]).into(),
                 wavelengths: wl().into(),
                 total_d: 400.0,
                 n_front_re: Arc::from([1.0_f64]),
@@ -3707,7 +3694,7 @@ mod tests {
                 for transform in [SimTransform::Linear, SimTransform::Log] {
                     let mut spec = MeritSpec::new();
                     let k = spec.add_key(MeritKey {
-                        angle: 30.0,
+                        angle: deg(30.0),
                         curve: CurveId::Rs,
                     });
                     let mut t = target(k as u32, wl(), kind, transform, false, 1.7);
@@ -3733,7 +3720,7 @@ mod tests {
             // 1/n, and the kind applies once, to the mean.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_target(target(
@@ -3756,7 +3743,7 @@ mod tests {
             // single-curve check.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 30.0,
+                angle: deg(30.0),
                 curve: CurveId::As,
             });
             spec.add_target(target(
@@ -3799,7 +3786,7 @@ mod tests {
             for transform in [SimTransform::Linear, SimTransform::Log] {
                 let mut spec = MeritSpec::new();
                 let k = spec.add_key(MeritKey {
-                    angle: 0.0,
+                    angle: Radians::ZERO,
                     curve: CurveId::Rs,
                 });
                 let mut t = target(
@@ -3831,11 +3818,11 @@ mod tests {
             // would still be elementwise correct on any single-target spec.
             let mut spec = MeritSpec::new();
             let k0 = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let k1 = spec.add_key(MeritKey {
-                angle: 30.0,
+                angle: deg(30.0),
                 curve: CurveId::Ts,
             });
             spec.add_target(target(
@@ -3875,7 +3862,7 @@ mod tests {
             // misaligned — silently, since the values would all still be finite.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_target(target(
@@ -3910,7 +3897,7 @@ mod tests {
             // difference, not conclude that the phase rows are constant.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let mut t = target(
@@ -3945,7 +3932,7 @@ mod tests {
         fn a_missing_curve_errors_where_the_residual_pass_errors() {
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rp,
             });
             spec.add_target(target(
@@ -3971,7 +3958,7 @@ mod tests {
             let build = |weight: f64, count: Option<f64>| {
                 let mut spec = MeritSpec::new();
                 let k = spec.add_key(MeritKey {
-                    angle: 0.0,
+                    angle: Radians::ZERO,
                     curve: CurveId::Rs,
                 });
                 let mut t = target(
@@ -4011,7 +3998,7 @@ mod tests {
             // assembling J does no work for them.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let mut t = target(

@@ -98,7 +98,7 @@ pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
     for t in &set.angular {
         check_target(
             &t.values,
-            &t.angles,
+            &navette::smatrix::angle::to_degrees_vec(&t.angles),
             &t.tolerances,
             t.weight,
             t.integral,

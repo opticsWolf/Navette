@@ -13,7 +13,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use super::color_merit::{ColorDemand, ColorDistance, ColorQuantity, ColorReference};
-use super::merit::{ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimTransform};
+use super::merit::{
+    ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimTransform,
+};
 use crate::color::tables::default_tables;
 use crate::spectralweave::opticalweaver::{OpticalKey, SpectralData};
 use crate::spectralweave::targetweaver::{TargetKind, TargetWeaver};
@@ -33,7 +35,8 @@ pub struct SpectralTarget {
     pub wavelengths: Vec<f64>,
     pub values: Vec<f64>,
     pub tolerances: Vec<f64>,
-    pub angle: f64,
+    #[serde(with = "crate::smatrix::angle::serde_degrees")]
+    pub angle: Radians,
     pub polarization: String,
     pub spectral: String,
     #[serde(default = "d_kind")]
@@ -65,7 +68,8 @@ pub struct SpectralTarget {
 #[serde(deny_unknown_fields)]
 pub struct AngularTarget {
     pub wavelength: f64,
-    pub angles: Vec<f64>,
+    #[serde(with = "crate::smatrix::angle::serde_degrees_vec")]
+    pub angles: Vec<Radians>,
     pub values: Vec<f64>,
     pub tolerances: Vec<f64>,
     pub polarization: String,
@@ -158,7 +162,8 @@ pub enum ReferenceJson {
 #[serde(deny_unknown_fields)]
 pub struct ColorTargetJson {
     pub curve: String,
-    pub angle: f64,
+    #[serde(with = "crate::smatrix::angle::serde_degrees")]
+    pub angle: Radians,
     pub illuminant: IllumJson,
     pub observer: CmfJson,
     pub quantity: String,
@@ -355,7 +360,7 @@ fn allclose(a: &[f64], b: &[f64]) -> bool {
 /// Ingested entry with its grid (native mirror of one export dict).
 struct Exported {
     uid: usize,
-    angle: f64,
+    angle: Radians,
     polarization: String,
     spectral: String,
     wavelengths: Vec<f64>,
@@ -384,7 +389,7 @@ fn ingest_spectral(weaver: &TargetWeaver, t: &SpectralTarget) -> Result<(), Stri
     } else {
         t.normalization_mode.as_str()
     };
-    let key = OpticalKey::from((t.angle, t.polarization.clone(), t.spectral.clone()));
+    let key = OpticalKey::from((t.angle.get(), t.polarization.clone(), t.spectral.clone()));
     let frame = weaver.create_dedicated_frame(&t.wavelengths)?;
     frame.set_data(
         key.clone(),
@@ -428,7 +433,11 @@ fn ingest_angular(weaver: &TargetWeaver, t: &AngularTarget) -> Result<(), String
     let wl_point = vec![t.wavelength];
     let frame = weaver.create_dedicated_frame(&wl_point)?;
     for i in 0..n {
-        let key = OpticalKey::from((t.angles[i], t.polarization.clone(), t.spectral.clone()));
+        let key = OpticalKey::from((
+            t.angles[i].get(),
+            t.polarization.clone(),
+            t.spectral.clone(),
+        ));
         frame.set_data(
             key.clone(),
             SpectralData::from_arc(Arc::from([t.values[i]].as_slice())),
@@ -475,7 +484,7 @@ fn export_all(weaver: &TargetWeaver) -> Vec<Exported> {
             let (angle, polarization, spectral) = key.as_tuple();
             out.push(Exported {
                 uid: frame.uid,
-                angle,
+                angle: Radians::new(angle).expect("weaver key written from a checked angle"),
                 polarization,
                 spectral,
                 wavelengths: wl.clone(),
@@ -696,9 +705,9 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             if idxs.len() != t.angles.len() {
                 continue;
             }
-            let mut got: Vec<f64> = idxs.iter().map(|i| entries[*i].angle).collect();
+            let mut got: Vec<f64> = idxs.iter().map(|i| entries[*i].angle.get()).collect();
             got.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let mut want = t.angles.clone();
+            let mut want: Vec<f64> = t.angles.iter().map(|a| a.get()).collect();
             want.sort_by(|a, b| a.partial_cmp(b).unwrap());
             if !allclose(&got, &want) {
                 continue;
@@ -741,8 +750,8 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         spec.set_env_roster(&roster)?;
     }
     let mut keys: BTreeMap<(u64, String), u32> = BTreeMap::new();
-    let mut get_key = |spec: &mut MeritSpec, angle: f64, curve: &str| -> u32 {
-        let k = (angle.to_bits(), curve.to_string());
+    let mut get_key = |spec: &mut MeritSpec, angle: Radians, curve: &str| -> u32 {
+        let k = (angle.get().to_bits(), curve.to_string());
         if let Some(idx) = keys.get(&k) {
             return *idx;
         }
@@ -849,6 +858,8 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
 
     /// Empty target set - the tests above spread it and state only the
     /// fields they actually vary.
@@ -869,7 +880,7 @@ mod tests {
             wavelengths: vec![500.0, 600.0],
             values: vec![0.05, 0.05],
             tolerances: vec![0.01, 0.01],
-            angle: 0.0,
+            angle: Radians::ZERO,
             polarization: "s".to_string(),
             spectral: "R".to_string(),
             kind: "e".to_string(),
@@ -889,7 +900,7 @@ mod tests {
     fn demand_environment_tags_resolve_and_refuse() {
         let tagged = |env: Option<&str>, angle: f64| SpectralTarget {
             environment: env.map(str::to_string),
-            angle,
+            angle: deg(angle),
             ..spec_target()
         };
 
@@ -929,7 +940,12 @@ mod tests {
         let by_angle: Vec<(f64, u32)> = spec
             .targets()
             .iter()
-            .map(|t| (spec.keys()[t.key_idx as usize].angle, t.env_idx))
+            .map(|t| {
+                (
+                    spec.keys()[t.key_idx as usize].angle.to_degrees(),
+                    t.env_idx,
+                )
+            })
             .collect();
         assert!(by_angle.contains(&(0.0, 1)), "{by_angle:?}");
         assert!(by_angle.contains(&(10.0, 0)), "{by_angle:?}");
@@ -974,7 +990,7 @@ mod tests {
     fn a_demand_cannot_outlive_its_environment() {
         let mut spec = MeritSpec::new();
         let ki = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         let mut t = MeritTarget {
@@ -1119,7 +1135,7 @@ mod tests {
         ColorTargetJson {
             environment: None,
             curve: "Ru".to_string(),
-            angle: 0.0,
+            angle: Radians::ZERO,
             illuminant: IllumJson::Table(IllumTable {
                 wavelengths: vec![500.0, 600.0],
                 values: vec![1.0, 1.0],

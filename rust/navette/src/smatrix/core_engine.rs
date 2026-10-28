@@ -827,7 +827,7 @@ pub fn differential_phase_rows(
     let mut out = Vec::with_capacity(t_rows.len());
     for (k, a) in t_rows.iter().enumerate() {
         let w = k % num_wavs;
-        let theta = sin_theta[k / num_wavs].asin().to_degrees();
+        let theta = crate::smatrix::angle::Radians::from_checked_sin(sin_theta[k / num_wavs]);
         let mut p = a.arg()
             - crate::smatrix::optics_core::reference_phase(
                 wavls[w],

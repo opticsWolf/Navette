@@ -754,7 +754,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             && let Ok(sim) = ctx.simulate(st)
             && let Ok(f) = build_needle_targets_env(
                 &spectral.spec,
-                &spectral.angles_deg,
+                &spectral.angles,
                 &spectral.wavls,
                 Some(&sim),
                 e as u32,
@@ -969,7 +969,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
             && let Ok(sim) = ctx.simulate(stack)
             && let Ok(f) = build_needle_targets(
                 &spectral.spec,
-                &spectral.angles_deg,
+                &spectral.angles,
                 &spectral.wavls,
                 Some(&sim),
             )
@@ -1348,6 +1348,8 @@ fn joint_cycle<C: DesignContext + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     // Only the tests build NeedleTargets by hand; the pass returns them.
     use crate::smatrix::synthesis::merit::{MeritSpec, SimCurves};
     use crate::smatrix::synthesis::needle_pass::NeedleTargets;
@@ -1440,7 +1442,7 @@ mod tests {
             sin_theta: vec![0.0],
             folds: vec![fold],
             spec: MeritSpec::new(),
-            angles_deg: vec![0.0],
+            angles: vec![Radians::ZERO],
         }
     }
 
@@ -1882,7 +1884,7 @@ mod tests {
 
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: crate::smatrix::synthesis::merit::CurveId::Rs,
         });
         spec.add_target(MeritTarget {
@@ -1913,7 +1915,7 @@ mod tests {
             envs: None,
             thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
         };
-        let spectral = SpectralInputs::from_spec(&spec, &[0.0], &[1000.0]).unwrap();
+        let spectral = SpectralInputs::from_spec(&spec, &[Radians::ZERO], &[1000.0]).unwrap();
         (ctx, spectral)
     }
 

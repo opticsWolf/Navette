@@ -28,7 +28,7 @@ use crate::smatrix::synthesis::cycle::{
     MaterialPool, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
 };
 use crate::smatrix::synthesis::inflate::{InflateResult, inflate_design};
-use crate::smatrix::synthesis::merit::MeritSpec;
+use crate::smatrix::synthesis::merit::{MeritSpec, Radians};
 use crate::smatrix::synthesis::needle_pass::{NeedleTargets, build_needle_targets_env};
 use crate::smatrix::synthesis::stagnation::StagnationDetector;
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack};
@@ -414,7 +414,7 @@ pub struct SpectralInputs {
     pub wavls: Vec<f64>,
     /// Sines of incidence angles.
     pub sin_theta: Vec<f64>,
-    /// Conservative fold of `spec` on (`angles_deg`, `wavls`) — the
+    /// Conservative fold of `spec` on (`angles`, `wavls`) — the
     /// starting fold; re-folded against the live sim each needle cycle
     /// (see `run_needle_cycles`).
     ///
@@ -425,48 +425,32 @@ pub struct SpectralInputs {
     /// single-environment case is a one-element vector and `folds[0]` is
     /// the fold that was here before.
     pub folds: Vec<NeedleTargets>,
-    /// Kept for per-cycle re-folds (spec + degree-convention angles).
+    /// Kept for per-cycle re-folds.
     pub spec: MeritSpec,
-    pub angles_deg: Vec<f64>,
+    pub angles: Vec<Radians>,
 }
 
 impl SpectralInputs {
-    /// Build from a merit spec: `angles_deg` matches the spec's key
-    /// convention (degrees, as produced by the Python converter).
-    pub fn from_spec(spec: &MeritSpec, angles_deg: &[f64], wavls: &[f64]) -> Result<Self, String> {
+    /// Build from a merit spec on the incidence grid `angles`.
+    pub fn from_spec(spec: &MeritSpec, angles: &[Radians], wavls: &[f64]) -> Result<Self, String> {
         let folds = (0..spec.n_envs())
-            .map(|e| build_needle_targets_env(spec, angles_deg, wavls, None, e as u32))
+            .map(|e| build_needle_targets_env(spec, angles, wavls, None, e as u32))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(SpectralInputs {
             wavls: wavls.to_vec(),
-            sin_theta: angles_deg
-                .iter()
-                .map(|a| (a * std::f64::consts::PI / 180.0).sin())
-                .collect(),
+            sin_theta: crate::smatrix::angle::sines(angles),
             folds,
             spec: spec.clone(),
-            angles_deg: angles_deg.to_vec(),
+            angles: angles.to_vec(),
         })
-    }
-
-    /// As [`from_spec`](Self::from_spec) for a grid in radians: the fold
-    /// labels its rows in degrees to match the merit keys, and the solver
-    /// takes `sin` of the radians directly.
-    pub fn from_spec_radians(
-        spec: &MeritSpec,
-        angles_rad: &[f64],
-        wavls: &[f64],
-    ) -> Result<Self, String> {
-        let deg: Vec<f64> = angles_rad.iter().map(|a| a.to_degrees()).collect();
-        let mut s = Self::from_spec(spec, &deg, wavls)?;
-        s.sin_theta = angles_rad.iter().map(|a| a.sin()).collect();
-        Ok(s)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     use crate::smatrix::synthesis::merit::SimCurves;
     use crate::smatrix::synthesis::structure::LayerSpec;
 
@@ -490,7 +474,7 @@ mod tests {
                 grad_t: vec![0.0f64; NW],
             }],
             spec: MeritSpec::new(),
-            angles_deg: vec![0.0],
+            angles: vec![Radians::ZERO],
         }
     }
 

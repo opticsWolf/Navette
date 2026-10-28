@@ -39,7 +39,9 @@ use crate::smatrix::needle_operator::{
     p_coherent_tb_from_fields,
 };
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
-use crate::smatrix::synthesis::merit::{CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves};
+use crate::smatrix::synthesis::merit::{
+    CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimCurves,
+};
 use crate::structure::Span;
 
 // ---------------------------------------------------------------------------
@@ -307,7 +309,7 @@ fn sample_op_value(
 ///   See `docs/spectralweave-target-kinds.md` for the full kind/fold reference.
 pub fn build_needle_targets(
     spec: &MeritSpec,
-    angles: &[f64],
+    angles: &[Radians],
     wavelengths: &[f64],
     current_sim: Option<&SimCurves>,
 ) -> Result<NeedleTargets, String> {
@@ -339,7 +341,7 @@ pub fn build_needle_targets(
 /// -film name; the sum is `run_needle_cycles`'s, not this function's.
 pub fn build_needle_targets_env(
     spec: &MeritSpec,
-    angles: &[f64],
+    angles: &[Radians],
     wavelengths: &[f64],
     current_sim: Option<&SimCurves>,
     env: u32,
@@ -400,7 +402,7 @@ pub fn build_needle_targets_env(
         let mut row = 0usize;
         let mut best_d = f64::INFINITY;
         for (a, &ang) in angles.iter().enumerate() {
-            let dd = (ang - key.angle).abs();
+            let dd = (ang.get() - key.angle.get()).abs();
             if dd < best_d {
                 best_d = dd;
                 row = a;
@@ -632,7 +634,7 @@ pub fn build_needle_targets_env(
         let mut row = 0usize;
         let mut best_d = f64::INFINITY;
         for (a, &ang) in angles.iter().enumerate() {
-            let dd = (ang - key.angle).abs();
+            let dd = (ang.get() - key.angle.get()).abs();
             if dd < best_d {
                 best_d = dd;
                 row = a;
@@ -1256,6 +1258,8 @@ pub fn run_needle_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     use crate::smatrix::optics_core::cplx;
     use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
     use crate::smatrix::synthesis::structure::LayerSpec;
@@ -1567,7 +1571,10 @@ mod tests {
         kind: ConstraintKind,
     ) -> MeritSpec {
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle, curve });
+        let k = spec.add_key(MeritKey {
+            angle: deg(angle),
+            curve,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             env_idx: 0,
@@ -1618,7 +1625,10 @@ mod tests {
         kind: ConstraintKind,
     ) -> MeritSpec {
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle, curve });
+        let k = spec.add_key(MeritKey {
+            angle: deg(angle),
+            curve,
+        });
         spec.add_target(MeritTarget {
             key_idx: k as u32,
             env_idx: 0,
@@ -1641,7 +1651,7 @@ mod tests {
 
     fn sim_single(angle: f64, wl: f64, curve: CurveId, val: f64) -> SimCurves {
         let mut sim = SimCurves {
-            angles: vec![angle].into(),
+            angles: vec![deg(angle)].into(),
             wavelengths: vec![wl].into(),
             curves: [None, None, None, None, None, None, None, None, None],
             back: [None, None, None, None, None, None],
@@ -1663,7 +1673,7 @@ mod tests {
         let ref_of = |wl: f64| TAU * 100.0 / wl;
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let tgt: Vec<f64> = [400.0, 500.0]
@@ -1689,7 +1699,7 @@ mod tests {
         .unwrap();
         let mk_sim = |d: f64| {
             let mut sim = SimCurves {
-                angles: vec![0.0].into(),
+                angles: vec![Radians::ZERO].into(),
                 wavelengths: vec![400.0, 500.0].into(),
                 curves: [None, None, None, None, None, None, None, None, None],
                 back: [None, None, None, None, None, None],
@@ -1708,7 +1718,7 @@ mod tests {
             );
             sim
         };
-        let angles = [0.0];
+        let angles = [Radians::ZERO];
         let wavs = [400.0, 500.0];
         let nt = build_needle_targets(&spec, &angles, &wavs, Some(&mk_sim(100.0))).unwrap();
         // Hand calc: 2·(−0.2)·(−kz/0.05) per point = 8·kz summed.
@@ -1758,7 +1768,7 @@ mod tests {
         let ref_of = |wl: f64| TAU * n(wl) * d / wl; // passes=1, theta=0
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let tgt: Vec<f64> = [450.0, 550.0]
@@ -1784,7 +1794,7 @@ mod tests {
         .unwrap();
         let mk_sim = |total_d: f64| {
             let mut sim = SimCurves {
-                angles: vec![0.0].into(),
+                angles: vec![Radians::ZERO].into(),
                 wavelengths: wls.to_vec().into(),
                 curves: [None, None, None, None, None, None, None, None, None],
                 back: [None, None, None, None, None, None],
@@ -1799,7 +1809,7 @@ mod tests {
             sim.cplx[3] = Some(vec![Complex64::from_polar(0.7, 0.3); 3].into());
             sim
         };
-        let nt = build_needle_targets(&spec, &[0.0], &wls, Some(&mk_sim(100.0))).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &wls, Some(&mk_sim(100.0))).unwrap();
         // Hand: r = -0.2/point, w = 1/0.05^2 = 400, s - rt = -0.01:
         // shift = sum(-2 * kz(wl) * 400 * (-0.01)) = 8 * (kz(450) + kz(550)).
         let kz = |wl: f64| TAU * n(wl) / wl;
@@ -1837,7 +1847,7 @@ mod tests {
         let mk_spec = |differential: bool| {
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Ts,
             });
             let tgt: Vec<f64> = [400.0, 500.0, 600.0]
@@ -1865,7 +1875,7 @@ mod tests {
         };
         let mk_sim = || {
             let mut sim = SimCurves {
-                angles: vec![0.0].into(),
+                angles: vec![Radians::ZERO].into(),
                 wavelengths: wls.to_vec().into(),
                 curves: [None, None, None, None, None, None, None, None, None],
                 back: [None, None, None, None, None, None],
@@ -1886,8 +1896,10 @@ mod tests {
             sim
         };
         let sim = mk_sim();
-        let fold_pd = build_needle_targets(&mk_spec(true), &[0.0], &wls, Some(&sim)).unwrap();
-        let fold_abs = build_needle_targets(&mk_spec(false), &[0.0], &wls, Some(&sim)).unwrap();
+        let fold_pd =
+            build_needle_targets(&mk_spec(true), &[Radians::ZERO], &wls, Some(&sim)).unwrap();
+        let fold_abs =
+            build_needle_targets(&mk_spec(false), &[Radians::ZERO], &wls, Some(&sim)).unwrap();
         // The buckets themselves are reference-free: bitwise identical.
         assert_eq!(fold_pd.phi[2].0, fold_abs.phi[2].0, "fold targets");
         assert_eq!(fold_pd.phi[2].1, fold_abs.phi[2].1, "fold weights");
@@ -1989,7 +2001,7 @@ mod tests {
         // weight 3 + count 2 → 150; raw target untouched.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(MeritTarget {
@@ -2009,7 +2021,7 @@ mod tests {
             count_norm: Some(2.0),
         })
         .unwrap();
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], None).unwrap();
         assert!((nt.r.1[0] - 150.0).abs() < 1e-9, "w={}", nt.r.1[0]);
         assert!((nt.r.0[0] - 0.5).abs() < 1e-14);
         // Gain shift inherits the same factor (PD demand, weight 2 →
@@ -2018,7 +2030,7 @@ mod tests {
         let ref_of = |wl: f64| TAU * 100.0 / wl;
         let mut pspec = MeritSpec::new();
         let pk = pspec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let tgt: Vec<f64> = [400.0].iter().map(|&w| 0.3 - ref_of(w) + 0.01).collect();
@@ -2041,7 +2053,7 @@ mod tests {
             })
             .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: vec![400.0].into(),
             curves: [None, None, None, None, None, None, None, None, None],
             back: [None, None, None, None, None, None],
@@ -2052,7 +2064,7 @@ mod tests {
             n_back_re: Arc::from([1.0_f64]),
         };
         sim.cplx[3] = Some(vec![Complex64::from_polar(0.7, 0.3)].into());
-        let pnt = build_needle_targets(&pspec, &[0.0], &[400.0], Some(&sim)).unwrap();
+        let pnt = build_needle_targets(&pspec, &[Radians::ZERO], &[400.0], Some(&sim)).unwrap();
         // Hand: −2·kz·w·Δ with w = 2/0.05² = 800, Δ = −0.01.
         let expect = -2.0 * (TAU / 400.0) * 800.0 * (-0.01);
         assert!(
@@ -2066,7 +2078,7 @@ mod tests {
     fn spec_integral(angle: f64, kind: ConstraintKind) -> MeritSpec {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle,
+            angle: deg(angle),
             curve: CurveId::Rs,
         });
         spec.add_target(MeritTarget {
@@ -2091,7 +2103,7 @@ mod tests {
 
     fn sim_rs(vals: [f64; 3]) -> SimCurves {
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: vec![400.0, 500.0, 600.0].into(),
             curves: [None, None, None, None, None, None, None, None, None],
             back: [None, None, None, None, None, None],
@@ -2111,7 +2123,8 @@ mod tests {
         // reproduce exactly that: 2·w_i·(s_i−t_i) == g for every i.
         let spec = spec_integral(0.0, ConstraintKind::Exact);
         let sim = sim_rs([0.7, 0.6, 0.5]);
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0], Some(&sim)).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0, 500.0, 600.0], Some(&sim))
+            .unwrap();
         let g = 2.0 * 100.0 * 0.1 / 3.0;
         // Direct: folded w_i = W/N² = 100/9, t_i = s_i − N·G = s_i − 0.3.
         for i in 0..3 {
@@ -2147,11 +2160,14 @@ mod tests {
         // (spec_integral has empty band → bare-r fallback ±tol = ±0.1;
         // mean diff 0.04 is inside → skip.)
         let sim = sim_rs([0.54, 0.54, 0.54]);
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0], Some(&sim)).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0, 500.0, 600.0], Some(&sim))
+            .unwrap();
         assert!(nt.r.1.iter().all(|&w| w == 0.0));
         // Mean diff 0.2 → violated: uniform edge pairs, w = 100/9 each.
         let sim2 = sim_rs([0.7, 0.7, 0.7]);
-        let nt2 = build_needle_targets(&spec, &[0.0], &[400.0, 500.0, 600.0], Some(&sim2)).unwrap();
+        let nt2 =
+            build_needle_targets(&spec, &[Radians::ZERO], &[400.0, 500.0, 600.0], Some(&sim2))
+                .unwrap();
         for i in 0..3 {
             assert!((nt2.r.1[i] - 100.0 / 9.0).abs() < 1e-9);
             // edge gap G = (0.2−0.1)/1 = 0.1 → t = 0.7 − 0.3 = 0.4.
@@ -2172,7 +2188,7 @@ mod tests {
             nf,
             ConstraintKind::Exact,
         );
-        let angles = [0.0];
+        let angles = [Radians::ZERO];
         let wavs = [400.0, 500.0, 600.0];
         let (tgt, wgt) = build_needle_targets(&spec, &angles, &wavs, None).unwrap().r;
         assert_eq!(tgt.len(), 3);
@@ -2191,7 +2207,7 @@ mod tests {
         // point: quadratic forms fold exactly to the weighted mean.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp,
         });
         let mk = |norm_t: f64, tol: f64, nf: f64| MeritTarget {
@@ -2214,7 +2230,7 @@ mod tests {
         spec.add_target(mk(0.4 * nfa, 0.1, nfa)).unwrap();
         spec.add_target(mk(0.6 * nfb, 0.2, nfb)).unwrap();
 
-        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[500.0], None)
+        let (tgt, wgt) = build_needle_targets(&spec, &[Radians::ZERO], &[500.0], None)
             .unwrap()
             .r;
         let wa = nfa * nfa / 0.01;
@@ -2238,7 +2254,7 @@ mod tests {
             ConstraintKind::Above,
         );
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: vec![400.0].into(),
             curves: [None, None, None, None, None, None, None, None, None],
             back: [None, None, None, None, None, None],
@@ -2248,14 +2264,14 @@ mod tests {
         };
         sim.curves[CurveId::Ru.index()] = Some(vec![0.7f64].into()); // above → satisfied
 
-        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim))
+        let (tgt, wgt) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim))
             .unwrap()
             .r;
         assert_eq!(wgt[0], 0.0);
         assert_eq!(tgt[0], 0.0);
 
         sim.curves[CurveId::Ru.index()] = Some(vec![0.3f64].into()); // violated → active
-        let (tgt, wgt) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim))
+        let (tgt, wgt) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim))
             .unwrap()
             .r;
         assert!(wgt[0] > 0.0);
@@ -2277,26 +2293,26 @@ mod tests {
         );
         // In-band operating point → masked out.
         let sim_in = sim_single(0.0, 400.0, CurveId::Rs, 0.52);
-        let (_, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_in))
+        let (_, w) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim_in))
             .unwrap()
             .r;
         assert_eq!(w[0], 0.0);
         // Violated above → nearest (upper) edge drives.
         let sim_hi = sim_single(0.0, 400.0, CurveId::Rs, 0.6);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_hi))
+        let (t, w) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim_hi))
             .unwrap()
             .r;
         assert!((t[0] - 0.55).abs() < 1e-14);
         assert!((w[0] - 100.0).abs() < 1e-9);
         // Violated below → lower edge drives.
         let sim_lo = sim_single(0.0, 400.0, CurveId::Rs, 0.3);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_lo))
+        let (t, w) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim_lo))
             .unwrap()
             .r;
         assert!((t[0] - 0.45).abs() < 1e-14);
         assert!((w[0] - 100.0).abs() < 1e-9);
         // No sim yet → conservative exact fold at the centre.
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], None)
+        let (t, w) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], None)
             .unwrap()
             .r;
         assert!((t[0] - 0.5).abs() < 1e-14);
@@ -2317,14 +2333,14 @@ mod tests {
             ConstraintKind::CenterBand,
         );
         let sim_in = sim_single(0.0, 400.0, CurveId::Rs, 0.52);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_in))
+        let (t, w) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim_in))
             .unwrap()
             .r;
         assert!((t[0] - 0.5).abs() < 1e-14);
         assert!((w[0] - 400.0).abs() < 1e-9);
         // Outside → upper edge with the outer weight.
         let sim_hi = sim_single(0.0, 400.0, CurveId::Rs, 0.6);
-        let (t, w) = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim_hi))
+        let (t, w) = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim_hi))
             .unwrap()
             .r;
         assert!((t[0] - 0.55).abs() < 1e-14);
@@ -2343,7 +2359,7 @@ mod tests {
             1.0,
             ConstraintKind::Exact,
         );
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], None).unwrap();
         assert!((nt.t.0[0] - 0.3).abs() < 1e-14);
         assert!((nt.t.1[0] - 100.0).abs() < 1e-9);
         assert_eq!(nt.r.1[0], 0.0);
@@ -2365,7 +2381,7 @@ mod tests {
         );
         let mut sim = sim_single(0.0, 400.0, CurveId::Rs, 0.6);
         sim.curves[CurveId::Ts.index()] = Some(vec![0.3f64].into());
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0], Some(&sim)).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], Some(&sim)).unwrap();
         assert!((nt.a.0[0] - 0.2).abs() < 1e-14);
         assert!((nt.a.1[0] - 100.0).abs() < 1e-9);
         assert_eq!(nt.r.1[0], 0.0);
@@ -2379,7 +2395,7 @@ mod tests {
             1.0,
             ConstraintKind::Above,
         );
-        let nt2 = build_needle_targets(&spec2, &[0.0], &[400.0], Some(&sim)).unwrap();
+        let nt2 = build_needle_targets(&spec2, &[Radians::ZERO], &[400.0], Some(&sim)).unwrap();
         assert_eq!(nt2.a.1[0], 0.0);
     }
 
@@ -2395,7 +2411,7 @@ mod tests {
             1.0,
             ConstraintKind::Exact,
         );
-        let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
+        let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], None).unwrap();
         assert!((nt.rb.0[0] - 0.4).abs() < 1e-14);
         assert!((nt.rb.1[0] - 100.0).abs() < 1e-9);
         assert_eq!(nt.r.1[0], 0.0);
@@ -2415,7 +2431,7 @@ mod tests {
                 1.0,
                 ConstraintKind::Exact,
             );
-            let nt = build_needle_targets(&spec, &[0.0], &[400.0], None).unwrap();
+            let nt = build_needle_targets(&spec, &[Radians::ZERO], &[400.0], None).unwrap();
             assert!((nt.phi[ch].0[0] - 1.0).abs() < 1e-14);
             assert!((nt.phi[ch].1[0] - 100.0).abs() < 1e-9);
             for (i, pair) in nt.phi.iter().enumerate() {
@@ -2427,13 +2443,13 @@ mod tests {
         // Phase demand with a log transform cannot fold.
         let mut spec_log = MeritSpec::new();
         let k = spec_log.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tgt = entry_for_phase(k as u32);
         tgt.transform = SimTransform::Log;
         spec_log.add_target(tgt).unwrap();
-        assert!(build_needle_targets(&spec_log, &[0.0], &[400.0], None).is_err());
+        assert!(build_needle_targets(&spec_log, &[Radians::ZERO], &[400.0], None).is_err());
     }
 
     #[test]
@@ -2441,7 +2457,7 @@ mod tests {
         // Log transform cannot fold → must be rejected.
         let mut spec_log = MeritSpec::new();
         let k = spec_log.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec_log
@@ -2462,7 +2478,7 @@ mod tests {
                 count_norm: None,
             })
             .unwrap();
-        assert!(build_needle_targets(&spec_log, &[0.0], &[400.0], None).is_err());
+        assert!(build_needle_targets(&spec_log, &[Radians::ZERO], &[400.0], None).is_err());
     }
 
     #[test]
@@ -2519,7 +2535,10 @@ mod tests {
             })
             .collect();
         let mut spec = MeritSpec::new();
-        let k = spec.add_key(MeritKey { angle: 0.0, curve });
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve,
+        });
         spec.add_color_demand(
             R4Demand::new(
                 k as u32,
@@ -2548,7 +2567,7 @@ mod tests {
             *slot = Some(Arc::from(vec![level; NW]));
         }
         SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: TEST_WAVLS.to_vec().into(),
             curves,
             back: [None, None, None, None, None, None],
@@ -2562,7 +2581,7 @@ mod tests {
     fn color_fold_deposits_half_for_u_and_skips() {
         let spec = color_spec_r4(CurveId::Ru, [0.30, 0.31, 0.50]);
         let sim = color_sim_r4(0.5);
-        let fold = build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&sim)).unwrap();
+        let fold = build_needle_targets(&spec, &[Radians::ZERO], &TEST_WAVLS, Some(&sim)).unwrap();
         // Bitwise vs a direct kernel call (same inputs, deterministic).
         let d = &spec.color_demands()[0];
         let row: &[f64] = sim.curves[2].as_ref().unwrap();
@@ -2578,12 +2597,13 @@ mod tests {
         // Pointwise buckets untouched by a pure color set.
         assert!(fold.r.1.iter().all(|&v| v == 0.0));
         // No sim: fold-conservative, nothing deposited.
-        let bare = build_needle_targets(&spec, &[0.0], &TEST_WAVLS, None).unwrap();
+        let bare = build_needle_targets(&spec, &[Radians::ZERO], &TEST_WAVLS, None).unwrap();
         assert!(bare.grad_r.iter().all(|&v| v == 0.0));
         // Missing curve: skip (sim carries no Ru row).
         let mut noru = color_sim_r4(0.5);
         noru.curves[2] = None;
-        let skipped = build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&noru)).unwrap();
+        let skipped =
+            build_needle_targets(&spec, &[Radians::ZERO], &TEST_WAVLS, Some(&noru)).unwrap();
         assert!(skipped.grad_r.iter().all(|&v| v == 0.0));
     }
 
@@ -2598,8 +2618,13 @@ mod tests {
             sim.curves[0] = Some(Arc::from(row));
             sim
         };
-        let fold =
-            build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&mk(base.clone()))).unwrap();
+        let fold = build_needle_targets(
+            &spec,
+            &[Radians::ZERO],
+            &TEST_WAVLS,
+            Some(&mk(base.clone())),
+        )
+        .unwrap();
         let delta = 1e-6;
         for j in [0usize, 2, 5] {
             let mut hi = base.clone();
@@ -2656,7 +2681,7 @@ mod tests {
         for (q, r) in cases {
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_color_demand(
@@ -2677,8 +2702,13 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-            let fold =
-                build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&mk(base.clone()))).unwrap();
+            let fold = build_needle_targets(
+                &spec,
+                &[Radians::ZERO],
+                &TEST_WAVLS,
+                Some(&mk(base.clone())),
+            )
+            .unwrap();
             let delta = 1e-6;
             for j in [1usize, 4] {
                 let mut hi = base.clone();
@@ -2712,7 +2742,7 @@ mod tests {
         ];
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_color_demand(
@@ -2739,8 +2769,13 @@ mod tests {
             sim.curves[0] = Some(Arc::from(row));
             sim
         };
-        let fold =
-            build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&mk(base.clone()))).unwrap();
+        let fold = build_needle_targets(
+            &spec,
+            &[Radians::ZERO],
+            &TEST_WAVLS,
+            Some(&mk(base.clone())),
+        )
+        .unwrap();
         let delta = 1e-6;
         for j in [1usize, 4] {
             let mut hi = base.clone();
@@ -2770,7 +2805,8 @@ mod tests {
             LayerSpec::constant("H", 2.35, 0.0, 50.0, NW),
         ];
         let run = |spec: &MeritSpec, s: bool, p: bool| {
-            let fold = build_needle_targets(spec, &[0.0], &TEST_WAVLS, Some(&sim)).unwrap();
+            let fold =
+                build_needle_targets(spec, &[Radians::ZERO], &TEST_WAVLS, Some(&sim)).unwrap();
             let mut inp = pass_input(&cache, &d, &rt, &rv, &fold, &needle_n);
             inp.calc_s = s;
             inp.calc_p = p;
@@ -2795,7 +2831,7 @@ mod tests {
         // (mirrors dual_pol_equals_sum_of_branches for the new buckets).
         let sim = color_sim_r4(0.5);
         let spec = color_spec_r4(CurveId::Ru, [0.35, 0.36, 0.55]);
-        let fold = build_needle_targets(&spec, &[0.0], &TEST_WAVLS, Some(&sim)).unwrap();
+        let fold = build_needle_targets(&spec, &[Radians::ZERO], &TEST_WAVLS, Some(&sim)).unwrap();
         let (cache, d, rt, rv) = test_stack_arrays();
         let needle_n = nk_const(1.46);
         let films = vec![LayerSpec::constant("H", 2.35, 0.0, 40.0, NW)];
@@ -2821,7 +2857,7 @@ mod tests {
         // skip-guards make them exactly inert (R4 grad-free regression).
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(MeritTarget {
@@ -2841,7 +2877,7 @@ mod tests {
             count_norm: None,
         })
         .unwrap();
-        let fold = build_needle_targets(&spec, &[0.0], &TEST_WAVLS, None).unwrap();
+        let fold = build_needle_targets(&spec, &[Radians::ZERO], &TEST_WAVLS, None).unwrap();
         assert!(fold.grad_r.iter().all(|&v| v == 0.0));
         assert!(fold.grad_t.iter().all(|&v| v == 0.0));
         let (cache, d, rt, rv) = test_stack_arrays();
