@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(stack.films().len(), 11);
         // Force every row free: the flag filter alone would take them all.
         for r in 0..11 {
-            stack.set_row_optimize_for_test(r, true);
+            stack.set_row_optimize(r, true);
         }
         let mut ctx = MockCtx {
             targets: vec![1.0; 11],

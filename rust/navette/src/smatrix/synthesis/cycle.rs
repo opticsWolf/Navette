@@ -562,7 +562,6 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     let envs = ctx
         .environments()
         .ok_or_else(|| "joint_needle_sweep: the context has no environments".to_string())?;
-    let k = envs.n_envs();
     let stacks = envs.expand(stack)?;
 
     let mut gtot = 0.0f64;
@@ -621,11 +620,11 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
                 let n = step.entry(site.film_idx).or_insert(0);
                 let ordinal = *n;
                 *n += 1;
-                let Some(slot) = envs.slot_of_row(e, site.film_idx) else {
+                let Some((slot, copy)) = envs.copy_of_row(e, site.film_idx) else {
                     continue; // surroundings: inadmissible, and never shared
                 };
-                if e == 0 {
-                    n_sites += 1;
+                if e == 0 && copy == 0 {
+                    n_sites += 1; // the design's own sites, each once
                 }
                 let entry = buckets.entry((mi, slot, ordinal)).or_insert((
                     site.depth_into_layer_nm,
@@ -639,15 +638,20 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     }
 
     // §4.4's alignment assert, in its span-aware form: the same design
-    // object must produce the same scan grid in every environment, so every
-    // bucket is filled exactly K times. A short bucket means the assemblies
-    // drifted apart, and summing it would sum over different loci.
-    if let Some(((m, slot, ord), (_, _, n))) = buckets.iter().find(|(_, v)| v.2 != k) {
+    // object must produce the same scan grid in every place it is used, so
+    // every bucket is filled once per copy in every environment. A short
+    // bucket means the assemblies drifted apart, and summing it would sum
+    // over different loci.
+    if let Some(((m, slot, ord), (_, _, n))) = buckets
+        .iter()
+        .find(|((_, slot, _), v)| v.2 != envs.n_placements(*slot))
+    {
         let m = &pool[*m].material;
+        let k = envs.n_placements(*slot);
         return Err(format!(
             "joint needle sweep: the locus (slot {slot}, step {ord}, needle {m:?}) \
-             appears in {n} of {k} environments - the assemblies no longer \
-             share the design's scan grid"
+             appears in {n} of the {k} places the design film is used - the \
+             assemblies no longer share the design's scan grid"
         ));
     }
 
@@ -1027,7 +1031,10 @@ fn joint_cycle<C: DesignContext + ?Sized>(
         })?;
     let mat = &pool[cand.material];
     let seed = new_needle(stack.films(), mat, cfg.needle_seed_thickness_nm);
-    stack.insert_needle_seed(row0, cand.depth_into_layer_nm, seed.clone())?;
+    // Every copy of the host in the design object, then every template.
+    ctx.environments()
+        .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
+        .split_design(stack, cand.slot, cand.depth_into_layer_nm, &seed)?;
     ctx.environments_mut()
         .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
         .insert_seed(cand.slot, cand.depth_into_layer_nm, &seed)?;

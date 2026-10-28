@@ -1513,11 +1513,10 @@ impl DesignStack {
         Ok(report)
     }
 
-    /// Test-only: force a row's optimize flag. The F0.2 span-exemption
-    /// twin needs an optimize=true graded span, which `from_design` never
-    /// produces before F1.6 (non-background graded films homogenize).
-    #[cfg(test)]
-    pub(crate) fn set_row_optimize_for_test(&mut self, row: usize, optimize: bool) {
+    /// Force a row's optimize flag. The joint compile pins the copies of a
+    /// design film that follow its primary; tests use it to build shapes
+    /// `from_design` does not produce.
+    pub(crate) fn set_row_optimize(&mut self, row: usize, optimize: bool) {
         self.films[row].optimize = optimize;
     }
 

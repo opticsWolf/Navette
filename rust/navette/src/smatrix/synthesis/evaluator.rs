@@ -508,6 +508,11 @@ impl SmatrixContext {
             false,
         )?;
         self.clamp_accumulator.merge(rep);
+        // The optimizer moved the primaries; the design's other copies of
+        // the same films follow them.
+        if let Some(envs) = &self.envs {
+            envs.sync(stack)?;
+        }
 
         self.evaluate_merit(stack).map(|mf| (mf, Some(res)))
     }
@@ -1559,7 +1564,7 @@ mod tests {
         fn the_clamp_accumulator_drains_and_resets() {
             let mut ctx = ar_ctx(1000.0);
             let mut stack = ar_stack(200.0);
-            stack.set_row_optimize_for_test(0, false);
+            stack.set_row_optimize(0, false);
             ctx.optimize_thicknesses(&mut stack).unwrap();
             assert!(ctx.take_clamp_report().is_none());
 

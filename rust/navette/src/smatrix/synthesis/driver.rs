@@ -313,6 +313,7 @@ pub fn run_environments(
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
     let k = envs.n_envs();
+    let joint = envs.is_joint();
     if spec.n_envs() != k {
         return Err(format!(
             "run_environments: the merit spec has {} environment(s) but the \
@@ -342,7 +343,7 @@ pub fn run_environments(
             envs.names().join(", ")
         ));
     }
-    if k > 1 {
+    if joint {
         let mut blocked: Vec<&str> = Vec::new();
         if cfg.enable_cleanup {
             blocked.push("enable_cleanup");
@@ -355,7 +356,7 @@ pub fn run_environments(
         }
         if !blocked.is_empty() {
             return Err(format!(
-                "run_environments: {} environments with {} - removing a \
+                "run_environments: {} environment(s){} with {} - removing a \
                  design parameter, or inserting one outside the needle path, \
                  changes the shared design's span layout in a direction the \
                  compile cannot yet follow (F2.3 gave it `insert_seed`, not \
@@ -363,6 +364,11 @@ pub fn run_environments(
                  run today: use thin_layer_policy 'clamp_up_final' and leave \
                  cleanup and inflate off, or run one environment.",
                 k,
+                if envs.has_copies() {
+                    ", a design segment used more than once,"
+                } else {
+                    ""
+                },
                 blocked.join(" and ")
             ));
         }
@@ -381,11 +387,17 @@ pub fn run_environments(
         thin_layer_policy: cfg.thin_layer_policy,
         lm,
         clamp_accumulator: ClampReport::default(),
-        // The branch. One environment keeps the flat path exactly.
-        envs: if k == 1 { None } else { Some(Arc::new(envs)) },
+        // The branch. One environment whose design films are each used
+        // once keeps the flat path exactly.
+        envs: if joint { Some(Arc::new(envs)) } else { None },
     };
     let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, pool)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
+    // The final clamp moves primaries only; the returned stack's copies
+    // follow them.
+    if let Some(envs) = &ctx.envs {
+        envs.sync(&mut pipe.stack)?;
+    }
     Ok((report, pipe.stack, Vec::new()))
 }
 

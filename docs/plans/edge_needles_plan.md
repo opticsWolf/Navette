@@ -231,5 +231,23 @@ multi-environment runs. Order of work at the end.
    Request-level lists are the single segment's, ambiguous (refused)
    with several. `seed_edges` stays refused on the joint door: seeding a
    segment edge is a joint boundary insertion, so it comes with step 6.
-5. Segment `inverted` and `repeat` through the Architect.
+5. Segment `inverted` and `repeat`, split in two:
+   - 5a, `repeat`. Built: `EnvSegmentCfg::repeat`, at-least-once
+     references, routing `routing[slot][env]` = every copy's span,
+     primary `routing[slot][0][0]`. Environment 0's other copies are
+     pinned (`optimize` false) and follow the primary through
+     `CompiledEnvironments::sync`, which `expand`, the optimizer's
+     write-back and the driver's return all call. `split_design` and
+     `insert_seed` split every copy; the joint sweep's buckets fill once
+     per placement (`n_placements`). One environment with copies is
+     joint (`is_joint`). Forward copies only, so the per-row copy holds,
+     and the Architect is not needed yet.
+   - 5b, `inverted`, through the Architect. An inverted run takes its
+     interface slice and roughness from the neighbour, and the slice is
+     carved from that neighbour's rows (`owner_of` in `expand`), so an
+     inverted copy is not a row-reversed forward copy. It is re-expanded
+     as its own unit from the segment's layer thicknesses, both at each
+     evaluation and after a needle, and its scan grid is laid out in
+     forward depth (`d - z`) so its buckets meet the forward copy's. The
+     primary is environment 0's first copy, even when it is inverted.
 6. Joint boundary needles (§B5 with the cases above).

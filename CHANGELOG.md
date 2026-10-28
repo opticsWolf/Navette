@@ -91,6 +91,19 @@ All notable changes to Navette are recorded here. Work items reference
   - An edge must be a layer. A film with an interface slice qualifies
     (its bulk row is matched); a graded or gradient film never does, and
     `seed_edges` is the way past one.
+- **Repeated design segments.** An environment's design reference takes
+  `repeat` (`{"design": "coat", "repeat": 3}`, default 1), and a design
+  segment may be referenced more than once: every environment now uses
+  each design segment at least once rather than exactly once. Copies are
+  one design. Each film stays one parameter: its first copy in the first
+  environment is free, the other copies follow it (`optimize` false in
+  the returned stack). A needle lands in every copy, its gain summed over
+  all of them. One environment with copies runs on the joint path, with
+  the joint path's refusals (cleanup, inflate, `thin_layer_policy
+  'remove'`). Segment edge lists are checked on every copy. Inverted
+  copies are still to come. The program bridge (`design_from_program`)
+  now carries `repeat` and a segment's `outer` / `inner`; it dropped the
+  edge lists before.
 - **Boundary needles.** `NeedleCycleConfig(boundary_needles=True)` also
   scans every span boundary, the outer edges included. A needle there is
   a new film between two layers, so it reaches films too thin for an

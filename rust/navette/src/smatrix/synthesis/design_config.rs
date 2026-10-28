@@ -661,6 +661,11 @@ pub(crate) struct RowAssembly<'a> {
     pub wavelengths: &'a [f64],
     /// Names the door in gradient-validation refusals.
     pub gate_label: &'a str,
+    /// A film name may appear more than once: the segmented door's copies
+    /// of a repeated design segment share their films' names, because a
+    /// name is a design parameter and the copies are one design. The flat
+    /// door refuses a repeat, where it can only be a mistake.
+    pub copies: bool,
 }
 
 /// Split `(name, row)` pairs by layer type and build the film layers.
@@ -717,7 +722,7 @@ pub(crate) fn split_and_build_films(
     let mut films: Vec<Layer> = Vec::with_capacity(film_rows.len());
     let mut seen: HashSet<&str> = HashSet::new();
     for (name, row) in film_rows {
-        if !seen.insert(name.as_str()) {
+        if !seen.insert(name.as_str()) && !ctx.copies {
             return Err(format!(
                 "duplicate film material code {name:?} (film names key the nk table)"
             ));
@@ -815,6 +820,7 @@ pub fn build_design(
             // `LayerRow` whose flags default true, so there is no
             // forced-false invariant here for M1 to protect.
             fixed_films: &HashSet::new(),
+            copies: false,
             nk: &nk_table,
             film_flags: &req.film_flags,
             per_film_flags: &req.per_film_flags,

@@ -466,11 +466,11 @@ def design_from_program(program, materials=None):
             "this program has no 'design' section - nothing to run as a "
             "multi-environment design."
         )
-    design = {
-        str(seg): _program_rows(body.get("layers"), mats,
-                                f"design segment {seg!r}")
-        for seg, body in design_doc.items()
-    }
+    design = {}
+    for seg, body in design_doc.items():
+        rows = _program_rows(body.get("layers"), mats, f"design segment {seg!r}")
+        edges = {k: body[k] for k in ("outer", "inner") if body.get(k) is not None}
+        design[str(seg)] = {"layers": rows, **edges} if edges else rows
     environments = []
     for env in env_doc:
         name = str(env.get("name", ""))
@@ -483,7 +483,10 @@ def design_from_program(program, materials=None):
             ref = part.get("design")
             rows = part.get("layers")
             if ref is not None:
-                stack.append({"design": str(ref)})
+                entry = {"design": str(ref)}
+                if part.get("repeat") is not None:
+                    entry["repeat"] = part["repeat"]
+                stack.append(entry)
             elif rows is not None:
                 stack.append({"layers": _program_rows(
                     rows, mats, f"environment {name!r} segment {j}")})
@@ -588,7 +591,24 @@ def _environments_request(design, environments, materials, wl,
                     "one of 'design' or 'layers'."
                 )
             if has_design:
-                stack.append({"design": str(part["design"])})
+                unknown = set(part) - {"design", "repeat"}
+                if unknown:
+                    raise ValueError(
+                        f"environment {name!r}: stack entry {j} has unknown "
+                        f"keys {sorted(unknown)} (a design reference takes "
+                        "'design' and 'repeat')."
+                    )
+                ref = {"design": str(part["design"])}
+                if "repeat" in part:
+                    repeat = part["repeat"]
+                    if isinstance(repeat, bool) or not isinstance(repeat, int) \
+                            or repeat < 1:
+                        raise ValueError(
+                            f"environment {name!r}: stack entry {j}: 'repeat' "
+                            f"must be an integer >= 1, got {repeat!r}."
+                        )
+                    ref["repeat"] = repeat
+                stack.append(ref)
                 continue
             rows = []
             for i, entry in enumerate(part["layers"]):
@@ -750,7 +770,14 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         incoming light) and last film in every environment, whatever
         surrounds it there.
     environments : [{"name": ..., "stack": [{"design": id} | {"layers": [...]}]}]
-        Each environment's ordered segment list. The shared design films
+        Each environment's ordered segment list. Every environment
+        references each design segment at least once; ``{"design": id,
+        "repeat": n}`` places ``n`` copies back to back, and a second
+        reference places another. Copies are one design: each film is one
+        parameter (its first copy in the first environment; the others
+        follow it, ``optimize`` false in the returned stack), and a needle
+        lands in every copy. One environment with copies runs jointly, so
+        cleanup and inflate refuse there too. The shared design films
         are the free variables; everything in a ``layers`` segment is
         fixed surroundings, and the row schema forces ``optimize`` and
         ``needle`` false there — an explicit ``true`` refuses, and since

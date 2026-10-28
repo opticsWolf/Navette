@@ -386,3 +386,74 @@ def test_duplicate_film_names_refuse_because_a_name_is_an_identity():
         environments=[{"name": "bare", "stack": [{"design": "coat"}]}],
         pipeline_config=PipelineConfig(**CFG)),
         "same", "unique")
+
+
+# --------------------------------------------------------------------------
+# Repeated segments
+# --------------------------------------------------------------------------
+
+def _repeat_targets():
+    tc = TargetCollection()
+    tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
+                          0.0, "s", "R", environment="twice"))
+    return tc
+
+
+def test_a_repeated_segment_is_one_design_in_every_copy():
+    """Two copies, one design: a needle lands in both, and the copies
+    leave the run with the same films at the same thicknesses."""
+    res = run_needle(
+        targets=_repeat_targets(), angles_deg=[0.0], wavelengths=WL,
+        design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
+        environments=[{"name": "twice",
+                       "stack": [{"design": "coat", "repeat": 2}]}],
+        pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"))
+    films = res["stack"].films()
+    assert len(films) > 4 and len(films) % 2 == 0, len(films)
+    half = len(films) // 2
+    for a, b in zip(films[:half], films[half:]):
+        assert a["material"] == b["material"]
+        assert _hex(a["thickness"]) == _hex(b["thickness"])
+        assert a["optimize"] and not b["optimize"]
+
+
+def test_a_document_repeat_and_edge_lists_are_the_keyword_run(tmp_path):
+    """`repeat` and a segment's `outer`/`inner` cross the program bridge."""
+    doc = json.loads(json.dumps(DOCUMENT))
+    doc["sections"]["design"]["coat"]["outer"] = ["L"]
+    doc["sections"]["environments"] = [
+        {"name": "twice", "stack": [{"design": "coat", "repeat": 2}]}]
+    prog = load_program(_write(tmp_path, doc), WL)
+    design, environments = design_from_program(prog)
+    assert design["coat"]["outer"] == ["L"]
+    assert environments[0]["stack"][0]["repeat"] == 2
+
+    kw = dict(targets=_repeat_targets(), angles_deg=[0.0], wavelengths=WL,
+              pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"))
+    from_file = run_needle(design=design, environments=environments, **kw)
+    from_kwargs = run_needle(
+        design={"coat": {"layers": [(L, 100.0, "L"), (H, 80.0, "H")],
+                         "outer": "L"}},
+        environments=[{"name": "twice",
+                       "stack": [{"design": "coat", "repeat": 2}]}], **kw)
+    assert _hex(from_file["final_mf"]) == _hex(from_kwargs["final_mf"])
+
+    # The bridge carries the list: off it, the file run refuses too.
+    doc["sections"]["design"]["coat"]["outer"] = ["H"]
+    prog = load_program(_write(tmp_path, doc), WL)
+    design, environments = design_from_program(prog)
+    _refuses(lambda: run_needle(design=design, environments=environments, **kw),
+             "design segment", "outer")
+
+
+@pytest.mark.parametrize("ref, needles", [
+    ({"design": "coat", "repeat": 0}, ("'repeat'", ">= 1")),
+    ({"design": "coat", "repeat": True}, ("'repeat'",)),
+    ({"design": "coat", "copies": 2}, ("unknown keys", "copies")),
+])
+def test_a_bad_repeat_refuses_at_the_door(ref, needles):
+    _refuses(lambda: run_needle(
+        targets=_repeat_targets(), angles_deg=[0.0], wavelengths=WL,
+        design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
+        environments=[{"name": "twice", "stack": [ref]}],
+        pipeline_config=PipelineConfig(**CFG)), *needles)
