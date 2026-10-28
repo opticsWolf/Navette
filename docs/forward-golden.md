@@ -124,12 +124,12 @@ The baseline pins today's numbers, defects included: its job is to catch
 drift. Each defect is a strict xfail in `test_forward_physics.py`, so a fix
 flips it. Drop the mark and regenerate in the same change.
 
-1. **Multi-angle synthesis reads the wrong angle.** `SmatrixContext` (and
-   the `run_design` driver) give `SimCurves` sin(theta) as its angle axis,
-   but `MeritSpec` keys are in degrees and `SimCurves::angle_row` compares
-   the two directly. With more than one angle, every key at a non-zero
-   angle scores against the last angle's curves. Single-angle runs are
-   right.
+1. **Multi-angle synthesis reads the wrong angle (fixed).** `SmatrixContext`
+   (and the `run_design` driver) gave `SimCurves` sin(theta) as its angle
+   axis, but `MeritSpec` keys are in degrees and `SimCurves::angle_row`
+   compares the two directly. With more than one angle, every key at a
+   non-zero angle scored against the last angle's curves. The evaluator now
+   labels the axis in degrees; the solver still runs on sin(theta).
 2. **Synthesis T into an absorbing substrate.** `SmatrixContext.simulate`'s
    `Ts`/`Tp` disagree with the Poynting transmittance the engine returns
    (and `1 - R`): T = 84 on bare Ag at 400 nm, 1e-5 off on Si. R and the

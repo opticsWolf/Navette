@@ -251,7 +251,14 @@ impl SmatrixContext {
 
         Ok((
             SimCurves {
-                angles: self.sin_theta.clone().into(),
+                // Merit keys name angles in degrees (`angle_row`), so the
+                // axis goes back from the solver's sines to degrees.
+                angles: self
+                    .sin_theta
+                    .iter()
+                    .map(|s| s.asin().to_degrees())
+                    .collect::<Vec<f64>>()
+                    .into(),
                 wavelengths: self.wavls.clone().into(),
                 total_d,
                 n_front_re,
@@ -1045,6 +1052,11 @@ mod tests {
         const WLS: [f64; 5] = [480.0, 520.0, 560.0, 600.0, 640.0];
         const SINS: [f64; 2] = [0.0, 0.45];
 
+        /// Merit keys name the incidence angle in degrees.
+        fn deg(sin_theta: f64) -> f64 {
+            sin_theta.asin().to_degrees()
+        }
+
         /// air | H(n=2.30) | L(n=1.46) | H(n=2.30, k=0.004) | glass(1.52).
         ///
         /// Three optimizable films of different index, one of them weakly
@@ -1112,6 +1124,20 @@ mod tests {
         }
 
         #[test]
+        fn the_angle_axis_is_in_degrees_so_each_key_reads_its_own_row() {
+            // Merit keys are in degrees; an axis left in sines sends every
+            // key at a non-zero angle to the last row.
+            let ctx = ctx3(ar_spec(0.0, 560.0));
+            let (sim, _) = ctx
+                .simulate_with_deposits(&stack3(118.0, 203.0, 64.0), &[0])
+                .unwrap();
+            for (i, &s) in SINS.iter().enumerate() {
+                assert!((sim.angles[i] - deg(s)).abs() < 1e-12);
+                assert_eq!(sim.angle_row(deg(s)), i);
+            }
+        }
+
+        #[test]
         fn thickness_deposits_are_a_finite_difference_of_the_simulated_curves() {
             // The right half of J, against its own oracle: `simulate()` centrally
             // differenced in THICKNESS space. No merit, no optimizer -- if this
@@ -1167,10 +1193,10 @@ mod tests {
             // central differences of the whole residual vector in thickness space.
             // R, T and A demands at two angles, both polarizations.
             let mut spec = MeritSpec::new();
-            demand(&mut spec, SINS[0], CurveId::Rs, 0.01);
-            demand(&mut spec, SINS[1], CurveId::Rp, 0.02);
-            demand(&mut spec, SINS[1], CurveId::Ts, 0.95);
-            demand(&mut spec, SINS[0], CurveId::As, 0.0);
+            demand(&mut spec, deg(SINS[0]), CurveId::Rs, 0.01);
+            demand(&mut spec, deg(SINS[1]), CurveId::Rp, 0.02);
+            demand(&mut spec, deg(SINS[1]), CurveId::Ts, 0.95);
+            demand(&mut spec, deg(SINS[0]), CurveId::As, 0.0);
             let ctx = ctx3(spec);
 
             let d = [118.0, 203.0, 64.0];
@@ -1229,7 +1255,7 @@ mod tests {
             // from either channel alone -- a single-channel bug would look
             // plausible and be wrong.
             let mut spec = MeritSpec::new();
-            demand(&mut spec, SINS[0], CurveId::As, 0.0);
+            demand(&mut spec, deg(SINS[0]), CurveId::As, 0.0);
             let ctx = ctx3(spec);
             let stack = stack3(118.0, 203.0, 64.0);
             let par = [2usize];
@@ -1598,8 +1624,8 @@ mod tests {
             let x = [118.0, 203.0, 64.0];
 
             let mut spec = MeritSpec::new();
-            demand(&mut spec, SINS[0], CurveId::Rs, 0.0);
-            demand(&mut spec, SINS[1], CurveId::As, 0.0);
+            demand(&mut spec, deg(SINS[0]), CurveId::Rs, 0.0);
+            demand(&mut spec, deg(SINS[1]), CurveId::As, 0.0);
             let covered = DepositJacobian {
                 ctx: ctx3(spec),
                 base_stack: stack.clone(),
@@ -1648,8 +1674,8 @@ mod tests {
             let rp0 = sim0.curve(CurveId::Rp).unwrap().to_vec();
             let nw = WLS.len();
             let mut spec = MeritSpec::new();
-            demand_at(&mut spec, SINS[0], CurveId::Rs, rs0[..nw].to_vec());
-            demand_at(&mut spec, SINS[1], CurveId::Rp, rp0[nw..].to_vec());
+            demand_at(&mut spec, deg(SINS[0]), CurveId::Rs, rs0[..nw].to_vec());
+            demand_at(&mut spec, deg(SINS[1]), CurveId::Rp, rp0[nw..].to_vec());
 
             let mut analytic = ctx3(spec.clone());
             analytic.lm.jacobian = JacobianMode::Analytic;

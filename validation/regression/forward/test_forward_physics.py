@@ -25,7 +25,7 @@ cos(theta_0); Psi is in radians; Delta_R = arg(-rp/rs), Delta_T =
 arg(tp/ts); S0 = Rs + Rp, S1 = Rp - Rs, S2_R = -2 Re(cross_R), S3_R =
 -2 Im(cross_R) with cross_R = rp rs*; GD = +d(phi)/d(omega) in fs.
 
-Three known defects are pinned as strict xfails (and by the baseline, which
+Two known defects are pinned as strict xfails (and by the baseline, which
 pins today's numbers); fixing one flips its xfail and needs a regenerate.
 """
 from __future__ import annotations
@@ -372,10 +372,6 @@ def test_synthesis_evaluator_matches_the_engine(name, evaluated):
 # Known defects (found while building this baseline). Strict: a fix flips
 # them to XPASS-fail, which is the cue to drop the mark and regenerate.
 # ---------------------------------------------------------------------------
-@pytest.mark.xfail(strict=True, reason=(
-  "SmatrixContext/run_design give SimCurves sin(theta) as the angle axis, but "
-  "MeritSpec keys are degrees and SimCurves::angle_row compares them directly: "
-  "with more than one angle, every non-zero key reads the last angle's curves."))
 def test_multi_angle_synthesis_reads_each_angle():
   from navette import _smatrix as S
 
