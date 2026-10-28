@@ -32,10 +32,10 @@ an interior incoherent layer, C2).
 | Absorptance | `A_s` `A_p` `A_avg` (6-8) | `1 - R - T`, unclamped (Névot-Croce can make it negative) | identity, sign |
 | Ellipsometry | `Psi_R` `Psi_T` (9-10), `Delta_R` `Delta_T` (11-12) | radians; `tan Psi = sqrt(Rp/Rs)`; `Delta_R = arg(-rp/rs)`, `Delta_T = arg(tp/ts)` | amplitudes |
 | Polarisation | `DOP_R` `DOP_T` (13-14), `Diattenuation_R/T` (15-16), `Retardance_R/T` (35-36) | 45-degree-input Stokes; `D = (Rp-Rs)/(Rp+Rs)`; `Retardance_R = Delta_R - pi`, `Retardance_T = Delta_T` | identities |
-| Stokes | `S0..S3_R` (17-20), `S0..S3_T` (21-24) | `S0 = Rs+Rp`, `S1 = Rp-Rs`, `S2_R = -2 Re(cross_R)`, `S3_R = -2 Im(cross_R)` | pure-state identity |
+| Stokes | `S0..S3_R` (17-20), `S0..S3_T` (21-24) | `S0 = Rs+Rp`, `S1 = Rp-Rs`, `S2_R = -2 Re(cross_R)`, `S3_R = -2 Im(cross_R)`, `S2_T = 2 Re(cross_T)`, `S3_T = 2 Im(cross_T)` | pure-state identity |
 | Absolute phase | `phi_rs` `phi_rp` `phi_ts` `phi_tp` (25-28) | `arg` of the amplitude, principal value | Airy, continuity |
 | Complex amplitudes | `rs_c` `rp_c` `ts_c` `tp_c` (29-32) | exp(+i beta); `rp_c` = minus textbook r_p; `tp_c` = textbook t_p x cos(theta_exit)/cos(theta_0) | Fresnel, Airy |
-| Coherency | `cross_R` `cross_T` (33-34) | `rp rs*`, `tp ts*` | amplitudes |
+| Coherency | `cross_R` `cross_T` (33-34) | `rp rs*`; `tp ts*` scaled by the real `sqrt(f_s f_p)`, so `abs(cross_T)^2 = Ts Tp` (0 without flux) | amplitudes, echo sum |
 | Dispersion | `GD/GDD/TOD/FOD_{R,T}_{s,p}` (37-40) | fs, fs^2, ...; `GD = +d phi / d omega` | finite difference |
 | Back incidence | `phi_rbs/rbp/tbs/tbp` (41-44), `rbs_c ... tbp_c` (45-48) | phase = `arg` of the back amplitude | identity |
 | Differential phase | `PDts` `PDtp` (49-50) | `arg(t * exp(-i 2 pi n0 D cos(theta0) / lambda))`, D = interior thickness | reference rotation |
@@ -141,9 +141,17 @@ flips it. Drop the mark and regenerate in the same change.
    engine and the needle gradient, and so does its thickness gradient. On
    transparent substrates every `sim_T*` moved by up to 1.1e-14, so the
    baseline was regenerated.
-3. **Transmitted Stokes S2/S3 lack the exit-medium factor.** `S2_T`/`S3_T`
-   come from `tp ts*` while `S0_T`/`S1_T` carry the admittance ratio, so
-   `DOP_T` of a coherent stack is below 1 whenever the exit index differs
-   from the ambient (0.658 for a film on glass at normal incidence; exactly
-   1 when free-standing). `Psi_T`, `Delta_T` and the retardance are
-   unaffected.
+3. **Transmitted Stokes S2/S3 lacked the exit-medium factor (fixed).**
+   `S2_T`/`S3_T` came from `tp ts*` while `S0_T`/`S1_T` carry the
+   admittance ratio, so `DOP_T` of a coherent stack was below 1 whenever
+   the exit index differed from the ambient (0.658 for a film on glass at
+   normal incidence, 0.19-0.28 on bare Si). Each block's transmitted cross
+   term is now scaled by the real `sqrt(f_s f_p)` at its source, forward
+   and (in `COHERENCY_MATRIX`) backward, so `abs(cross_T)^2 = Ts Tp` for
+   one block and the phase is kept; into an absorbing exit `f_s != f_p`,
+   so no single factor on the fields would do. Without flux (past TIR)
+   the term is exactly +0: `Retardance_T` reads 0 there instead of the
+   evanescent field's phase, and `DOP_T` the 0 convention for an undefined
+   state. `Psi_T` and `Delta_T` did not move beyond rounding; the
+   `COHERENCY_MATRIX` reflection echoes moved by 1e-16. The baseline was
+   regenerated.

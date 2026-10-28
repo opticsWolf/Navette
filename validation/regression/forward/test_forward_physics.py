@@ -23,10 +23,13 @@ Im(q) >= 0; `rp_c` is the negative of the textbook r_p (so rs = rp at
 normal incidence); `tp_c` is the textbook t_p times cos(theta_exit) /
 cos(theta_0); Psi is in radians; Delta_R = arg(-rp/rs), Delta_T =
 arg(tp/ts); S0 = Rs + Rp, S1 = Rp - Rs, S2_R = -2 Re(cross_R), S3_R =
--2 Im(cross_R) with cross_R = rp rs*; GD = +d(phi)/d(omega) in fs.
+-2 Im(cross_R) with cross_R = rp rs*; S2_T = 2 Re(cross_T), S3_T =
+2 Im(cross_T) with cross_T = tp ts* scaled to |cross_T|^2 = Ts Tp; GD =
++d(phi)/d(omega) in fs.
 
-One known defect is pinned as a strict xfail (and by the baseline, which
-pins today's numbers); fixing it flips the xfail and needs a regenerate.
+The defects found while building the baseline are fixed; their tests stay
+below. A new one goes in as a strict xfail (the baseline pins today's
+numbers), and fixing it flips the xfail and needs a regenerate.
 """
 from __future__ import annotations
 
@@ -208,6 +211,16 @@ def _wrapped(x):
   return np.abs(np.angle(np.exp(1j * x)))
 
 
+def _flux_cross(tp, ts, Ts, Tp):
+  """The transmitted cross term from its definition: the p-s phase of
+  tp ts*, with the magnitude sqrt(Ts Tp) of the flux-normalised fields.
+  Exactly 0 where either polarisation carries no flux."""
+  z = tp * np.conj(ts)
+  m = np.abs(z)
+  live = (m > 0) & (Ts > 0) & (Tp > 0)
+  return np.where(live, z / np.where(live, m, 1.0) * np.sqrt(Ts * Tp), 0.0)
+
+
 @pytest.mark.parametrize("name", [n for n in C.CASES if C.CASES[n].get("coherence_mode", 0) != 2])
 @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_ellipsometric_and_stokes_identities(name, evaluated):
@@ -228,7 +241,7 @@ def test_ellipsometric_and_stokes_identities(name, evaluated):
     assert np.max(np.abs(o["Psi_T"] - np.arctan(np.sqrt(o["Tp"] / o["Ts"])))[ok_t]) < 1e-12
     assert np.max(_wrapped(o["Delta_T"] - np.angle(tp / ts))[ok_t]) < 1e-9
     assert np.max(np.abs(o["cross_R"] - rp * np.conj(rs))) < 1e-15
-    assert np.max(np.abs(o["cross_T"] - tp * np.conj(ts))) < 1e-14
+    assert np.max(np.abs(o["cross_T"] - _flux_cross(tp, ts, o["Ts"], o["Tp"]))) < 1e-14
     assert np.max(np.abs(o["S0_R"] - (o["Rs"] + o["Rp"]))) < 1e-15
     assert np.max(np.abs(o["S1_R"] - (o["Rp"] - o["Rs"]))) < 1e-15
     assert np.max(np.abs(o["S2_R"] + 2 * o["cross_R"].real)) < 1e-15
@@ -238,6 +251,9 @@ def test_ellipsometric_and_stokes_identities(name, evaluated):
     pure = o["S1_R"] ** 2 + o["S2_R"] ** 2 + o["S3_R"] ** 2
     assert np.max(np.abs(pure - o["S0_R"] ** 2)) < 1e-14, "coherent reflection is a pure state"
     assert np.max(np.abs(o["DOP_R"] - 1.0)[o["S0_R"] > 1e-8]) < 1e-9
+    pure = o["S1_T"] ** 2 + o["S2_T"] ** 2 + o["S3_T"] ** 2
+    assert np.max(np.abs(pure - o["S0_T"] ** 2)) < 1e-14, "coherent transmission is a pure state"
+    assert np.max(np.abs(o["DOP_T"] - 1.0)[o["S0_T"] > 1e-8]) < 1e-9
     d_r = (o["Rp"] - o["Rs"]) / (o["Rp"] + o["Rs"])
     assert np.max(np.abs(o["Diattenuation_R"] - d_r)[o["S0_R"] > 1e-8]) < 1e-12
     for p in ("rs", "rp", "ts", "tp", "rbs", "rbp", "tbs", "tbp"):
@@ -400,16 +416,113 @@ def test_synthesis_transmittance_into_absorbing_substrate(sub):
   assert np.max(np.abs(sim["sim_Tp"] - eng["Tp"])) < 1e-13
 
 
-@pytest.mark.parametrize("n_exit", [
-  1.0,
-  pytest.param(1.52, marks=pytest.mark.xfail(strict=True, reason=(
-    "S2_T/S3_T are built from tp*ts* without the exit-medium factor that S0_T/S1_T "
-    "carry, so DOP_T of a coherent stack is < 1 whenever n_exit != n_ambient "
-    "(0.658 for a film on glass at normal incidence)."))),
-])
-def test_coherent_transmission_is_a_pure_state(n_exit):
+T_REQUEST = (Request.TS | Request.TP | Request.TS_C | Request.TP_C | Request.CROSS_T
+             | Request.DOP_T | Request.DELTA_T | Request.RETARD_T | Request.S2_T
+             | Request.S3_T)
+T_REQUEST_KEYS = ("Ts", "Tp", "cross_T", "DOP_T", "Delta_T", "Retardance_T", "S2_T", "S3_T")
+
+
+def _const(wl, *ns):
+  return [np.full(wl.size, complex(n)) for n in ns]
+
+
+@pytest.mark.parametrize("mode", list(CoherenceMode))
+@pytest.mark.parametrize("n_exit", [1.0, 1.52, 2.4])
+def test_coherent_transmission_is_a_pure_state(n_exit, mode):
+  """Fixed defect: S2_T/S3_T came from tp ts* without the exit-medium factor
+  S0_T/S1_T carry, so DOP_T was 0.658 for a film on glass at normal
+  incidence. With every layer coherent the three modes are one block."""
   wl = DENSE["vis"]
-  sm = _engine([np.full(wl.size, 1.0 + 0j), np.full(wl.size, 2.0 + 0j),
-                np.full(wl.size, n_exit + 0j)], [120.0], wl, angles=np.array([0.0, 30.0, 60.0]))
-  o = sm.compute(Request.DOP_T, squeeze=False)
+  sm = _engine(_const(wl, 1.0, 2.0, n_exit), [120.0], wl,
+               angles=np.array([0.0, 30.0, 60.0]), coherence_mode=mode)
+  o = sm.compute(T_REQUEST, squeeze=False)
   assert np.max(np.abs(o["DOP_T"] - 1.0)) < 1e-12
+  assert np.max(np.abs(o["cross_T"] - _flux_cross(o["tp_c"], o["ts_c"], o["Ts"], o["Tp"]))) < 1e-15
+
+
+def test_transmission_into_an_absorbing_exit_is_a_pure_state():
+  """Oblique into an absorbing half-space, where f_s != f_p and no single
+  scalar normalises both fields: |cross_T|^2 = Ts Tp, phase kept."""
+  wl = DENSE["vis"]
+  for exit_n in (M["Si"](wl), M["Ag"](wl), np.full(wl.size, 3.9 + 0.3j)):
+    sm = _engine([*_const(wl, 1.0, 2.0), exit_n], [120.0], wl,
+                 angles=np.array([0.0, 30.0, 60.0, 75.0]))
+    o = sm.compute(T_REQUEST, squeeze=False)
+    live = o["Ts"] > 1e-12
+    assert np.max(np.abs(o["DOP_T"] - 1.0)[live]) < 1e-12
+    assert np.max(np.abs(np.abs(o["cross_T"]) ** 2 - o["Ts"] * o["Tp"])) < 1e-15
+    assert np.max(_wrapped(o["Delta_T"] - np.angle(o["tp_c"] / o["ts_c"]))[live]) < 1e-12
+    assert np.max(_wrapped(o["Retardance_T"] - o["Delta_T"])[live]) < 1e-12
+
+
+def test_no_flux_transmission_has_an_exact_zero_cross_term():
+  """Past TIR nothing is transmitted: cross_T, S2_T, S3_T and the retardance
+  are exactly +0.0 (a -0.0 would turn atan2 into -pi)."""
+  wl = DENSE["vis"]
+  for ds, ns in (([], (1.52, 1.0)), ([120.0], (1.52, 2.0, 1.0))):
+    o = _engine(_const(wl, *ns), ds, wl, angles=np.array([50.0, 60.0, 75.0])).compute(
+      T_REQUEST, squeeze=False)
+    assert np.all(o["Ts"] == 0.0) and np.all(o["Tp"] == 0.0)
+    for k in ("S2_T", "S3_T", "Retardance_T", "Delta_T"):
+      assert np.all(o[k] == 0.0) and not np.any(np.signbit(o[k])), k
+    for part in (o["cross_T"].real, o["cross_T"].imag):
+      assert np.all(part == 0.0) and not np.any(np.signbit(part))
+
+
+def test_grazing_transmission_stays_finite():
+  """Towards grazing incidence both T vanish; at 90 degrees only the p
+  channel keeps a residual flux, and one-sided flux means no cross term."""
+  wl = DENSE["vis"]
+  angles = np.array([89.0, 89.9, 89.99, 89.999, 90.0])
+  o = _engine(_const(wl, 1.0, 2.0, 1.52), [120.0], wl, angles=angles).compute(
+    T_REQUEST, squeeze=False)
+  for k in T_REQUEST_KEYS:
+    assert np.all(np.isfinite(o[k])), k
+  live = (o["Ts"] > 0) & (o["Tp"] > 0)
+  assert np.max(np.abs(o["DOP_T"] - 1.0)[live]) < 1e-12
+  tt = o["Ts"] * o["Tp"]
+  rel = np.abs(np.abs(o["cross_T"]) ** 2 - tt)[live] / tt[live]
+  assert np.max(rel) < 1e-13
+  assert np.all(o["cross_T"][~live] == 0.0)
+
+
+def _block(ns, ds, wl, theta):
+  """One coherent block's flux-normalised cross terms, from the Airy reference:
+  (forward transmitted, front reflected, back reflected)."""
+  fwd = _stack_reference(ns, ds, wl, theta)
+  theta_b = np.degrees(np.arcsin(ns[0].real * np.sin(np.radians(theta)) / ns[-1].real))
+  back = _stack_reference(ns[::-1], ds[::-1], wl, theta_b)
+  c_tf = _flux_cross(fwd["tp_c"], fwd["ts_c"], fwd["Ts"], fwd["Tp"])
+  return c_tf, fwd["rp_c"] * np.conj(fwd["rs_c"]), back["rp_c"] * np.conj(back["rs_c"])
+
+
+def test_coherency_matrix_cascade_matches_the_echo_sum():
+  """COHERENCY_MATRIX against an independent block sum: air | film | thick
+  glass (incoherent, transparent) | film | sapphire. The cross channel sums
+  the echoes in the glass, cross_T = c1 c2 / (1 - c_rb1 c_rf2), each block's
+  c_tf flux-normalised; the exit differs from the ambient, so the old
+  unnormalised term is off by the whole sqrt(f_s f_p)."""
+  wl = DENSE["vis"]
+  angles = np.array([0.0, 30.0, 60.0])
+  air, film, glass, film2, sapph = _const(wl, 1.0, 2.0, 1.52, 1.38, 1.76)
+  sm = _engine([air, film, glass, film2, sapph], [120.0, 1e6, 95.0], wl, angles=angles,
+               incoherent_flags=[0, 0, 1, 0, 0],
+               coherence_mode=CoherenceMode.COHERENCY_MATRIX)
+  o = sm.compute(T_REQUEST, squeeze=False)
+  for ai, a in enumerate(angles):
+    c_tf1, _, c_rb1 = _block([air, film, glass], [120.0], wl, a)
+    theta_g = np.degrees(np.arcsin(np.sin(np.radians(a)) / 1.52))
+    c_tf2, c_rf2, _ = _block([glass, film2, sapph], [95.0], wl, theta_g)
+    want = c_tf1 * c_tf2 / (1.0 - c_rb1 * c_rf2)
+    assert np.max(np.abs(o["cross_T"][ai] - want)) < 1e-13, a
+  # Echoes with their own p-s phase depolarise, never over-polarise.
+  assert np.max(o["DOP_T"]) <= 1.0 + 1e-12 and np.min(o["DOP_T"]) < 1.0 - 1e-6
+
+
+def test_fully_coherent_thick_stack_is_a_pure_state():
+  wl = DENSE["vis"]
+  sm = _engine(_const(wl, 1.0, 2.0, 1.52, 1.38, 1.76), [120.0, 1e6, 95.0], wl,
+               angles=np.array([0.0, 30.0, 60.0]), incoherent_flags=[0, 0, 1, 0, 0],
+               coherence_mode=CoherenceMode.FULLY_COHERENT)
+  o = sm.compute(T_REQUEST, squeeze=False)
+  assert np.max(np.abs(o["DOP_T"] - 1.0)) < 1e-9

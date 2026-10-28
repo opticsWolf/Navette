@@ -205,6 +205,22 @@ def redheffer_product_real(ra_Rf, ra_Tb, ra_Tf, ra_Rb,
 
 
 @njit(cache=True, inline='always')
+def flux_cross(z, i_s, i_p):
+    """
+    One block's transmitted p-s cross term, flux-normalized like the
+    intensities beside it: z = tp·conj(ts) times the real sqrt(f_s·f_p), so
+    |cross|² = Ts·Tp. i_s = |ts|²·f_s and i_p = |tp|²·f_p carry the factors,
+    so sqrt(f_s·f_p) = sqrt(i_s)·sqrt(i_p) / |z|. Exactly 0 without flux.
+    Mirrors `flux_cross` in core_engine.rs.
+    """
+    m = np.abs(z)
+    k = np.sqrt(i_s) * np.sqrt(i_p) / m if m > 0.0 else 0.0
+    if k > 0.0:
+        return z * k
+    return 0.0 + 0.0j
+
+
+@njit(cache=True, inline='always')
 def solve_coherent_block_fields(
     start_idx, end_idx, n_stack, d_stack,
     rough_vals, rough_types, lam,
@@ -545,8 +561,9 @@ def core_engine_rigorous_ellipsometry(
                 first_block_processed = True
 
             # 5. Accumulate Mueller cross-terms for transmission:
-            #    z_block = tp · conj(ts) captures the relative p-s phase
-            cross_T_acc *= (tp_f * np.conjugate(ts_f))
+            #    z_block = tp · conj(ts) captures the relative p-s phase,
+            #    scaled by sqrt(f_s·f_p) like the intensities (Ts, Tp)
+            cross_T_acc *= flux_cross(tp_f * np.conjugate(ts_f), Rs_Tf, Rp_Tf)
 
             # 6. Accumulate intensities via real Redheffer star product
             Ig_s = redheffer_product_real(
@@ -653,7 +670,7 @@ def core_engine_rigorous_ellipsometry(
 
         # Mueller cross-term propagation (rigorous for single-pass):
         #
-        # cross_T_acc = Π_blocks(tp_k · conj(ts_k)) · Π_inc(τ_k)
+        # cross_T_acc = Π_blocks(sqrt(f_s f_p)_k · tp_k · conj(ts_k)) · Π_inc(τ_k)
         #
         # This product captures the accumulated p-s phase through all coherent
         # blocks and the intensity attenuation through incoherent layers.
@@ -667,6 +684,8 @@ def core_engine_rigorous_ellipsometry(
         #
         # No convention correction needed for transmission (tp has no sign
         # flip between admittance and Born & Wolf conventions).
+        if cross_T_acc.real == 0.0 and cross_T_acc.imag == 0.0:
+            cross_T_acc = 0.0 + 0.0j
         S2_T = 2.0 * cross_T_acc.real + 0.0
         S3_T = 2.0 * cross_T_acc.imag + 0.0
 

@@ -327,6 +327,29 @@ pub struct OpticalState {
     pub cross_t: Complex64,
 }
 
+/// One block's transmitted p-s cross term, flux-normalized like the
+/// intensities it sits beside: `z = t_p·conj(t_s)` times the real
+/// √(f_s·f_p), so |cross|² = T_s·T_p and a coherent block's transmitted
+/// Stokes vector is a pure state (DOP_T = 1). The flux factors are not
+/// passed in: `i_s = |t_s|²·f_s` and `i_p = |t_p|²·f_p` already carry them,
+/// so √(f_s·f_p) = √i_s·√i_p / |z|. The scale is real and positive, so
+/// arg(z) is kept. Without flux in either polarization (TIR, an evanescent
+/// exit) the result is exactly 0 + 0i.
+#[inline]
+fn flux_cross(z: Complex64, i_s: f64, i_p: f64) -> Complex64 {
+    let m = z.norm();
+    let k = if m > 0.0 {
+        i_s.sqrt() * i_p.sqrt() / m
+    } else {
+        0.0
+    };
+    if k > 0.0 {
+        z * k
+    } else {
+        Complex64::new(0.0, 0.0)
+    }
+}
+
 /// Solve one point. Runs only the requested polarization branch(es) and the
 /// coherency channel only when `need_cross`.
 ///
@@ -431,14 +454,17 @@ pub fn solve_point(
                 first = true;
             }
 
+            // Transmitted cross terms carry √(f_s·f_p), each in its own
+            // direction, as the intensity cascade carries f; reflected ones
+            // stay in their own medium and need none.
             if track_cross_channel {
                 let c_rf = p_rf * s_rf.conj();
-                let c_tb = p_tb * s_tb.conj();
-                let c_tf = p_tf * s_tf.conj();
+                let c_tb = flux_cross(p_tb * s_tb.conj(), s_tbi, p_tbi);
+                let c_tf = flux_cross(p_tf * s_tf.conj(), s_tfi, p_tfi);
                 let c_rb = p_rb * s_rb.conj();
                 cg = redheffer_product_cross_inner(cg.0, cg.1, cg.2, cg.3, c_rf, c_tb, c_tf, c_rb);
             } else if need_cross {
-                cross_t_acc *= p_tf * s_tf.conj();
+                cross_t_acc *= flux_cross(p_tf * s_tf.conj(), s_tfi, p_tfi);
             }
         } else if need_s {
             let (s_rf, s_tb, s_tf, s_rb, s_rfi, s_tbi, s_tfi, s_rbi) =
@@ -533,6 +559,13 @@ pub fn solve_point(
         }
     } else {
         (c0, c0)
+    };
+    // A zero-flux block zeroes the transmitted cross term, but later
+    // products can leave it a signed zero, and atan2 of -0.0 is -pi.
+    let cross_t = if cross_t.re == 0.0 && cross_t.im == 0.0 {
+        c0
+    } else {
+        cross_t
     };
 
     OpticalState {

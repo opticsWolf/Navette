@@ -83,6 +83,21 @@ All notable changes to Navette are recorded here. Work items reference
   forward golden baseline is regenerated, the Windows needle digest is
   re-recorded (the Linux one needs the same re-read from CI), and the
   bench merit moves by 2 ulps (`46dc154d6946ee40`).
+- **Transmitted Stokes S2_T/S3_T lacked the exit-medium factor.** They
+  came from `tp·conj(ts)` while S0_T/S1_T carry the flux factor, so DOP_T
+  of a coherent stack was below 1 whenever the exit index differed from
+  the ambient (0.658 for a film on glass, 0.19-0.28 on bare Si). Each
+  block's transmitted cross term is now scaled by the real √(f_s·f_p),
+  forward and, in `COHERENCY_MATRIX`, backward, so |cross_T|² = Ts·Tp
+  for one coherent block and the p-s phase is kept; an absorbing exit
+  has f_s ≠ f_p, so no common factor on the fields would do. Without
+  flux (past TIR) cross_T is exactly +0: Retardance_T reads 0 there
+  instead of the evanescent field's phase. cross_T, S2_T, S3_T, DOP_T
+  and Retardance_T change; Psi_T and Delta_T only in the last bit, the
+  `COHERENCY_MATRIX` reflection echoes by 1e-16. The numba parity
+  reference carries the same factor, and the forward golden baseline is
+  regenerated. Synthesis does not read the cross channel: the needle
+  digest and the bench merit do not move.
 - **A needle could land as an air gap.** The old scan swept each seed
   material over every needle-flagged film, inserted seeds included,
   which had no contrast entry; a winning site there fell back to

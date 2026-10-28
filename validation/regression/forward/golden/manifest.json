@@ -1,13 +1,13 @@
 {
  "format_version": 1,
  "navette_version": "0.8.1",
- "git_commit": "605606e19c441976395c5a33a1e5b7f162e3b2d4",
+ "git_commit": "22cd32ee2c46747c6ac4b1de3f54255f13b29c14",
  "git_dirty": true,
- "generated_utc": "2026-10-28T16:48:03+00:00",
+ "generated_utc": "2026-10-28T17:33:53+00:00",
  "numpy_version": "2.5.3",
  "python_version": "3.13.14",
  "platform": "Windows-11-10.0.26200-SP0",
- "npz_sha256": "9676857e4f77332d330cfd6f682e943cb036708db7a40e2d71d5bf6fb66678e2",
+ "npz_sha256": "bf9cd99fdd13cc6bfeca060f22071b0069a7bcb5bf8d6e08a92e16687128d87c",
  "grids": {
   "uv": [
    250.0,
