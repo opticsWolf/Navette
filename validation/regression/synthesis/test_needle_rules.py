@@ -188,8 +188,9 @@ def test_the_environments_door_takes_the_rules():
     assert not _inserted(run_needle(insert_rules={"L": ["H"], "H": []}, **kw))
     with pytest.raises(ValueError, match="outer"):
         run_needle(outer="H", **kw)
-    with pytest.raises(ValueError, match="seed_edges"):
-        run_needle(outer="H", seed_edges=2.0, **kw)
+    # Seeded, the H edge film goes on top in both environments.
+    res = run_needle(outer="H", seed_edges=2.0, **kw)
+    assert res["stack"].films()[0]["material"] == "H#1"
 
 
 def test_edge_lists_belong_to_a_segment():

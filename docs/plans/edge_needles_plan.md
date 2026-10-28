@@ -1,9 +1,8 @@
-# Boundary needles — built for flat runs; joint runs to do
+# Boundary needles — built
 
 Status: `NeedleCycleConfig(boundary_needles=True)` is built for flat
-(single-environment) runs. A multi-environment run refuses the option.
-§B5 is the remaining step; §B7 records the agreed follow-up work and
-its order.
+and joint (multi-environment) runs. §B5 records how the joint step was
+built; §B7 records the agreed follow-up work and its order, all built.
 
 This replaces the earlier "edge needles" plan (a site at the top of the
 outer film and at the bottom of the inner film only): every span
@@ -70,7 +69,7 @@ total thickness / step interior ones: about +3 % of the scan for a
 thin films. The scan is a few percent of an insertion, the
 re-optimization the rest. To be measured with `bench_needle_insertion`.
 
-## B5. Remaining: joint (multi-environment) runs
+## B5. Joint (multi-environment) runs — built
 
 The joint sweep routes each site to a shared design parameter (slot) and
 a step ordinal, and `CompiledEnvironments::insert_seed` splits one slot in
@@ -90,9 +89,30 @@ every environment. A boundary needle needs:
   anywhere); an insertion that matters in at least one environment is
   allowed. §B7 lists the cases.
 
-Tests to add then: over two identical environments a boundary needle
-lands where the single-environment run lands it; the alignment check
-holds after a boundary insertion; the refusal test turns into a run.
+As built: the locus is `Gap { seg, k }`, the plane before forward film
+`k` of segment `seg` (`k == len` is after the last film), placed in
+every copy by `CompiledEnvironments::gap_places` (a turned copy takes it
+at the mirror plane). `MaterialPool::gap_accepts` applies the cases;
+`insert_boundary` inserts the slot everywhere and `boundary_design`
+moves the design stack in step. `DesignStack::insert_span` carries an
+interface slice with its plane when a turned copy's slice sits at the
+locus, and `insert_film_at_boundary` re-mixes the slice of the layer
+below (flat too). A plane that would give a slice a new neighbour in
+one copy and not another refuses (`gap_keeps_slices`): the plane above a
+forward first film with a slice, turned behind another turned copy. The
+joint sweep appends one boundary site per placement, buckets P by
+(material, locus) and checks every bucket fills once per copy; a tie
+goes to the interior site. A locus that is rough anywhere is
+trial-scored at the largest start thickness any placement asks for.
+`seed_edges` on the joint door seeds a segment edge through the same
+insertion.
+
+Tests: `a_boundary_film_is_the_film_authored_there`,
+`a_segment_edge_takes_a_needle_that_matters_somewhere`,
+`a_joint_boundary_needle_over_identical_environments_lands_where_one_does`,
+`seed_edges_seed_a_segment_edge_in_every_copy`, and in Python the
+refusal test turned into a run
+(`test_the_environments_door_takes_boundary_needles_jointly`).
 
 ## B6. Tests in place
 
@@ -105,7 +125,7 @@ holds after a boundary insertion; the refusal test turns into a run.
   `a_boundary_film_splits_nothing`, `a_boundary_film_obeys_the_edge_lists`.
 - Python: `validation/regression/synthesis/test_boundary_needles.py`
   (off is bit-identical, a pinned 3 nm film reached on its boundaries,
-  edge lists, rules, the environments refusal).
+  edge lists, rules, a joint run over identical environments).
 - Off by default: every existing test and the needle pin are unchanged.
 
 ## B7. Agreed next steps (2026-10-27)
@@ -229,8 +249,8 @@ multi-environment runs. Order of work at the end.
    on each segment's first and last span in every environment;
    `CompiledEnvironments::segment_edges` keeps them for step 6.
    Request-level lists are the single segment's, ambiguous (refused)
-   with several. `seed_edges` stays refused on the joint door: seeding a
-   segment edge is a joint boundary insertion, so it comes with step 6.
+   with several. `seed_edges` on the joint door came with step 6: seeding
+   a segment edge is a joint boundary insertion.
 5. Segment `inverted` and `repeat`, split in two:
    - 5a, `repeat`. Built: `EnvSegmentCfg::repeat`, at-least-once
      references, routing `routing[slot][env]` = every copy's span,
@@ -261,4 +281,4 @@ multi-environment runs. Order of work at the end.
      (`check_slices`); graded films are not inverted. Edge lists need no
      change: they are checked per slot, so outer stays with the first
      film.
-6. Joint boundary needles (§B5 with the cases above).
+6. Joint boundary needles (§B5 with the cases above). Built; see §B5.

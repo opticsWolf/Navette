@@ -618,7 +618,7 @@ fn push_row(
 }
 
 /// Owner+carrier Looyenga mix at f=0.5 (native kernel; eps→n at insertion).
-fn looyenga_mix(owner_nk: &[Complex64], other_nk: &[Complex64]) -> Vec<Complex64> {
+pub(crate) fn looyenga_mix(owner_nk: &[Complex64], other_nk: &[Complex64]) -> Vec<Complex64> {
     use ndarray::Array1;
     let ni = Array1::from_vec(owner_nk.to_vec());
     let nh = Array1::from_vec(other_nk.to_vec());

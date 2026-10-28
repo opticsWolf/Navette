@@ -764,7 +764,8 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         is off its list gets a film of the list's first material, this
         thick, on that edge instead of an error; the old edge film stays
         behind it. The clamp floor (``clamp_min_nm``) is the natural
-        value. Flat runs only: with ``environments`` it refuses.
+        value. With ``environments`` it seeds a segment's edge in every
+        copy.
     pipeline_config / needle_config / lm_config : native configs (or None).
     callback : ``(macro_cycle, phase_dict)``; raising aborts (USER_ABORT).
     stack_kwargs : ambient, substrate, per-film flags (see

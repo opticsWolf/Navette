@@ -86,8 +86,9 @@ All notable changes to Navette are recorded here. Work items reference
     `pipeline_from_config` and `DesignRequest`: a starting design whose
     edge film is off its list gets a film of the list's first material,
     this thick, on that edge instead of an error, and the old edge film
-    stays behind it. The clamp floor is the natural value. Flat runs
-    only; the multi-environment door refuses it.
+    stays behind it. The clamp floor is the natural value. On the
+    multi-environment door it seeds a segment's edge in every copy, at
+    the top of a forward copy and the bottom of a turned one.
   - An edge must be a layer. A film with an interface slice qualifies
     (its bulk row is matched); a graded or gradient film never does, and
     `seed_edges` is the way past one.
@@ -143,8 +144,22 @@ All notable changes to Navette are recorded here. Work items reference
     thickness. Its record has `best_p: None` and the measured gain as
     `predicted_improvement`. Smooth boundaries and interior sites are
     scored by P as before.
-  - Flat runs only: a multi-environment run refuses the option. The
-    joint step is planned in `docs/plans/edge_needles_plan.md`.
+  - A multi-environment run scans the design's boundaries jointly. A
+    boundary is a plane of the design, between two of a segment's films
+    or at a segment's edge, and it lands in every environment and every
+    copy, forward or turned, with P summed over all of them. Inside a
+    segment the flat rules apply in every placement. At a segment edge
+    the neighbour outside the design (a surrounding, the ambient, the
+    substrate) excludes a needle only where it has the needle's index in
+    every placement, so a needle that matters in one environment is
+    allowed. Fixed films never host. A boundary that is rough in any
+    placement is trial-scored, at the largest start thickness any
+    placement asks for. A plane that would give an interface slice a new
+    neighbour in one copy and not another refuses. One environment with
+    segment edges and the option on runs on the joint path.
+  - Inserting a film on a boundary now re-mixes the interface slice of
+    the layer below, as the expander mixes it, from the layer and the new
+    film. This changes flat runs only where the layer below has a slice.
 - `examples/dual_band_ar.py`: a three-oxide (SiO2, Al2O3, HfO2)
   dual-band anti-reflection coating on fused silica, with a VIS band
   (420-680 nm) and a NIR band (1044-1084 nm). Needle synthesis at a 2 nm floor, then a

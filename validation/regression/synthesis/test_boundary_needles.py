@@ -13,7 +13,9 @@ these are the seams:
   * the edge lists and the insertion rules hold on boundaries too;
   * a rough boundary is scored by a trial and its needle goes in at the
     start thickness, a smooth one at the seed;
-  * the multi-environment door refuses the option rather than ignore it.
+  * the multi-environment door scans the design's boundaries jointly: two
+    identical environments take the needle one does, and the merit is
+    the sum.
 """
 import numpy as np
 import pytest
@@ -136,17 +138,27 @@ def test_a_smooth_boundary_needle_goes_in_at_the_seed():
     assert rec["best_p"] < 0.0
 
 
-def test_the_environments_door_refuses_the_option():
-    G = 1.52 + 0j
-    with pytest.raises(ValueError, match="boundary_needles"):
-        run_needle(
-            targets=_targets(), angles_deg=[0.0], wavelengths=WL,
-            design={"coat": [(N["L"], 100.0, "L"), (N["H"], 80.0, "H")]},
-            environments=[{"name": "bare", "stack": [{"design": "coat"}]},
-                          {"name": "laminated", "stack": [
-                              {"layers": [(G, 300.0, "G")]}, {"design": "coat"}]}],
-            pipeline_config=PipelineConfig(max_macro_cycles=1, enable_cleanup=False,
-                                           enable_inflate=False,
-                                           thin_layer_policy="clamp_up_final"),
-            needle_config=NeedleCycleConfig(boundary_needles=True),
-            substrate=(G, "sub"))
+def _joint_thin(names):
+    tc = TargetCollection()
+    for env in names:
+        tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
+                              0.0, "s", "R", environment=env))
+    return run_needle(
+        targets=tc, angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
+        design={"coat": [(N["M"], 3.0, "M")]},
+        environments=[{"name": n, "stack": [{"design": "coat"}]} for n in names],
+        pipeline_config=PipelineConfig(max_macro_cycles=1, needles_per_cycle=1,
+                                       enable_cleanup=False, enable_inflate=False,
+                                       thin_layer_policy="clamp_up_final"),
+        needle_config=NeedleCycleConfig(boundary_needles=True),
+        substrate=(1.52, "sub"), **PIN)
+
+
+def test_the_environments_door_takes_boundary_needles_jointly():
+    one, two = _joint_thin(["a"]), _joint_thin(["a", "b"])
+    ins = _insertions(one)
+    assert ins and all(i["boundary"] for i in ins), ins
+    assert [(i["material"], i["film_idx"]) for i in _insertions(two)] == \
+        [(i["material"], i["film_idx"]) for i in ins]
+    assert _labels(two) == _labels(one)
+    assert two["final_mf"] == pytest.approx(2.0 * one["final_mf"], rel=1e-6)

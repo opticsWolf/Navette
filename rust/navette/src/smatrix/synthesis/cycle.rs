@@ -19,6 +19,7 @@ use std::time::Instant;
 use num_complex::Complex64;
 
 use crate::smatrix::synthesis::context::DesignContext;
+use crate::smatrix::synthesis::environments::{CompiledEnvironments, Gap, GapPlace};
 use crate::smatrix::synthesis::needle_pass::{
     NeedlePassInput, ScanSite, build_boundary_sites, build_needle_targets_env, build_scan_sites,
     needle_pass_scan,
@@ -27,6 +28,7 @@ use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{
     DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec, edge_allows, is_edge_material,
 };
+use crate::structure::Span;
 
 /// Knobs for the inner insertion loop (Python `NeedleConfig` subset).
 #[derive(Clone, Debug)]
@@ -50,7 +52,8 @@ pub struct NeedleCycleConfig {
     /// Also scan every span boundary, the outer edges included (see
     /// `build_boundary_sites`): a needle there is a new film between two
     /// layers, and reaches films too thin for an interior site. Off, the
-    /// scan and the run are exactly what they were. Flat runs only.
+    /// scan and the run are exactly what they were. A joint run scans the
+    /// shared design's boundary loci (see `MaterialPool::gap_accepts`).
     pub boundary_needles: bool,
 }
 
@@ -379,6 +382,116 @@ impl MaterialPool {
         };
         Ok((b != 0 || listed(&edges.outer)) && (b != n || listed(&edges.inner)))
     }
+
+    /// May a needle of entry `m` go on boundary locus `gap` of the shared
+    /// design? `stacks` are the K expanded assemblies and `places[e]` the
+    /// gap's placements in `stacks[e]`, copy by copy.
+    ///
+    /// The flat rules, read per placement:
+    ///  * some design film beside the gap is a needle host, and no span
+    ///    beside it, inside or outside, is empty in any placement (that
+    ///    plane is also the next one);
+    ///  * the needle differs in index from the design films beside it, in
+    ///    every placement (adjacent row and bulk row), and every one of
+    ///    them that is a host accepts it under the insertion rules;
+    ///  * past the segment's edge the neighbour is no design parameter: it
+    ///    differs per environment and brings no rules. It excludes the
+    ///    needle only when it has the needle's index in every placement,
+    ///    where the needle would do nothing anywhere;
+    ///  * on the segment's top edge the needle is on its outer list, on its
+    ///    bottom edge on its inner list;
+    ///  * no film's own interface slice moves (see
+    ///    [`CompiledEnvironments::gap_keeps_slices`]).
+    pub(crate) fn gap_accepts(
+        &self,
+        envs: &CompiledEnvironments,
+        stacks: &[DesignStack],
+        gap: Gap,
+        places: &[Vec<GapPlace>],
+        m: usize,
+    ) -> Result<bool, String> {
+        let nk = &self.materials[m].nk;
+        let (above, below) = envs.gap_neighbours(gap);
+        let design: Vec<usize> = [above, below].into_iter().flatten().collect();
+        let primary = &stacks[0];
+        let thick =
+            |st: &DesignStack, sp: &Span| st.films()[sp.start..sp.end].iter().any(|f| f.d_nm > 0.0);
+        let mut host = false;
+        for &slot in &design {
+            let sp = primary.spans()[envs.span_of(slot, 0).expect("a design slot has a primary")];
+            if !sp.is_singleton_bulk() {
+                continue; // a graded profile: excluded by its adjacent row only
+            }
+            let layer = &primary.films()[sp.bulk_start];
+            if layer.nk == *nk || (layer.needle && !self.accepts(layer, m)?) {
+                return Ok(false);
+            }
+            host |= layer.needle && thick(primary, &sp);
+        }
+        if !host {
+            return Ok(false);
+        }
+        // Per side, whether every outside neighbour so far has the needle's
+        // index; a side with no outside neighbour never excludes.
+        let mut outside_same = [None::<bool>; 2];
+        for (e, st) in stacks.iter().enumerate() {
+            let spans = st.spans();
+            let films = st.films();
+            for (c, pl) in places[e].iter().enumerate() {
+                if !envs.gap_keeps_slices(pl) {
+                    return Ok(false);
+                }
+                let mine: Vec<usize> = design.iter().map(|&s| envs.spans_of(s, e)[c]).collect();
+                // The spans above and below the new film, and the rows that
+                // will touch it.
+                let sides = [
+                    (pl.at.checked_sub(1), pl.row.checked_sub(1)),
+                    (
+                        (pl.at < spans.len()).then_some(pl.at),
+                        (pl.row < films.len()).then_some(pl.row),
+                    ),
+                ];
+                for (side, (span, row)) in sides.into_iter().enumerate() {
+                    let same = match (span, row) {
+                        (Some(si), Some(r)) => {
+                            let sp = &spans[si];
+                            if !thick(st, sp) {
+                                return Ok(false);
+                            }
+                            films[r].nk == *nk
+                                || (sp.is_singleton_bulk() && films[sp.bulk_start].nk == *nk)
+                        }
+                        _ => {
+                            let half = if side == 0 {
+                                st.ambient()
+                            } else {
+                                st.substrate()
+                            };
+                            half.nk == *nk
+                        }
+                    };
+                    if span.is_some_and(|si| mine.contains(&si)) {
+                        if same {
+                            return Ok(false);
+                        }
+                    } else {
+                        let o = outside_same[side].get_or_insert(true);
+                        *o &= same;
+                    }
+                }
+            }
+        }
+        if outside_same.contains(&Some(true)) {
+            return Ok(false);
+        }
+        let (edges, top, bottom) = envs.gap_edges(gap);
+        let needle = &self.materials[m];
+        let listed = |l: Option<&Vec<EdgeMaterial>>| {
+            l.is_none_or(|l| l.iter().any(|e| is_edge_material(e, needle)))
+        };
+        Ok((!top || listed(edges.and_then(|e| e.outer.as_ref())))
+            && (!bottom || listed(edges.and_then(|e| e.inner.as_ref()))))
+    }
 }
 
 /// Rules for one needle run beyond the pool itself: which needles go into
@@ -483,7 +596,7 @@ pub fn dedup_pool(entries: impl IntoIterator<Item = LayerSpec>) -> MaterialPool 
 
 /// A fresh needle of pool entry `m`, `d_nm` thick, named apart from every
 /// film in `films`.
-fn new_needle(films: &[LayerSpec], m: &LayerSpec, d_nm: f64) -> LayerSpec {
+pub(crate) fn new_needle(films: &[LayerSpec], m: &LayerSpec, d_nm: f64) -> LayerSpec {
     LayerSpec {
         material: needle_name(films, &m.material),
         nk: m.nk.clone(),
@@ -523,13 +636,34 @@ pub fn pool_from_layers(stack: &DesignStack, keep: impl Fn(usize) -> bool) -> Ma
 /// place when both answer to the same slot.
 #[derive(Clone, Debug)]
 struct JointCandidate {
-    /// Index into `CompiledEnvironments::slots`.
-    slot: usize,
-    depth_into_layer_nm: f64,
+    site: JointSite,
     /// The needle material: the index into the pool whose sweep won.
     material: usize,
     /// P summed over environments.
     p: f64,
+}
+
+/// Where a joint needle goes: inside a design film, or on a boundary
+/// locus as a new design film.
+#[derive(Clone, Copy, Debug)]
+enum JointSite {
+    Interior {
+        /// Index into `CompiledEnvironments::slots`.
+        slot: usize,
+        depth_into_layer_nm: f64,
+    },
+    Boundary(Gap),
+}
+
+/// What the joint sweep found: the best P-scored candidate, the gain
+/// shift summed over the K folds, the number of admissible design sites
+/// (zero: "stack too thin"), and the rough boundary loci left for a trial
+/// as (locus, pool index, start thickness).
+struct JointSweep {
+    best: Option<JointCandidate>,
+    gtot: f64,
+    n_sites: usize,
+    rough: Vec<(Gap, usize, f64)>,
 }
 
 /// F2.3: the joint analytic sweep — K scans, one candidate.
@@ -546,11 +680,17 @@ struct JointCandidate {
 /// Surroundings never deposit: their rows answer `None` to `slot_of_row`,
 /// which is the second lock on the door the `needle` flag already holds.
 ///
+/// Under `boundary_needles` the boundary loci of the design are scored the
+/// same way: one site per placement, in every copy in every environment,
+/// summed per (material, locus). A locus whose plane is rough in some
+/// placement is set aside for a trial, as on the flat arm, at the largest
+/// start thickness over its placements.
+///
 /// Returns the winner (most negative ΣP, `None` when nothing improves), the
-/// gain shift summed over the K folds for the convergence test, and the
-/// number of admissible design sites — zero means "stack too thin".
-/// Under `record_timing` the K re-folds' wall time is added to `refold_s`,
-/// so the caller can split it out of the sweep's total.
+/// gain shift summed over the K folds for the convergence test, the number
+/// of admissible design sites (zero means "stack too thin") and the rough
+/// loci. Under `record_timing` the K re-folds' wall time is added to
+/// `refold_s`, so the caller can split it out of the sweep's total.
 fn joint_needle_sweep<C: DesignContext + ?Sized>(
     ctx: &C,
     stack: &DesignStack,
@@ -558,7 +698,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     pool: &MaterialPool,
     cfg: &NeedleCycleConfig,
     refold_s: &mut f64,
-) -> Result<(Option<JointCandidate>, f64, usize), String> {
+) -> Result<JointSweep, String> {
     let envs = ctx
         .environments()
         .ok_or_else(|| "joint_needle_sweep: the context has no environments".to_string())?;
@@ -568,6 +708,44 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     // (pool index, slot, step into the host) -> (depth, ΣP, environments seen)
     let mut buckets: HashMap<(usize, usize, usize), (f64, f64, usize)> = HashMap::new();
     let mut n_sites = 0usize;
+
+    // The boundary loci each material may take, P-scored or rough.
+    let mut gap_sets: Vec<Vec<(Gap, Vec<Vec<GapPlace>>)>> = vec![Vec::new(); pool.len()];
+    let mut rough = Vec::new();
+    if cfg.boundary_needles {
+        let solver: Vec<_> = stacks.iter().map(DesignStack::solver_arrays).collect();
+        for gap in envs.gaps() {
+            let places: Vec<Vec<GapPlace>> = stacks
+                .iter()
+                .enumerate()
+                .map(|(e, st)| envs.gap_places(e, st.spans(), st.films().len(), gap))
+                .collect();
+            let d0 = places
+                .iter()
+                .flatten()
+                .filter_map(|pl| {
+                    rough_boundary_start_nm(
+                        &solver[pl.env],
+                        pl.row,
+                        cfg.needle_seed_thickness_nm,
+                        stack.roughness_cap(),
+                    )
+                })
+                .reduce(f64::max);
+            for (m, set) in gap_sets.iter_mut().enumerate() {
+                if !pool.gap_accepts(envs, &stacks, gap, &places, m)? {
+                    continue;
+                }
+                n_sites += 1;
+                match d0 {
+                    Some(d0) => rough.push((gap, m, d0)),
+                    None => set.push((gap, places.clone())),
+                }
+            }
+        }
+    }
+    // (pool index, locus) -> (ΣP, placements seen)
+    let mut gap_buckets: HashMap<(usize, Gap), (f64, usize)> = HashMap::new();
 
     for (e, st) in stacks.iter().enumerate() {
         let mut fold = spectral.folds[e].clone();
@@ -608,8 +786,30 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             // same index in every environment, so every environment keeps
             // the same rows.
             let all = envs.scan_sites(e, st, stack, cfg.scan_step_nm);
-            let sites = pool.sites_for(mi, st, &all)?;
+            let mut sites = pool.sites_for(mi, st, &all)?;
+            let n_interior = sites.len();
+            // The boundary sites follow, one per placement of each locus
+            // this material may take, at the depth the locator sums to.
+            let mut gap_of_site = Vec::new();
+            let films = st.films();
+            for (gap, places) in &gap_sets[mi] {
+                for pl in &places[e] {
+                    let z_nm = films[..pl.row].iter().map(|f| f.d_nm).sum();
+                    sites.push(ScanSite {
+                        film_idx: pl.row,
+                        depth_into_layer_nm: 0.0,
+                        z_nm,
+                        boundary: true,
+                    });
+                    gap_of_site.push(*gap);
+                }
+            }
             let res = needle_pass_scan(&input, &sites)?;
+            for (gap, &p) in gap_of_site.iter().zip(&res.p_profile[n_interior..]) {
+                let entry = gap_buckets.entry((mi, *gap)).or_insert((0.0, 0));
+                entry.0 += p;
+                entry.1 += 1;
+            }
             // The scan walks rows in order and emits steps 1..n_steps
             // inside each admissible forward row, so the running count per
             // row IS the step index — and it is the same index in every
@@ -619,7 +819,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             // from the depth into the forward film, which is also the
             // depth the bucket keeps.
             let mut step: HashMap<usize, usize> = HashMap::new();
-            for (site, &p) in res.sites.iter().zip(res.p_profile.iter()) {
+            for (site, &p) in res.sites.iter().zip(res.p_profile.iter()).take(n_interior) {
                 let n = step.entry(site.film_idx).or_insert(0);
                 let mut ordinal = *n;
                 *n += 1;
@@ -661,14 +861,44 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
         ));
     }
 
+    // A boundary locus is placed once per copy of its segment.
+    if let Some(((m, gap), (_, n))) = gap_buckets.iter().find(|((_, gap), v)| {
+        let first = envs.segments()[gap.seg].start;
+        v.1 != envs.n_placements(first)
+    }) {
+        let m = &pool[*m].material;
+        return Err(format!(
+            "joint needle sweep: the boundary locus (segment {}, before film {}, \
+             needle {m:?}) appears in {n} of its places - the assemblies no longer \
+             share the design's boundaries",
+            gap.seg, gap.k
+        ));
+    }
+
     // Deterministic order before the min: a hash map's iteration order is
     // not stable, and two loci can tie on P exactly (identical
-    // environments, mirrored stacks).
-    let mut items: Vec<((usize, usize, usize), (f64, f64, usize))> = buckets.into_iter().collect();
+    // environments, mirrored stacks). Per material, interior sites come
+    // before boundary loci, so an exact tie goes to the interior site as on
+    // the flat arm.
+    let mut items: Vec<((usize, usize, usize, usize), JointSite, f64)> = buckets
+        .into_iter()
+        .map(|((m, slot, ord), (depth, p, _))| {
+            let site = JointSite::Interior {
+                slot,
+                depth_into_layer_nm: depth,
+            };
+            ((m, 0, slot, ord), site, p)
+        })
+        .chain(
+            gap_buckets
+                .into_iter()
+                .map(|((m, gap), (p, _))| ((m, 1, gap.seg, gap.k), JointSite::Boundary(gap), p)),
+        )
+        .collect();
     items.sort_by_key(|a| a.0);
 
     let mut best: Option<JointCandidate> = None;
-    for ((material, slot, _), (depth, p, _)) in items {
+    for ((material, ..), site, p) in items {
         if p >= 0.0 {
             continue; // not an improvement anywhere
         }
@@ -677,15 +907,15 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             Some(b) => p < b.p,
         };
         if better {
-            best = Some(JointCandidate {
-                slot,
-                depth_into_layer_nm: depth,
-                material,
-                p,
-            });
+            best = Some(JointCandidate { site, material, p });
         }
     }
-    Ok((best, gtot, n_sites))
+    Ok(JointSweep {
+        best,
+        gtot,
+        n_sites,
+        rough,
+    })
 }
 
 /// Run one full needle pass on `stack`.
@@ -719,15 +949,6 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
     // the shared design object and IS environment 0's assembly; the other
     // K-1 are re-expressed from it inside the sweep.
     let multi = ctx.environments().is_some();
-    if multi && cfg.boundary_needles {
-        // A boundary needle adds a design film between two slots, which
-        // the compiled environments have no move for yet (`insert_seed`
-        // only splits a slot). Refuse rather than scan what cannot land.
-        return Err("boundary_needles is not available with environments yet: \
-                    the joint run inserts only inside the shared design's films. \
-                    Turn it off for this run."
-            .into());
-    }
 
     // Initial optimization.
     let t0 = tick(cfg.record_timing);
@@ -971,10 +1192,11 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 /// re-optimize, record — with two differences and no others. The sweep is
 /// [`joint_needle_sweep`]'s (K scans summed by design parameter), and the
 /// insertion happens TWICE: once on the shared design object and once on
-/// the compile, so every environment's template splits at its own row for
+/// the compile, so every environment's template changes at its own row for
 /// the same parameter. Nothing else about the insertion changes: the same
-/// seed, the same depth, the same `insert_needle_seed`, the same
-/// re-optimization through the context.
+/// seed, the same depth, the same `insert_needle_seed` (or, on a boundary,
+/// a new film of its own), the same re-optimization through the context.
+/// Rough boundary loci are scored by a trial, as on the flat arm.
 fn joint_cycle<C: DesignContext + ?Sized>(
     ctx: &mut C,
     stack: &mut DesignStack,
@@ -986,16 +1208,53 @@ fn joint_cycle<C: DesignContext + ?Sized>(
 ) -> Result<bool, String> {
     let mut t = CycleTiming::default();
     let t0 = tick(cfg.record_timing);
-    let (best, gtot, n_sites) =
-        joint_needle_sweep(&*ctx, stack, spectral, pool, cfg, &mut t.refold_s)?;
+    let sweep = joint_needle_sweep(&*ctx, stack, spectral, pool, cfg, &mut t.refold_s)?;
     // The sweep interleaves K re-folds with K scans; the scan is the rest.
     t.scan_s = tock(t0) - t.refold_s;
-    if n_sites == 0 {
+    if sweep.n_sites == 0 {
         return Ok(true); // "Stack too thin for needle insertion."
     }
     let t0 = tick(cfg.record_timing);
     let current_mf = ctx.evaluate_merit(stack)?;
     t.merit_s = tock(t0);
+
+    // The gain shift is summed over the K folds for the same reason P is:
+    // growing the seed grows every environment's equivalent-medium
+    // reference, and the joint merit charges all of them.
+    // (site, material, P if scored by P, seed thickness, improvement it promises)
+    let mut best: Option<(JointSite, usize, Option<f64>, f64, f64)> = sweep.best.map(|c| {
+        let predicted = -(c.p + sweep.gtot) * cfg.needle_seed_thickness_nm;
+        (
+            c.site,
+            c.material,
+            Some(c.p),
+            cfg.needle_seed_thickness_nm,
+            predicted,
+        )
+    });
+
+    // Rough boundary loci: the joint merit with the needle in place in
+    // every copy, at its start thickness. The trial runs on a copy of the
+    // compile, swapped into the context for the one evaluation. The trials
+    // count to the scan's time.
+    let t0 = tick(cfg.record_timing);
+    for &(gap, m, d0) in &sweep.rough {
+        let lost = || "joint needle: the context lost its environments".to_string();
+        let film = new_needle(stack.films(), &pool[m], d0);
+        let mut trial = stack.clone();
+        let mut envs = ctx.environments().ok_or_else(lost)?.clone();
+        envs.boundary_design(&mut trial, gap, &film)?;
+        envs.insert_boundary(gap, &film)?;
+        let saved = std::mem::replace(ctx.environments_mut().ok_or_else(lost)?, envs);
+        let merit = ctx.evaluate_merit(&trial);
+        *ctx.environments_mut().ok_or_else(lost)? = saved;
+        let gain = current_mf - merit?;
+        if best.as_ref().is_none_or(|b| gain > b.4) {
+            best = Some((JointSite::Boundary(gap), m, None, d0, gain));
+        }
+    }
+    t.scan_s += tock(t0);
+
     let timing = cfg.record_timing.then_some(t);
     let stalled = |history: &mut Vec<NeedleCycleResult>, p, predicted| {
         history.push(NeedleCycleResult {
@@ -1010,40 +1269,59 @@ fn joint_cycle<C: DesignContext + ?Sized>(
         });
     };
 
-    let Some(cand) = best else {
+    let Some((site, m, p, seed_nm, predicted)) = best else {
         stalled(history, None, None);
         return Ok(true); // no improving locus in any environment
     };
-    // The gain shift is summed over the K folds for the same reason P is:
-    // growing the seed grows every environment's equivalent-medium
-    // reference, and the joint merit charges all of them.
-    let predicted = -(cand.p + gtot) * cfg.needle_seed_thickness_nm;
     if predicted < cfg.convergence_threshold {
-        stalled(history, Some(cand.p), Some(predicted));
+        stalled(history, p, Some(predicted));
         return Ok(true); // "Convergence reached - stopping."
     }
 
-    // Locus -> the shared design's own row. `host_row` answers the BULK
+    let lost = || "joint needle: the context lost its environments".to_string();
+    let mat = &pool[m];
+    let seed = new_needle(stack.films(), mat, seed_nm);
+    // Locus -> the shared design's own row: the host's before a split, the
+    // new film's after a boundary insertion. `host_row` answers the BULK
     // row, so an interface-carrying design film is still a legal host (N1).
-    let row0 = ctx
-        .environments()
-        .and_then(|e| e.host_row(0, cand.slot))
-        .ok_or_else(|| {
-            format!(
-                "joint needle: design parameter {} has no host row in \
-                 environment 0",
-                cand.slot
-            )
-        })?;
-    let mat = &pool[cand.material];
-    let seed = new_needle(stack.films(), mat, cfg.needle_seed_thickness_nm);
-    // Every copy of the host in the design object, then every template.
-    ctx.environments()
-        .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
-        .split_design(stack, cand.slot, cand.depth_into_layer_nm, &seed)?;
-    ctx.environments_mut()
-        .ok_or_else(|| "joint needle: the context lost its environments".to_string())?
-        .insert_seed(cand.slot, cand.depth_into_layer_nm, &seed)?;
+    let row_of = |ctx: &C, slot: usize| {
+        ctx.environments()
+            .and_then(|e| e.host_row(0, slot))
+            .ok_or_else(|| {
+                format!("joint needle: design parameter {slot} has no row in environment 0")
+            })
+    };
+    // Every copy in the design object, then every template.
+    let (row0, depth, boundary) = match site {
+        JointSite::Interior {
+            slot,
+            depth_into_layer_nm,
+        } => {
+            let row0 = row_of(&*ctx, slot)?;
+            ctx.environments().ok_or_else(lost)?.split_design(
+                stack,
+                slot,
+                depth_into_layer_nm,
+                &seed,
+            )?;
+            ctx.environments_mut().ok_or_else(lost)?.insert_seed(
+                slot,
+                depth_into_layer_nm,
+                &seed,
+            )?;
+            (row0, depth_into_layer_nm, false)
+        }
+        JointSite::Boundary(gap) => {
+            ctx.environments()
+                .ok_or_else(lost)?
+                .boundary_design(stack, gap, &seed)?;
+            let slot = ctx
+                .environments_mut()
+                .ok_or_else(lost)?
+                .insert_boundary(gap, &seed)?;
+            (row_of(&*ctx, slot)?, 0.0, true)
+        }
+    };
 
     let t0 = tick(cfg.record_timing);
     let new_mf = ctx.optimize_thicknesses(stack)?;
@@ -1052,15 +1330,15 @@ fn joint_cycle<C: DesignContext + ?Sized>(
         cycle: cycle + 1,
         merit_before: current_mf,
         merit_after: new_mf,
-        best_p: Some(cand.p),
+        best_p: p,
         predicted_improvement: Some(predicted),
         layer_count: stack.films().len(),
         insertion: Some(Insertion {
             film_idx: row0,
-            depth_into_layer_nm: cand.depth_into_layer_nm,
+            depth_into_layer_nm: depth,
             material: mat.material.clone(),
-            boundary: false,
-            seed_nm: cfg.needle_seed_thickness_nm,
+            boundary,
+            seed_nm,
         }),
         timing: cfg.record_timing.then_some(t),
     });

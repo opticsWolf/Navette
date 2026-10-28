@@ -890,7 +890,10 @@ impl DesignStack {
     /// `row` must be a span boundary, never a row inside a span. On an
     /// outer edge the film becomes the edge layer, so it must be on that
     /// edge's list when one is set. The film takes no roughness from its
-    /// neighbours: the boundary's interface stays on the row below.
+    /// neighbours: the boundary's interface stays on the row below. When
+    /// the layer below opens with its interface slice, the slice stays with
+    /// it and is re-mixed as the expander mixes it, from the layer and the
+    /// film now above it.
     pub fn insert_film_at_boundary(&mut self, row: usize, film: LayerSpec) -> Result<(), String> {
         let n = self.films.len();
         let at = if row == n {
@@ -927,6 +930,17 @@ impl DesignStack {
                 ));
             }
         }
+        if let Some(below) = self
+            .spans
+            .get(at)
+            .filter(|sp| sp.slice && sp.is_singleton_bulk())
+        {
+            let mix = crate::structure::expansion::looyenga_mix(
+                &self.films[below.bulk_start].nk,
+                &film.nk,
+            );
+            self.films[below.start].nk = mix.into();
+        }
         self.films.insert(row, film);
         for sp in &mut self.spans[at..] {
             sp.start += 1;
@@ -943,6 +957,60 @@ impl DesignStack {
                 bulk_start: row,
             },
         );
+        self.recipes.insert(at, None);
+        self.assert_spans_partition();
+        Ok(())
+    }
+
+    /// Insert `film` as a new span at span index `at` (`spans.len()`: on
+    /// the substrate). With `take_slice`, span `at` must open with an
+    /// interface slice: the slice moves into the new span, ahead of the
+    /// film, and span `at` keeps only its bulk. That is an inverted copy's
+    /// shape, where the slice at the start of a span is carved by the entry
+    /// before it and so stays against that entry. Without, this is
+    /// [`Self::insert_film_at_boundary`] at the span's first row.
+    pub(crate) fn insert_span(
+        &mut self,
+        at: usize,
+        film: LayerSpec,
+        take_slice: bool,
+    ) -> Result<(), String> {
+        if !take_slice {
+            let row = self.spans.get(at).map_or(self.films.len(), |sp| sp.start);
+            return self.insert_film_at_boundary(row, film);
+        }
+        let sp = *self
+            .spans
+            .get(at)
+            .filter(|sp| sp.slice && sp.bulk_start == sp.start + 1)
+            .ok_or_else(|| format!("span {at} opens with no interface slice to take"))?;
+        if film.nk.len() != self.num_wavs {
+            return Err(format!(
+                "film '{}' nk length {} != the stack's {}",
+                film.material,
+                film.nk.len(),
+                self.num_wavs
+            ));
+        }
+        let row = sp.bulk_start;
+        self.films.insert(row, film);
+        for later in &mut self.spans[at..] {
+            later.start += 1;
+            later.end += 1;
+            later.bulk_start += 1;
+        }
+        self.spans[at].slice = false;
+        self.spans.insert(
+            at,
+            Span {
+                start: sp.start,
+                end: row + 1,
+                logical: row,
+                slice: true,
+                bulk_start: row,
+            },
+        );
+        self.spans[at + 1].start = row + 1;
         self.recipes.insert(at, None);
         self.assert_spans_partition();
         Ok(())

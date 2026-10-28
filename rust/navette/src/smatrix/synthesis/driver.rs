@@ -313,7 +313,10 @@ pub fn run_environments(
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
     let k = envs.n_envs();
-    let joint = envs.is_joint();
+    // A segment's edge lists live in the compile, not on the flat stack,
+    // so boundary needles that could reach a segment edge take the joint
+    // path even in one environment.
+    let joint = envs.is_joint() || (needle_cfg.boundary_needles && envs.has_segment_edges());
     if spec.n_envs() != k {
         return Err(format!(
             "run_environments: the merit spec has {} environment(s) but the \
