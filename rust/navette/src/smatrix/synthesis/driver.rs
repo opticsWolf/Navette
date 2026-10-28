@@ -188,8 +188,28 @@ pub fn assemble_stack(
     })
 }
 
+/// The needle fold and the solver sines for an incidence grid. Degrees keep
+/// the conversions these doors have always made, bit for bit; radians go
+/// straight into `sin` (see [`SpectralInputs::from_spec_radians`]).
+fn fold_and_sines(
+    spec: &MeritSpec,
+    angles: &[f64],
+    angles_in_radians: bool,
+    wavelengths: &[f64],
+) -> Result<(SpectralInputs, Vec<f64>), String> {
+    if angles_in_radians {
+        let spectral = SpectralInputs::from_spec_radians(spec, angles, wavelengths)?;
+        let sin_theta = spectral.sin_theta.clone();
+        Ok((spectral, sin_theta))
+    } else {
+        let spectral = SpectralInputs::from_spec(spec, angles, wavelengths)?;
+        Ok((spectral, angles.iter().map(|a| a.to_radians().sin()).collect()))
+    }
+}
+
 /// End-to-end design run: assemble, fold demands, execute the macro-loop.
-/// `angles_deg` in degrees; `callback` fires per macro-cycle.
+/// `angles` in degrees, or radians with `angles_in_radians`; `callback`
+/// fires per macro-cycle.
 ///
 /// `materials` is the needle pool; `None` takes one entry per distinct
 /// index among the assembled layers ([`pool_from_layers`]). `rules` narrow
@@ -212,7 +232,8 @@ pub fn run_design(
     materials: Option<&[ArrayMaterial]>,
     rules: &NeedleRules,
     wavelengths: &[f64],
-    angles_deg: &[f64],
+    angles: &[f64],
+    angles_in_radians: bool,
     spec: &MeritSpec,
     cfg: PipelineConfig,
     needle_cfg: NeedleCycleConfig,
@@ -248,9 +269,8 @@ pub fn run_design(
         }
     };
     let pool = rules.apply(&mut stack, pool)?;
-    let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
+    let (spectral, sin_theta) = fold_and_sines(spec, angles, angles_in_radians, wavelengths)?;
     let cfg = cfg.validated()?;
-    let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();
     let mut ctx = SmatrixContext {
         wavls: wavelengths.to_vec(),
         sin_theta,
@@ -306,6 +326,26 @@ pub fn run_environments(
     pool: MaterialPool,
     wavelengths: &[f64],
     angles_deg: &[f64],
+    spec: &MeritSpec,
+    cfg: PipelineConfig,
+    needle_cfg: NeedleCycleConfig,
+    lm: LmConfig,
+    callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
+) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+    run_environments_angles(
+        envs, pool, wavelengths, angles_deg, false, spec, cfg, needle_cfg, lm, callback,
+    )
+}
+
+/// [`run_environments`] with the incidence grid in degrees, or in radians
+/// with `angles_in_radians`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_environments_angles(
+    envs: super::environments::CompiledEnvironments,
+    pool: MaterialPool,
+    wavelengths: &[f64],
+    angles: &[f64],
+    angles_in_radians: bool,
     spec: &MeritSpec,
     cfg: PipelineConfig,
     needle_cfg: NeedleCycleConfig,
@@ -378,9 +418,8 @@ pub fn run_environments(
     }
 
     let stack = envs.stacks()[0].clone();
-    let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
+    let (spectral, sin_theta) = fold_and_sines(spec, angles, angles_in_radians, wavelengths)?;
     let cfg = cfg.validated()?;
-    let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();
     let mut ctx = SmatrixContext {
         wavls: wavelengths.to_vec(),
         sin_theta,

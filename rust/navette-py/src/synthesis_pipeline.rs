@@ -45,6 +45,15 @@ fn deg_to_sin(angles_deg: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// Solver sines for a grid in degrees, or in radians (used directly).
+fn angles_to_sin(angles: &[f64], angles_in_radians: bool) -> Vec<f64> {
+    if angles_in_radians {
+        angles.iter().map(|a| a.sin()).collect()
+    } else {
+        deg_to_sin(angles)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // LayerSpec / DesignStack
 // ---------------------------------------------------------------------------
@@ -467,7 +476,7 @@ pub(crate) fn assemble_design(
 /// `stack`; assembly warnings (dropped ambient absorption, homogenized
 /// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None, angles_in_radians=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -489,6 +498,7 @@ pub(crate) fn run_design(
     outer: Option<Vec<String>>,
     inner: Option<Vec<String>>,
     seed_edges: Option<f64>,
+    angles_in_radians: bool,
 ) -> PyResult<Py<PyDict>> {
     use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
     let rules = NeedleRules {
@@ -550,6 +560,7 @@ pub(crate) fn run_design(
                     &rules,
                     &w,
                     &a,
+                    angles_in_radians,
                     &spec_inner,
                     cfg,
                     needle_cfg,
@@ -595,7 +606,7 @@ pub(crate) fn run_design(
 /// 0's assembly, which IS the shared design object); assembly warnings
 /// re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (request_json, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
+#[pyo3(signature = (request_json, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, angles_in_radians=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design_environments(
     py: Python<'_>,
@@ -607,8 +618,9 @@ pub(crate) fn run_design_environments(
     needle_config: Option<Py<PyNeedleCycleConfig>>,
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
+    angles_in_radians: bool,
 ) -> PyResult<Py<PyDict>> {
-    use navette::smatrix::synthesis::driver::run_environments as core_run;
+    use navette::smatrix::synthesis::driver::run_environments_angles as core_run;
     use navette::smatrix::synthesis::environments::build_environments;
 
     let req: DesignRequest = serde_json::from_str(request_json).map_err(|e| {
@@ -639,6 +651,7 @@ pub(crate) fn run_design_environments(
                     pool,
                     &w,
                     &a,
+                    angles_in_radians,
                     &spec_inner,
                     cfg,
                     needle_cfg,
@@ -1269,8 +1282,9 @@ pub struct PySmatrixContext {
 impl PySmatrixContext {
     #[new]
     #[pyo3(signature = (spec, angles_deg, wavelengths, clamp_min=2.0, clamp_max=1000.0,
-                        lm=None, thin_layer_policy="remove"))]
-    /// `angles_deg`: degrees (spec-key convention); converted to sines.
+                        lm=None, thin_layer_policy="remove", angles_in_radians=false))]
+    /// `angles_deg`: degrees (spec-key convention), or radians with
+    /// `angles_in_radians`; converted to sines (radians directly).
     /// `thin_layer_policy`: 'remove' (default), 'clamp_up_final' or
     /// 'clamp_up_always' (F0.3; the last one moves the LM lower bound).
     fn new(
@@ -1281,6 +1295,7 @@ impl PySmatrixContext {
         clamp_max: f64,
         lm: Option<Py<PyLmConfig>>,
         thin_layer_policy: &str,
+        angles_in_radians: bool,
         py: Python<'_>,
     ) -> PyResult<Self> {
         let a = angles_deg.as_slice()?;
@@ -1296,7 +1311,7 @@ impl PySmatrixContext {
         Ok(PySmatrixContext {
             inner: SmatrixContext {
                 wavls: w.to_vec(),
-                sin_theta: deg_to_sin(a),
+                sin_theta: angles_to_sin(a, angles_in_radians),
                 spec: spec.inner().clone(),
                 clamp_min_nm: clamp_min,
                 clamp_max_nm: clamp_max,
@@ -1506,7 +1521,8 @@ impl PyNeedlePipeline {
     #[new]
     #[pyo3(signature = (stack, spec, angles_deg, wavelengths, materials=None,
                         pipeline_config=None, needle_config=None, lm=None,
-                        insert_rules=None, outer=None, inner=None, seed_edges=None))]
+                        insert_rules=None, outer=None, inner=None, seed_edges=None,
+                        angles_in_radians=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1522,6 +1538,7 @@ impl PyNeedlePipeline {
         outer: Option<Vec<String>>,
         inner: Option<Vec<String>>,
         seed_edges: Option<f64>,
+        angles_in_radians: bool,
     ) -> PyResult<Self> {
         let a = angles_deg.as_slice()?;
         let w = wavelengths.as_slice()?;
@@ -1575,8 +1592,12 @@ impl PyNeedlePipeline {
         }
         .apply(&mut design, pool)
         .map_err(PyValueError::new_err)?;
-        let spectral =
-            SpectralInputs::from_spec(spec.inner(), a, w).map_err(PyValueError::new_err)?;
+        let spectral = if angles_in_radians {
+            SpectralInputs::from_spec_radians(spec.inner(), a, w)
+        } else {
+            SpectralInputs::from_spec(spec.inner(), a, w)
+        }
+        .map_err(PyValueError::new_err)?;
         let inner = NeedlePipeline::new(
             design,
             spectral,
@@ -1588,7 +1609,7 @@ impl PyNeedlePipeline {
         Ok(PyNeedlePipeline {
             inner,
             spec: spec.inner().clone(),
-            sin_theta: deg_to_sin(a),
+            sin_theta: angles_to_sin(a, angles_in_radians),
             wavls: w.to_vec(),
             clamp_min: cfg.clamp_min_nm,
             clamp_max: cfg.clamp_max_nm,

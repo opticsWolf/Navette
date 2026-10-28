@@ -174,13 +174,15 @@ def build_merit_spec(collection: TargetCollection,
 def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
                              n_inc: float | np.ndarray = 1.0,
                              total_d: float = 0.0,
-                             passes: float = 1.0):
+                             passes: float = 1.0,
+                             angles_in_radians: bool = False):
     """Rotate complex amplitudes into differential-phase space.
 
     Multiplies by ``exp(-i·ref)`` with
     ``ref = passes · 2π · n_inc · total_d · cosθ / λ`` (``wavelengths`` and
     ``total_d`` share units; ``angle_deg`` is degrees in the incidence
-    medium), so ``arg()`` of the result is the differential phase
+    medium, or radians, used directly, with ``angles_in_radians=True``),
+    so ``arg()`` of the result is the differential phase
     ``Δφ = arg(a) − ref``. Last axis is wavelength; leading axes (angles)
     broadcast. ``n_inc`` is a float (constant medium) or a per-wavelength
     float array (a dispersive medium; PD2) — the native kernel broadcasts
@@ -200,13 +202,14 @@ def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
         raise ValueError(
             f"last axis {a.shape[-1]} != {wl.size} wavelengths."
         )
+    rad = bool(angles_in_radians)
     if np.ndim(n_inc) == 0:
         rot = np.asarray(_ref_rot(wl, float(angle_deg), float(n_inc),
-                                  float(total_d), float(passes)))
+                                  float(total_d), float(passes), rad))
     else:
         n = np.ascontiguousarray(np.asarray(n_inc, dtype=np.float64).ravel())
         rot = np.asarray(_ref_rot(wl, float(angle_deg), n,
-                                  float(total_d), float(passes)))
+                                  float(total_d), float(passes), rad))
     return a * rot.reshape((1,) * (a.ndim - 1) + (-1,))
 
 
@@ -215,8 +218,12 @@ def sim_curves_from_arrays(angles, wavelengths,
                            complex_curves: Dict[str, np.ndarray] | None = None,
                            total_d: float = 0.0,
                            n_front: float | np.ndarray = 1.0,
-                           n_back: float | np.ndarray = 1.0):
+                           n_back: float | np.ndarray = 1.0,
+                           angles_in_radians: bool = False):
     """Build a native ``SimCurves`` from row-major ``[n_angles, n_wavs]`` maps.
+
+    ``angles`` label the rows in degrees, or in radians with
+    ``angles_in_radians=True`` (stored in degrees, the merit-key unit).
 
     ``curves`` maps CurveId codes (``"Rs"``…``"ABu"``) to float rows;
     ``complex_curves`` maps ``Rs/Rp/Ts/Tp/RBs/RBp/TBs/TBp`` to complex rows
@@ -233,7 +240,7 @@ def sim_curves_from_arrays(angles, wavelengths,
     angles = np.ascontiguousarray(np.asarray(angles, dtype=np.float64)).ravel()
     wavelengths = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64)).ravel()
     sim = _NativeSimCurves(angles, wavelengths, float(total_d),
-                            n_front, n_back)
+                            n_front, n_back, bool(angles_in_radians))
     for code, arr in curves.items():
         sim.set_curve(code, np.ascontiguousarray(
             np.asarray(arr, dtype=np.float64)).ravel())

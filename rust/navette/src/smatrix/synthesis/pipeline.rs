@@ -448,6 +448,20 @@ impl SpectralInputs {
             angles_deg: angles_deg.to_vec(),
         })
     }
+
+    /// As [`from_spec`](Self::from_spec) for a grid in radians: the fold
+    /// labels its rows in degrees to match the merit keys, and the solver
+    /// takes `sin` of the radians directly.
+    pub fn from_spec_radians(
+        spec: &MeritSpec,
+        angles_rad: &[f64],
+        wavls: &[f64],
+    ) -> Result<Self, String> {
+        let deg: Vec<f64> = angles_rad.iter().map(|a| a.to_degrees()).collect();
+        let mut s = Self::from_spec(spec, &deg, wavls)?;
+        s.sin_theta = angles_rad.iter().map(|a| a.sin()).collect();
+        Ok(s)
+    }
 }
 
 #[cfg(test)]

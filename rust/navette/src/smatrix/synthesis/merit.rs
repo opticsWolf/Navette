@@ -1748,6 +1748,27 @@ pub fn reference_rotation(
     total_d: f64,
     passes: f64,
 ) -> Result<Vec<num_complex::Complex64>, String> {
+    rotation_from_cos(wavelengths, angle_deg.to_radians().cos(), n_inc, total_d, passes)
+}
+
+/// [`reference_rotation`] with the angle in radians, used directly.
+pub fn reference_rotation_radians(
+    wavelengths: &[f64],
+    angle_rad: f64,
+    n_inc: &[f64],
+    total_d: f64,
+    passes: f64,
+) -> Result<Vec<num_complex::Complex64>, String> {
+    rotation_from_cos(wavelengths, angle_rad.cos(), n_inc, total_d, passes)
+}
+
+fn rotation_from_cos(
+    wavelengths: &[f64],
+    cos_t: f64,
+    n_inc: &[f64],
+    total_d: f64,
+    passes: f64,
+) -> Result<Vec<num_complex::Complex64>, String> {
     use std::f64::consts::PI;
     if n_inc.is_empty() {
         return Err("reference_rotation: n_inc is empty - supply length 1 \
@@ -1763,7 +1784,6 @@ pub fn reference_rotation(
             wavelengths.len()
         ));
     }
-    let cos_t = angle_deg.to_radians().cos();
     Ok(wavelengths
         .iter()
         .enumerate()

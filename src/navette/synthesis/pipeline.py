@@ -718,6 +718,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                outer: Any = None,
                inner: Any = None,
                seed_edges: Optional[float] = None,
+               angles_in_radians: bool = False,
                **stack_kwargs) -> Dict[str, Any]:
     """Design a coating with the needle pipeline, end to end.
 
@@ -727,7 +728,9 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         Materials are ``MaterialSpec`` / mappings / nk arrays (constant
         complex also accepted).
     targets : TargetCollection or MeritSpec (native).
-    angles_deg / wavelengths : solver grid (degrees / nm).
+    angles_deg / wavelengths : solver grid (degrees / nm). With
+        ``angles_in_radians=True`` the angles are radians and go straight
+        into ``sin``; the targets keep their own unit.
     materials : {label: material} — the needle material pool. Every film
         whose ``needle`` flag is set accepts a needle of every pool
         material of another index; each insertion is the single best
@@ -848,7 +851,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         return _run_needle_environments(
             design, environments, targets, angles_deg, wavelengths, materials,
             pipeline_config, needle_config, lm_config, callback, stack_kwargs,
-            rules, outer, inner, seed_edges)
+            rules, outer, inner, seed_edges, angles_in_radians)
     if environments is not None:
         raise ValueError(
             "run_needle: `environments` needs `design` - a flat film list has "
@@ -884,14 +887,16 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         films, gmap, _pool(materials, wl), wl, angs, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback,
-        insert_rules=rules, outer=outer, inner=inner, seed_edges=seed_edges)
+        insert_rules=rules, outer=outer, inner=inner, seed_edges=seed_edges,
+        angles_in_radians=bool(angles_in_radians))
 
 
 def _run_needle_environments(design, environments, targets, angles_deg,
                              wavelengths, materials, pipeline_config,
                              needle_config, lm_config, callback,
                              stack_kwargs, insert_rules=None, outer=None,
-                             inner=None, seed_edges=None) -> Dict[str, Any]:
+                             inner=None, seed_edges=None,
+                             angles_in_radians=False) -> Dict[str, Any]:
     """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
 
     Shapes the request document and hands it to the core in one call. The
@@ -926,4 +931,5 @@ def _run_needle_environments(design, environments, targets, angles_deg,
     return _run_envs(
         _json.dumps(request), wl, angs, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
-        lm=lm_config, callback=callback)
+        lm=lm_config, callback=callback,
+        angles_in_radians=bool(angles_in_radians))

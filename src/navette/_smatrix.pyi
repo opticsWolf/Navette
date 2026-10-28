@@ -346,6 +346,7 @@ class SimCurves:
         total_d: float = ...,
         n_front: float | FloatArray = ...,
         n_back: float | FloatArray = ...,
+        angles_in_radians: bool = ...,
     ) -> None: ...
     def set_curve(self, curve_id: str, values: FloatArray) -> None: ...
     def set_complex(self, curve_id: str, values: ComplexArray) -> None: ...
@@ -354,7 +355,7 @@ class MeritSpec:
     """Compiled merit: keys (angle, curve) plus the targets hung off them."""
 
     def __init__(self) -> None: ...
-    def add_key(self, angle: float, curve_id: str) -> int: ...
+    def add_key(self, angle: float, curve_id: str, angles_in_radians: bool = ...) -> int: ...
     def add_target(
         self,
         key_idx: int,
@@ -382,6 +383,7 @@ def reference_rotation(
     n_inc: float | FloatArray = ...,
     total_d: float = ...,
     passes: float = ...,
+    angles_in_radians: bool = ...,
 ) -> ComplexArray:
     """`exp(-i * passes * k * D * cos)` per wavelength — the differential-phase
     reference."""
@@ -393,6 +395,7 @@ def build_needle_targets(
     angles: FloatArray,
     wavelengths: FloatArray,
     sim: SimCurves | None = ...,
+    angles_in_radians: bool = ...,
 ) -> dict[str, Any]:
     """Per-channel `targets`/`weights` surfaces for `needle_gradient`.
 
@@ -576,6 +579,7 @@ class SmatrixContext:
         clamp_max: float = ...,
         lm: LmConfig | None = ...,
         thin_layer_policy: str = ...,
+        angles_in_radians: bool = ...,
     ) -> None: ...
     def simulate(self, stack: DesignStack) -> SimCurves: ...
     def evaluate_merit(self, stack: DesignStack) -> float: ...
@@ -606,6 +610,7 @@ class NeedlePipeline:
         outer: Sequence[str] | None = ...,
         inner: Sequence[str] | None = ...,
         seed_edges: float | None = ...,
+        angles_in_radians: bool = ...,
     ) -> None: ...
     def run(self, callback: Callable[..., Any] | None = ...) -> dict[str, Any]: ...
 
@@ -643,6 +648,7 @@ def run_design(
     outer: Sequence[str] | None = ...,
     inner: Sequence[str] | None = ...,
     seed_edges: float | None = ...,
+    angles_in_radians: bool = ...,
 ) -> dict[str, Any]: ...
 def run_design_environments(
     request_json: str,
@@ -653,4 +659,5 @@ def run_design_environments(
     needle_config: NeedleCycleConfig | None = ...,
     lm: LmConfig | None = ...,
     callback: Callable[..., Any] | None = ...,
+    angles_in_radians: bool = ...,
 ) -> dict[str, Any]: ...

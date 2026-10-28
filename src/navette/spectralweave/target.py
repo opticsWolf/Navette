@@ -96,6 +96,9 @@ class SpectralTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
+    #: ``angle`` given in radians. It is stored in degrees, the merit-key
+    #: unit, and the flag reads False after construction.
+    angles_in_radians: bool = False
 
     def _dump(self) -> dict:
         band = self.band
@@ -127,6 +130,7 @@ class SpectralTarget:
             band = np.ascontiguousarray(np.full(np.shape(self.values), float(band), dtype=np.float64))
         elif band is not None:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64))
+        _angles_to_degrees(self, 'angle')
         # FFI Guard: Ensure contiguous float64 memory to prevent Rust segfaults.
         # This is an O(1) no-op if the array is already correctly formatted.
         object.__setattr__(self, 'wavelengths', np.ascontiguousarray(self.wavelengths, dtype=np.float64))
@@ -156,6 +160,9 @@ class AngularTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
+    #: ``angles`` given in radians. They are stored in degrees, the
+    #: merit-key unit, and the flag reads False after construction.
+    angles_in_radians: bool = False
 
     def _dump(self) -> dict:
         band = self.band
@@ -188,6 +195,7 @@ class AngularTarget:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64))
         # FFI Guard
         object.__setattr__(self, 'angles', np.ascontiguousarray(self.angles, dtype=np.float64))
+        _angles_to_degrees(self, 'angles')
         object.__setattr__(self, 'values', np.ascontiguousarray(self.values, dtype=np.float64))
         object.__setattr__(self, 'tolerances', np.ascontiguousarray(self.tolerances, dtype=np.float64))
         object.__setattr__(self, 'band', band)
@@ -253,6 +261,9 @@ class ColorTarget:
     yi_cx:        Union[float, None] = None
     yi_cz:        Union[float, None] = None
     environment:  Union[str, None] = None
+    #: ``angle`` given in radians. It is stored in degrees, the merit-key
+    #: unit, and the flag reads False after construction.
+    angles_in_radians: bool = False
 
     def _dump(self) -> dict:
         return {
@@ -272,7 +283,18 @@ class ColorTarget:
     def __post_init__(self) -> None:
         from navette._structure import validate_targets as _validate
         import json as _json
+        _angles_to_degrees(self, 'angle')
         _validate(_json.dumps({"spectral": [], "angular": [], "color": [self._dump()]}))
+
+
+def _angles_to_degrees(target, name: str) -> None:
+    """Store a radian ``name`` field in degrees and clear the flag, so a
+    built target always carries the merit-key unit."""
+    if target.angles_in_radians:
+        value = np.degrees(getattr(target, name))
+        object.__setattr__(target, name,
+                           float(value) if np.ndim(value) == 0 else value)
+        object.__setattr__(target, 'angles_in_radians', False)
 
 
 def _dump_environment(env):
