@@ -14,7 +14,8 @@ optimisation loops) against any numeric drift. It lives in
 | `test_forward_physics.py` | independent references (Fresnel, Airy, energy, identities, phase continuity, door agreement) and the known defects as strict xfails |
 | `gen_forward_golden.py` | the only writer: dry run by default, `--write` to rewrite |
 
-Baseline written at Navette 0.8.1, commit `b24b06c`.
+Baseline written at Navette 0.8.1, commit `b24b06c`; regenerated at
+`22cd32e` (defect 2) and `4c2d969` (defect 3, section 4).
 
 ## 1. Survey: what can be computed
 
