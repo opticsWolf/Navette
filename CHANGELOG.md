@@ -65,8 +65,8 @@ All notable changes to Navette are recorded here. Work items reference
   only on name and index, so they stay apart. The first row's properties
   win.
 - The needle pin's trajectory moves deliberately (cycle 2 now inserts H
-  into an earlier L needle); the Windows digest is re-recorded and the
-  Linux digest needs the same re-read from CI. `bench_eval` reports
+  into an earlier L needle); both platform digests are re-recorded, Linux
+  from CI. `bench_eval` reports
   `n_pool_materials` in place of its contrast count.
 
 ### Fixed
@@ -80,8 +80,8 @@ All notable changes to Navette are recorded here. Work items reference
   the forward |t_fwd|²·Re(y_exit)/Re(y_0), the value the engine reports
   and the needle gradient already used, and the thickness gradient
   follows it. On transparent substrates T moves by up to 1.1e-14: the
-  forward golden baseline is regenerated, the Windows needle digest is
-  re-recorded (the Linux one needs the same re-read from CI), and the
+  forward golden baseline is regenerated, both needle digests are
+  re-recorded (Linux from CI), and the
   bench merit moves by 2 ulps (`46dc154d6946ee40`).
 - **Transmitted Stokes S2_T/S3_T lacked the exit-medium factor.** They
   came from `tp·conj(ts)` while S0_T/S1_T carry the flux factor, so DOP_T

@@ -154,16 +154,20 @@ def _strip_keys(obj, drop):
 # trajectory change: a needle is now a film of its own that accepts
 # needles (cycle 2 inserts H into an earlier L needle), needles are named
 # "<label>#<n>", and touching layers of one index merge whatever their
-# names. The Linux entry needs the same re-read from CI.
+# names.
 #
 # Re-recorded (Windows) when synthesis Ts/Tp moved from the backward
 # channel |t_back|^2 Re(y0)/Re(y_exit) to the forward one the engine
 # reports, |t_fwd|^2 Re(y_exit)/Re(y0). Equal in exact arithmetic on this
 # transparent substrate, not in the last bits; into an absorbing substrate
-# the backward one was wrong. The Linux entry needs the same re-read.
+# the backward one was wrong.
+#
+# Linux re-read for both changes at once from CI run 40737848279
+# (``4c2d969``, ubuntu-24.04, release build; the python and the
+# dependency-floors jobs printed the same digest).
 RECORDED_DIGESTS = {
     "Windows": "59c60c828f9c58cd73ec7fca28e18deafa880f5c8ce41071331ff060de2a8be4",
-    "Linux": "5c30981320d71b9228a2dbc3b1942599a59a0bcdecd1c921c8b49cc8dbf547da",
+    "Linux": "a52946d7974d57d9edfb8d685f9af624b8dd09dec97a584d5a021f2e1203cdf7",
 }
 DIGEST = RECORDED_DIGESTS.get(platform.system())
 
