@@ -95,9 +95,9 @@ def problem():
     n_demands = 0
     for ang in ANGLES:
         tc.add(SpectralTarget(WL, np.zeros(WL.size), np.full(WL.size, 0.01),
-                              float(ang), "s", "R", kind="e"))
+                              "s", "R", kind="e", angle_deg=float(ang)))
         tc.add(SpectralTarget(WL, np.ones(WL.size), np.full(WL.size, 0.01),
-                              float(ang), "p", "T", kind="e"))
+                              "p", "T", kind="e", angle_deg=float(ang)))
         n_demands += 2
     return layers, names, materials, tc, n_demands
 
@@ -131,7 +131,7 @@ def measure(repeats=5, inner=50):
     spec = build_merit_spec(tc)
 
     stack, pool = stack_from_layers(layers, WL, materials, names=names)
-    ctx = SmatrixContext(spec, ANGLES, WL)
+    ctx = SmatrixContext(spec, WL, angles_deg=ANGLES)
     sim = ctx.simulate(stack)
     merit = float(spec.merit(sim, 1e6))
     n_res = len(np.asarray(spec.residuals(sim)).ravel())

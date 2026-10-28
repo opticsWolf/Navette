@@ -127,7 +127,7 @@ def de2000(lab1, lab2):
 N = np.array([1.0 + 0j, 2.35 + 0j, 1.46 + 0j, 2.10 + 0j, 1.52 + 0j])
 D = np.array([0.0, 120.0, 200.0, 80.0, 0.0])
 WLS = np.linspace(450.0, 750.0, 31)
-st0 = ScatterMatrix(N, D, wavelengths=WLS, angles=[30.0])
+st0 = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[30.0])
 out0 = st0.compute(Request.RS | Request.RS_C)
 RS = np.atleast_2d(np.asarray(out0["Rs"], float))
 
@@ -140,7 +140,7 @@ def make_spec(quantity="Lab", distance="DeltaE2000", reference=REF,
     doc = {
         "spectral": [], "angular": [],
         "color": [dict({
-            "curve": "Rs", "angle": 30.0,
+            "curve": "Rs", "angle_deg": 30.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": quantity, "reference": reference,
             "distance": distance, "weight": WEIGHT,
@@ -150,7 +150,7 @@ def make_spec(quantity="Lab", distance="DeltaE2000", reference=REF,
 
 
 def sim_of(rs):
-    sim = SimCurves(np.array([30.0]), WLS, float(D[1:-1].sum()), 1.0, 1.52)
+    sim = SimCurves(WLS, float(D[1:-1].sum()), 1.0, 1.52, angles_deg=np.array([30.0]))
     sim.set_curve("Rs", np.ascontiguousarray(rs.ravel()))
     return sim
 
@@ -218,7 +218,7 @@ LAY_N = {1: 2.35 + 0j, 2: 1.46 + 0j, 3: 2.10 + 0j}
 
 
 def merit_of(th):
-    st = ScatterMatrix(N, np.asarray(th, float), wavelengths=WLS, angles=[30.0])
+    st = ScatterMatrix(N, np.asarray(th, float), wavelengths=WLS, angles_deg=[30.0])
     o = st.compute(Request.RS)
     return spec.merit(sim_of(np.atleast_2d(np.asarray(o["Rs"], float))), 1e6)
 

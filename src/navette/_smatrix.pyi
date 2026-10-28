@@ -3,8 +3,9 @@
 # (submodule of the aggregated navette._navette extension, built from
 # rust/navette-py over the navette Rust crate).
 #
-# Wavelengths are nanometres, thicknesses nanometres, angles degrees unless a
-# parameter says otherwise. The `n_stack_cache` buffers are wav-major flat:
+# Wavelengths are nanometres, thicknesses nanometres. Every incidence angle
+# names its unit: exactly one of `angles_deg=` / `angles_rad=` (or
+# `angle_deg=` / `angle_rad=`), range-checked to [0, 90] deg / [0, pi/2] rad. The `n_stack_cache` buffers are wav-major flat:
 # layer `j` at wavelength `i` lives at `i * n_layers + j`. `Solver.__init__` is
 # the exception -- its `indices` is layer-major (`layer * n_wavs + wav`), which
 # is what a C-contiguous `(n_layers, n_wavs)` array ravels to; the Rust side
@@ -225,14 +226,12 @@ class Solver:
     index cache.
 
     `indices` is layer-major flat (`layer * n_wavs + wav`), i.e. exactly a
-    C-contiguous `(n_layers, n_wavs)` array raveled. `angles` are degrees
-    unless `angles_in_radians`.
+    C-contiguous `(n_layers, n_wavs)` array raveled.
     """
 
     def __init__(
         self,
         wavelengths: FloatArray,
-        angles: FloatArray,
         indices: ComplexArray,
         n_layers: int,
         thicknesses: FloatArray | None = ...,
@@ -240,8 +239,10 @@ class Solver:
         roughness_types: IntArray | None = ...,
         roughness_values: FloatArray | None = ...,
         coherence_mode: int = ...,
-        angles_in_radians: bool = ...,
         roughness_cap: float = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     @property
     def roughness_cap(self) -> float:
@@ -250,6 +251,10 @@ class Solver:
         ...
     @property
     def n_angles(self) -> int: ...
+    @property
+    def sin_theta(self) -> FloatArray:
+        """The sines of the incidence grid, exactly as the solve uses them."""
+        ...
     @property
     def n_wavs(self) -> int: ...
     def solve(self, requested: int) -> dict[str, Any]:
@@ -341,12 +346,13 @@ class SimCurves:
 
     def __init__(
         self,
-        angles: FloatArray,
         wavelengths: FloatArray,
         total_d: float = ...,
         n_front: float | FloatArray = ...,
         n_back: float | FloatArray = ...,
-        angles_in_radians: bool = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def set_curve(self, curve_id: str, values: FloatArray) -> None: ...
     def set_complex(self, curve_id: str, values: ComplexArray) -> None: ...
@@ -355,7 +361,9 @@ class MeritSpec:
     """Compiled merit: keys (angle, curve) plus the targets hung off them."""
 
     def __init__(self) -> None: ...
-    def add_key(self, angle: float, curve_id: str, angles_in_radians: bool = ...) -> int: ...
+    def add_key(
+        self, curve_id: str, *, angle_deg: float | None = ..., angle_rad: float | None = ...
+    ) -> int: ...
     def add_target(
         self,
         key_idx: int,
@@ -379,11 +387,12 @@ class MeritSpec:
 def compile_merit_spec(request_json: str) -> MeritSpec: ...
 def reference_rotation(
     wavelengths: FloatArray,
-    angle_deg: float,
     n_inc: float | FloatArray = ...,
     total_d: float = ...,
     passes: float = ...,
-    angles_in_radians: bool = ...,
+    *,
+    angle_deg: float | None = ...,
+    angle_rad: float | None = ...,
 ) -> ComplexArray:
     """`exp(-i * passes * k * D * cos)` per wavelength — the differential-phase
     reference."""
@@ -392,10 +401,11 @@ def reference_rotation(
 def rotate_rows(rows: Sequence[complex], rot: Sequence[complex]) -> list[complex]: ...
 def build_needle_targets(
     spec: MeritSpec,
-    angles: FloatArray,
     wavelengths: FloatArray,
     sim: SimCurves | None = ...,
-    angles_in_radians: bool = ...,
+    *,
+    angles_deg: FloatArray | None = ...,
+    angles_rad: FloatArray | None = ...,
 ) -> dict[str, Any]:
     """Per-channel `targets`/`weights` surfaces for `needle_gradient`.
 
@@ -573,13 +583,14 @@ class SmatrixContext:
     def __init__(
         self,
         spec: MeritSpec,
-        angles_deg: FloatArray,
         wavelengths: FloatArray,
         clamp_min: float = ...,
         clamp_max: float = ...,
         lm: LmConfig | None = ...,
         thin_layer_policy: str = ...,
-        angles_in_radians: bool = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def simulate(self, stack: DesignStack) -> SimCurves: ...
     def evaluate_merit(self, stack: DesignStack) -> float: ...
@@ -600,7 +611,6 @@ class NeedlePipeline:
         self,
         stack: DesignStack,
         spec: MeritSpec,
-        angles_deg: FloatArray,
         wavelengths: FloatArray,
         materials: Sequence[LayerSpec] | None = ...,
         pipeline_config: PipelineConfig | None = ...,
@@ -610,7 +620,9 @@ class NeedlePipeline:
         outer: Sequence[str] | None = ...,
         inner: Sequence[str] | None = ...,
         seed_edges: float | None = ...,
-        angles_in_radians: bool = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def run(self, callback: Callable[..., Any] | None = ...) -> dict[str, Any]: ...
 
@@ -638,7 +650,6 @@ def run_design(
     groups: Mapping[str, Any],
     materials: Sequence[tuple[str, Sequence[complex]]] | None,
     wavelengths: FloatArray,
-    angles_deg: FloatArray,
     spec: MeritSpec,
     pipeline_config: PipelineConfig | None = ...,
     needle_config: NeedleCycleConfig | None = ...,
@@ -648,16 +659,19 @@ def run_design(
     outer: Sequence[str] | None = ...,
     inner: Sequence[str] | None = ...,
     seed_edges: float | None = ...,
-    angles_in_radians: bool = ...,
+    *,
+    angles_deg: FloatArray | None = ...,
+    angles_rad: FloatArray | None = ...,
 ) -> dict[str, Any]: ...
 def run_design_environments(
     request_json: str,
     wavelengths: FloatArray,
-    angles_deg: FloatArray,
     spec: MeritSpec,
     pipeline_config: PipelineConfig | None = ...,
     needle_config: NeedleCycleConfig | None = ...,
     lm: LmConfig | None = ...,
     callback: Callable[..., Any] | None = ...,
-    angles_in_radians: bool = ...,
+    *,
+    angles_deg: FloatArray | None = ...,
+    angles_rad: FloatArray | None = ...,
 ) -> dict[str, Any]: ...

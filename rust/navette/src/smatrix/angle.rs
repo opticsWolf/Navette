@@ -78,14 +78,21 @@ impl Radians {
     }
 }
 
-/// A grid given in radians.
+/// A grid given in radians. An error names the offending index.
 pub fn radians_slice(rad: &[f64]) -> Result<Vec<Radians>, String> {
-    rad.iter().map(|&a| Radians::new(a)).collect()
+    grid(rad, Radians::new)
 }
 
-/// A grid given in degrees.
+/// A grid given in degrees. An error names the offending index.
 pub fn degrees_slice(deg: &[f64]) -> Result<Vec<Radians>, String> {
-    deg.iter().map(|&a| Radians::from_degrees(a)).collect()
+    grid(deg, Radians::from_degrees)
+}
+
+fn grid(a: &[f64], one: fn(f64) -> Result<Radians, String>) -> Result<Vec<Radians>, String> {
+    a.iter()
+        .enumerate()
+        .map(|(i, &x)| one(x).map_err(|e| format!("index {i}: {e}")))
+        .collect()
 }
 
 /// The sines the solver kernels take.
@@ -110,31 +117,31 @@ pub(crate) fn degs(d: &[f64]) -> Vec<Radians> {
     degrees_slice(d).unwrap()
 }
 
-/// serde adapter: one angle stored in JSON as degrees.
-pub mod serde_degrees {
+/// serde adapter: one angle stored in JSON as radians (range-checked).
+pub mod serde_radians {
     use super::Radians;
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(a: &Radians, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_f64(a.to_degrees())
+        s.serialize_f64(a.get())
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Radians, D::Error> {
-        Radians::from_degrees(f64::deserialize(d)?).map_err(serde::de::Error::custom)
+        Radians::new(f64::deserialize(d)?).map_err(serde::de::Error::custom)
     }
 }
 
-/// serde adapter: an angle grid stored in JSON as degrees.
-pub mod serde_degrees_vec {
+/// serde adapter: an angle grid stored in JSON as radians (range-checked).
+pub mod serde_radians_vec {
     use super::Radians;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(a: &[Radians], s: S) -> Result<S::Ok, S::Error> {
-        super::to_degrees_vec(a).serialize(s)
+        a.iter().map(|x| x.get()).collect::<Vec<f64>>().serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Radians>, D::Error> {
-        super::degrees_slice(&Vec::<f64>::deserialize(d)?).map_err(serde::de::Error::custom)
+        super::radians_slice(&Vec::<f64>::deserialize(d)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -157,7 +164,7 @@ mod tests {
     #[test]
     fn degrees_given_as_radians_are_refused() {
         let err = radians_slice(&[0.0, 30.0, 60.0]).unwrap_err();
-        assert!(err.contains("30 rad"), "{err}");
+        assert!(err.contains("index 1") && err.contains("30 rad"), "{err}");
     }
 
     #[test]

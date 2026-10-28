@@ -168,8 +168,8 @@ def test_lossless_reciprocity():
   fwd.add_structure(st)
   bwd = Navette_Architect(materials=mats)
   bwd.add_structure(st, inverted=True)
-  rf = np.asarray(solve_structure(fwd, wl0, [0.0])["R_avg"])
-  rb = np.asarray(solve_structure(bwd, wl0, [0.0])["R_avg"])
+  rf = np.asarray(solve_structure(fwd, wl0, angles_deg=[0.0])["R_avg"])
+  rb = np.asarray(solve_structure(bwd, wl0, angles_deg=[0.0])["R_avg"])
   np.testing.assert_allclose(rf, rb, rtol=1e-12, atol=1e-12)
 
 

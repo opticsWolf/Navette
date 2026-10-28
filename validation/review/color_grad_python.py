@@ -59,7 +59,7 @@ NW = WLS.size
 LAY_Z = {1: 60.0, 2: 220.0, 3: 360.0}
 LAY_N = {1: 2.35 + 0j, 2: 1.46 + 0j, 3: 2.10 + 0j}
 
-st0 = ScatterMatrix(N, D, wavelengths=WLS, angles=ANGLES)
+st0 = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=ANGLES)
 out0 = st0.compute(Request.RS | Request.TS)
 RS = np.atleast_2d(np.asarray(out0["Rs"], float))
 TS = np.atleast_2d(np.asarray(out0["Ts"], float))
@@ -69,7 +69,7 @@ def make_spec(curve="Rs", quantity="Lab", distance="DeltaE2000", reference=REF):
     doc = {
         "spectral": [], "angular": [],
         "color": [{
-            "curve": curve, "angle": 30.0,
+            "curve": curve, "angle_deg": 30.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": quantity, "reference": reference,
             "distance": distance, "weight": WEIGHT,
@@ -79,7 +79,7 @@ def make_spec(curve="Rs", quantity="Lab", distance="DeltaE2000", reference=REF):
 
 
 def sim_of(rs=None, ts=None):
-    sim = SimCurves(ANGLES, WLS, float(D[1:-1].sum()), 1.0, 1.52)
+    sim = SimCurves(WLS, float(D[1:-1].sum()), 1.0, 1.52, angles_deg=ANGLES)
     sim.set_curve("Rs", np.ascontiguousarray(
         (RS if rs is None else rs).ravel()))
     sim.set_curve("Ts", np.ascontiguousarray(
@@ -88,7 +88,7 @@ def sim_of(rs=None, ts=None):
 
 
 SPEC = make_spec()
-FOLD = build_needle_targets(SPEC, ANGLES, WLS, sim_of())
+FOLD = build_needle_targets(SPEC, WLS, sim_of(), angles_deg=ANGLES)
 
 
 # --------------------------------------------------------------------------
@@ -208,7 +208,7 @@ print("=== 5. dF/dthickness through the Python path ===")
 
 
 def merit_of_thickness(th):
-    st = ScatterMatrix(N, np.asarray(th, float), wavelengths=WLS, angles=ANGLES)
+    st = ScatterMatrix(N, np.asarray(th, float), wavelengths=WLS, angles_deg=ANGLES)
     o = st.compute(Request.RS)
     return SPEC.merit(sim_of(rs=np.atleast_2d(np.asarray(o["Rs"], float))), 1e6)
 
@@ -242,7 +242,7 @@ for lay in (1, 2, 3):
 # --------------------------------------------------------------------------
 print("=== 6. a transmission color demand rides P_T, not P ===")
 spec_t = make_spec(curve="Ts")
-fold_t = build_needle_targets(spec_t, ANGLES, WLS, sim_of())
+fold_t = build_needle_targets(spec_t, WLS, sim_of(), angles_deg=ANGLES)
 gr_t = np.asarray(fold_t["grads_r"], float)
 gt_t = np.asarray(fold_t["grads_t"], float)
 report("grads_t is populated and grads_r is empty",

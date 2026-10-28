@@ -31,7 +31,7 @@ MATERIALS = {k: np.full(WL.shape, v) for k, v in N.items()}
 def _targets():
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     return tc
 
 
@@ -108,7 +108,7 @@ def _first_on_l_m(sigma):
     # target asks for. M's sigma 4 is capped to 1.5 by the 3 nm films.
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.ones_like(WL), np.full_like(WL, 0.01),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     flags = {"L": {"optimize": False},
              "M": {"optimize": False, "rough_type": 5, "rough_val": sigma}}
     res = run_needle(
@@ -142,7 +142,7 @@ def _joint_thin(names):
     tc = TargetCollection()
     for env in names:
         tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                              0.0, "s", "R", environment=env))
+                              "s", "R", environment=env, angle_deg=0.0))
     return run_needle(
         targets=tc, angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
         design={"coat": [(N["M"], 3.0, "M")]},

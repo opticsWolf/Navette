@@ -42,13 +42,13 @@ _FILMS = [(2.35, 80.0), (1.46, 140.0), (2.10, 70.0)]
 def bench():
     tc = TargetCollection()
     tc.add(SpectralTarget(_WL, np.zeros(_WL.size), np.full(_WL.size, 0.01),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     spec = build_merit_spec(tc)
     layers = [(MaterialSpec("Konstant", dict(n=n)), d) for n, d in _FILMS]
     names = [f"L{i}" for i in range(len(_FILMS))]
 
     def ctx():
-        return SmatrixContext(spec, _ANGLES, _WL, _NO_REMOVAL_MIN, _CLAMP_MAX)
+        return SmatrixContext(spec, _WL, _NO_REMOVAL_MIN, _CLAMP_MAX, angles_deg=_ANGLES)
 
     def scipy_from(x0):
         c = ctx()

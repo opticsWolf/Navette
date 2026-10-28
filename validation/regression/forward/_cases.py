@@ -258,7 +258,7 @@ def scatter_matrix(case: Dict[str, Any], rows: Dict[str, np.ndarray], wl: np.nda
     warnings.simplefilter("ignore", UserWarning)
     return ScatterMatrix(
       rows["indices"], rows["thicknesses"], wavelengths=wl,
-      angles=np.asarray(angles, dtype=np.float64),
+      angles_deg=np.asarray(angles, dtype=np.float64),
       incoherent_flags=rows["flags"], roughness_types=rows["rough_types"],
       roughness_values=rows["rough_vals"], coherence_mode=opts["coherence_mode"],
       roughness_cap=opts["roughness_cap"])
@@ -316,13 +316,13 @@ def synthesis_outputs(case: Dict[str, Any], rows: Dict[str, np.ndarray],
   for ai, a in enumerate(angles):
     spec = S.MeritSpec()
     for c in SIM_CURVES:
-      spec.add_target(spec.add_key(float(a), c), wl, zeros, ones, "e", "linear", 1.0)
+      spec.add_target(spec.add_key(c, angle_deg=float(a)), wl, zeros, ones, "e", "linear", 1.0)
     for c in SIM_PHASES:
-      spec.add_target(spec.add_key(float(a), c), wl, zeros, ones, "e", "phase", 1.0, phase=True)
+      spec.add_target(spec.add_key(c, angle_deg=float(a)), wl, zeros, ones, "e", "phase", 1.0, phase=True)
     for c in SIM_PHASES:
-      spec.add_target(spec.add_key(float(a), c), wl, zeros, ones, "e", "phase", 1.0,
+      spec.add_target(spec.add_key(c, angle_deg=float(a)), wl, zeros, ones, "e", "phase", 1.0,
                       phase=True, differential_passes=1.0)
-    sim = S.SmatrixContext(spec, np.array([float(a)]), wl).simulate(stack)
+    sim = S.SmatrixContext(spec, wl, angles_deg=np.array([float(a)])).simulate(stack)
     res = np.asarray(spec.residuals(sim)).reshape(len(names), wl.size)
     for k, row in zip(names, res):
       out[k][ai] = row

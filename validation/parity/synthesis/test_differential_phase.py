@@ -128,13 +128,13 @@ def test_hand():
         t = solver_space_tfs(pol)[0]
         expect = np.angle(t) - ref_array()
         tc = TargetCollection()
-        tc.add(SpectralTarget(WL, expect, np.full(3, 0.05), TH_DEG, pol,
-                              "PDt" + pol, kind="e", phase=True))
+        tc.add(SpectralTarget(WL, expect, np.full(3, 0.05), pol,
+                              "PDt" + pol, kind="e", phase=True, angle_deg=TH_DEG))
         spec = build_merit_spec(tc)
         sim = sim_curves_from_arrays(
-            np.array([TH_DEG]), WL, {},
+            WL, {},
             {"Ts": solver_space_tfs("s"), "Tp": solver_space_tfs("p")},
-            total_d=D_NM, n_front=1.0)
+            total_d=D_NM, n_front=1.0, angles_deg=np.array([TH_DEG]))
         m = spec.merit(sim, 1e6)
         check(f"PDt{pol} exact-target merit ~ 0", m < 1e-24, f"merit={m:.3g}")
 
@@ -143,8 +143,8 @@ def pd_collection(kind="e", band=None, tol=0.05, offset=0.0):
     tc = TargetCollection()
     t = solver_space_tfs("s")[0]
     vals = np.angle(t) - ref_array() + offset
-    tc.add(SpectralTarget(WL, vals, np.full(3, tol), TH_DEG, "s",
-                          "PDts", kind=kind, band=band, phase=True))
+    tc.add(SpectralTarget(WL, vals, np.full(3, tol), "s",
+                          "PDts", kind=kind, band=band, phase=True, angle_deg=TH_DEG))
     return tc
 
 
@@ -163,18 +163,18 @@ def test_oracle_kinds():
     for kind, band, tol, offset in cases:
         tc = pd_collection(kind, band, tol, offset)
         spec = build_merit_spec(tc)
-        sim = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                     {"Ts": rows}, total_d=D_NM, n_front=1.0)
+        sim = sim_curves_from_arrays(WL, {},
+                                     {"Ts": rows}, total_d=D_NM, n_front=1.0, angles_deg=np.array([TH_DEG]))
         m_nat = spec.merit(sim, 1e6)
         # Absolute-phase twin on rotated rows, same targets/tols.
-        rot = apply_reference_rotation(rows, WL, TH_DEG, 1.0, D_NM, 1.0)
+        rot = apply_reference_rotation(rows, WL, 1.0, D_NM, 1.0, angle_deg=TH_DEG)
         tc2 = TargetCollection()
         t = np.angle(rows[0]) - ref_array() + offset
-        tc2.add(SpectralTarget(WL, t, np.full(3, tol), TH_DEG, "s",
-                               "T", kind=kind, band=band, phase=True))
+        tc2.add(SpectralTarget(WL, t, np.full(3, tol), "s",
+                               "T", kind=kind, band=band, phase=True, angle_deg=TH_DEG))
         spec2 = build_merit_spec(tc2)
-        sim2 = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                      {"Ts": rot})
+        sim2 = sim_curves_from_arrays(WL, {},
+                                      {"Ts": rot}, angles_deg=np.array([TH_DEG]))
         m_abs = spec2.merit(sim2, 1e6)
         check(f"kind={kind} band={band} off={offset}",
               abs(m_nat - m_abs) < 1e-12 * max(1.0, m_abs),
@@ -190,13 +190,13 @@ def test_numpy_2x2():
         off = 0.02
         expect = float(np.sum(((delta - (delta + off)) / tol) ** 2))
         tc = TargetCollection()
-        tc.add(SpectralTarget(WL, delta + off, np.full(3, tol), TH_DEG, pol,
-                              "PDt" + pol, kind="e", phase=True))
+        tc.add(SpectralTarget(WL, delta + off, np.full(3, tol), pol,
+                              "PDt" + pol, kind="e", phase=True, angle_deg=TH_DEG))
         spec = build_merit_spec(tc)
         sim = sim_curves_from_arrays(
-            np.array([TH_DEG]), WL, {},
+            WL, {},
             {"Ts": solver_space_tfs("s"), "Tp": solver_space_tfs("p")},
-            total_d=D_NM, n_front=1.0)
+            total_d=D_NM, n_front=1.0, angles_deg=np.array([TH_DEG]))
         m = spec.merit(sim, 1e6)
         check(f"PDt{pol} hand merit", abs(m - expect) < 1e-12,
               f"got={m:.6f} expect={expect:.6f}")
@@ -209,20 +209,20 @@ def test_dmdD():
     tc = pd_collection("e", None, tol, off)
     spec = build_merit_spec(tc)
     base = dict(rows={"Ts": rows})
-    sim = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                 base["rows"], total_d=D_NM, n_front=1.0)
+    sim = sim_curves_from_arrays(WL, {},
+                                 base["rows"], total_d=D_NM, n_front=1.0, angles_deg=np.array([TH_DEG]))
     h = 1e-3
-    sim_hi = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                    base["rows"], total_d=D_NM + h, n_front=1.0)
-    sim_lo = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                    base["rows"], total_d=D_NM - h, n_front=1.0)
+    sim_hi = sim_curves_from_arrays(WL, {},
+                                    base["rows"], total_d=D_NM + h, n_front=1.0, angles_deg=np.array([TH_DEG]))
+    sim_lo = sim_curves_from_arrays(WL, {},
+                                    base["rows"], total_d=D_NM - h, n_front=1.0, angles_deg=np.array([TH_DEG]))
     fd = (spec.merit(sim_hi, 1e6) - spec.merit(sim_lo, 1e6)) / (2 * h)
     kz = 2 * np.pi * 1.0 * np.cos(np.radians(TH_DEG)) / WL
     delta = np.angle(rows[0]) - ref_array()
     r = (delta - (delta + off)) / tol
     analytic = float(np.sum(2 * r * (-kz / tol)))
     from navette.synthesis import build_needle_targets
-    folded = build_needle_targets(spec, np.array([TH_DEG]), WL, sim)
+    folded = build_needle_targets(spec, WL, sim, angles_deg=np.array([TH_DEG]))
     gs = float(folded["phi2"]["gain_shift"])
     check("FD == analytic", abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)),
           f"fd={fd:.6f} analytic={analytic:.6f}")
@@ -241,15 +241,15 @@ def test_fold_values():
     angs = np.array([TH_DEG, TH_DEG + 5.0])
     for i, (pol, rr) in enumerate([("s", rows), ("p", rowp)]):
         delta = np.angle(rr[0]) - ref_array(theta=angs[i])
-        tc.add(SpectralTarget(WL, delta + off, np.full(3, tol), angs[i], pol,
-                              "PDt" + pol, kind="e", phase=True))
+        tc.add(SpectralTarget(WL, delta + off, np.full(3, tol), pol,
+                              "PDt" + pol, kind="e", phase=True, angle_deg=angs[i]))
     spec = build_merit_spec(tc)
-    sim = sim_curves_from_arrays(angs, WL, {},
+    sim = sim_curves_from_arrays(WL, {},
                                  {"Ts": np.vstack([rows[0], rows[0]]),
                                   "Tp": np.vstack([rowp[0], rowp[0]])},
-                                 total_d=D_NM, n_front=1.0)
+                                 total_d=D_NM, n_front=1.0, angles_deg=angs)
     from navette.synthesis import build_needle_targets
-    folded = build_needle_targets(spec, angs, WL, sim)
+    folded = build_needle_targets(spec, WL, sim, angles_deg=angs)
     m = spec.merit(sim, 1e6)
     # folded merit from (targets, weights) vs Dphi sims.
     # channel 2 shared by s/p: evaluate per-angle rows explicitly
@@ -270,18 +270,18 @@ def test_zero_d():
     # reference vanishes, so both paths must read 3 * (0.01/0.05)^2 = 0.12.
     t = np.angle(rows[0]) + 0.01
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, t, np.full(3, 0.05), TH_DEG, "s",
-                          "PDts", kind="e", phase=True))
+    tc.add(SpectralTarget(WL, t, np.full(3, 0.05), "s",
+                          "PDts", kind="e", phase=True, angle_deg=TH_DEG))
     spec = build_merit_spec(tc)
-    sim_d = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                   {"Ts": rows}, total_d=0.0, n_front=1.0)
+    sim_d = sim_curves_from_arrays(WL, {},
+                                   {"Ts": rows}, total_d=0.0, n_front=1.0, angles_deg=np.array([TH_DEG]))
     m_d = spec.merit(sim_d, 1e6)
     tc2 = TargetCollection()
-    tc2.add(SpectralTarget(WL, t, np.full(3, 0.05), TH_DEG, "s",
-                           "T", kind="e", phase=True))
+    tc2.add(SpectralTarget(WL, t, np.full(3, 0.05), "s",
+                           "T", kind="e", phase=True, angle_deg=TH_DEG))
     spec2 = build_merit_spec(tc2)
-    sim_a = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                   {"Ts": rows})
+    sim_a = sim_curves_from_arrays(WL, {},
+                                   {"Ts": rows}, angles_deg=np.array([TH_DEG]))
     m_a = spec2.merit(sim_a, 1e6)
     check("zero-D match", abs(m_d - m_a) < 1e-12 and abs(m_d - 0.12) < 1e-12,
           f"d={m_d:.6f} a={m_a:.6f}")
@@ -291,8 +291,8 @@ def test_errors():
     print("--- error paths ---")
     # PD without phase=True
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), TH_DEG, "s",
-                          "PDts", kind="e", phase=False))
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), "s",
+                          "PDts", kind="e", phase=False, angle_deg=TH_DEG))
     try:
         build_merit_spec(tc)
         check("PD + phase=False rejected", False)
@@ -300,8 +300,8 @@ def test_errors():
         check("PD + phase=False rejected", True)
     # PD pol mismatch
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), TH_DEG, "p",
-                          "PDts", kind="e", phase=True))
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), "p",
+                          "PDts", kind="e", phase=True, angle_deg=TH_DEG))
     try:
         build_merit_spec(tc)
         check("PDts + pol=p rejected", False)
@@ -310,7 +310,7 @@ def test_errors():
     # binding-level: differential without phase
     from navette._smatrix import MeritSpec
     ms = MeritSpec()
-    ki = ms.add_key(0.0, "Ts")
+    ki = ms.add_key("Ts", angle_deg=0.0)
     try:
         ms.add_target(ki, WL.copy(), np.zeros(3), np.full(3, 0.05),
                       "e", "phase", 1.0, phase=False, differential_passes=1.0)
@@ -325,8 +325,8 @@ def test_errors():
         check("binding negative passes rejected", True)
     # unknown label still rejected
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), TH_DEG, "s",
-                          "Q", kind="e"))
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), "s",
+                          "Q", kind="e", angle_deg=TH_DEG))
     try:
         build_merit_spec(tc)
         check("unknown label rejected", False)
@@ -340,17 +340,17 @@ def test_fold_equiv():
     rows = solver_space_tfs("s")
     tc = pd_collection("e", None, 0.05, 0.01)
     spec = build_merit_spec(tc)
-    sim = sim_curves_from_arrays(np.array([TH_DEG]), WL, {},
-                                 {"Ts": rows}, total_d=D_NM, n_front=1.0)
-    f1 = build_needle_targets(spec, np.array([TH_DEG]), WL, sim)
-    rot = apply_reference_rotation(rows, WL, TH_DEG, 1.0, D_NM, 1.0)
+    sim = sim_curves_from_arrays(WL, {},
+                                 {"Ts": rows}, total_d=D_NM, n_front=1.0, angles_deg=np.array([TH_DEG]))
+    f1 = build_needle_targets(spec, WL, sim, angles_deg=np.array([TH_DEG]))
+    rot = apply_reference_rotation(rows, WL, 1.0, D_NM, 1.0, angle_deg=TH_DEG)
     tc2 = TargetCollection()
     t = np.angle(rows[0]) - ref_array() + 0.01
-    tc2.add(SpectralTarget(WL, t, np.full(3, 0.05), TH_DEG, "s",
-                           "T", kind="e", phase=True))
+    tc2.add(SpectralTarget(WL, t, np.full(3, 0.05), "s",
+                           "T", kind="e", phase=True, angle_deg=TH_DEG))
     spec2 = build_merit_spec(tc2)
-    sim2 = sim_curves_from_arrays(np.array([TH_DEG]), WL, {}, {"Ts": rot})
-    f2 = build_needle_targets(spec2, np.array([TH_DEG]), WL, sim2)
+    sim2 = sim_curves_from_arrays(WL, {}, {"Ts": rot}, angles_deg=np.array([TH_DEG]))
+    f2 = build_needle_targets(spec2, WL, sim2, angles_deg=np.array([TH_DEG]))
     same_t = np.allclose(f1["phi2"]["targets"], f2["phi2"]["targets"], atol=0)
     same_w = np.allclose(f1["phi2"]["weights"], f2["phi2"]["weights"], atol=0)
     check("fold targets identical", bool(same_t))
@@ -366,12 +366,12 @@ def test_angular_pd():
     ang = np.array([TH_DEG, TH_DEG + 5.0])
     ref0 = 1.0 * 2 * np.pi * 1.0 * D_NM * np.cos(np.radians(ang[0])) / 500.0
     delta = np.angle(rows[0])[1] - ref0  # Dphi at (500 nm, TH_DEG)
-    tc.add(AngularTarget(500.0, ang, np.full(2, delta + 0.01),
-                         np.full(2, 0.05), "s", "PDts", kind="e", phase=True))
+    tc.add(AngularTarget(500.0, np.full(2, delta + 0.01),
+                         np.full(2, 0.05), "s", "PDts", kind="e", phase=True, angles_deg=ang))
     spec = build_merit_spec(tc)
-    sim = sim_curves_from_arrays(ang, WL, {},
+    sim = sim_curves_from_arrays(WL, {},
                                  {"Ts": np.vstack([rows[0], rows[0]])},
-                                 total_d=D_NM, n_front=1.0)
+                                 total_d=D_NM, n_front=1.0, angles_deg=ang)
     m = spec.merit(sim, 1e6)
     # hand: point0 exact (Dphi(500) at TH_DEG), point1 residual from angle shift
     ref1 = 1.0 * 2 * np.pi * 1.0 * D_NM * np.cos(np.radians(ang[1])) / 500.0
@@ -406,13 +406,13 @@ def test_dispersive_hand():
     ref = 2 * np.pi * n_amb_re * d * np.cos(np.radians(th)) / wl
     expect = np.angle(t[0]) - ref
     tc = TargetCollection()
-    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
-                          "PDts", kind="e", phase=True))
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), "s",
+                          "PDts", kind="e", phase=True, angle_deg=th))
     spec = build_merit_spec(tc)
     st = DesignStack(LayerSpec("amb", n_amb, 0.0, optimize=False, needle=False),
                      LayerSpec("sub", n_sub, 0.0, optimize=False, needle=False),
                      [LayerSpec("L", n_l, d)])
-    sim = SmatrixContext(spec, np.array([th]), wl).simulate(st)
+    sim = SmatrixContext(spec, wl, angles_deg=np.array([th])).simulate(st)
     m = spec.merit(sim, 1e6)
     check("dispersive ambient, per-lambda reference: merit ~ 0",
           m < 1e-20, f"merit={m:.3g}")
@@ -420,8 +420,7 @@ def test_dispersive_hand():
     # lands at sum((ref_frozen - ref_per_lambda)/tol)^2 ~ 319.
     ref_frozen = 2 * np.pi * 1.7 * d * np.cos(np.radians(th)) / wl
     tc2 = TargetCollection()
-    tc2.add(SpectralTarget(wl, np.angle(t[0]) - ref_frozen, np.full(3, 0.05), th,
-                           "s", "PDts", kind="e", phase=True))
+    tc2.add(SpectralTarget(wl, np.angle(t[0]) - ref_frozen, np.full(3, 0.05), "s", "PDts", kind="e", phase=True, angle_deg=th))
     spec2 = build_merit_spec(tc2)
     m2 = spec2.merit(sim, 1e6)
     frozen_merit = float(np.sum(((ref_frozen - ref) / 0.05) ** 2))
@@ -445,12 +444,12 @@ def test_nondispersive_bitwise():
     ref = 2 * np.pi * 1.0 * d * np.cos(np.radians(th)) / wl
     expect = np.angle(t[0]) - ref
     tc = TargetCollection()
-    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
-                          "PDts", kind="e", phase=True))
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), "s",
+                          "PDts", kind="e", phase=True, angle_deg=th))
     spec = build_merit_spec(tc)
     # Scalar door (length-1 broadcast).
-    sim = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
-                                 total_d=d, n_front=1.0)
+    sim = sim_curves_from_arrays(wl, {}, {"Ts": t},
+                                 total_d=d, n_front=1.0, angles_deg=np.array([th]))
     m = spec.merit(sim, 1e6)
     r = spec.residuals(sim)
     check("door merit bitwise",
@@ -465,7 +464,7 @@ def test_nondispersive_bitwise():
                      LayerSpec("sub", np.full(3, 1.52 + 0j), 0.0,
                                optimize=False, needle=False),
                      [LayerSpec("L", np.full(3, float(np.sqrt(1.52)) + 0j), d)])
-    ctx = SmatrixContext(spec, np.array([th]), wl)
+    ctx = SmatrixContext(spec, wl, angles_deg=np.array([th]))
     sim2 = ctx.simulate(st)
     m2 = spec.merit(sim2, 1e6)
     r2 = spec.residuals(sim2)
@@ -494,17 +493,17 @@ def test_dispersive_rotation_door():
     t = np.array([[oracle_tf(n_amb_re[i], float(np.sqrt(1.52)), 1.52,
                              d, wl[i], th, "s").conjugate() for i in range(3)]])
     # Scalar == length-1 array, bitwise, at every door.
-    rot_s = apply_reference_rotation(t, wl, th, 1.7, d, 1.0)
+    rot_s = apply_reference_rotation(t, wl, 1.7, d, 1.0, angle_deg=th)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        rot_l1 = apply_reference_rotation(t, wl, th, np.array([1.7]), d, 1.0)
+        rot_l1 = apply_reference_rotation(t, wl, np.array([1.7]), d, 1.0, angle_deg=th)
     check("scalar == length-1 array (rotation door)",
           np.array_equal(rot_s, rot_l1))
-    s1 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
-                                total_d=d, n_front=1.7, n_back=1.52)
-    s2 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": t},
+    s1 = sim_curves_from_arrays(wl, {}, {"Ts": t},
+                                total_d=d, n_front=1.7, n_back=1.52, angles_deg=np.array([th]))
+    s2 = sim_curves_from_arrays(wl, {}, {"Ts": t},
                                 total_d=d, n_front=np.array([1.7]),
-                                n_back=np.array([1.52]))
+                                n_back=np.array([1.52]), angles_deg=np.array([th]))
     check("scalar == length-1 array (SimCurves door)", True)
     # The oracle re-run with a per-lambda index: the native differential
     # demand (engine sim, per-lambda reference) == absolute-phase demand on
@@ -512,23 +511,23 @@ def test_dispersive_rotation_door():
     ref = 2 * np.pi * n_amb_re * d * np.cos(np.radians(th)) / wl
     expect = np.angle(t[0]) - ref
     tc = TargetCollection()
-    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), th, "s",
-                          "PDts", kind="e", phase=True))
+    tc.add(SpectralTarget(wl, expect, np.full(3, 0.05), "s",
+                          "PDts", kind="e", phase=True, angle_deg=th))
     spec = build_merit_spec(tc)
     from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
     st = DesignStack(LayerSpec("amb", n_amb_re + 0j, 0.0,
                                optimize=False, needle=False),
                      LayerSpec("sub", n_sub, 0.0, optimize=False, needle=False),
                      [LayerSpec("L", n_l, d)])
-    sim = SmatrixContext(spec, np.array([th]), wl).simulate(st)
+    sim = SmatrixContext(spec, wl, angles_deg=np.array([th])).simulate(st)
     m_nat = spec.merit(sim, 1e6)
-    rot = apply_reference_rotation(t, wl, th, n_amb_re, d, 1.0)
+    rot = apply_reference_rotation(t, wl, n_amb_re, d, 1.0, angle_deg=th)
     tc2 = TargetCollection()
     t2 = np.angle(t[0]) - ref
-    tc2.add(SpectralTarget(wl, t2, np.full(3, 0.05), th, "s",
-                           "T", kind="e", phase=True))
+    tc2.add(SpectralTarget(wl, t2, np.full(3, 0.05), "s",
+                           "T", kind="e", phase=True, angle_deg=th))
     spec2 = build_merit_spec(tc2)
-    sim2 = sim_curves_from_arrays(np.array([th]), wl, {}, {"Ts": rot})
+    sim2 = sim_curves_from_arrays(wl, {}, {"Ts": rot}, angles_deg=np.array([th]))
     m_abs = spec2.merit(sim2, 1e6)
     check("native differential == per-lambda-rotated absolute (1e-12)",
           abs(m_nat - m_abs) < 1e-12 * max(1.0, m_abs),
@@ -537,7 +536,7 @@ def test_dispersive_rotation_door():
     # carries the remedy, and is ASCII.
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        apply_reference_rotation(t, wl, th, 1.7, d, 1.0)
+        apply_reference_rotation(t, wl, 1.7, d, 1.0, angle_deg=th)
     texts = [str(w.message) for w in caught
              if issubclass(w.category, UserWarning) and "scalar reference index" in str(w.message)]
     ok = len(texts) == 1 and "per-wavelength array" in texts[0] and texts[0].isascii()
@@ -545,7 +544,7 @@ def test_dispersive_rotation_door():
           f"n={len(texts)} msg={texts[0][:60] if texts else ''!r}")
     # Length mismatch refuses at the door, naming both numbers (ASCII).
     try:
-        apply_reference_rotation(t, wl, th, np.array([1.5, 1.7]), d, 1.0)
+        apply_reference_rotation(t, wl, np.array([1.5, 1.7]), d, 1.0, angle_deg=th)
         check("length mismatch refuses", False)
     except ValueError as e:
         msg = str(e)
@@ -557,7 +556,7 @@ def test_dispersive_rotation_door():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         spec.merit(sim_curves_from_arrays(
-            np.array([th]), wl, {}, {"Ts": t}, total_d=d, n_front=1.0), 1e6)
+            wl, {}, {"Ts": t}, total_d=d, n_front=1.0, angles_deg=np.array([th])), 1e6)
     m_texts = [str(w.message) for w in caught
                if issubclass(w.category, UserWarning)
                and "scalar reference index" in str(w.message)]
@@ -583,8 +582,8 @@ def test_dispersive_rotation_door():
     with warnings.catch_warnings(record=True) as caught3:
         warnings.simplefilter("always")
         spec.merit(sim_curves_from_arrays(
-            np.array([th]), wl, {}, {"Ts": t},
-            total_d=d, n_front=n_amb_re), 1e6)
+            wl, {}, {"Ts": t},
+            total_d=d, n_front=n_amb_re, angles_deg=np.array([th])), 1e6)
     g_texts = [str(w.message) for w in caught3
                if issubclass(w.category, UserWarning)
                and "scalar reference index" in str(w.message)]
@@ -629,9 +628,9 @@ def test_gd_gdd_convention():
     lam2 = np.array([450.0, 700.0])
     n_lin = a * lam2 + b
     stack = ScatterMatrix(np.array([n_lin, np.full(2, nf), np.full(2, nf)]),
-                          np.array([0.0, d, 0.0]), wavelengths=lam2, angles=[0.0])
+                          np.array([0.0, d, 0.0]), wavelengths=lam2, angles_deg=[0.0])
     ref_st = ScatterMatrix(np.array([n_lin, n_lin, n_lin]),
-                           np.array([0.0, d, 0.0]), wavelengths=lam2, angles=[0.0])
+                           np.array([0.0, d, 0.0]), wavelengths=lam2, angles_deg=[0.0])
     gd_s, gdd_s = run_disp(stack)
     gd_r, gdd_r = run_disp(ref_st)
     check("absolute GD carries no reference (bitwise nf*D/c)",
@@ -657,11 +656,11 @@ def test_gd_gdd_convention():
     nK = np.full(5, 1.45)
     films = np.array([0.0, d, 0.0])
     st_c = ScatterMatrix(np.array([nC, np.full(5, nf), np.full(5, nf)]), films,
-                         wavelengths=lam_u, angles=[0.0])
-    rf_c = ScatterMatrix(np.array([nC, nC, nC]), films, wavelengths=lam_u, angles=[0.0])
+                         wavelengths=lam_u, angles_deg=[0.0])
+    rf_c = ScatterMatrix(np.array([nC, nC, nC]), films, wavelengths=lam_u, angles_deg=[0.0])
     st_k = ScatterMatrix(np.array([nK, np.full(5, nf), np.full(5, nf)]), films,
-                         wavelengths=lam_u, angles=[0.0])
-    rf_k = ScatterMatrix(np.array([nK, nK, nK]), films, wavelengths=lam_u, angles=[0.0])
+                         wavelengths=lam_u, angles_deg=[0.0])
+    rf_k = ScatterMatrix(np.array([nK, nK, nK]), films, wavelengths=lam_u, angles_deg=[0.0])
     gdd_ca = run_disp(st_c)[1] - run_disp(rf_c)[1]
     gdd_ck = run_disp(st_k)[1] - run_disp(rf_k)[1]
     analytic = -3.0 * B * om_u * d / (2.0 * np.pi ** 2 * C ** 3)
@@ -706,20 +705,20 @@ def test_compute_observable():
     n_inc = A + B / wl ** 2
     st = ScatterMatrix(
         np.array([n_inc, np.full(4, nf), np.full(4, 1.5)]),
-        np.array([0.0, d, 0.0]), wavelengths=wl, angles=[0.0])
+        np.array([0.0, d, 0.0]), wavelengths=wl, angles_deg=[0.0])
     for pol, pd_bit, pd_key in [("s", "PD_TS", "PDts"), ("p", "PD_TP", "PDtp")]:
         ts = np.asarray(st.compute(getattr(Request, "T" + pol.upper() + "_C")
                                    )["t" + pol + "_c"])[None, :]
         pd = np.asarray(st.compute(getattr(Request, pd_bit))[pd_key]).ravel()
-        rot = apply_reference_rotation(ts, wl, 0.0, n_inc, d, 1.0)
+        rot = apply_reference_rotation(ts, wl, n_inc, d, 1.0, angle_deg=0.0)
         check(f"compute({pd_key}) == rotation oracle (1e-12)",
               float(np.max(np.abs(pd - np.angle(rot[0])))) < 1e-12,
               f"max|d|={np.max(np.abs(pd - np.angle(rot[0]))):.2e}")
         # The native merit's op point: a zero-target PD demand on the
         # engine-filled sim; the residual IS the wrapped op-point Dphi.
         tc = TargetCollection()
-        tc.add(SpectralTarget(wl, np.zeros(4), np.full(4, 0.05), 0.0, pol,
-                              pd_key, kind="e", phase=True))
+        tc.add(SpectralTarget(wl, np.zeros(4), np.full(4, 0.05), pol,
+                              pd_key, kind="e", phase=True, angle_deg=0.0))
         spec = build_merit_spec(tc)
         from navette._smatrix import DesignStack, LayerSpec, SmatrixContext
         dst = DesignStack(
@@ -728,7 +727,7 @@ def test_compute_observable():
             LayerSpec("sub", np.full(4, 1.5 + 0j), 0.0,
                       optimize=False, needle=False),
             [LayerSpec("L", np.full(4, nf + 0j), d)])
-        ctx = SmatrixContext(spec, np.array([0.0]), wl)
+        ctx = SmatrixContext(spec, wl, angles_deg=np.array([0.0]))
         sim = ctx.simulate(dst)
         r = np.asarray(spec.residuals(sim)).ravel() * 0.05  # the door scales by tol
         check(f"compute({pd_key}) == native merit op point (1e-12)",

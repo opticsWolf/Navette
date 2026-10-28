@@ -61,7 +61,7 @@ def _solve(idx, thick, req, *, flags=None, mode=CoherenceMode.FRONT_BLOCK,
         warnings.simplefilter("ignore")  # C3/C5 flag chatter is not the subject
         sm = ScatterMatrix(
             np.asarray(idx, dtype=complex), list(thick),
-            wavelengths=np.asarray([lam], float), angles=[angle],
+            wavelengths=np.asarray([lam], float), angles_deg=[angle],
             incoherent_flags=flags, coherence_mode=mode,
         )
     out = sm.compute(req, squeeze=False)

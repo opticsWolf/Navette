@@ -156,11 +156,10 @@ pub struct PySolver {
 #[pymethods]
 impl PySolver {
     #[new]
-    #[pyo3(signature = (wavelengths, angles, indices, n_layers, thicknesses=None, incoherent_flags=None, roughness_types=None, roughness_values=None, coherence_mode=0, angles_in_radians=false, roughness_cap=navette::smatrix::optics_core::ROUGHNESS_CAP_RATIO))]
+    #[pyo3(signature = (wavelengths, indices, n_layers, thicknesses=None, incoherent_flags=None, roughness_types=None, roughness_values=None, coherence_mode=0, roughness_cap=navette::smatrix::optics_core::ROUGHNESS_CAP_RATIO, *, angles_deg=None, angles_rad=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         wavelengths: PyReadonlyArray1<f64>,
-        angles: PyReadonlyArray1<f64>,
         indices: PyReadonlyArray1<Complex64>,
         n_layers: usize,
         thicknesses: Option<PyReadonlyArray1<f64>>,
@@ -168,8 +167,9 @@ impl PySolver {
         roughness_types: Option<PyReadonlyArray1<i32>>,
         roughness_values: Option<PyReadonlyArray1<f64>>,
         coherence_mode: i32,
-        angles_in_radians: bool,
         roughness_cap: f64,
+        angles_deg: Option<PyReadonlyArray1<f64>>,
+        angles_rad: Option<PyReadonlyArray1<f64>>,
     ) -> PyResult<Self> {
         let opt_f =
             |o: &Option<PyReadonlyArray1<f64>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
@@ -179,7 +179,7 @@ impl PySolver {
         let cf = opt_i(&incoherent_flags);
         let rt = opt_i(&roughness_types);
         let rv = opt_f(&roughness_values);
-        let a = crate::angles::grid(angles.as_slice()?, angles_in_radians)?;
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         navette::smatrix::solver::Solver::from_raw(
             wavelengths.as_slice()?,
             &a,
@@ -217,6 +217,12 @@ impl PySolver {
     #[getter]
     fn n_angles(&self) -> usize {
         self.inner.n_angles()
+    }
+
+    /// The sines of the incidence grid, exactly as the solve uses them.
+    #[getter]
+    fn sin_theta<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
+        numpy::PyArray1::from_slice(py, self.inner.sin_theta())
     }
 
     #[getter]

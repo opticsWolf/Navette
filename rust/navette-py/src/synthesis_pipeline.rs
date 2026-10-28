@@ -460,7 +460,7 @@ pub(crate) fn assemble_design(
 /// `stack`; assembly warnings (dropped ambient absorption, homogenized
 /// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None, angles_in_radians=false))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None, *, angles_deg=None, angles_rad=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -472,7 +472,6 @@ pub(crate) fn run_design(
     groups: std::collections::HashMap<String, Py<crate::structure::PyGroup>>,
     materials: Option<Vec<(String, Vec<Complex64>)>>,
     wavelengths: PyReadonlyArray1<'_, f64>,
-    angles_deg: PyReadonlyArray1<'_, f64>,
     spec: &crate::synthesis_merit::PyMeritSpec,
     pipeline_config: Option<Py<PyPipelineConfig>>,
     needle_config: Option<Py<PyNeedleCycleConfig>>,
@@ -482,7 +481,8 @@ pub(crate) fn run_design(
     outer: Option<Vec<String>>,
     inner: Option<Vec<String>>,
     seed_edges: Option<f64>,
-    angles_in_radians: bool,
+    angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+    angles_rad: Option<PyReadonlyArray1<'_, f64>>,
 ) -> PyResult<Py<PyDict>> {
     use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
     let rules = NeedleRules {
@@ -492,7 +492,7 @@ pub(crate) fn run_design(
         seed_edges,
     };
     let w = wavelengths.as_slice()?.to_vec();
-    let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
+    let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let cfg = pipeline_config
         .map(|c| c.bind(py).borrow().inner.clone())
         .unwrap_or_default();
@@ -589,19 +589,19 @@ pub(crate) fn run_design(
 /// 0's assembly, which IS the shared design object); assembly warnings
 /// re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (request_json, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, angles_in_radians=false))]
+#[pyo3(signature = (request_json, wavelengths, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, *, angles_deg=None, angles_rad=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design_environments(
     py: Python<'_>,
     request_json: &str,
     wavelengths: PyReadonlyArray1<'_, f64>,
-    angles_deg: PyReadonlyArray1<'_, f64>,
     spec: &crate::synthesis_merit::PyMeritSpec,
     pipeline_config: Option<Py<PyPipelineConfig>>,
     needle_config: Option<Py<PyNeedleCycleConfig>>,
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
-    angles_in_radians: bool,
+    angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+    angles_rad: Option<PyReadonlyArray1<'_, f64>>,
 ) -> PyResult<Py<PyDict>> {
     use navette::smatrix::synthesis::driver::run_environments as core_run;
     use navette::smatrix::synthesis::environments::build_environments;
@@ -610,7 +610,7 @@ pub(crate) fn run_design_environments(
         PyValueError::new_err(format!("run_design_environments: invalid request: {e}"))
     })?;
     let w = wavelengths.as_slice()?.to_vec();
-    let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
+    let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let cfg = pipeline_config
         .map(|c| c.bind(py).borrow().inner.clone())
         .unwrap_or_default();
@@ -1263,23 +1263,23 @@ pub struct PySmatrixContext {
 #[pymethods]
 impl PySmatrixContext {
     #[new]
-    #[pyo3(signature = (spec, angles_deg, wavelengths, clamp_min=2.0, clamp_max=1000.0,
-                        lm=None, thin_layer_policy="remove", angles_in_radians=false))]
-    /// `angles_deg`: degrees, or radians with `angles_in_radians`.
+    #[pyo3(signature = (spec, wavelengths, clamp_min=2.0, clamp_max=1000.0,
+                        lm=None, thin_layer_policy="remove", *, angles_deg=None, angles_rad=None))]
+    /// The grid is `angles_deg=` or `angles_rad=` (exactly one).
     /// `thin_layer_policy`: 'remove' (default), 'clamp_up_final' or
     /// 'clamp_up_always' (F0.3; the last one moves the LM lower bound).
     fn new(
         spec: &PyMeritSpec,
-        angles_deg: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
         clamp_min: f64,
         clamp_max: f64,
         lm: Option<Py<PyLmConfig>>,
         thin_layer_policy: &str,
-        angles_in_radians: bool,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
         py: Python<'_>,
     ) -> PyResult<Self> {
-        let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
             return Err(PyValueError::new_err(
@@ -1500,16 +1500,15 @@ pub struct PyNeedlePipeline {
 #[pymethods]
 impl PyNeedlePipeline {
     #[new]
-    #[pyo3(signature = (stack, spec, angles_deg, wavelengths, materials=None,
+    #[pyo3(signature = (stack, spec, wavelengths, materials=None,
                         pipeline_config=None, needle_config=None, lm=None,
                         insert_rules=None, outer=None, inner=None, seed_edges=None,
-                        angles_in_radians=false))]
+                        *, angles_deg=None, angles_rad=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         stack: &PyDesignStack,
         spec: &PyMeritSpec,
-        angles_deg: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
         materials: Option<Vec<Py<PyLayerSpec>>>,
         pipeline_config: Option<Py<PyPipelineConfig>>,
@@ -1519,9 +1518,10 @@ impl PyNeedlePipeline {
         outer: Option<Vec<String>>,
         inner: Option<Vec<String>>,
         seed_edges: Option<f64>,
-        angles_in_radians: bool,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<Self> {
-        let a = crate::angles::grid(angles_deg.as_slice()?, angles_in_radians)?;
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
             return Err(PyValueError::new_err(

@@ -48,8 +48,8 @@ def _layers(thicknesses):
 
 
 def _ctx(spec, jacobian):
-    return SmatrixContext(spec, _ANGLES, _WL, _NO_REMOVAL_MIN, _CLAMP_MAX,
-                          LmConfig(jacobian=jacobian))
+    return SmatrixContext(spec, _WL, _NO_REMOVAL_MIN, _CLAMP_MAX,
+                          LmConfig(jacobian=jacobian), angles_deg=_ANGLES)
 
 
 @pytest.fixture(scope="module")
@@ -60,15 +60,15 @@ def interior():
     # R itself, point for point.
     flat = TargetCollection()
     flat.add(SpectralTarget(_WL, np.zeros(_WL.size), np.ones(_WL.size),
-                            0.0, "s", "R", kind="e"))
+                            "s", "R", kind="e", angle_deg=0.0))
     flat_spec = build_merit_spec(flat)
     probe = _ctx(flat_spec, "analytic")
     ref, _ = stack_from_layers(_layers(_REFERENCE), _WL, {}, names=_NAMES)
     rs = np.asarray(flat_spec.residuals(probe.simulate(ref)), dtype=float)
 
     tc = TargetCollection()
-    tc.add(SpectralTarget(_WL, rs, np.full(_WL.size, 0.02), 0.0, "s", "R",
-                          kind="e"))
+    tc.add(SpectralTarget(_WL, rs, np.full(_WL.size, 0.02), "s", "R",
+                          kind="e", angle_deg=0.0))
     return build_merit_spec(tc)
 
 
@@ -126,7 +126,7 @@ def test_a_phase_demand_falls_back_to_differences():
     # driver differences — the run still has to work, and has to say so.
     tc = TargetCollection()
     tc.add(SpectralTarget(_WL, np.zeros(_WL.size), np.full(_WL.size, 0.05),
-                          0.0, "s", "PDts", kind="e", phase=True))
+                          "s", "PDts", kind="e", phase=True, angle_deg=0.0))
     spec = build_merit_spec(tc)
     mf, report, d = _run(spec, "analytic")
     assert report["analytic_jacobians"] == 0

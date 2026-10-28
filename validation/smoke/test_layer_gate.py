@@ -262,10 +262,10 @@ def test_the_flat_array_surface_is_still_permissive():
     d = [0.0, 120.0, 200.0, 0.0]
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        neg = ScatterMatrix(n, d, wavelengths=_WLS, angles=[0.0],
+        neg = ScatterMatrix(n, d, wavelengths=_WLS, angles_deg=[0.0],
                             roughness_types=[0, 5, 5, 5],
                             roughness_values=[0.0, -20.0, -20.0, -20.0])
-        pos = ScatterMatrix(n, d, wavelengths=_WLS, angles=[0.0],
+        pos = ScatterMatrix(n, d, wavelengths=_WLS, angles_deg=[0.0],
                             roughness_types=[0, 5, 5, 5],
                             roughness_values=[0.0, 20.0, 20.0, 20.0])
         req = Request.RS | Request.TS

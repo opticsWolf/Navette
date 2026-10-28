@@ -1,6 +1,7 @@
 # Angle units — one unit inside, explicit units at the door
 
-Status: planned, not built. This replaces the `angles_in_radians` bool
+Status: commit 1 (Rust core) and commit 2 (Python boundary) built; commit 3
+(docs) open. This replaces the `angles_in_radians` bool
 (253d8f6). Backwards compatibility is not a goal: names, keyword
 arguments and target JSON keys change.
 
@@ -101,9 +102,19 @@ builds `Radians` from whichever argument came in and passes only
 they do not convert. That leaves one conversion site per unit in the
 whole code base.
 
-Python dataclasses (`SpectralTarget` etc.) store one field, `angle_rad`
-(or `angles_rad`), and expose `angle_deg` as a read-only property for
-display. `__post_init__` takes whichever unit was given.
+Python dataclasses (`SpectralTarget` etc.) hold both keyword-only fields,
+`angle_deg` and `angle_rad` (or `angles_deg` / `angles_rad`), and keep the
+angle in the unit it was given; the other field stays `None`. Their JSON
+carries only the key that was given, and the native validator converts
+it. So Python still converts nothing. `ColorTarget` is the one target
+whose angle is optional: given neither, it is normal incidence.
+
+The spectralweave `TargetWeaver` keys hold radians, and so
+`export_entries` reports `angle_rad`. `calculate_merit` matches those keys
+bit for bit against the simulation weaver's keys, so a simulation keyed
+in degrees would silently cost `missing_penalty` on every target. It
+warns instead, naming the first unmatched key and saying that keys are
+radians.
 
 Target JSON uses the key `"angle_deg"` or `"angle_rad"` (and
 `"angles_deg"` / `"angles_rad"`). A file with the old `"angle"` key is
@@ -229,9 +240,13 @@ Each commit needs the user's approval and leaves the full battery green.
    new target JSON keys, the removals from A3, and the stubs plus
    `check_pyi_sync.py`. `test_angle_units.py` is rewritten: both units
    agree, both or neither raises, out of range raises, and the old
-   keyword and the old JSON key are rejected.
-3. **Callers:** validation, docs, examples, notebooks. Then the benches,
-   before and after, and the full battery.
+   keyword and the old JSON key are rejected. Commit 2 also rewrites
+   every caller the battery runs (`validation/`, `examples/`, plus
+   `tools/` and `benchmarks/`), because the new keywords break all of
+   them and each commit has to leave the battery green.
+3. **Docs:** the calls shown under `docs/`, `docs/forward-golden.md`, and
+   the notebooks. Then the benches, before and after, and the full
+   battery.
 
 The battery is the release one: `cargo test --release -p navette`, then
 `maturin develop --release`, then `pytest validation -q`. On top of it

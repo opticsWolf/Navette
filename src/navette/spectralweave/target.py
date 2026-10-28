@@ -85,7 +85,6 @@ class SpectralTarget:
     wavelengths:  np.ndarray
     values:       np.ndarray
     tolerances:   np.ndarray
-    angle:        float
     polarization: str
     spectral:     str
     kind:         TargetType = "e"
@@ -96,9 +95,10 @@ class SpectralTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
-    #: ``angle`` given in radians. It is stored in degrees, the merit-key
-    #: unit, and the flag reads False after construction.
-    angles_in_radians: bool = False
+    #: The angle of incidence, in degrees or in radians: give exactly one
+    #: (keyword-only). It is kept as given; the native layer converts.
+    angle_deg:    Union[float, None] = field(default=None, kw_only=True)
+    angle_rad:    Union[float, None] = field(default=None, kw_only=True)
 
     def _dump(self) -> dict:
         band = self.band
@@ -111,7 +111,8 @@ class SpectralTarget:
             "wavelengths": np.ascontiguousarray(np.asarray(self.wavelengths, dtype=np.float64)).ravel().tolist(),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
-            "angle": float(self.angle), "polarization": str(self.polarization),
+            **_dump_angle("angle", self.angle_deg, self.angle_rad),
+            "polarization": str(self.polarization),
             "spectral": str(self.spectral), "kind": str(self.kind),
             "normalization_mode": str(self.normalization_mode),
             "band": band, "phase": bool(self.phase),
@@ -130,7 +131,6 @@ class SpectralTarget:
             band = np.ascontiguousarray(np.full(np.shape(self.values), float(band), dtype=np.float64))
         elif band is not None:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64))
-        _angles_to_degrees(self, 'angle')
         # FFI Guard: Ensure contiguous float64 memory to prevent Rust segfaults.
         # This is an O(1) no-op if the array is already correctly formatted.
         object.__setattr__(self, 'wavelengths', np.ascontiguousarray(self.wavelengths, dtype=np.float64))
@@ -147,7 +147,6 @@ class AngularTarget:
     Same ``kind``/``band`` semantics as :class:`SpectralTarget`.
     """
     wavelength:   float
-    angles:       np.ndarray
     values:       np.ndarray
     tolerances:   np.ndarray
     polarization: str
@@ -160,9 +159,10 @@ class AngularTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
-    #: ``angles`` given in radians. They are stored in degrees, the
-    #: merit-key unit, and the flag reads False after construction.
-    angles_in_radians: bool = False
+    #: The angle grid, in degrees or in radians: give exactly one
+    #: (keyword-only). It is kept as given; the native layer converts.
+    angles_deg:   Union[np.ndarray, None] = field(default=None, kw_only=True)
+    angles_rad:   Union[np.ndarray, None] = field(default=None, kw_only=True)
 
     def _dump(self) -> dict:
         band = self.band
@@ -173,7 +173,7 @@ class AngularTarget:
         return {
             **_dump_environment(self.environment),
             "wavelength": float(self.wavelength),
-            "angles": np.ascontiguousarray(np.asarray(self.angles, dtype=np.float64)).ravel().tolist(),
+            **_dump_angle("angles", self.angles_deg, self.angles_rad),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
             "polarization": str(self.polarization),
@@ -194,8 +194,10 @@ class AngularTarget:
         elif band is not None:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64))
         # FFI Guard
-        object.__setattr__(self, 'angles', np.ascontiguousarray(self.angles, dtype=np.float64))
-        _angles_to_degrees(self, 'angles')
+        for name in ('angles_deg', 'angles_rad'):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, np.ascontiguousarray(
+                    np.asarray(getattr(self, name), dtype=np.float64)).ravel())
         object.__setattr__(self, 'values', np.ascontiguousarray(self.values, dtype=np.float64))
         object.__setattr__(self, 'tolerances', np.ascontiguousarray(self.tolerances, dtype=np.float64))
         object.__setattr__(self, 'band', band)
@@ -248,7 +250,6 @@ class ColorTarget:
     no duplication) — shaping here is normalization only.
     """
     curve:        str = "Ru"
-    angle:        float = 0.0
     illuminant:   Union[str, dict] = "D65"
     observer:     Union[str, dict] = "1931_2deg"
     quantity:     str = "Lab"
@@ -261,14 +262,17 @@ class ColorTarget:
     yi_cx:        Union[float, None] = None
     yi_cz:        Union[float, None] = None
     environment:  Union[str, None] = None
-    #: ``angle`` given in radians. It is stored in degrees, the merit-key
-    #: unit, and the flag reads False after construction.
-    angles_in_radians: bool = False
+    #: The angle of incidence, in degrees or in radians: give at most one
+    #: (keyword-only); neither is normal incidence. It is kept as given;
+    #: the native layer converts.
+    angle_deg:    Union[float, None] = field(default=None, kw_only=True)
+    angle_rad:    Union[float, None] = field(default=None, kw_only=True)
 
     def _dump(self) -> dict:
         return {
             **_dump_environment(self.environment),
-            "curve": str(self.curve), "angle": float(self.angle),
+            "curve": str(self.curve),
+            **_dump_angle("angle", self.angle_deg, self.angle_rad, normal=True),
             "illuminant": _dump_table(self.illuminant, "illuminant"),
             "observer": _dump_table(self.observer, "observer"),
             "quantity": str(self.quantity),
@@ -283,18 +287,21 @@ class ColorTarget:
     def __post_init__(self) -> None:
         from navette._structure import validate_targets as _validate
         import json as _json
-        _angles_to_degrees(self, 'angle')
         _validate(_json.dumps({"spectral": [], "angular": [], "color": [self._dump()]}))
 
 
-def _angles_to_degrees(target, name: str) -> None:
-    """Store a radian ``name`` field in degrees and clear the flag, so a
-    built target always carries the merit-key unit."""
-    if target.angles_in_radians:
-        value = np.degrees(getattr(target, name))
-        object.__setattr__(target, name,
-                           float(value) if np.ndim(value) == 0 else value)
-        object.__setattr__(target, 'angles_in_radians', False)
+def _dump_angle(stem: str, deg, rad, normal: bool = False) -> dict:
+    """The JSON angle key(s) as given: ``"<stem>_deg"`` and/or
+    ``"<stem>_rad"``. The native validator refuses both or neither; with
+    ``normal`` (an optional angle), neither is normal incidence."""
+    out = {}
+    for unit, value in (("deg", deg), ("rad", rad)):
+        if value is not None:
+            out[f"{stem}_{unit}"] = (float(value) if np.ndim(value) == 0 else
+                                     np.asarray(value, dtype=np.float64).ravel().tolist())
+    if normal and not out:
+        out[f"{stem}_rad"] = 0.0
+    return out
 
 
 def _dump_environment(env):
@@ -421,21 +428,23 @@ class TargetCollection:
         for t in self._spectral_targets:
             weaver.add_spectral_target(
                 t.wavelengths, t.values, t.tolerances,
-                t.angle, t.polarization, t.spectral, t.kind,
-                "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
-                t.band,
-                weight=t.weight, normalize_count=t.normalize_count,
-                integral=t.integral,
-            )
-
-        for t in self._angular_targets:
-            weaver.add_angular_target(
-                t.wavelength, t.angles, t.values, t.tolerances,
                 t.polarization, t.spectral, t.kind,
                 "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
                 t.band,
                 weight=t.weight, normalize_count=t.normalize_count,
                 integral=t.integral,
+                angle_deg=t.angle_deg, angle_rad=t.angle_rad,
+            )
+
+        for t in self._angular_targets:
+            weaver.add_angular_target(
+                t.wavelength, t.values, t.tolerances,
+                t.polarization, t.spectral, t.kind,
+                "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
+                t.band,
+                weight=t.weight, normalize_count=t.normalize_count,
+                integral=t.integral,
+                angles_deg=t.angles_deg, angles_rad=t.angles_rad,
             )
 
         return weaver

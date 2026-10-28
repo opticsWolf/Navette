@@ -61,7 +61,7 @@ def test_collection_and_build_merit_spec():
   spec = build_merit_spec(col)
   assert spec.n_residuals() == 1
   row = np.full((1, len(WL)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), WL, {"Ru": row})
+  sim = sim_curves_from_arrays(WL, {"Ru": row}, angles_deg=np.array([0.0]))
   assert np.isfinite(spec.merit(sim, 1e6))
   col.clear()
   assert col.count == 0
@@ -77,7 +77,7 @@ def test_target_set_json_roundtrip_same_merit():
   a = compile_merit_spec(json.dumps(doc))
   b = compile_merit_spec(json.dumps(json.loads(json.dumps(doc))))
   row = np.full((1, len(WL)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), WL, {"Ru": row})
+  sim = sim_curves_from_arrays(WL, {"Ru": row}, angles_deg=np.array([0.0]))
   assert a.n_residuals() == b.n_residuals() == 1
   assert a.merit(sim, 1e6).hex() == b.merit(sim, 1e6).hex()
   assert a.residuals(sim).tobytes().hex() == b.residuals(sim).tobytes().hex()
@@ -91,12 +91,12 @@ def test_named_and_explicit_tables_agree():
   ref = [60.0, 10.0, -20.0]
   named = compile_merit_spec(json.dumps(
     {"spectral": [], "angular": [],
-     "color": [{"curve": "Ru", "angle": 0.0, "illuminant": "D65",
+     "color": [{"curve": "Ru", "angle_deg": 0.0, "illuminant": "D65",
                  "observer": "1931_2deg", "quantity": "Lab",
                  "reference": ref, "distance": "DeltaE76"}]}))
   explicit = compile_merit_spec(json.dumps(
     {"spectral": [], "angular": [],
-     "color": [{"curve": "Ru", "angle": 0.0,
+     "color": [{"curve": "Ru", "angle_deg": 0.0,
                  "illuminant": {"wavelengths": d65["lambda"].tolist(),
                                  "values": d65["S_D65(lambda)"].tolist()},
                  "observer": {"wavelengths": cmf["lambda"].tolist(),
@@ -104,7 +104,7 @@ def test_named_and_explicit_tables_agree():
                                                  cmf["z_bar(lambda)"]], axis=1).tolist()},
                  "quantity": "Lab", "reference": ref, "distance": "DeltaE76"}]}))
   row = np.full((1, len(WL)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), WL, {"Ru": row})
+  sim = sim_curves_from_arrays(WL, {"Ru": row}, angles_deg=np.array([0.0]))
   assert named.merit(sim, 1e6).hex() == explicit.merit(sim, 1e6).hex()
 
 
@@ -120,7 +120,7 @@ def test_p2_quantities_construct_and_compile():
   assert spec.n_residuals() == 3
   wl = np.linspace(500., 519., 20)
   row = np.full((1, len(wl)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+  sim = sim_curves_from_arrays(wl, {"Ru": row}, angles_deg=np.array([0.0]))
   assert np.isfinite(spec.merit(sim, 1e6))
   # Pair gates still fire through the surface.
   with pytest.raises(ValueError, match="Oklab"):
@@ -138,7 +138,7 @@ def test_domwl_constructs_and_compiles():
   assert spec.n_residuals() == 1
   wl = np.linspace(400., 700., 301)
   row = np.exp(-((wl - 550.0) / 15.0) ** 2).reshape(1, -1)
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row})
+  sim = sim_curves_from_arrays(wl, {"Rs": row}, angles_deg=np.array([0.0]))
   assert np.isfinite(spec.merit(sim, 1e6))
   with pytest.raises(ValueError, match="DomWl"):
     ColorTarget(quantity="DomWl", reference=(60.0, 10.0, -20.0))
@@ -155,7 +155,7 @@ def test_coordinate_quantities_construct_and_compile():
     assert spec.n_residuals() == 1
     wl = np.linspace(500., 519., 20)
     row = np.full((1, len(wl)), 0.5)
-    sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+    sim = sim_curves_from_arrays(wl, {"Ru": row}, angles_deg=np.array([0.0]))
     assert np.isfinite(spec.merit(sim, 1e6))
     with pytest.raises(ValueError, match="take Channels"):
       ColorTarget(quantity=q, reference=ref, distance="DeltaE76")
@@ -173,7 +173,7 @@ def test_index_quantities_construct_and_compile():
     assert spec.n_residuals() == 1
     wl = np.linspace(500., 519., 20)
     row = np.full((1, len(wl)), 0.5)
-    sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+    sim = sim_curves_from_arrays(wl, {"Ru": row}, angles_deg=np.array([0.0]))
     assert np.isfinite(spec.merit(sim, 1e6))
     with pytest.raises(ValueError, match="Channels"):
       ColorTarget(quantity=q, reference=ref, distance="DeltaE76", **kw)
@@ -187,7 +187,7 @@ def test_wavelength_range_surface():
   assert spec.n_residuals() == 1
   wl = np.linspace(400., 700., 301)
   row = np.full((1, len(wl)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Ru": row})
+  sim = sim_curves_from_arrays(wl, {"Ru": row}, angles_deg=np.array([0.0]))
   assert np.isfinite(spec.merit(sim, 1e6))
   with pytest.raises(ValueError, match="lo < hi"):
     ColorTarget(quantity="Lab", reference=(60.0, 10.0, -20.0),

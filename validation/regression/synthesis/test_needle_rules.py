@@ -31,7 +31,7 @@ NAMES = ["L", "M"]
 def _targets():
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     return tc
 
 
@@ -86,15 +86,13 @@ def test_the_edges_hold_to_the_end():
 
 def test_the_rules_reach_the_pipeline_class():
     stack, pool = stack_from_layers(SEED, WL, MATERIALS, names=NAMES)
-    pipe = NeedlePipeline(stack, build_merit_spec(_targets()), np.array([0.0]),
-                          WL, pool, _cfg(), insert_rules={"M": [], "L": ["H"]},
-                          outer=["L"])
+    pipe = NeedlePipeline(stack, build_merit_spec(_targets()), WL, pool, _cfg(), insert_rules={"M": [], "L": ["H"]},
+                          outer=["L"], angles_deg=np.array([0.0]))
     res = pipe.run()
     assert set(_inserted(res)) <= {"H", "L"}
     assert _labels(res)[0] == "L"
     with pytest.raises(ValueError, match="outer"):
-        NeedlePipeline(stack, build_merit_spec(_targets()), np.array([0.0]),
-                       WL, pool, _cfg(), outer=["H"])
+        NeedlePipeline(stack, build_merit_spec(_targets()), WL, pool, _cfg(), outer=["H"], angles_deg=np.array([0.0]))
 
 
 @pytest.mark.parametrize("kw, match", [
@@ -154,8 +152,7 @@ def test_seed_edges_put_a_listed_film_on_an_edge_off_its_list():
 
 def test_the_pipeline_class_seeds_edges_too():
     stack, pool = stack_from_layers(SEED, WL, MATERIALS, names=NAMES)
-    pipe = NeedlePipeline(stack, build_merit_spec(_targets()), np.array([0.0]),
-                          WL, pool, _cfg(), outer=["H"], seed_edges=2.0)
+    pipe = NeedlePipeline(stack, build_merit_spec(_targets()), WL, pool, _cfg(), outer=["H"], seed_edges=2.0, angles_deg=np.array([0.0]))
     assert _labels(pipe.run())[0] == "H"
 
 

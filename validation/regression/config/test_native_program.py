@@ -37,6 +37,6 @@ def test_native_prefix_and_solve():
     nat = native_load_program(text, WL, prefix="p_")
     assert set(nat["structures"].keys()) == {"p_ar"}
     sa = nat["structures"]["p_ar"].solver_inputs()
-    out, warns = solve_arrays_fn(sa, WL, np.array([0.0]), solver_rt_request("u"))
+    out, warns = solve_arrays_fn(sa, WL, solver_rt_request("u"), angles_deg=np.array([0.0]))
     assert set(out) == {"Rs", "Rp", "Ts", "Tp", "R_avg", "T_avg"}
     assert list(warns) == [] or all(isinstance(w, str) for w in warns)

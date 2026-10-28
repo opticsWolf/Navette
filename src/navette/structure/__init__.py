@@ -103,8 +103,9 @@ def _assert_provider_grids(source: Any, wl: np.ndarray) -> None:
 def solve_structure(
   source: Union[Navette_Structure, Navette_Architect],
   wavelengths: Sequence[float],
-  angles: Union[float, Sequence[float]],
   *,
+  angles_deg: Union[float, Sequence[float], None] = None,
+  angles_rad: Union[float, Sequence[float], None] = None,
   request=None,
   errors: bool = False,
   rng: Optional[np.random.Generator] = None,
@@ -134,19 +135,22 @@ def solve_structure(
     else source.get_solver_inputs()
   wl = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64)).ravel()
   _assert_provider_grids(source, wl)
-  angles_arr = np.ascontiguousarray(np.atleast_1d(np.asarray(angles, dtype=np.float64))).ravel()
-  known = {"coherence_mode", "angles_in_radians"}
+  grids = [None if a is None
+           else np.ascontiguousarray(np.atleast_1d(np.asarray(a, dtype=np.float64))).ravel()
+           for a in (angles_deg, angles_rad)]
+  known = {"coherence_mode"}
   unknown = set(solver_opts) - known
   if unknown:
     raise TypeError(f"solve_structure: unknown solver options {sorted(unknown)}.")
   mask = _rt_request("u") if request is None else int(request)
   out, warns = _solve_arrays(
-    sa, wl, angles_arr, mask,
-    radians=bool(solver_opts.get("angles_in_radians", False)),
+    sa, wl, mask,
     coherence_mode=int(solver_opts.get("coherence_mode", 0)),
+    angles_deg=grids[0], angles_rad=grids[1],
   )
   for w in warns:
     warnings.warn(f"solve_structure: {w}", stacklevel=2)
-  if angles_arr.size != 1:
+  n_angles = next((g.size for g in grids if g is not None), 0)
+  if n_angles != 1:
     return dict(out)
   return {k: v[0] for k, v in out.items()}

@@ -103,10 +103,10 @@ def test_primitives():
     # context vs ScatterMatrix oracle.
     from navette._smatrix import MeritSpec, SmatrixContext
     spec = MeritSpec()
-    k = spec.add_key(0.0, "Rs")
+    k = spec.add_key("Rs", angle_deg=0.0)
     spec.add_target(k, WL.copy(), np.zeros(3), np.full(3, 0.01),
                     "e", "linear", 1.0)
-    ctx = SmatrixContext(spec, ANGS, WL)
+    ctx = SmatrixContext(spec, WL, angles_deg=ANGS)
     films = [LayerSpec("L", N_L, 150.0)]
     st = DesignStack(air(), sub(), films)
     m0 = ctx.evaluate_merit(st)
@@ -114,8 +114,8 @@ def test_primitives():
     check("simulate_merit_agree",
           abs(m0 - spec.merit(sim, 1e6)) < 1e-12, f"mf={m0:.4f}")
     sm = ScatterMatrix(np.array([N_AIR, N_L, N_SUB]), np.array([0., 150., 0.]),
-                       wavelengths=WL, angles=[0.0])
-    oracle = sim_curves_from_arrays(ANGS, WL, {"Rs": np.atleast_2d(sm.compute(Request.RS)["Rs"])})
+                       wavelengths=WL, angles_deg=[0.0])
+    oracle = sim_curves_from_arrays(WL, {"Rs": np.atleast_2d(sm.compute(Request.RS)["Rs"])}, angles_deg=ANGS)
     check("context_matches_solver",
           abs(m0 - spec.merit(oracle, 1e6)) < 1e-9 * max(1.0, m0), f"mf={m0:.4f}")
     m1 = ctx.optimize_thicknesses(st)
@@ -128,13 +128,13 @@ def mixed_collection():
     # path, nonzero weight still applies).
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.array([0.0, 0.0, 0.0]), np.full(3, 0.01),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.0, 0.0, 0.0]), np.full(3, 0.05),
-                          0.0, "s", "R", kind="a", integral=True,
-                          weight=3.0))
-    tc.add(AngularTarget(1000.0, np.array([0.0]), np.array([0.0]),
+                          "s", "R", kind="a", integral=True,
+                          weight=3.0, angle_deg=0.0))
+    tc.add(AngularTarget(1000.0, np.array([0.0]),
                          np.array([0.02]), "p", "R", kind="e",
-                         normalize_count=True))
+                         normalize_count=True, angles_deg=np.array([0.0])))
     return tc
 
 
@@ -154,9 +154,9 @@ def test_run():
     # initial merit of the unoptimized start stack (for the improvement check).
     from navette._smatrix import SmatrixContext
     stack0, _ = stack_from_layers(layers, WL, {}, names=["L"])
-    m_init = SmatrixContext(build_merit_spec(tc), ANGS, WL).evaluate_merit(stack0)
-    res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
-                     callback=cb, names=["L"])
+    m_init = SmatrixContext(build_merit_spec(tc), WL, angles_deg=ANGS).evaluate_merit(stack0)
+    res = run_needle(layers, tc, WL, materials, pipeline_config=cfg,
+                     callback=cb, names=["L"], angles_deg=ANGS)
     check("termination", res["termination"] in
           ("MAX_ITERATIONS_REACHED", "STAGNATION_PLATEAU", "MERIT_TARGET_REACHED"),
           res["termination"])
@@ -179,10 +179,10 @@ def test_run():
     mats = [N_AIR] + [np.asarray(f["nk"]) for f in films] + [N_SUB]
     th = [0.0] + [float(f["thickness"]) for f in films] + [0.0]
     sm = ScatterMatrix(np.array(mats), np.array(th),
-                       wavelengths=WL, angles=[0.0])
+                       wavelengths=WL, angles_deg=[0.0])
     o = sm.compute(Request.RS | Request.RP)
-    sim = sim_curves_from_arrays(angs, WL, {"Rs": np.atleast_2d(o["Rs"]),
-                                            "Rp": np.atleast_2d(o["Rp"])})
+    sim = sim_curves_from_arrays(WL, {"Rs": np.atleast_2d(o["Rs"]),
+                                            "Rp": np.atleast_2d(o["Rp"])}, angles_deg=angs)
     check("final_mf_reproducible",
           abs(spec.merit(sim, 1e6) - res["final_mf"]) < 1e-6 * max(1.0, res["final_mf"]),
           f'{spec.merit(sim, 1e6):.4f} vs {res["final_mf"]:.4f}')
@@ -193,7 +193,7 @@ def test_abort_and_validation():
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
     materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R"))
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), "s", "R", angle_deg=0.0))
     cfg = PipelineConfig(max_macro_cycles=3, needles_per_cycle=1,
                          stagnation_window=100)
 
@@ -201,17 +201,17 @@ def test_abort_and_validation():
         if cycle >= 2:
             raise RuntimeError("stop now")
 
-    res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
-                     callback=stop_at_2, names=["L"])
+    res = run_needle(layers, tc, WL, materials, pipeline_config=cfg,
+                     callback=stop_at_2, names=["L"], angles_deg=ANGS)
     check("user_abort", res["termination"] == "USER_ABORT"
           and len(res["phases"]) == 2, res["termination"])
     try:
         PipelineConfig(clamp_min_nm=5.0, clamp_max_nm=5.0)
         # constructed fine (validation happens at pipeline construction);
         # the error surfaces on run_needle:
-        run_needle(layers, tc, ANGS, WL, materials,
+        run_needle(layers, tc, WL, materials,
                    pipeline_config=PipelineConfig(clamp_min_nm=5.0, clamp_max_nm=5.0),
-                   names=["L"])
+                   names=["L"], angles_deg=ANGS)
         check("bad_clamps_rejected", False)
     except ValueError:
         check("bad_clamps_rejected", True)
@@ -219,8 +219,7 @@ def test_abort_and_validation():
     try:
         stack, pool = stack_from_layers(
             [(MaterialSpec("Konstant", dict(n=1.5)), 10.0)], WL, {}, names=["X"])
-        NeedlePipeline(stack, build_merit_spec(tc), ANGS,
-                       np.array([500., 600.]), pool)
+        NeedlePipeline(stack, build_merit_spec(tc), np.array([500., 600.]), pool, angles_deg=ANGS)
         check("grid_mismatch_rejected", False)
     except ValueError:
         check("grid_mismatch_rejected", True)
@@ -234,11 +233,11 @@ def test_cycle_config_passthrough():
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
     materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R"))
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), "s", "R", angle_deg=0.0))
     cfg = PipelineConfig(max_macro_cycles=1, needles_per_cycle=1,
                          stagnation_window=100)
-    res = run_needle(layers, tc, ANGS, WL, materials, pipeline_config=cfg,
-                     needle_config=nc, names=["L"])
+    res = run_needle(layers, tc, WL, materials, pipeline_config=cfg,
+                     needle_config=nc, names=["L"], angles_deg=ANGS)
     n = len(res["phases"][0]["needle_results"])
     check("needles_per_cycle_1", n <= 1, f"{n} cycles")
 

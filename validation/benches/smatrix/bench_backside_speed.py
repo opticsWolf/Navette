@@ -52,7 +52,7 @@ REPS = 60
 
 
 def bench(mask):
-    st = ScatterMatrix(IDX, THICK, wavelengths=WAVLS, angles=ANGLES)
+    st = ScatterMatrix(IDX, THICK, wavelengths=WAVLS, angles_deg=ANGLES)
     for _ in range(WARMUP):
         st.compute(mask)
     ts = []

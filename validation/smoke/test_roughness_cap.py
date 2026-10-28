@@ -21,7 +21,7 @@ def _rs(rows, **kw):
     d = np.array([0.0] + [r[1] for r in rows] + [0.0])
     rv = np.array([0.0] + [r[2] for r in rows] + [0.0])
     rt = np.where(rv > 0, 5, 0).astype(np.int32)
-    sm = ScatterMatrix(n, d, wavelengths=WL, angles=[0.0],
+    sm = ScatterMatrix(n, d, wavelengths=WL, angles_deg=[0.0],
                        roughness_types=rt, roughness_values=rv, **kw)
     return np.asarray(sm.compute(Request.RS)["Rs"], float).ravel(), sm
 

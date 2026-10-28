@@ -35,7 +35,9 @@ _ANG = [30.0]
 
 
 def _sm(**kw):
-    args = dict(layer_indices=_N, thicknesses=_D, wavelengths=_WLS, angles=_ANG)
+    args = dict(layer_indices=_N, thicknesses=_D, wavelengths=_WLS, angles_deg=_ANG)
+    if "angles_rad" in kw:
+        del args["angles_deg"]
     args.update(kw)
     layer_indices = args.pop("layer_indices")
     thicknesses = args.pop("thicknesses")
@@ -68,12 +70,14 @@ _REJECT = [
      ["wavelengths", "strictly increasing", "index 2", "550.0"]),
     ("descending_wavelengths", dict(wavelengths=_WLS[::-1].copy()),
      ["wavelengths", "strictly increasing", "index 1"]),
-    ("nan_angle", dict(angles=[30.0, np.nan]), ["angles", "index 1", "nan"]),
-    ("angle_above_90", dict(angles=[95.0]), ["angles", "index 0", "95.0"]),
-    ("angle_retrograde", dict(angles=[120.0]), ["angles", "index 0", "120.0"]),
-    ("angle_negative", dict(angles=[-30.0]), ["angles", "index 0", "-30.0"]),
-    ("angle_radians_out_of_range", dict(angles=[2.0], angles_in_radians=True),
-     ["angles", "index 0", "2.0", "rad"]),
+    ("nan_angle", dict(angles_deg=[30.0, np.nan]), ["angles_deg", "index 1", "NaN"]),
+    ("angle_above_90", dict(angles_deg=[95.0]), ["angles_deg", "index 0", "95 deg"]),
+    ("angle_retrograde", dict(angles_deg=[120.0]), ["angles_deg", "index 0", "120 deg"]),
+    ("angle_negative", dict(angles_deg=[-30.0]), ["angles_deg", "index 0", "-30 deg"]),
+    ("angle_radians_out_of_range", dict(angles_rad=[2.0]),
+     ["angles_rad", "index 0", "2 rad"]),
+    ("degrees_given_as_radians", dict(angles_rad=[0.0, 30.0]),
+     ["angles_rad", "index 1", "30 rad"]),
 ]
 
 
@@ -97,9 +101,9 @@ def test_bad_input_raises_and_names_the_offender(kwargs, fragments):
 # --------------------------------------------------------------------------
 
 _ACCEPT = [
-    ("grazing_90_deg", dict(angles=[90.0])),
-    ("normal_0_deg", dict(angles=[0.0])),
-    ("radians_pi_over_2", dict(angles=[np.pi / 2.0], angles_in_radians=True)),
+    ("grazing_90_deg", dict(angles_deg=[90.0])),
+    ("normal_0_deg", dict(angles_deg=[0.0])),
+    ("radians_pi_over_2", dict(angles_rad=[np.pi / 2.0])),
     ("single_wavelength", dict(wavelengths=np.array([550.0]))),
     ("zero_thickness_everywhere", dict(thicknesses=np.zeros(4))),
     ("huge_thickness_1e9", dict(thicknesses=_with(_D, 2, 1e9))),
@@ -232,7 +236,7 @@ _NEEDLE_SPAN = 400.0
 
 
 def _needle_stack(**kw):
-    return ScatterMatrix(_NEEDLE_N, _NEEDLE_D, wavelengths=_WLS, angles=[30.0], **kw)
+    return ScatterMatrix(_NEEDLE_N, _NEEDLE_D, wavelengths=_WLS, angles_deg=[30.0], **kw)
 
 
 def _needle(z, stack=None, n_prime=None, **kw):
@@ -410,7 +414,7 @@ def test_dop_r_never_exceeds_one():
                      + [complex(1.515, 0.001)])
         d = np.array([0.0] + [rng.uniform(5.0, 400.0) for _ in range(nl - 2)] + [0.0])
         sm = ScatterMatrix(n, d, wavelengths=np.linspace(300.0, 1200.0, 301),
-                           angles=[float(rng.uniform(0.0, 85.0))],
+                           angles_deg=[float(rng.uniform(0.0, 85.0))],
                            coherence_mode=CoherenceMode.COHERENCY_MATRIX)
         out = sm.compute(Request.DOP_R | Request.DOP_T)
         worst = max(worst, float(np.max(np.asarray(out["DOP_R"]))))
@@ -457,9 +461,9 @@ def test_absorbing_ambient_is_solved_as_its_transparent_twin():
     req = Request.RS | Request.TS | Request.RP | Request.TP
     with pytest.warns(UserWarning):
         absorbing = ScatterMatrix(_with(_N, 0, 1.0 + 0.3j), _D,
-                                  wavelengths=_WLS, angles=_ANG).compute(req, squeeze=False)
+                                  wavelengths=_WLS, angles_deg=_ANG).compute(req, squeeze=False)
     transparent = ScatterMatrix(_with(_N, 0, 1.0 + 0.0j), _D,
-                                wavelengths=_WLS, angles=_ANG).compute(req, squeeze=False)
+                                wavelengths=_WLS, angles_deg=_ANG).compute(req, squeeze=False)
     for key in transparent:
         assert np.array_equal(absorbing[key], transparent[key]), f"{key} drifted"
 
@@ -480,7 +484,7 @@ def test_only_the_incident_row_is_touched_in_a_2d_index_array():
     grid = np.repeat(_N[:, None], _WLS.size, axis=1)
     grid[1, :] = 2.35 + 0.4j          # absorbing interior layer: fine
     grid[3, :] = 1.52 + 0.02j         # absorbing substrate: fine
-    out = ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG).compute(Request.RS)
+    out = ScatterMatrix(grid, _D, wavelengths=_WLS, angles_deg=_ANG).compute(Request.RS)
     assert np.all(np.isfinite(np.asarray(out["Rs"], float)))
 
     # One absorbing wavelength in the ambient row is enough to warn, and the
@@ -488,7 +492,7 @@ def test_only_the_incident_row_is_touched_in_a_2d_index_array():
     grid[0, 7] = 1.0 + 1e-9j
     before = grid.copy()
     with pytest.warns(UserWarning, match=r"absorbing at 1 of "):
-        sm = ScatterMatrix(grid, _D, wavelengths=_WLS, angles=_ANG)
+        sm = ScatterMatrix(grid, _D, wavelengths=_WLS, angles_deg=_ANG)
     assert np.array_equal(grid, before), "the caller's array was mutated"
 
     # The interior and substrate rows still absorb; only layer 0 was flattened.
@@ -508,8 +512,7 @@ def test_the_native_solver_is_still_permissive():
 
     n = _with(_N, 0, 1.52 + 0.05j)
     idx2d = np.repeat(np.asarray(n, dtype=np.complex128)[:, None], _WLS.size, axis=1)
-    solver = Solver(_WLS, np.asarray(_ANG, dtype=float),
-                    np.ascontiguousarray(idx2d).ravel(), _N.size,
-                    thicknesses=_D)
+    solver = Solver(_WLS, np.ascontiguousarray(idx2d).ravel(), _N.size,
+                    thicknesses=_D, angles_deg=np.asarray(_ANG, dtype=float))
     out = solver.solve(solver_rt_request(pol="s"))
     assert out  # it answers; interpreting the answer is the caller's problem

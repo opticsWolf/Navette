@@ -74,13 +74,13 @@ def _targets():
     # Satisfiable mix: spectral exact + integral band + angular exact.
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.full(31, 0.15), np.full(31, 0.02),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.full(31, 0.85), np.full(31, 0.10),
-                          0.0, "s", "T", kind="a", integral=True,
-                          weight=3.0))
-    tc.add(AngularTarget(600.0, np.array([0.0]), np.array([0.0]),
+                          "s", "T", kind="a", integral=True,
+                          weight=3.0, angle_deg=0.0))
+    tc.add(AngularTarget(600.0, np.array([0.0]),
                          np.array([0.05]), "p", "R", kind="e",
-                         normalize_count=True))
+                         normalize_count=True, angles_deg=np.array([0.0])))
     return tc
 
 
@@ -168,10 +168,10 @@ def test_needle_run_is_deterministic_and_matches_the_recorded_digest():
             f"no recorded needle digest for {platform.system()} - "
             "record one at the current tree before gating it (amendment 3, C1)"
         )
-    res1 = run_needle(LAYERS, _targets(), ANGS, WL, MATERIALS,
-                      pipeline_config=_cfg(), names=NAMES)
-    res2 = run_needle(LAYERS, _targets(), ANGS, WL, MATERIALS,
-                      pipeline_config=_cfg(), names=NAMES)
+    res1 = run_needle(LAYERS, _targets(), WL, MATERIALS,
+                      pipeline_config=_cfg(), names=NAMES, angles_deg=ANGS)
+    res2 = run_needle(LAYERS, _targets(), WL, MATERIALS,
+                      pipeline_config=_cfg(), names=NAMES, angles_deg=ANGS)
     d1, d2 = _digest(res1), _digest(res2)
     # Determinism first: two runs of the same inputs, one digest. If this
     # fails the pin is measuring noise, and the recorded value is void.
@@ -186,8 +186,8 @@ def test_needle_run_shape():
     # Sanity on the pin's problem: the run must actually exercise the
     # machinery the fingerprint is supposed to cover (insertions happened,
     # cleanup ran, more than one macro cycle).
-    res = run_needle(LAYERS, _targets(), ANGS, WL, MATERIALS,
-                     pipeline_config=_cfg(), names=NAMES)
+    res = run_needle(LAYERS, _targets(), WL, MATERIALS,
+                     pipeline_config=_cfg(), names=NAMES, angles_deg=ANGS)
     assert len(res["phases"]) == 3
     assert any(p["needle_results"] for p in res["phases"]), (
         "the pin must cover needle insertions - this design inserts nothing"

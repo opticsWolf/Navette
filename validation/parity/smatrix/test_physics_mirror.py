@@ -53,7 +53,7 @@ def test_ar_physics():
     # lossless: R + T == 1, values in [0, 1].
     st = ScatterMatrix(np.array([1.0 + 0j, n_l + 0j, 1.52 + 0j]),
                        np.array([0.0, 200.0, 0.0]),
-                       wavelengths=wavls, angles=[0.0])
+                       wavelengths=wavls, angles_deg=[0.0])
     out = st.compute(Request.RS | Request.RP | Request.TS | Request.TP)
     check("lossless_conservation",
           bool(np.allclose(out["Rs"] + out["Ts"], 1.0, atol=1e-10))
@@ -63,27 +63,27 @@ def test_ar_physics():
     d_qw = 1000.0 / (4.0 * n_l)
     st_qw = ScatterMatrix(np.array([1.0 + 0j, n_l + 0j, 1.52 + 0j]),
                           np.array([0.0, d_qw, 0.0]),
-                          wavelengths=np.array([1000.]), angles=[0.0])
+                          wavelengths=np.array([1000.]), angles_deg=[0.0])
     r_qw = float(st_qw.compute(Request.RS)["Rs"][0])
     check("quarter_wave_zero", r_qw < 1e-12, f"R={r_qw:.2e}")
     st_off = ScatterMatrix(np.array([1.0 + 0j, n_l + 0j, 1.52 + 0j]),
                            np.array([0.0, d_qw * 0.7, 0.0]),
-                           wavelengths=np.array([1000.]), angles=[0.0])
+                           wavelengths=np.array([1000.]), angles_deg=[0.0])
     check("off_quarter_nonzero", float(st_off.compute(Request.RS)["Rs"][0]) > 1e-6)
 
     # optimizer recovery from a bad start (scipy drives the same merit).
     from scipy.optimize import minimize
     spec = MeritSpec()
-    k = spec.add_key(0.0, "Rs")
+    k = spec.add_key("Rs", angle_deg=0.0)
     spec.add_target(k, np.array([1000.]), np.array([0.0]), np.array([0.01]),
                     "e", "linear", 1.0)
 
     def merit(d):
         st = ScatterMatrix(np.array([1.0 + 0j, n_l + 0j, 1.52 + 0j]),
                            np.array([0.0, float(d[0]), 0.0]),
-                           wavelengths=np.array([1000.]), angles=[0.0])
-        sim = sim_curves_from_arrays(np.array([0.0]), np.array([1000.]),
-                                     {"Rs": np.atleast_2d(st.compute(Request.RS)["Rs"])})
+                           wavelengths=np.array([1000.]), angles_deg=[0.0])
+        sim = sim_curves_from_arrays(np.array([1000.]),
+                                     {"Rs": np.atleast_2d(st.compute(Request.RS)["Rs"])}, angles_deg=np.array([0.0]))
         return spec.merit(sim, 1e6)
 
     res = minimize(merit, np.array([50.0]), method="Nelder-Mead",
@@ -99,26 +99,26 @@ def test_propagation_sign():
     # kD = 2.5pi -> arg = +pi/2 (NOT -pi/2): the crate's sign convention.
     st = ScatterMatrix(np.array([1.0 + 0j, 1.0 + 0j, 1.0 + 0j]),
                        np.array([0.0, 500.0, 0.0]),
-                       wavelengths=np.array([400.]), angles=[0.0])
+                       wavelengths=np.array([400.]), angles_deg=[0.0])
     tf = complex(st.compute(Request.TS_C)["ts_c"][0])
     check("matched_slab_arg", abs(np.angle(tf) - np.pi / 2) < 1e-9, f"arg={np.angle(tf):.6f}")
     # reference_phase is unwrapped (2.5pi): PD merit with the unwrapped
     # target must wrap to zero exactly as the kernel does.
     spec = MeritSpec()
-    k = spec.add_key(0.0, "Ts")
+    k = spec.add_key("Ts", angle_deg=0.0)
     spec.add_target(k, np.array([400.]), np.array([np.angle(tf) - 2.5 * np.pi]),
                     np.array([0.05]), "e", "phase", 1.0, phase=True, differential_passes=1.0)
     from navette._smatrix import SimCurves
-    sim = SimCurves(np.array([0.0]), np.array([400.]), 500.0, 1.0, 1.0)
+    sim = SimCurves(np.array([400.]), 500.0, 1.0, 1.0, angles_deg=np.array([0.0]))
     sim.set_complex("Ts", np.array([tf]))
     check("unwrapped_ref_wraps", spec.merit(sim, 1e6) < 1e-20)
     # oblique: 60° halves the axial projection; kz*D reconstructs ref.
     spec = MeritSpec()
-    k = spec.add_key(60.0, "Ts")
+    k = spec.add_key("Ts", angle_deg=60.0)
     ref60 = 2 * np.pi * 100.0 * np.cos(np.radians(60.0)) / 500.0
     spec.add_target(k, np.array([500.]), np.array([0.3 - ref60]), np.array([0.05]),
                     "e", "phase", 1.0, phase=True, differential_passes=1.0)
-    sim = SimCurves(np.array([60.0]), np.array([500.]), 100.0, 1.0, 1.0)
+    sim = SimCurves(np.array([500.]), 100.0, 1.0, 1.0, angles_deg=np.array([60.0]))
     sim.set_complex("Ts", np.array([0.7 * np.exp(1j * 0.3)]))
     check("oblique_reference", spec.merit(sim, 1e6) < 1e-28, f"ref60={ref60:.6f}")
     # hand values: (500, 1, 0°, 100, 1) -> 2pi/5; 2 passes double; D = 0 kills.
@@ -141,8 +141,7 @@ def membrane(absorbing=True):
 def needle_pair(idx, thick, j, xi, flags=None):
     """Base + needle-inserted stacks (needle glass DELTA at depth xi in layer j)."""
     base = ScatterMatrix(idx, thick, wavelengths=np.array([LAM]),
-                         angles=np.arcsin(0.3), angles_in_radians=True,
-                         incoherent_flags=flags)
+                         angles_rad=np.arcsin(0.3), incoherent_flags=flags)
     # split host layer j into top(xi)/needle/bottom: rebuild explicitly.
     th = list(thick)
     top, bot = xi, th[j] - xi
@@ -153,8 +152,7 @@ def needle_pair(idx, thick, j, xi, flags=None):
         fl = list(flags)
         fl2 = np.array(fl[:j + 1] + [0, fl[j]] + fl[j + 1:], dtype=np.int32)
     ins = ScatterMatrix(idx2, th2, wavelengths=np.array([LAM]),
-                        angles=np.arcsin(0.3), angles_in_radians=True,
-                        incoherent_flags=fl2)
+                        angles_rad=np.arcsin(0.3), incoherent_flags=fl2)
     return base, ins
 
 
@@ -171,7 +169,7 @@ def test_pd_optimizer_recovery():
     from navette._smatrix import SimCurves
     wl = np.array([1000.])
     spec = MeritSpec()
-    k = spec.add_key(0.0, "Ts")
+    k = spec.add_key("Ts", angle_deg=0.0)
     spec.add_target(k, wl, np.array([0.0]), np.array([0.05]),
                     "e", "phase", 1.0, phase=True, differential_passes=1.0)
 
@@ -187,9 +185,9 @@ def test_pd_optimizer_recovery():
             return 1.0 + abs(dd)
         st = ScatterMatrix(np.array([1.0 + 0j, 1.5 + 0j, 1.0 + 0j]),
                            np.array([0.0, dd, 0.0]),
-                           wavelengths=wl, angles=[0.0])
+                           wavelengths=wl, angles_deg=[0.0])
         tc = complex(np.asarray(st.compute(Request.TS_C)["ts_c"]).ravel()[0])
-        sim = SimCurves(np.array([0.0]), wl, dd, 1.0, 1.0)
+        sim = SimCurves(wl, dd, 1.0, 1.0, angles_deg=np.array([0.0]))
         sim.set_complex("Ts", np.array([tc]))
         return spec.merit(sim, 1e6)
 
@@ -239,10 +237,9 @@ def test_multiblock():
     thick = np.array([0.0, 40.0, 2000.0, 50.0, 0.0])
     flags = np.array([0, 0, 1, 0, 0], dtype=np.int32)
     coh = ScatterMatrix(idx, thick, wavelengths=np.array([LAM]),
-                        angles=np.arcsin(0.3), angles_in_radians=True)
+                        angles_rad=np.arcsin(0.3))
     mb = ScatterMatrix(idx, thick, wavelengths=np.array([LAM]),
-                       angles=np.arcsin(0.3), angles_in_radians=True,
-                       incoherent_flags=flags)
+                       angles_rad=np.arcsin(0.3), incoherent_flags=flags)
     # reduction: all-coherent flags -> P_MB == P.
     tgt = np.array([0.05])
     g_p = needle_gradient(coh, N_NEEDLE, np.array([40.0]), int(NeedleRequest.P),
@@ -287,7 +284,7 @@ def test_multiblock():
     idxm = np.array([1.0 + 0j, 2.0 + 0j, 1.8 + 0.4j, 2.0 + 0j, 1.0 + 0j])
     thickm = np.array([0.0, 25.0, 25.0, 25.0, 0.0])
     cohm = ScatterMatrix(idxm, thickm, wavelengths=np.array([LAM]),
-                         angles=np.arcsin(0.3), angles_in_radians=True)
+                         angles_rad=np.arcsin(0.3))
     kw = dict(targets_tb=np.array([0.0]), weights_tb=np.array([1.0]),
               targets_rb=np.array([0.0]), weights_rb=np.array([1.0]),
               targets_ab=np.array([0.0]), weights_ab=np.array([1.0]), pol="s")
@@ -310,10 +307,10 @@ def test_dispersion_channels():
     idx = np.array([1.0 + 0j, 2.35 + 0j, 1.46 + 0j, 2.35 + 0j, 1.52 + 0j])
     thick = np.array([0.0, 40.0, 80.0, 30.0, 0.0])
     wavls = np.array([500., 600., 700.])
-    base = ScatterMatrix(idx, thick, wavelengths=wavls, angles=[0.0])
+    base = ScatterMatrix(idx, thick, wavelengths=wavls, angles_deg=[0.0])
     th2 = np.array([0.0, 40.0, 25.0, DELTA, 80.0 - 25.0, 30.0, 0.0])
     idx2 = np.array([1.0 + 0j, 2.35 + 0j, 1.46 + 0j, N_NEEDLE, 1.46 + 0j, 2.35 + 0j, 1.52 + 0j])
-    ins = ScatterMatrix(idx2, th2, wavelengths=wavls, angles=[0.0])
+    ins = ScatterMatrix(idx2, th2, wavelengths=wavls, angles_deg=[0.0])
     # DPHI: dphi[w] = d(arg ts)/dδ; full-gradient convention (no /2).
     ph0 = np.angle(np.asarray(base.compute(Request.TS_C)["ts_c"]).ravel())
     ph1 = np.angle(np.asarray(ins.compute(Request.TS_C)["ts_c"]).ravel())

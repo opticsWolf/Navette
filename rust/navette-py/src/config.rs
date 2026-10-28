@@ -77,9 +77,8 @@ pub(crate) fn gate_document(request_json: &str) -> PyResult<(String, Option<Stri
 /// dataclass holders; the authoritative checks run at ingestion).
 #[pyfunction]
 pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
-    let set: navette::smatrix::synthesis::targets::TargetSet =
-        serde_json::from_str(request_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid target set: {e}")))?;
+    let set = navette::smatrix::synthesis::targets::TargetSet::from_json(request_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid target set: {e}")))?;
     for t in &set.spectral {
         check_target(
             &t.values,

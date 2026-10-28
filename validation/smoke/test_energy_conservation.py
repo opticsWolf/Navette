@@ -19,7 +19,7 @@ def test_lossless_stack_conserves():
     """3-layer lossless oxide -> conservation residual ~ 0 for both pols."""
     n = np.array([1.0 + 0j, 1.46 + 0j, 2.10 + 0j, 1.52 + 0j])
     d = np.array([0.0, 120.0, 80.0, 0.0])
-    sm = ScatterMatrix(n, d, wavelengths=_WLS, angles=[0.0, 30.0, 60.0])
+    sm = ScatterMatrix(n, d, wavelengths=_WLS, angles_deg=[0.0, 30.0, 60.0])
     cons = sm.energy_conservation()
     assert cons.shape == (3, len(_WLS))
     assert float(np.max(cons)) < 1e-12
@@ -29,7 +29,7 @@ def test_two_d_shape_preserved():
     """Multi-angle input keeps the 2-D [n_angles, n_wavs] shape."""
     n = np.array([1.0 + 0j, 1.46 + 0j, 1.52 + 0j])
     d = np.array([0.0, 120.0, 0.0])
-    sm = ScatterMatrix(n, d, wavelengths=_WLS, angles=[0.0, 15.0])
+    sm = ScatterMatrix(n, d, wavelengths=_WLS, angles_deg=[0.0, 15.0])
     assert sm.energy_conservation().shape == (2, len(_WLS))
 
 
@@ -37,7 +37,7 @@ def test_single_angle_squeezes_to_1d():
     """A single angle returns a 1-D array (squeeze semantics preserved)."""
     n = np.array([1.0 + 0j, 1.46 + 0j, 1.52 + 0j])
     d = np.array([0.0, 120.0, 0.0])
-    sm = ScatterMatrix(n, d, wavelengths=_WLS, angles=[0.0])
+    sm = ScatterMatrix(n, d, wavelengths=_WLS, angles_deg=[0.0])
     cons = sm.energy_conservation()
     assert cons.shape == (len(_WLS),)
 
@@ -49,7 +49,7 @@ def test_absorbing_equals_absorptance():
     prev = -1.0
     for thick in (0.0, 50.0, 200.0, 800.0):
         d = np.array([0.0, thick, 0.0])
-        sm = ScatterMatrix(n, d, wavelengths=np.array([550.0]), angles=[0.0])
+        sm = ScatterMatrix(n, d, wavelengths=np.array([550.0]), angles_deg=[0.0])
         cons = float(sm.energy_conservation()[0])
         out = sm.compute(Request.A_AVG | Request.A_S | Request.A_P)
         a_max = max(float(out["A_s"][0]), float(out["A_p"][0]))

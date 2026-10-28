@@ -72,9 +72,9 @@ def nk(material, wl=None):
 def demands():
     tc = TargetCollection()
     tc.add(SpectralTarget(VIS, np.zeros_like(VIS), np.full_like(VIS, TOL_VIS),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     tc.add(SpectralTarget(NIR, np.zeros_like(NIR), np.full_like(NIR, TOL_NIR),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     return tc
 
 
@@ -134,7 +134,7 @@ def reflectance(stack_films, wl):
             + [nk(MATERIALS[name], wl) for name, _, _ in stack_films]
             + [nk(SUBSTRATE, wl)])
     d = [0.0] + [t for _, _, t in stack_films] + [0.0]
-    sm = ScatterMatrix(np.vstack(rows), d, wavelengths=wl, angles=[0.0])
+    sm = ScatterMatrix(np.vstack(rows), d, wavelengths=wl, angles_deg=[0.0])
     return np.asarray(sm.compute(Request.RS)["Rs"]).ravel()
 
 

@@ -72,7 +72,7 @@ def _targets():
     tc = TargetCollection()
     for env in ("bare", "laminated"):
         tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                              0.0, "s", "R", environment=env))
+                              "s", "R", environment=env, angle_deg=0.0))
     return tc
 
 
@@ -200,7 +200,7 @@ def test_an_unknown_environment_tag_refuses_naming_the_roster():
     """
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                          0.0, "s", "R", environment="laminted"))
+                          "s", "R", environment="laminted", angle_deg=0.0))
     _refuses(lambda: build_merit_spec(tc, environments=["bare", "laminated"]),
              "laminted", "bare", "laminated")
 
@@ -214,7 +214,7 @@ def test_a_tagged_demand_on_a_flat_run_still_names_what_it_knows():
     """
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                          0.0, "s", "R", environment="bare"))
+                          "s", "R", environment="bare", angle_deg=0.0))
     _refuses(lambda: build_merit_spec(tc), "bare", "default")
 
 
@@ -229,15 +229,15 @@ def test_an_empty_environment_tag_refuses_at_construction():
     # by serializing it, so the tag is checked at the moment the mistake
     # is made rather than at the moment the run starts.
     _refuses(lambda: SpectralTarget(WL, np.zeros_like(WL),
-                                    np.full_like(WL, 0.01), 0.0, "s", "R",
-                                    environment=""),
+                                    np.full_like(WL, 0.01), "s", "R",
+                                    environment="", angle_deg=0.0),
              "environment", "non-empty")
 
 
 def test_an_untagged_demand_emits_no_environment_key():
     """Absent stays absent: a pre-F2.1 target set's JSON does not move."""
     t = SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                       0.0, "s", "R")
+                       "s", "R", angle_deg=0.0)
     assert "environment" not in t._dump()
 
 
@@ -395,7 +395,7 @@ def test_duplicate_film_names_refuse_because_a_name_is_an_identity():
 def _repeat_targets():
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
-                          0.0, "s", "R", environment="twice"))
+                          "s", "R", environment="twice", angle_deg=0.0))
     return tc
 
 

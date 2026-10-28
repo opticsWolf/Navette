@@ -158,7 +158,7 @@ _ANGLES = [0.0, 45.0]
 
 
 def _stack():
-    return ScatterMatrix(_N, _D, wavelengths=_WLS, angles=_ANGLES)
+    return ScatterMatrix(_N, _D, wavelengths=_WLS, angles_deg=_ANGLES)
 
 
 _SINGLE = sorted(

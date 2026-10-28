@@ -79,7 +79,7 @@ def demands(*names):
     tc = TargetCollection()
     for name in names:
         tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, TOL),
-                              0.0, "s", "R", environment=name))
+                              "s", "R", environment=name, angle_deg=0.0))
     return tc
 
 
@@ -127,11 +127,11 @@ def score_in(films, env_name):
     names = [f"{n}{i}" for i, (_, _, n) in enumerate(layers)]
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, TOL),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     spec = build_merit_spec(tc)
     stack, _ = stack_from_layers([(nk, d) for nk, d, _ in layers], WL, {},
                                  names=names, substrate=(GLASS, "sub"))
-    ctx = SmatrixContext(spec, np.asarray(ANGLES, dtype=np.float64), WL)
+    ctx = SmatrixContext(spec, WL, angles_deg=np.asarray(ANGLES, dtype=np.float64))
     return float(spec.merit(ctx.simulate(stack), 1e6))
 
 

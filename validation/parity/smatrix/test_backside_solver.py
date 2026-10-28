@@ -47,7 +47,7 @@ def test_analytic():
     for deg in [0.0, 35.0]:
         th = np.radians(deg)
         s = ScatterMatrix(np.array([n0, n1]), np.array([0.0, 0.0]),
-                          wavelengths=WAVLS, angles=[deg])
+                          wavelengths=WAVLS, angles_deg=[deg])
         out = s.compute(Request.BACKSIDE)
         st0 = np.sin(th)
         for pol, rs_k, tb_k, ph_r, ph_t in [("s", "rbs_c", "tbs_c", "phi_rbs", "phi_tbs"),
@@ -68,7 +68,7 @@ def membrane(absorbing=False):
     n_mid = (1.8 + 0.4j) if absorbing else (1.45 + 0j)
     idx = np.array([1.0 + 0j, 2.35 + 0j, n_mid, 2.35 + 0j, 1.0 + 0j])
     return ScatterMatrix(idx, np.array([0.0, 40.0, 80.0, 40.0, 0.0]),
-                         wavelengths=WAVLS, angles=[0.0, 30.0])
+                         wavelengths=WAVLS, angles_deg=[0.0, 30.0])
 
 
 def test_symmetry():

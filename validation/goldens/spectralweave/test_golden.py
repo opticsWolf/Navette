@@ -51,7 +51,7 @@ def _scenario_linear_aligned():
     tol = arr([0.1] * 5)
     sim_vals = raw + 0.05
     tw = sw.TargetWeaver(cache_size=8)
-    tw.add_spectral_target(wl, raw, tol, 0.0, "s", "R", "e", "linear")
+    tw.add_spectral_target(wl, raw, tol, "s", "R", "e", "linear", angle_rad=0.0)
     sim = sw.OpticalWeaver(cache_size=8)
     sim.set_data((0.0, "s", "R"), sim_vals, wl)
 
@@ -71,9 +71,9 @@ def _scenario_interp():
     raw = arr([2.0, 3.0, 4.0])
     tol = arr([0.1] * 3)
     tw = sw.TargetWeaver(cache_size=8)
-    tw.add_spectral_target(t_wl, raw, tol, 1.0, "s", "R", "e", "linear")
+    tw.add_spectral_target(t_wl, raw, tol, "s", "R", "e", "linear", angle_rad=0.1)
     sim = sw.OpticalWeaver(cache_size=8)
-    sim.set_data((1.0, "s", "R"), sim_vals, sim_wl)
+    sim.set_data((0.1, "s", "R"), sim_vals, sim_wl)
 
     def ref():
         interp = np.interp(t_wl, sim_wl, sim_vals)  # [1.5, 2.5, 3.5]
@@ -89,9 +89,9 @@ def _scenario_phase():
     tol = arr([0.5, 0.5])
     sim_vals = arr([7.0, 3.0])
     tw = sw.TargetWeaver(cache_size=8)
-    tw.add_spectral_target(wl, raw, tol, 2.0, "s", "R", "e", "phase")
+    tw.add_spectral_target(wl, raw, tol, "s", "R", "e", "phase", angle_rad=0.2)
     sim = sw.OpticalWeaver(cache_size=8)
-    sim.set_data((2.0, "s", "R"), sim_vals, wl)
+    sim.set_data((0.2, "s", "R"), sim_vals, wl)
 
     def ref():
         # phase: norm_factor == 1, residual wrapped to (-pi, pi] via round.
@@ -107,9 +107,9 @@ def _scenario_above_violated():
     tol = arr([0.1] * 5)
     sim_vals = arr([1.9] * 5)  # below an "above" target -> penalised
     tw = sw.TargetWeaver(cache_size=8)
-    tw.add_spectral_target(wl, raw, tol, 3.0, "s", "R", "a", "linear")
+    tw.add_spectral_target(wl, raw, tol, "s", "R", "a", "linear", angle_rad=0.3)
     sim = sw.OpticalWeaver(cache_size=8)
-    sim.set_data((3.0, "s", "R"), sim_vals, wl)
+    sim.set_data((0.3, "s", "R"), sim_vals, wl)
 
     def ref():
         nf, scaled = _linear_norm(raw)
@@ -125,9 +125,9 @@ def _scenario_below_satisfied():
     tol = arr([0.1] * 5)
     sim_vals = arr([1.9] * 5)  # below a "below" target -> satisfied, zero
     tw = sw.TargetWeaver(cache_size=8)
-    tw.add_spectral_target(wl, raw, tol, 4.0, "s", "R", "b", "linear")
+    tw.add_spectral_target(wl, raw, tol, "s", "R", "b", "linear", angle_rad=0.4)
     sim = sw.OpticalWeaver(cache_size=8)
-    sim.set_data((4.0, "s", "R"), sim_vals, wl)
+    sim.set_data((0.4, "s", "R"), sim_vals, wl)
     return sim, tw, lambda: 0.0
 
 
@@ -135,7 +135,7 @@ def _scenario_missing():
     wl = arr([400, 500, 600])
     tw = sw.TargetWeaver(cache_size=8)
     tw.add_spectral_target(wl, arr([2.0, 2.0, 2.0]), arr([0.1] * 3),
-                           5.0, "s", "R", "e", "linear")
+                           "s", "R", "e", "linear", angle_rad=0.5)
     sim = sw.OpticalWeaver(cache_size=8)  # no data for the target key
     return sim, tw, lambda: MISSING
 
@@ -192,7 +192,7 @@ def test_merit_tolerance_inverse_square():
         wl = arr([400, 500, 600, 700, 800])
         raw = arr([1.0, 2.0, 3.0, 4.0, 5.0])
         tw = sw.TargetWeaver(cache_size=8)
-        tw.add_spectral_target(wl, raw, arr([t] * 5), 0.0, "s", "R", "e", "linear")
+        tw.add_spectral_target(wl, raw, arr([t] * 5), "s", "R", "e", "linear", angle_rad=0.0)
         sim = sw.OpticalWeaver(cache_size=8)
         sim.set_data((0.0, "s", "R"), raw + 0.05, wl)
         return sw.calculate_merit(sim, tw, MISSING)

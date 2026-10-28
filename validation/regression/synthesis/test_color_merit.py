@@ -40,7 +40,7 @@ def demand(curve="Rs", angle=0.0, quantity="Lab", reference=(60.0, 10.0, -20.0),
     cmf = {"wavelengths": wl.tolist(),
            "xyz": np.stack([x, y, z], axis=1).tolist()}
   doc = {"spectral": [], "angular": [],
-         "color": [{"curve": curve, "angle": angle,
+         "color": [{"curve": curve, "angle_deg": angle,
                     "illuminant": illum, "observer": cmf,
                     "quantity": quantity,
                     "reference": (list(reference) if isinstance(reference, (tuple, list)) else reference),
@@ -82,7 +82,7 @@ def test_xyy_channels_hex_against_oracle():
   ref = (0.35, 0.36, 0.55)
   spec = demand(quantity="XyY", reference=ref, distance="Channels",
                 weight=2.0, tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   assert spec.n_residuals() == 1 and len(got) == 1
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
@@ -100,7 +100,7 @@ def test_lab_de00_against_color_pipeline():
   ref = (62.0, 18.0, -34.0)
   spec = demand(quantity="Lab", reference=ref, distance="DeltaE2000",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -117,9 +117,9 @@ def test_missing_curve_penalty_parity():
                 distance="Channels",
                 tables=(wl, x, y, z, el, ev))
   row = np.full((1, len(wl)), 0.5)
-  full = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row})
+  full = sim_curves_from_arrays(wl, {"Rs": row}, angles_deg=np.array([0.0]))
   assert np.isfinite(spec.merit(full, 1e6))
-  empty = sim_curves_from_arrays(np.array([0.0]), wl, {})
+  empty = sim_curves_from_arrays(wl, {}, angles_deg=np.array([0.0]))
   assert spec.merit(empty, 1e6) == 1e6  # one penalty (shared key group)
   with pytest.raises(ValueError, match="Rs"):
     spec.residuals(empty)
@@ -131,7 +131,7 @@ def test_n_residuals_counts_color_as_one():
                 distance="Channels", tables=(wl, x, y, z, el, ev))
   assert spec.n_residuals() == 1
   row = np.full((1, len(wl)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row})
+  sim = sim_curves_from_arrays(wl, {"Rs": row}, angles_deg=np.array([0.0]))
   assert len(spec.residuals(sim)) == 1
 
 
@@ -140,7 +140,7 @@ def test_named_tables_resolve():
   spec = demand(quantity="Lab", reference=(60.0, 10.0, -20.0),
                 distance="DeltaE76", names=True)
   row = np.full((1, len(wl)), 0.5)
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row})
+  sim = sim_curves_from_arrays(wl, {"Rs": row}, angles_deg=np.array([0.0]))
   assert np.isfinite(spec.merit(sim, 1e6))
 
 
@@ -157,7 +157,7 @@ def test_lch_channels_against_color_pipeline():
   ref = (62.0, 18.0, 100.0)
   spec = demand(quantity="LCh", reference=ref, distance="DeltaE76",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -184,7 +184,7 @@ def test_lch_channels_hue_cut_twin():
   ref = (60.0, 20.0, h0 + 181.0)
   spec = demand(quantity="LCh", reference=ref, distance="Channels",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)[0]
   lch = C.Lab_to_LCHab(np.array([lab]))[0]
   wrap = lambda d: d - 360.0 * round(d / 360.0)
@@ -201,7 +201,7 @@ def test_oklab_channels_hex_against_pipeline():
   ref = (0.55, 0.02, -0.03)
   spec = demand(quantity="Oklab", reference=ref, distance="Channels",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -219,7 +219,7 @@ def test_y_scalar_hex_against_hand_oracle():
   row = 0.2 + 0.6 * (wl - wl[0]) / (wl[-1] - wl[0])
   spec = demand(quantity="Y", reference=0.45, distance="Channels",
                 weight=2.0, tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   assert spec.n_residuals() == 1
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
@@ -267,7 +267,7 @@ def test_domwl_against_independent_oracle():
   ref = (550.0, 0.9)
   spec = demand(quantity="DomWl", reference=ref, distance="Channels",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -289,7 +289,7 @@ def test_srgb_channels_against_pipeline():
   ref = (0.5, 0.5, 0.5)
   spec = demand(quantity="sRGB", reference=ref, distance="Channels",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -308,7 +308,7 @@ def test_luv_channels_against_pipeline():
   ref = (50.0, 10.0, -20.0)
   spec = demand(quantity="Luv", reference=ref, distance="Channels",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -325,7 +325,7 @@ def test_xyz_channels_hex_against_hand_oracle():
   ref = (0.3, 0.4, 0.2)
   spec = demand(quantity="XYZ", reference=ref, distance="Channels",
                 weight=2.0, tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -341,7 +341,7 @@ def test_din99_channels_against_numpy():
   ref = (50.0, 5.0, 5.0)
   spec = demand(quantity="Din99", reference=ref, distance="Channels",
                 tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   xyz = xyz_oracle(row.tolist(), wl.tolist(), x.tolist(), y.tolist(),
                    z.tolist(), ev.tolist())
@@ -374,7 +374,7 @@ def test_white_yellow_against_hand_oracles():
   # Whiteness pair vs closed form (1e-12; same fractions, both sides).
   wspec = demand(quantity="White", reference=(90.0, 2.0), distance="Channels",
                  tables=(wl, x, y, z, el, ev))
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = wspec.residuals(sim)
   s, ws = sum(xyz), sum(white)
   w = 100.0 * xyz[1] + 800.0 * (white[0] / ws - xyz[0] / s) + 1700.0 * (white[1] / ws - xyz[1] / s)
@@ -397,7 +397,7 @@ def test_wavelength_range_windows_the_sample_only():
   ref = (60.0, 10.0, -20.0)
   spec = demand(quantity="Lab", reference=ref, distance="DeltaE2000",
                 tables=(wl, x, y, z, el, ev), wr=[500.0, 519.0])
-  sim = sim_curves_from_arrays(np.array([0.0]), wl, {"Rs": row.reshape(1, -1)})
+  sim = sim_curves_from_arrays(wl, {"Rs": row.reshape(1, -1)}, angles_deg=np.array([0.0]))
   got = spec.residuals(sim)
   assert spec.n_residuals() == 1 and len(got) == 1
   m = (wl >= 500.0) & (wl <= 519.0)

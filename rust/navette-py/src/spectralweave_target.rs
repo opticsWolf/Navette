@@ -31,8 +31,10 @@ impl PyTargetWeaver {
         }
     }
 
-    #[pyo3(signature = (wavelengths, values, tolerances, angle, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false))]
+    #[pyo3(signature = (wavelengths, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false, *, angle_deg=None, angle_rad=None))]
     /// Ingest one target curve over wavelengths (kind e/a/b/r/c, norm mode).
+    /// The angle is `angle_deg=` or `angle_rad=` (exactly one); the key
+    /// holds it in radians, so the simulation weaver must key in radians.
     /// `band` holds optional per-point half-widths for `r`/`c` (raw units).
     /// `weight` scales the frame's merit sum; `normalize_count` divides it by
     /// the point count (target-level equal say regardless of sampling density).
@@ -44,7 +46,6 @@ impl PyTargetWeaver {
         wavelengths: PyReadonlyArray1<'_, f64>,
         values: PyReadonlyArray1<'_, f64>,
         tolerances: PyReadonlyArray1<'_, f64>,
-        angle: f64,
         polarization: String,
         spectral: String,
         kind: String,
@@ -53,7 +54,10 @@ impl PyTargetWeaver {
         weight: f64,
         normalize_count: bool,
         integral: bool,
+        angle_deg: Option<f64>,
+        angle_rad: Option<f64>,
     ) -> PyResult<()> {
+        let angle = crate::angles::pick_one("angle", angle_deg, angle_rad)?;
         let k = TargetKind::from_str(&kind).ok_or_else(|| {
             PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')")
         })?;
@@ -78,7 +82,7 @@ impl PyTargetWeaver {
                 ));
             }
         }
-        let key = OpticalKey::from((angle, polarization, spectral));
+        let key = OpticalKey::from((angle.get(), polarization, spectral));
 
         let wl_ptr = wl.as_ptr() as usize;
         let wl_len = wl.len();
@@ -141,7 +145,7 @@ impl PyTargetWeaver {
                 let (angle, polarization, spectral) = key.as_tuple();
                 let d = PyDict::new(py);
                 d.set_item("uid", frame.uid)?;
-                d.set_item("angle", angle)?;
+                d.set_item("angle_rad", angle)?;
                 d.set_item("polarization", polarization)?;
                 d.set_item("spectral", spectral)?;
                 d.set_item("wavelengths", PyArray::from_vec(py, wl.clone()))?;
@@ -166,8 +170,10 @@ impl PyTargetWeaver {
         Ok(out)
     }
 
-    #[pyo3(signature = (wavelength, angles, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false))]
+    #[pyo3(signature = (wavelength, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false, *, angles_deg=None, angles_rad=None))]
     /// Ingest one target curve over angles (kind e/a/b/r/c, norm mode).
+    /// The grid is `angles_deg=` or `angles_rad=` (exactly one); the keys
+    /// hold it in radians.
     /// `band` holds optional per-point half-widths for `r`/`c` (raw units).
     /// `weight` scales the target's merit sum; `normalize_count` divides by
     /// the TARGET-level angle count (shared across this target's single-point
@@ -177,7 +183,6 @@ impl PyTargetWeaver {
         &self,
         py: Python<'_>,
         wavelength: f64,
-        angles: PyReadonlyArray1<'_, f64>,
         values: PyReadonlyArray1<'_, f64>,
         tolerances: PyReadonlyArray1<'_, f64>,
         polarization: String,
@@ -188,7 +193,10 @@ impl PyTargetWeaver {
         weight: f64,
         normalize_count: bool,
         integral: bool,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
+        let angs = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let k = TargetKind::from_str(&kind).ok_or_else(|| {
             PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')")
         })?;
@@ -202,7 +210,6 @@ impl PyTargetWeaver {
                 "integral targets reject normalize_count (the mean already is one)",
             ));
         }
-        let angs = angles.as_slice()?;
         let vals = values.as_slice()?;
         let tols = tolerances.as_slice()?;
         let band_sl = band.as_ref().map(|b| b.as_slice()).transpose()?;
@@ -218,7 +225,6 @@ impl PyTargetWeaver {
         // it across points (per-point resolution would weight each angle by
         // its own magnitude, unlike spectral targets).
         let (shared_mode, shared_nf) = TargetWeaver::resolve_norm(vals, &norm_mode);
-        let a_ptr = angs.as_ptr() as usize;
         let a_len = angs.len();
         let v_ptr = vals.as_ptr() as usize;
         let v_len = vals.len();
@@ -232,7 +238,6 @@ impl PyTargetWeaver {
         let spec = spectral.clone();
 
         py.detach(move || -> PyResult<()> {
-            let a_data = unsafe { std::slice::from_raw_parts(a_ptr as *const f64, a_len) };
             let v_data = unsafe { std::slice::from_raw_parts(v_ptr as *const f64, v_len) };
             let t_data = unsafe { std::slice::from_raw_parts(t_ptr as *const f64, t_len) };
             let b_data: &[f64] = if band_len == 0 {
@@ -248,7 +253,7 @@ impl PyTargetWeaver {
                 .map_err(PyValueError::new_err)?;
 
             for i in 0..a_len {
-                let key = OpticalKey::from((a_data[i], pol.clone(), spec.clone()));
+                let key = OpticalKey::from((angs[i].get(), pol.clone(), spec.clone()));
                 let val_arr = vec![v_data[i]];
                 let tol_arr = vec![t_data[i]];
                 let band_arr = if b_data.is_empty() {
@@ -330,17 +335,21 @@ fn kind_contribution(kind: TargetKind, scaled_diff: f64, tol: f64, band: f64) ->
 #[pyfunction]
 #[pyo3(signature = (sim_weaver, target_weaver, missing_penalty=1e6))]
 /// Merit of simulated weaves vs targets (exact/above/below residuals).
+/// A target key with no simulated curve costs `missing_penalty` and warns:
+/// keys match bit for bit and target angles are radians, so a simulation
+/// keyed in degrees would otherwise match nothing without a word.
 pub fn calculate_merit(
     py: Python<'_>,
     sim_weaver: &PyOpticalWeaver,
     target_weaver: &PyTargetWeaver,
     missing_penalty: f64,
-) -> f64 {
+) -> PyResult<f64> {
     let sim_core = sim_weaver.inner.clone();
     let tw_core = target_weaver.inner.clone();
 
-    py.detach(move || {
+    let (merit, missing) = py.detach(move || {
         let mut total_merit = 0.0;
+        let mut missing: Vec<OpticalKey> = Vec::new();
         let target_keys = tw_core.inner.inner.keys();
         let meta_guard = tw_core.target_metadata.read();
 
@@ -350,6 +359,7 @@ pub fn calculate_merit(
                 Ok((w, v)) if !w.is_empty() => (w, v),
                 _ => {
                     total_merit += missing_penalty;
+                    missing.push(key.clone());
                     continue;
                 }
             };
@@ -471,6 +481,23 @@ pub fn calculate_merit(
                 }
             }
         }
-        total_merit
-    })
+        (total_merit, missing)
+    });
+    if let Some(first) = missing.first() {
+        let (angle, polarization, spectral) = first.as_tuple();
+        let msg = format!(
+            "calculate_merit: {} target key(s) have no simulated curve and cost \
+missing_penalty, e.g. ({angle}, {polarization:?}, {spectral:?}). Keys match bit for \
+bit and target angles are radians: key the simulation weaver in radians",
+            missing.len()
+        );
+        let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+        PyErr::warn(
+            py,
+            &user_warning,
+            std::ffi::CString::new(msg)?.as_c_str(),
+            1,
+        )?;
+    }
+    Ok(merit)
 }

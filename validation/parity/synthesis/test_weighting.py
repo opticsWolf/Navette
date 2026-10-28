@@ -50,7 +50,7 @@ def spec_merit(tc, sim):
 
 
 def flat_sim(rows):
-    return sim_curves_from_arrays(np.array([0.0]), WL, rows)
+    return sim_curves_from_arrays(WL, rows, angles_deg=np.array([0.0]))
 
 
 def test_density():
@@ -61,7 +61,7 @@ def test_density():
         wl = np.linspace(400.0, 600.0, n)
         tc = TargetCollection()
         tc.add(SpectralTarget(wl, np.full(n, base["tv"]), np.full(n, base["tol"]),
-                              0.0, "s", "R"))
+                              "s", "R", angle_deg=0.0))
         tw = tc.build_weaver()
         sw = SimulationWeaver()
         sw.add_fragment(OpticalFragment(wl, np.full(n, base["sv"]), 0.0, "s", "R"))
@@ -74,7 +74,7 @@ def test_density():
         wl = np.linspace(400.0, 600.0, n)
         tc = TargetCollection()
         tc.add(SpectralTarget(wl, np.full(n, base["tv"]), np.full(n, base["tol"]),
-                              0.0, "s", "R", normalize_count=True))
+                              "s", "R", normalize_count=True, angle_deg=0.0))
         tw = tc.build_weaver()
         sw = SimulationWeaver()
         sw.add_fragment(OpticalFragment(wl, np.full(n, base["sv"]), 0.0, "s", "R"))
@@ -86,7 +86,7 @@ def test_density():
     tc = TargetCollection()
     tc.add(SpectralTarget(wl, np.full(200, base["tv"]),
                           np.full(200, base["tol"] * np.sqrt(200)),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     tw = tc.build_weaver()
     sw = SimulationWeaver()
     sw.add_fragment(OpticalFragment(wl, np.full(200, base["sv"]), 0.0, "s", "R"))
@@ -95,11 +95,11 @@ def test_density():
           f"{recipe:.6f} vs {normed[200]:.6f}")
     # weight scales.
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.full(3, 0.6), np.full(3, 0.05), 0.0, "s", "R",
-                          weight=3.0))
+    tc.add(SpectralTarget(WL, np.full(3, 0.6), np.full(3, 0.05), "s", "R",
+                          weight=3.0, angle_deg=0.0))
     m = weaver_merit(tc, [((0.0, "s", "R"), np.full(3, 0.61))])
     tc0 = TargetCollection()
-    tc0.add(SpectralTarget(WL, np.full(3, 0.6), np.full(3, 0.05), 0.0, "s", "R"))
+    tc0.add(SpectralTarget(WL, np.full(3, 0.6), np.full(3, 0.05), "s", "R", angle_deg=0.0))
     m0 = weaver_merit(tc0, [((0.0, "s", "R"), np.full(3, 0.61))])
     check("weight x3", abs(m / m0 - 3.0) < 1e-12, f"{m:.6f} vs {m0:.6f}")
 
@@ -108,8 +108,8 @@ def test_angular_count():
     print("--- angular target-level count ---")
     tc = TargetCollection()
     angs = np.array([0.0, 5.0, 10.0, 15.0])
-    tc.add(AngularTarget(500.0, angs, np.full(4, 0.6), np.full(4, 0.05),
-                         "s", "R", normalize_count=True))
+    tc.add(AngularTarget(500.0, np.full(4, 0.6), np.full(4, 0.05),
+                         "s", "R", normalize_count=True, angles_deg=angs))
     tw = tc.build_weaver()
     sw = SimulationWeaver()
     sw.add_fragment(OpticalFragment(WL, np.full(3, 0.61), 0.0, "s", "R"))
@@ -125,8 +125,8 @@ def test_angular_count():
 def test_integral_hand():
     print("--- integral hand calcs ---")
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.1), 0.0, "s", "R",
-                          kind="e", integral=True))
+    tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.1), "s", "R",
+                          kind="e", integral=True, angle_deg=0.0))
     m = weaver_merit(tc, [((0.0, "s", "R"), R_VALS)])
     # nf = 1/0.5 = 2; d = (R-0.5)*2 = [0.04, 0.22, 0.38]; mean = 0.64/3;
     # R = dbar/0.1 = 2.1333 -> 4.5511.
@@ -135,14 +135,14 @@ def test_integral_hand():
           f"got={m:.6f} expect={expect:.6f}")
     # integral-a: mean above -> 0 even though one point dips.
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.1), 0.0, "s", "R",
-                          kind="a", integral=True))
+    tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.1), "s", "R",
+                          kind="a", integral=True, angle_deg=0.0))
     m = weaver_merit(tc, [((0.0, "s", "R"), np.array([0.7, 0.7, 0.4]))])
     check("integral-a mean-above silent", m == 0.0, f"got={m:.6f}")
     # weight x integral.
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.1), 0.0, "s", "R",
-                          kind="e", integral=True, weight=2.0))
+    tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.1), "s", "R",
+                          kind="e", integral=True, weight=2.0, angle_deg=0.0))
     m = weaver_merit(tc, [((0.0, "s", "R"), R_VALS)])
     check("weight x integral", abs(m - 2 * expect) < 1e-9, f"got={m:.6f}")
 
@@ -151,16 +151,16 @@ def test_mixed_run():
     print("--- mixed regular + integral + PD in one run ---")
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.array([0.5, 0.6, 0.7]), np.full(3, 0.05),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.3, 0.3, 0.3]), np.full(3, 0.05),
-                          5.0, "s", "T", kind="a", integral=True))
-    tc.add(AngularTarget(500.0, np.array([0.0, 10.0]), np.array([0.5, 0.6]),
+                          "s", "T", kind="a", integral=True, angle_deg=5.0))
+    tc.add(AngularTarget(500.0, np.array([0.5, 0.6]),
                          np.array([0.05, 0.05]), "s", "R", kind="e",
-                         normalize_count=True))
+                         normalize_count=True, angles_deg=np.array([0.0, 10.0])))
     rows = {"Rs": np.array([R_VALS, R_VALS, np.array([0.55, 0.62, 0.70])]),
             "Ts": np.array([np.array([0.28, 0.31, 0.33])] * 3)}
     angs = np.array([0.0, 5.0, 10.0])
-    sim = sim_curves_from_arrays(angs, WL, rows)
+    sim = sim_curves_from_arrays(WL, rows, angles_deg=angs)
     m_spec = spec_merit(tc, sim)
     # weaver side needs matching fragments.
     tw = tc.build_weaver()
@@ -183,18 +183,18 @@ def test_fold_mixed():
     angs = np.array([0.0, 5.0, 10.0])
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.array([0.5, 0.6, 0.7]), np.full(3, 0.05),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.5, 0.5, 0.5]), np.full(3, 0.05),
-                          5.0, "s", "R", kind="e", integral=True))
+                          "s", "R", kind="e", integral=True, angle_deg=5.0))
     tc.add(SpectralTarget(WL, np.array([0.3, 0.3, 0.3]), np.full(3, 0.05),
-                          10.0, "s", "T", kind="a"))
+                          "s", "T", kind="a", angle_deg=10.0))
     spec = build_merit_spec(tc)
     r0 = np.array([0.52, 0.61, 0.69])
     r1 = np.array([0.55, 0.60, 0.65])
     rows = {"Rs": np.array([r0, r1, r1]),
             "Ts": np.array([np.array([0.28, 0.29, 0.30])] * 3)}
-    sim = sim_curves_from_arrays(angs, WL, rows)
-    folded = build_needle_targets(spec, angs, WL, sim)
+    sim = sim_curves_from_arrays(WL, rows, angles_deg=angs)
+    folded = build_needle_targets(spec, WL, sim, angles_deg=angs)
     w = np.asarray(folded["r"]["weights"]).reshape(3, 3)
     t = np.asarray(folded["r"]["targets"]).reshape(3, 3)
     s1 = r1
@@ -210,8 +210,8 @@ def test_fold_mixed():
     h = 1e-7
     rows_hi = dict(rows, Rs=np.array([r0, r1 + h, r1]))
     rows_lo = dict(rows, Rs=np.array([r0, r1 - h, r1]))
-    sim_hi = sim_curves_from_arrays(angs, WL, rows_hi)
-    sim_lo = sim_curves_from_arrays(angs, WL, rows_lo)
+    sim_hi = sim_curves_from_arrays(WL, rows_hi, angles_deg=angs)
+    sim_lo = sim_curves_from_arrays(WL, rows_lo, angles_deg=angs)
     fd = (spec.merit(sim_hi, 1e6) - spec.merit(sim_lo, 1e6)) / (2 * h)
     check("integral FD == folded sum", abs(fd - float(np.sum(gs))) < 1e-6,
           f"fd={fd:.4f} folded={float(np.sum(gs)):.4f}")
@@ -221,14 +221,14 @@ def test_errors():
     print("--- error paths ---")
     cases = [
         ("py integral+count", lambda: SpectralTarget(
-            WL, np.full(3, 0.5), np.full(3, 0.1), 0.0, "s", "R",
-            integral=True, normalize_count=True)),
+            WL, np.full(3, 0.5), np.full(3, 0.1), "s", "R",
+            integral=True, normalize_count=True, angle_deg=0.0)),
         ("py neg weight", lambda: SpectralTarget(
-            WL, np.full(3, 0.5), np.full(3, 0.1), 0.0, "s", "R",
-            weight=-1.0)),
+            WL, np.full(3, 0.5), np.full(3, 0.1), "s", "R",
+            weight=-1.0, angle_deg=0.0)),
         ("py nan weight", lambda: SpectralTarget(
-            WL, np.full(3, 0.5), np.full(3, 0.1), 0.0, "s", "R",
-            weight=float("nan"))),
+            WL, np.full(3, 0.5), np.full(3, 0.1), "s", "R",
+            weight=float("nan"), angle_deg=0.0)),
     ]
     for name, thunk in cases:
         try:
@@ -239,7 +239,7 @@ def test_errors():
     # binding-level combo + bad count.
     from navette._smatrix import MeritSpec
     ms = MeritSpec()
-    ki = ms.add_key(0.0, "Rs")
+    ki = ms.add_key("Rs", angle_deg=0.0)
     try:
         ms.add_target(ki, WL.copy(), np.full(3, 0.5), np.full(3, 0.1),
                       "e", "linear", 1.0, integral=True, count_norm=3.0)

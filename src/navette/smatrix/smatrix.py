@@ -15,7 +15,7 @@ Conventions
 * ``layer_indices`` is complex, shape ``(n_layers, n_wavs)`` — row 0 is the
   ambient/incident medium, the last row is the substrate. A 1-D array of length
   ``n_layers`` is accepted and treated as wavelength-independent.
-* Angles are in degrees by default (pass ``angles_in_radians=True`` to override).
+* Angles name their unit: pass exactly one of ``angles_deg=`` or ``angles_rad=``.
 * ``thicknesses``, ``incoherent_flags`` and the two roughness arrays are
   per-layer (length ``n_layers``). Roughness entry ``k`` describes the interface
   at the *front* of layer ``k`` (so ambient entries are unused); ambient and
@@ -460,27 +460,11 @@ def _validate_wavelengths(w: np.ndarray) -> None:
             )
 
 
-def _validate_angles(theta: np.ndarray, in_radians: bool) -> None:
-    """Finite, and within the physical incidence quadrant.
-
-    Only ``sin(theta)`` reaches the engine, so 120 deg silently became 60 deg
-    and returned plausible numbers for an angle the caller never asked for.
-    """
-    where = _first_bad(~np.isfinite(theta))
-    if where is not None:
-        raise ValueError(
-            f"`angles`: non-finite value at index {where}: {float(theta[where])}."
-        )
-    hi = (np.pi / 2.0) if in_radians else 90.0
-    unit = "rad" if in_radians else "deg"
-    where = _first_bad((theta < 0.0) | (theta > hi))
-    if where is not None:
-        raise ValueError(
-            f"`angles`: out of range at index {where}: {float(theta[where])} "
-            f"{unit}. Angle of incidence must satisfy 0 <= theta <= {hi} "
-            f"{unit}; the engine uses sin(theta) only, so an angle outside "
-            f"that range silently aliases onto its mirror."
-        )
+def _grid(angles) -> Optional[np.ndarray]:
+    """An angle grid as the native door takes it; ``None`` stays ``None``."""
+    if angles is None:
+        return None
+    return np.ascontiguousarray(angles, dtype=np.float64).ravel()
 
 
 # ─── Eigenmode result container ──────────────────────────────────────────────
@@ -583,8 +567,8 @@ class ScatterMatrix:
         Physical thickness per layer (same length unit as ``wavelengths``).
         Ambient and substrate should be 0.
     wavelengths : float array, shape (n_wavs,)
-    angles : float or float array
-        Angle(s) of incidence, degrees unless ``angles_in_radians=True``.
+    angles_deg, angles_rad : float or float array
+        Angle(s) of incidence, in degrees or in radians. Give exactly one.
     incoherent_flags : int array, shape (n_layers,), optional
         Non-zero where a layer breaks phase coherence. Default all-zero (fully
         coherent boundaries). Any non-zero value means the same thing: the
@@ -635,8 +619,6 @@ class ScatterMatrix:
         off.
     coherence_mode : CoherenceMode, optional
         Default ``FRONT_BLOCK``.
-    angles_in_radians : bool, optional
-        Treat ``angles`` as radians. Default False (degrees).
 
     Raises
     ------
@@ -652,9 +634,11 @@ class ScatterMatrix:
           descending grids are rejected rather than sorted, because sorting
           would desynchronize the grid from the caller's own
           wavelength-indexed arrays;
-        * ``angles`` finite and within ``0 <= theta <= 90`` degrees (or
-          ``pi/2`` radians): only ``sin(theta)`` reaches the engine, so a
-          larger angle would alias onto its mirror.
+        * exactly one of ``angles_deg`` / ``angles_rad``, finite and within
+          ``0 <= theta <= 90`` degrees (``pi/2`` radians): only
+          ``sin(theta)`` reaches the engine, so a larger angle would alias
+          onto its mirror. A grid in degrees passed as ``angles_rad`` fails
+          here (30 rad is out of range).
 
         The native ``Solver`` underneath stays permissive for internal
         callers; there is no opt-out at this layer.
@@ -675,19 +659,18 @@ class ScatterMatrix:
         thicknesses: Sequence[float],
         *,
         wavelengths: Sequence[float],
-        angles: Union[float, Sequence[float]],
+        angles_deg: Union[float, Sequence[float], None] = None,
+        angles_rad: Union[float, Sequence[float], None] = None,
         incoherent_flags: Optional[Sequence[int]] = None,
         roughness_types: Optional[Sequence[int]] = None,
         roughness_values: Optional[Sequence[float]] = None,
         coherence_mode: Union[CoherenceMode, int] = CoherenceMode.FRONT_BLOCK,
-        angles_in_radians: bool = False,
         roughness_cap: float = 2.0,
     ):
         # Thin over the native Solver: validation, normalization and the
         # solve itself live in Rust. Array views below stay for the
         # needle driver (ported in R1c) and eigen slicing (R1c).
         wavls = np.ascontiguousarray(wavelengths, dtype=np.float64).ravel()
-        theta = np.ascontiguousarray(angles, dtype=np.float64).ravel()
         raw_idx = np.asarray(layer_indices, dtype=np.complex128)
         if raw_idx.ndim == 1:
             n_layers = raw_idx.shape[0]
@@ -702,24 +685,24 @@ class ScatterMatrix:
         _validate_indices(idx2d)
         idx2d = _sanitize_incident_medium(idx2d)
         _validate_wavelengths(wavls)
-        _validate_angles(theta, bool(angles_in_radians))
         if thick is not None:
             _validate_thicknesses(thick)
 
         self._native = _NativeSolver(
-            wavls, theta, np.ascontiguousarray(idx2d).ravel(), n_layers,
+            wavls, np.ascontiguousarray(idx2d).ravel(), n_layers,
             thicknesses=thick,
             incoherent_flags=None if incoherent_flags is None else np.ascontiguousarray(incoherent_flags, dtype=np.int32).ravel(),
             roughness_types=None if roughness_types is None else np.ascontiguousarray(roughness_types, dtype=np.int32).ravel(),
             roughness_values=None if roughness_values is None else np.ascontiguousarray(roughness_values, dtype=np.float64).ravel(),
             coherence_mode=int(coherence_mode),
-            angles_in_radians=bool(angles_in_radians),
             roughness_cap=float(roughness_cap),
+            angles_deg=_grid(angles_deg),
+            angles_rad=_grid(angles_rad),
         )
         self.roughness_cap = self._native.roughness_cap
         self.wavls = wavls
         self.n_wavs = wavls.size
-        self.n_angles = theta.size
+        self.n_angles = self._native.n_angles
         self.n_layers = n_layers
         self.coherence_mode = CoherenceMode(int(coherence_mode))
         self.thicknesses = self._as_layer_array(thicknesses, np.float64, "thicknesses", 0.0)
@@ -735,10 +718,9 @@ class ScatterMatrix:
         self._indices = np.ascontiguousarray(idx2d)
         self._indices_wav_major = np.ascontiguousarray(idx2d.T)
         self._n_stack_cache = self._indices_wav_major.view(np.float64).ravel()
-        self.sin_theta = np.ascontiguousarray(
-            np.sin(theta) if angles_in_radians else np.sin(np.radians(theta)),
-            dtype=np.float64,
-        )
+        # The solver's own sines: the needle kernels must see the grid the
+        # solve used, bit for bit.
+        self.sin_theta = np.ascontiguousarray(self._native.sin_theta)
         self._warn_about_flags()
 
     def _warn_about_flags(self) -> None:

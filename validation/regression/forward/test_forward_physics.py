@@ -102,7 +102,7 @@ def _engine(ns, ds, wl, angles=DENSE_ANGLES, **kw):
   d = [0.0, *ds, 0.0]
   with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
-    sm = ScatterMatrix(idx, d, wavelengths=wl, angles=angles, **kw)
+    sm = ScatterMatrix(idx, d, wavelengths=wl, angles_deg=angles, **kw)
   return sm
 
 
@@ -342,8 +342,8 @@ def test_solve_structure_door_matches_scatter_matrix(name):
     want = C.engine_outputs(case, rows, wl)
     with warnings.catch_warnings():
       warnings.simplefilter("ignore", UserWarning)
-      got = solve_structure(C.build_structure(case, wl), wl, list(C.ANGLES), request=mask,
-                            coherence_mode=opts["coherence_mode"])
+      got = solve_structure(C.build_structure(case, wl), wl, request=mask,
+                            coherence_mode=opts["coherence_mode"], angles_deg=list(C.ANGLES))
     assert sorted(got) == sorted(want)
     for k in want:
       assert np.array_equal(np.asarray(got[k]), want[k], equal_nan=True), (rng, k)
@@ -382,9 +382,9 @@ def test_multi_angle_synthesis_reads_each_angle():
   angles = np.array([0.0, 30.0, 60.0])
   spec = S.MeritSpec()
   for a in angles:
-    spec.add_target(spec.add_key(float(a), "Rs"), wl, np.zeros(wl.size), np.ones(wl.size),
+    spec.add_target(spec.add_key("Rs", angle_deg=float(a)), wl, np.zeros(wl.size), np.ones(wl.size),
                     "e", "linear", 1.0)
-  got = np.asarray(spec.residuals(S.SmatrixContext(spec, angles, wl).simulate(stack)))
+  got = np.asarray(spec.residuals(S.SmatrixContext(spec, wl, angles_deg=angles).simulate(stack)))
   want = C.engine_outputs(case, rows, wl, angles)["Rs"]
   assert np.max(np.abs(got.reshape(want.shape) - want)) < 1e-13
 

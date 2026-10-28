@@ -35,7 +35,9 @@ pub struct SpectralTarget {
     pub wavelengths: Vec<f64>,
     pub values: Vec<f64>,
     pub tolerances: Vec<f64>,
-    #[serde(with = "crate::smatrix::angle::serde_degrees")]
+    /// JSON `"angle_deg"` or `"angle_rad"` (see [`TargetSet::from_value`]),
+    /// held in radians.
+    #[serde(rename = "angle_rad", with = "crate::smatrix::angle::serde_radians")]
     pub angle: Radians,
     pub polarization: String,
     pub spectral: String,
@@ -68,7 +70,12 @@ pub struct SpectralTarget {
 #[serde(deny_unknown_fields)]
 pub struct AngularTarget {
     pub wavelength: f64,
-    #[serde(with = "crate::smatrix::angle::serde_degrees_vec")]
+    /// JSON `"angles_deg"` or `"angles_rad"` (see [`TargetSet::from_value`]),
+    /// held in radians.
+    #[serde(
+        rename = "angles_rad",
+        with = "crate::smatrix::angle::serde_radians_vec"
+    )]
     pub angles: Vec<Radians>,
     pub values: Vec<f64>,
     pub tolerances: Vec<f64>,
@@ -162,7 +169,9 @@ pub enum ReferenceJson {
 #[serde(deny_unknown_fields)]
 pub struct ColorTargetJson {
     pub curve: String,
-    #[serde(with = "crate::smatrix::angle::serde_degrees")]
+    /// JSON `"angle_deg"` or `"angle_rad"` (see [`TargetSet::from_value`]),
+    /// held in radians.
+    #[serde(rename = "angle_rad", with = "crate::smatrix::angle::serde_radians")]
     pub angle: Radians,
     pub illuminant: IllumJson,
     pub observer: CmfJson,
@@ -242,6 +251,75 @@ pub struct TargetSet {
     /// read is a tag that is not checked at all.
     #[serde(default)]
     pub environments: Vec<String>,
+}
+
+impl TargetSet {
+    /// Parse a target-set document (JSON text). See [`TargetSet::from_value`].
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        Self::from_value(doc)
+    }
+
+    /// Parse a target-set document. Every spectral and color target names
+    /// its angle in exactly one unit, `"angle_deg"` or `"angle_rad"`, and
+    /// every angular target its grid, `"angles_deg"` or `"angles_rad"`.
+    /// Both, neither, or the old unit-less `"angle"` / `"angles"` key is an
+    /// error naming the two keys. Degrees convert here, through
+    /// `Radians::from_degrees`, the one degree formula in the crate.
+    pub fn from_value(mut doc: serde_json::Value) -> Result<Self, String> {
+        resolve_angle_keys(&mut doc)?;
+        serde_json::from_value(doc).map_err(|e| e.to_string())
+    }
+}
+
+/// Rewrite each target's `*_deg` / `*_rad` angle key to the `*_rad` key
+/// the structs read. Radians pass through; the struct's adapter checks
+/// their range.
+fn resolve_angle_keys(doc: &mut serde_json::Value) -> Result<(), String> {
+    use crate::smatrix::angle::{Radians, degrees_slice};
+    use serde_json::Value;
+    for (section, stem) in [
+        ("spectral", "angle"),
+        ("color", "angle"),
+        ("angular", "angles"),
+    ] {
+        let Some(items) = doc.get_mut(section).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for (i, item) in items.iter_mut().enumerate() {
+            let Some(obj) = item.as_object_mut() else {
+                continue;
+            };
+            let (deg_key, rad_key) = (format!("{stem}_deg"), format!("{stem}_rad"));
+            let pair = format!("\"{deg_key}\" or \"{rad_key}\"");
+            if obj.contains_key(stem) {
+                return Err(format!(
+                    "{section}[{i}]: the key \"{stem}\" is no longer read; give {pair}"
+                ));
+            }
+            match (obj.remove(&deg_key), obj.contains_key(&rad_key)) {
+                (Some(_), true) => {
+                    return Err(format!(
+                        "{section}[{i}]: give exactly one of {pair}, not both"
+                    ));
+                }
+                (None, false) => return Err(format!("{section}[{i}]: give exactly one of {pair}")),
+                (None, true) => {}
+                (Some(deg), false) => {
+                    let bad = || format!("{section}[{i}].{deg_key}: expected a number");
+                    let rad = if stem == "angle" {
+                        let d = deg.as_f64().ok_or_else(bad)?;
+                        Value::from(Radians::from_degrees(d)?.get())
+                    } else {
+                        let d: Vec<f64> = serde_json::from_value(deg).map_err(|_| bad())?;
+                        degrees_slice(&d)?.iter().map(|a| a.get()).collect()
+                    };
+                    obj.insert(rad_key, rad);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn d_cache() -> usize {
@@ -1347,12 +1425,7 @@ mod tests {
         // field; domain refusals like lo<hi above carry the names).
         let mut v = serde_json::to_value(color_set()).unwrap();
         v["color"][0]["wavelength_range"] = serde_json::json!([500.0, 520.0, 540.0]);
-        assert!(
-            serde_json::from_value::<TargetSet>(v)
-                .unwrap_err()
-                .to_string()
-                .contains("length")
-        );
+        assert!(TargetSet::from_value(v).unwrap_err().contains("length"));
     }
 
     #[test]
@@ -1404,13 +1477,13 @@ mod tests {
         let doc = serde_json::json!({
           "spectral": [], "angular": [],
           "color": [{
-            "curve": "Rs", "angle": 0.0,
+            "curve": "Rs", "angle_deg": 0.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "DomWl", "reference": [550.0, 0.9],
             "distance": "Channels",
           }],
         });
-        let set: TargetSet = serde_json::from_value(doc).unwrap();
+        let set = TargetSet::from_value(doc).unwrap();
         let spec = compile_merit_spec(&set).unwrap();
         assert_eq!(spec.color_demands().len(), 1);
         assert_eq!(spec.n_residuals(), 1);
@@ -1423,13 +1496,13 @@ mod tests {
         let doc = serde_json::json!({
           "spectral": [], "angular": [],
           "color": [{
-            "curve": "Ru", "angle": 0.0,
+            "curve": "Ru", "angle_deg": 0.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "Lab", "reference": [1.0, 2.0],
             "distance": "DeltaE2000",
           }],
         });
-        let set: TargetSet = serde_json::from_value(doc).unwrap();
+        let set = TargetSet::from_value(doc).unwrap();
         // A 2-array is a Pair (DomWl shape) — refused here by the shape gate.
         assert!(
             compile_merit_spec(&set)
@@ -1440,23 +1513,20 @@ mod tests {
         let doc4 = serde_json::json!({
           "spectral": [], "angular": [],
           "color": [{
-            "curve": "Ru", "angle": 0.0,
+            "curve": "Ru", "angle_deg": 0.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "Lab", "reference": [1.0, 2.0, 3.0, 4.0],
             "distance": "DeltaE2000",
           }],
         });
-        let set4: TargetSet = serde_json::from_value(doc4).unwrap();
+        let set4 = TargetSet::from_value(doc4).unwrap();
         assert!(
             compile_merit_spec(&set4)
                 .unwrap_err()
                 .contains("[3] triple")
         );
         // Unknown top-level keys still denied.
-        assert!(
-            serde_json::from_value::<TargetSet>(serde_json::json!({"color": [], "bogus": 1}))
-                .is_err()
-        );
+        assert!(TargetSet::from_value(serde_json::json!({"color": [], "bogus": 1})).is_err());
     }
 
     #[test]
@@ -1493,12 +1563,70 @@ mod tests {
     }
 
     #[test]
+    fn target_json_names_the_angle_unit() {
+        let spectral = |angle: serde_json::Value| {
+            let mut t = serde_json::json!({
+                "wavelengths": [500.0], "values": [0.5], "tolerances": [0.1],
+                "polarization": "s", "spectral": "R",
+            });
+            for (k, v) in angle.as_object().unwrap() {
+                t[k] = v.clone();
+            }
+            TargetSet::from_value(serde_json::json!({"spectral": [t]}))
+        };
+        let d = spectral(serde_json::json!({"angle_deg": 37.3})).unwrap();
+        let r = spectral(serde_json::json!({"angle_rad": 37.3f64.to_radians()})).unwrap();
+        assert_eq!(d.spectral[0].angle, Radians::from_degrees(37.3).unwrap());
+        assert_eq!(d.spectral[0].angle, r.spectral[0].angle);
+        for (doc, needle) in [
+            (serde_json::json!({"angle": 30.0}), "no longer read"),
+            (
+                serde_json::json!({"angle_deg": 30.0, "angle_rad": 0.5}),
+                "not both",
+            ),
+            (
+                serde_json::json!({}),
+                "exactly one of \"angle_deg\" or \"angle_rad\"",
+            ),
+            (serde_json::json!({"angle_rad": 30.0}), "30 rad"),
+            (serde_json::json!({"angle_deg": 91.0}), "91 deg"),
+        ] {
+            let err = spectral(doc).unwrap_err();
+            assert!(err.contains(needle), "{err}");
+        }
+        let ang = |grid: serde_json::Value| {
+            let mut t = serde_json::json!({
+                "wavelength": 500.0, "values": [0.5, 0.5], "tolerances": [0.1, 0.1],
+                "polarization": "s", "spectral": "R",
+            });
+            for (k, v) in grid.as_object().unwrap() {
+                t[k] = v.clone();
+            }
+            TargetSet::from_value(serde_json::json!({"angular": [t]}))
+        };
+        let a = ang(serde_json::json!({"angles_deg": [0.0, 45.0]})).unwrap();
+        assert_eq!(a.angular[0].angles[1], Radians::from_degrees(45.0).unwrap());
+        assert!(
+            ang(serde_json::json!({"angles": [0.0]}))
+                .unwrap_err()
+                .contains("no longer read")
+        );
+        // Serialized sets carry radians and parse back unchanged.
+        let text = serde_json::to_string(&d).unwrap();
+        assert!(text.contains("\"angle_rad\""), "{text}");
+        assert_eq!(
+            TargetSet::from_json(&text).unwrap().spectral[0].angle,
+            d.spectral[0].angle
+        );
+    }
+
+    #[test]
     fn color_target_set_json_roundtrips() {
         // Serialize -> parse -> compile: same demands, same white (schema v1
         // carries color demands without loss).
         let set = color_set();
         let text = serde_json::to_string(&set).unwrap();
-        let back: TargetSet = serde_json::from_str(&text).unwrap();
+        let back = TargetSet::from_json(&text).unwrap();
         assert_eq!(back.color.len(), 1);
         let a = compile_merit_spec(&set).unwrap();
         let b = compile_merit_spec(&back).unwrap();

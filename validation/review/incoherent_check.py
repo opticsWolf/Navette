@@ -81,7 +81,7 @@ def _solve(idx, thick, req, *, flags=None, mode=CoherenceMode.FRONT_BLOCK,
         sm = ScatterMatrix(
             np.asarray(idx, dtype=complex), list(thick),
             wavelengths=np.asarray(wls if wls is not None else [550.0], float),
-            angles=list(angles), incoherent_flags=flags, coherence_mode=mode,
+            angles_deg=list(angles), incoherent_flags=flags, coherence_mode=mode,
         )
         return sm.compute(req, squeeze=False)
 

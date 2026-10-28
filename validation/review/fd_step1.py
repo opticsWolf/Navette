@@ -32,7 +32,7 @@ ANGLES = [0.0, 30.0]
 
 def stack_with(d=None):
     dd = D.copy() if d is None else np.asarray(d, float)
-    return ScatterMatrix(N, dd, wavelengths=WLS, angles=ANGLES)
+    return ScatterMatrix(N, dd, wavelengths=WLS, angles_deg=ANGLES)
 
 
 def solver_curves(st):
@@ -47,7 +47,7 @@ def solver_curves(st):
 
 def sim_from(st, total_d):
     out = solver_curves(st)
-    sim = SimCurves(np.array(ANGLES, float), WLS, total_d, 1.0, 1.52)
+    sim = SimCurves(WLS, total_d, 1.0, 1.52, angles_deg=np.array(ANGLES, float))
     sim.set_curve("Rs", np.ascontiguousarray(rs.ravel()))
     sim.set_curve("Ts", np.ascontiguousarray(ts.ravel()))
     sim.set_complex("Rs", np.ascontiguousarray(rs_c.ravel().astype(np.complex128)))
@@ -57,17 +57,17 @@ def sim_from(st, total_d):
 def build_spec():
     spec = MeritSpec()
     wl_e = np.ascontiguousarray(WLS[::5])   # exact target on coarse grid
-    key = spec.add_key(30.0, "Rs")
+    key = spec.add_key("Rs", angle_deg=30.0)
     spec.add_target(key, wl_e, 0.32 * np.ones(wl_e.size),
                     0.05 * np.ones(wl_e.size), "e", "linear", 1.0, None,
                     False, None, 1.7, None, False)
     # above-target on T at 30 deg, log transform
-    keyT = spec.add_key(30.0, "Ts")
+    keyT = spec.add_key("Ts", angle_deg=30.0)
     spec.add_target(keyT, wl_e, 0.80 * np.ones(wl_e.size),
                     0.10 * np.ones(wl_e.size), "a", "log", 1.0, None,
                     False, None, 1.3, None, False)
     # range band on R at 0 deg
-    keyR0 = spec.add_key(0.0, "Rs")
+    keyR0 = spec.add_key("Rs", angle_deg=0.0)
     wls_c = np.ascontiguousarray(WLS)
     spec.add_target(keyR0, wls_c, 0.10 * np.ones(WLS.size),
                     0.02 * np.ones(WLS.size), "r", "linear", 1.0,
@@ -138,7 +138,7 @@ def my_merit(sim_data, spec_desc):
 
 st0 = stack_with()
 out0 = solver_curves(st0)
-sim0_native = SimCurves(np.array(ANGLES, float), WLS, float(D[1:-1].sum()), 1.0, 1.52)
+sim0_native = SimCurves(WLS, float(D[1:-1].sum()), 1.0, 1.52, angles_deg=np.array(ANGLES, float))
 sim0_native.set_curve("Rs", np.ascontiguousarray(np.asarray(out0["Rs"], float).ravel()))
 sim0_native.set_curve("Ts", np.ascontiguousarray(np.asarray(out0["Ts"], float).ravel()))
 sim0_native.set_complex("Rs", np.ascontiguousarray(np.asarray(out0["rs_c"]).ravel().astype(np.complex128)))
@@ -168,15 +168,15 @@ def build_spec_lin():
     """All-linear spec (needle-foldable): e on Rs@30, a on Ts@30, r on Rs@0."""
     spec = MeritSpec()
     wl_e = np.ascontiguousarray(WLS[::5])
-    key30 = spec.add_key(30.0, "Rs")
+    key30 = spec.add_key("Rs", angle_deg=30.0)
     spec.add_target(key30, wl_e, 0.32 * np.ones(wl_e.size),
                     0.05 * np.ones(wl_e.size), "e", "linear", 1.0, None,
                     False, None, 1.7, None, False)
-    keyT = spec.add_key(30.0, "Ts")
+    keyT = spec.add_key("Ts", angle_deg=30.0)
     spec.add_target(keyT, wl_e, 0.80 * np.ones(wl_e.size),
                     0.10 * np.ones(wl_e.size), "a", "linear", 1.0, None,
                     False, None, 1.3, None, False)
-    key0 = spec.add_key(0.0, "Rs")
+    key0 = spec.add_key("Rs", angle_deg=0.0)
     wls_c = np.ascontiguousarray(WLS)
     spec.add_target(key0, wls_c, 0.10 * np.ones(WLS.size),
                     0.02 * np.ones(WLS.size), "r", "linear", 1.0,
@@ -186,7 +186,7 @@ def build_spec_lin():
 
 spec_lin = build_spec_lin()
 native_lin = spec_lin.merit(sim0_native, 1e6)
-fold = build_needle_targets(spec_lin, np.array(ANGLES, float), WLS, sim0_native)
+fold = build_needle_targets(spec_lin, WLS, sim0_native, angles_deg=np.array(ANGLES, float))
 print(f"  native merit (linear spec) = {native_lin:.10g}")
 for ch in ("r", "t", "a", "phi0"):
     tt = np.asarray(fold[ch]["targets"]).ravel()
@@ -199,7 +199,7 @@ for ch in ("r", "t", "a", "phi0"):
 def merit_of_stack(th):
     st = stack_with(th)
     out = st.compute(Request.RS | Request.TS | Request.RS_C)
-    sim = SimCurves(np.array(ANGLES, float), WLS, float(np.sum(th[1:-1])), 1.0, 1.52)
+    sim = SimCurves(WLS, float(np.sum(th[1:-1])), 1.0, 1.52, angles_deg=np.array(ANGLES, float))
     sim.set_curve("Rs", np.ascontiguousarray(np.asarray(out["Rs"], float).ravel()))
     sim.set_curve("Ts", np.ascontiguousarray(np.asarray(out["Ts"], float).ravel()))
     sim.set_complex("Rs", np.ascontiguousarray(np.asarray(out["rs_c"]).ravel().astype(np.complex128)))
@@ -254,7 +254,7 @@ def stack_insert(xi, n_prime, delta):
     idx = np.array([1.0 + 0j, 2.35 + 0j, 1.46 + 0j, complex(n_prime),
                     1.46 + 0j, 2.10 + 0j, 1.52 + 0j])
     thick = np.array([0.0, 120.0, xi, delta, 200.0 - xi, 80.0, 0.0])
-    return ScatterMatrix(idx, thick, wavelengths=WLS, angles=[30.0])
+    return ScatterMatrix(idx, thick, wavelengths=WLS, angles_deg=[30.0])
 
 
 def amp_of(st):
@@ -262,7 +262,7 @@ def amp_of(st):
 
 
 def fd_dphi(h, nprime=1.8 + 0.05j, xi=100.0, pol_ang=30.0):
-    st = ScatterMatrix(N, D, wavelengths=WLS, angles=[pol_ang])
+    st = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[pol_ang])
     a0 = amp_of(st)
     ap = amp_of(stack_insert(xi, nprime, h))
     a2 = amp_of(stack_insert(xi, nprime, 2 * h))
@@ -307,7 +307,7 @@ ng_p = needle_gradient(st0, nn, [220.0], NeedleRequest.DPHI,
 eng_p = np.asarray(ng_p["dphi_p"]).reshape(2, WLS.size)[1]
 fd_p = fd_dphi(1.0)  # amp_of uses RS_C = s-pol; rebuild for p
 def fd_dphi_p(h):
-    st = ScatterMatrix(N, D, wavelengths=WLS, angles=[30.0])
+    st = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[30.0])
     a0 = np.asarray(st.compute(Request.RP_C)["rp_c"])
     def amp_p(delta):
         stx = stack_insert(100.0, 1.8 + 0.05j, delta)

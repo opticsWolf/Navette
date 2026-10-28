@@ -1678,17 +1678,17 @@ impl PySolverArrays {
 /// Solve pre-expanded arrays (thin over `solver::solve_arrays`).
 /// Returns `(result_dict, warnings)`; warnings re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (sa, wavelengths, angles, requested, radians=false, coherence_mode=0))]
+#[pyo3(signature = (sa, wavelengths, requested, coherence_mode=0, *, angles_deg=None, angles_rad=None))]
 fn solve_arrays_fn(
     py: Python<'_>,
     sa: &PySolverArrays,
     wavelengths: numpy::PyReadonlyArray1<f64>,
-    angles: numpy::PyReadonlyArray1<f64>,
     requested: u64,
-    radians: bool,
     coherence_mode: i32,
+    angles_deg: Option<numpy::PyReadonlyArray1<f64>>,
+    angles_rad: Option<numpy::PyReadonlyArray1<f64>>,
 ) -> pyo3::PyResult<(pyo3::Py<pyo3::types::PyDict>, Vec<String>)> {
-    let a = crate::angles::grid(angles.as_slice()?, radians)?;
+    let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let (sol, warnings) = navette::smatrix::solver::solve_arrays(
         &sa.inner.indices,
         &sa.inner.thicknesses,

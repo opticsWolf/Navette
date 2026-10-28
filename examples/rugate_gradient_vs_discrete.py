@@ -191,7 +191,7 @@ def solver(stack):
                   + [np.asarray(r["nk"]) for r in rows]
                   + [evaluate(BK7, WL)])
     d = np.array([0.0] + [float(r["thickness"]) for r in rows] + [0.0])
-    return ScatterMatrix(n, d, wavelengths=WL, angles=[0.0])
+    return ScatterMatrix(n, d, wavelengths=WL, angles_deg=[0.0])
 
 
 def spectrum(stack):

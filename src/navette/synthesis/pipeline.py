@@ -705,9 +705,16 @@ def _needle_rules(insert_rules, outer, inner):
     return rules, labels(outer), labels(inner)
 
 
+def _grid(angles):
+    """An angle grid as the native doors take it; ``None`` stays ``None``."""
+    if angles is None:
+        return None
+    return np.ascontiguousarray(np.asarray(angles, dtype=np.float64)).ravel()
+
+
 def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                targets: Any = None,
-               angles_deg=None, wavelengths=None,
+               wavelengths=None,
                materials: Optional[Mapping[Any, Any]] = None,
                pipeline_config=None, needle_config=None, lm_config=None,
                callback: Optional[Callable[[int, Dict], None]] = None,
@@ -718,7 +725,8 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                outer: Any = None,
                inner: Any = None,
                seed_edges: Optional[float] = None,
-               angles_in_radians: bool = False,
+               angles_deg=None,
+               angles_rad=None,
                **stack_kwargs) -> Dict[str, Any]:
     """Design a coating with the needle pipeline, end to end.
 
@@ -728,9 +736,9 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         Materials are ``MaterialSpec`` / mappings / nk arrays (constant
         complex also accepted).
     targets : TargetCollection or MeritSpec (native).
-    angles_deg / wavelengths : solver grid (degrees / nm). With
-        ``angles_in_radians=True`` the angles are radians and go straight
-        into ``sin``; the targets keep their own unit.
+    wavelengths : solver wavelength grid (nm).
+    angles_deg / angles_rad : solver angle grid, in degrees or in radians.
+        Give exactly one; the targets name their own unit.
     materials : {label: material} — the needle material pool. Every film
         whose ``needle`` flag is set accepts a needle of every pool
         material of another index; each insertion is the single best
@@ -836,8 +844,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
             "`design` (named segments shared across `environments`) - "
             + ("both were given." if layers is not None else "neither was given.")
         )
-    for name, value in (("targets", targets), ("angles_deg", angles_deg),
-                        ("wavelengths", wavelengths)):
+    for name, value in (("targets", targets), ("wavelengths", wavelengths)):
         if value is None:
             raise ValueError(f"run_needle: `{name}` is required.")
     if "contrast" in stack_kwargs:
@@ -849,9 +856,9 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     rules, outer, inner = _needle_rules(insert_rules, outer, inner)
     if design is not None:
         return _run_needle_environments(
-            design, environments, targets, angles_deg, wavelengths, materials,
-            pipeline_config, needle_config, lm_config, callback, stack_kwargs,
-            rules, outer, inner, seed_edges, angles_in_radians)
+            design, environments, targets, angles_deg, angles_rad, wavelengths,
+            materials, pipeline_config, needle_config, lm_config, callback,
+            stack_kwargs, rules, outer, inner, seed_edges)
     if environments is not None:
         raise ValueError(
             "run_needle: `environments` needs `design` - a flat film list has "
@@ -861,7 +868,6 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     # assembly + macro-loop in Rust.
     from navette._smatrix import run_design as _run_design
     wl = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64))
-    angs = np.ascontiguousarray(np.asarray(angles_deg, dtype=np.float64))
     names = stack_kwargs.pop("names", None)
     if names is None:
         names = [f"film{i}" for i in range(len(layers))]
@@ -884,19 +890,19 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     return _run_design(
         amb_nk, str(ambient[1] if len(ambient) > 1 else "air"),
         sub_nk, str(substrate[1] if len(substrate) > 1 else "sub"),
-        films, gmap, _pool(materials, wl), wl, angs, spec,
+        films, gmap, _pool(materials, wl), wl, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback,
         insert_rules=rules, outer=outer, inner=inner, seed_edges=seed_edges,
-        angles_in_radians=bool(angles_in_radians))
+        angles_deg=_grid(angles_deg), angles_rad=_grid(angles_rad))
 
 
 def _run_needle_environments(design, environments, targets, angles_deg,
-                             wavelengths, materials, pipeline_config,
-                             needle_config, lm_config, callback,
-                             stack_kwargs, insert_rules=None, outer=None,
-                             inner=None, seed_edges=None,
-                             angles_in_radians=False) -> Dict[str, Any]:
+                             angles_rad, wavelengths, materials,
+                             pipeline_config, needle_config, lm_config,
+                             callback, stack_kwargs, insert_rules=None,
+                             outer=None, inner=None,
+                             seed_edges=None) -> Dict[str, Any]:
     """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
 
     Shapes the request document and hands it to the core in one call. The
@@ -907,7 +913,6 @@ def _run_needle_environments(design, environments, targets, angles_deg,
     import json as _json
     from navette._smatrix import run_design_environments as _run_envs
     wl = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64))
-    angs = np.ascontiguousarray(np.asarray(angles_deg, dtype=np.float64))
     if not environments:
         raise ValueError(
             "run_needle: `design` needs `environments` - a design segment is "
@@ -929,7 +934,7 @@ def _run_needle_environments(design, environments, targets, angles_deg,
     spec = (_build_merit_spec(targets, environments=roster)
             if isinstance(targets, TargetCollection) else targets)
     return _run_envs(
-        _json.dumps(request), wl, angs, spec,
+        _json.dumps(request), wl, spec,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback,
-        angles_in_radians=bool(angles_in_radians))
+        angles_deg=_grid(angles_deg), angles_rad=_grid(angles_rad))

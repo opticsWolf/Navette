@@ -66,7 +66,7 @@ def run_once():
     hi, lo = np.full(WL.shape, H + 0j), np.full(WL.shape, L + 0j)
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, TOL),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     # A deliberately poor seed; each film may host the other material.
     seed = [(lo, 250.0), (hi, 150.0), (lo, 250.0), (hi, 150.0)]
     # The site's AR problem, with the stagnation stop off: left on, it ends
@@ -76,9 +76,9 @@ def run_once():
                          max_film_layers=32, stagnation_window=100)
     nc = NeedleCycleConfig(record_timing=True)
     t0 = time.perf_counter()
-    res = run_needle(seed, tc, [0.0], WL, {0: hi, 1: lo, 2: hi, 3: lo},
+    res = run_needle(seed, tc, WL, {0: hi, 1: lo, 2: hi, 3: lo},
                      pipeline_config=cfg, needle_config=nc,
-                     substrate=(np.full(WL.shape, GLASS + 0j), "sub"))
+                     substrate=(np.full(WL.shape, GLASS + 0j), "sub"), angles_deg=[0.0])
     wall = time.perf_counter() - t0
     recs = [r for p in res["phases"] for r in p["needle_results"]]
     return wall, res, recs

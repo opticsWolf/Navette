@@ -512,6 +512,11 @@ impl Solver {
         self.sin_theta.len()
     }
 
+    /// The sines of the incidence grid, exactly as the solve uses them.
+    pub fn sin_theta(&self) -> &[f64] {
+        &self.sin_theta
+    }
+
     pub fn n_wavs(&self) -> usize {
         self.wavls.len()
     }

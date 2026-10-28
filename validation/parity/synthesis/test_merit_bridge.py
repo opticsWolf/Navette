@@ -43,19 +43,19 @@ RB_VALS = np.array([0.41, 0.39, 0.42])
 def r_target_collection():
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.array([0.5, 0.6, 0.7]), np.full(3, 0.05),
-                          0.0, "s", "R", kind="e"))
+                          "s", "R", kind="e", angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.3, 0.3, 0.3]), np.full(3, 0.05),
-                          0.0, "s", "T", kind="a"))
+                          "s", "T", kind="a", angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.5, 0.5, 0.5]), np.full(3, 0.05),
-                          0.0, "s", "R", kind="r", band=0.02))
+                          "s", "R", kind="r", band=0.02, angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.2, 0.2, 0.2]), np.full(3, 0.05),
-                          5.0, "s", "A", kind="e"))
+                          "s", "A", kind="e", angle_deg=5.0))
     tc.add(SpectralTarget(WL, np.array([0.4, 0.4, 0.4]), np.full(3, 0.05),
-                          0.0, "s", "RB", kind="e"))
+                          "s", "RB", kind="e", angle_deg=0.0))
     # Angular demand shares the (0.0, R) key with the spectral targets, so
     # its sim fragment must carry the same curve (one value per key).
-    tc.add(AngularTarget(500.0, np.array([0.0, 10.0]), np.array([0.5, 0.6]),
-                         np.array([0.05, 0.05]), "s", "R", kind="e"))
+    tc.add(AngularTarget(500.0, np.array([0.5, 0.6]),
+                         np.array([0.05, 0.05]), "s", "R", kind="e", angles_deg=np.array([0.0, 10.0])))
     return tc
 
 
@@ -73,7 +73,7 @@ def matched_sim():
         "Ts": np.array([T_VALS, T_VALS, T_VALS]),
         "RBs": np.array([RB_VALS, RB_VALS, RB_VALS]),
     }
-    sim = sim_curves_from_arrays(ANGLES, WL, rows)
+    sim = sim_curves_from_arrays(WL, rows, angles_deg=ANGLES)
     return sw, sim, rows
 
 
@@ -119,20 +119,20 @@ def test_fold_identity():
     fa = np.array([0.0, 5.0, 10.0, 15.0])
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.array([0.5, 0.6, 0.7]), np.full(3, 0.05),
-                          0.0, "s", "R", kind="e"))
+                          "s", "R", kind="e", angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.array([0.5, 0.5, 0.5]), np.full(3, 0.05),
-                          5.0, "s", "R", kind="r", band=0.02))
-    tc.add(AngularTarget(500.0, np.array([10.0]), np.array([0.55]),
-                         np.array([0.05]), "s", "R", kind="e"))
+                          "s", "R", kind="r", band=0.02, angle_deg=5.0))
+    tc.add(AngularTarget(500.0, np.array([0.55]),
+                         np.array([0.05]), "s", "R", kind="e", angles_deg=np.array([10.0])))
     tc.add(SpectralTarget(WL, np.array([0.3, 0.3, 0.3]), np.full(3, 0.05),
-                          15.0, "s", "T", kind="a"))
+                          "s", "T", kind="a", angle_deg=15.0))
     spec = build_merit_spec(tc)
     r0 = np.array([0.52, 0.61, 0.69])
     r1 = np.array([0.505, 0.60, 0.40])  # pt0 in-band, pt2 violated-below
     rows = {"Rs": np.array([r0, r0, r0, r1]),
             "Ts": np.array([T_VALS, T_VALS, T_VALS, T_VALS])}
-    sim = sim_curves_from_arrays(fa, WL, rows)
-    folded = build_needle_targets(spec, fa, WL, sim)
+    sim = sim_curves_from_arrays(WL, rows, angles_deg=fa)
+    folded = build_needle_targets(spec, WL, sim, angles_deg=fa)
     fsum = folded_total(folded, rows, angles=fa)
     m = spec.merit(sim, 1e6)
     check("folded == merit (no c-outside)", abs(fsum - m) < 1e-9 * max(1.0, m),
@@ -140,11 +140,11 @@ def test_fold_identity():
     # All-violated soft-box: folded + n_points == merit.
     tc2 = TargetCollection()
     tc2.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.05),
-                           0.0, "s", "R", kind="c", band=0.01))
+                           "s", "R", kind="c", band=0.01, angle_deg=0.0))
     spec2 = build_merit_spec(tc2)
     rows2 = {"Rs": np.array([np.full(3, 0.8)])}
-    sim2 = sim_curves_from_arrays(np.array([0.0]), WL, rows2)
-    f2 = build_needle_targets(spec2, np.array([0.0]), WL, sim2)
+    sim2 = sim_curves_from_arrays(WL, rows2, angles_deg=np.array([0.0]))
+    f2 = build_needle_targets(spec2, WL, sim2, angles_deg=np.array([0.0]))
     fsum2 = folded_total(f2, rows2, angles=np.array([0.0]))
     m2 = spec2.merit(sim2, 1e6)
     check("c-outside +1 accounting", abs(fsum2 + 3 - m2) < 1e-9 * m2,
@@ -155,10 +155,10 @@ def test_phase():
     print("--- phase demands ---")
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.array([0.5, 0.5, 1.0]), np.full(3, 0.1),
-                          0.0, "s", "R", kind="e", phase=True))
+                          "s", "R", kind="e", phase=True, angle_deg=0.0))
     spec = build_merit_spec(tc)
     cplx = np.exp(1j * np.array([[0.52, 0.48, 1.05]]))
-    sim = sim_curves_from_arrays(np.array([0.0]), WL, {}, {"Rs": cplx})
+    sim = sim_curves_from_arrays(WL, {}, {"Rs": cplx}, angles_deg=np.array([0.0]))
     m = spec.merit(sim, 1e6)
     # converter unscales phase demands to raw radians (nf == 1 invariant)
     d = np.array([0.52, 0.48, 1.05]) - np.array([0.5, 0.5, 1.0])
@@ -166,7 +166,7 @@ def test_phase():
     expect = float(np.sum((d / 0.1) ** 2))
     check("wrapped phase merit", abs(m - expect) < 1e-9 * max(1.0, expect),
           f"got={m:.6f} expect={expect:.6f}")
-    folded = build_needle_targets(spec, np.array([0.0]), WL, sim)
+    folded = build_needle_targets(spec, WL, sim, angles_deg=np.array([0.0]))
     check("phi0 bucket active, others empty",
           abs(float(folded["phi0"]["weights"][0]) - (1.0 / 0.01)) < 1e-9
           and all(float(np.sum(folded[f"phi{i}"]["weights"])) == 0.0 for i in [1, 2, 3]))
@@ -176,7 +176,7 @@ def test_errors():
     print("--- error paths ---")
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.05),
-                          0.0, "s", "MYCHAN", kind="e"))
+                          "s", "MYCHAN", kind="e", angle_deg=0.0))
     try:
         build_merit_spec(tc)
         check("unknown label rejected", False)
@@ -184,7 +184,7 @@ def test_errors():
         check("unknown label rejected", True)
     tc2 = TargetCollection()
     tc2.add(SpectralTarget(WL, np.full(3, 0.5), np.full(3, 0.05),
-                           0.0, "s", "A", kind="e", phase=True))
+                           "s", "A", kind="e", phase=True, angle_deg=0.0))
     try:
         build_merit_spec(tc2)
         check("phase-on-absorption rejected", False)
