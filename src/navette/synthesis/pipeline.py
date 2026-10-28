@@ -531,13 +531,29 @@ def _environments_request(design, environments, materials, wl,
             "design must be a non-empty mapping of segment id -> layer list."
         )
     design_doc: Dict[str, Any] = {}
-    for seg, layers in design.items():
+    for seg, value in design.items():
+        edges: Dict[str, Any] = {}
+        if isinstance(value, Mapping):
+            unknown = set(value) - {"layers", "outer", "inner"}
+            if unknown or "layers" not in value:
+                raise ValueError(
+                    f"design segment {seg!r}: a mapping needs 'layers' and "
+                    "may add 'outer' and 'inner' - got keys "
+                    f"{sorted(value)}."
+                )
+            layers = value["layers"]
+            _, outer, inner = _needle_rules(None, value.get("outer"),
+                                            value.get("inner"))
+            edges = {k: v for k, v in (("outer", outer), ("inner", inner))
+                     if v is not None}
+        else:
+            layers = value
         rows = []
         for i, entry in enumerate(layers):
             material, d, name, flags = _entry_parts(entry, f"{seg}{i}")
             register(name, material)
             rows.append({"material_code": name, "thickness_nm": float(d), **flags})
-        design_doc[str(seg)] = {"layers": rows}
+        design_doc[str(seg)] = {"layers": rows, **edges}
 
     env_doc = []
     seen_env = set()
@@ -710,6 +726,9 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         Labels are pool labels: the keys of ``materials``, or, with
         ``materials=None``, the film names. An edge film matches by label
         (a needle's ``#n`` suffix stripped), or else by index.
+        With ``design``, edge lists belong to a segment (see ``design``);
+        these two are that segment's lists when there is one segment, and
+        refuse when there are several.
     seed_edges : float (nm), optional — a starting design whose edge film
         is off its list gets a film of the list's first material, this
         thick, on that edge instead of an error; the old edge film stays
@@ -725,7 +744,11 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         it. Mutually exclusive with ``layers``: one of the two, never both
         and never neither. Entries also accept ``(material, d_nm, name)``
         or a mapping (``material``, ``thickness_nm``, ``name``, plus row
-        flags including ``layer_type`` for a half-space row).
+        flags including ``layer_type`` for a half-space row). A segment
+        may also be ``{"layers": [...], "outer": ..., "inner": ...}``:
+        its own edge lists, checked on its own first film (facing the
+        incoming light) and last film in every environment, whatever
+        surrounds it there.
     environments : [{"name": ..., "stack": [{"design": id} | {"layers": [...]}]}]
         Each environment's ordered segment list. The shared design films
         are the free variables; everything in a ``layers`` segment is

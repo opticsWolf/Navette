@@ -190,3 +190,38 @@ def test_the_environments_door_takes_the_rules():
         run_needle(outer="H", **kw)
     with pytest.raises(ValueError, match="seed_edges"):
         run_needle(outer="H", seed_edges=2.0, **kw)
+
+
+def test_edge_lists_belong_to_a_segment():
+    """With two segments each one's lists are checked on its own films,
+    in an order that differs per environment."""
+    G = 1.52 + 0j
+    cfg = PipelineConfig(max_macro_cycles=1, needles_per_cycle=1,
+                         enable_cleanup=False, enable_inflate=False,
+                         thin_layer_policy="clamp_up_final")
+
+    def run(top_outer, **extra):
+        design = {
+            "top": {"layers": [(N["L"], 100.0, "L"), (N["H"], 80.0, "H")],
+                    "outer": top_outer, "inner": "H"},
+            "bottom": {"layers": [(N["M"], 60.0, "M")], "outer": ["M"]},
+        }
+        return run_needle(
+            targets=_targets(), angles_deg=[0.0], wavelengths=WL,
+            design=design,
+            environments=[
+                {"name": "a", "stack": [{"design": "top"}, {"design": "bottom"}]},
+                {"name": "b", "stack": [{"layers": [(G, 300.0, "G")]},
+                                        {"design": "bottom"}, {"design": "top"}]},
+            ],
+            pipeline_config=cfg, substrate=(G, "sub"), **extra)
+
+    assert "stack" in run("L")
+    with pytest.raises(ValueError, match=r'design segment "top".*outer'):
+        run("H")
+    with pytest.raises(ValueError, match="ambiguous"):
+        run("L", outer="L")
+    with pytest.raises(ValueError, match="'layers'"):
+        run_needle(targets=_targets(), angles_deg=[0.0], wavelengths=WL,
+                   design={"top": {"films": []}},
+                   environments=[{"name": "a", "stack": [{"design": "top"}]}])

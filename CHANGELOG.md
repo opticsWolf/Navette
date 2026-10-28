@@ -61,8 +61,15 @@ All notable changes to Navette are recorded here. Work items reference
     materials the first and last film may be. The starting design must
     comply. Insertion never changes an edge film; cleanup skips a
     removal that would expose a disallowed one, and the thin-layer clamp
-    holds such a film at the floor instead of removing it. On the
-    multi-environment door the edges are the shared design's.
+    holds such a film at the floor instead of removing it.
+  - On the multi-environment door edge lists belong to a design segment:
+    `"outer"` / `"inner"` on the segment (`DesignSegmentCfg`, or
+    `design={"coat": {"layers": [...], "outer": ..., "inner": ...}}` on
+    `run_needle`), checked on the segment's own first and last film in
+    every environment. Request-level `outer` / `inner` are the segment's
+    lists when there is one segment; with several they refuse as
+    ambiguous, as does setting both a request-level list and the
+    segment's own.
   - Every door takes them: `run_needle(insert_rules=, outer=, inner=)`
     (flat and multi-environment), `NeedlePipeline(...)`,
     `run_design(...)` and `DesignRequest` in the core; config's

@@ -37,7 +37,7 @@ use super::design_config::{
     DesignRequest, LayerRow, RowAssembly, build_pool, d_inh_delta, d_layer_type, d_true,
     eval_library, split_and_build_films,
 };
-use super::structure::DesignStack;
+use super::structure::{DesignStack, EdgeMaterials};
 use crate::structure::Group;
 
 // ---------------------------------------------------------------------------
@@ -115,10 +115,20 @@ impl FixedLayerRow {
 }
 
 /// One named design segment: an ordered film list, defined once.
+///
+/// `outer` and `inner` are the segment's own edge lists (pool labels):
+/// the materials allowed for its first film, which faces the incoming
+/// light, and for its last, which faces away from it. They are checked on
+/// the segment's own top and bottom in every environment, whatever
+/// surrounds it there. `None` leaves that edge free.
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesignSegmentCfg {
     pub layers: Vec<LayerRow>,
+    #[serde(default)]
+    pub outer: Option<Vec<String>>,
+    #[serde(default)]
+    pub inner: Option<Vec<String>>,
 }
 
 /// One entry in an environment's ordered stack: inline fixed layers, or
@@ -193,6 +203,9 @@ pub struct CompiledEnvironments {
     /// row-keyed would have had to be rebuilt span-keyed after Phase A —
     /// which is the whole reason Phase B sits after gradients.
     routing: Vec<Vec<usize>>,
+    /// Edge lists per design segment id; a segment with neither list set
+    /// has no entry. Empty for a flat request, whose stack carries its own.
+    segment_edges: BTreeMap<Arc<str>, EdgeMaterials>,
 }
 
 impl CompiledEnvironments {
@@ -217,6 +230,12 @@ impl CompiledEnvironments {
     /// ordered.
     pub fn slots(&self) -> &[DesignSlot] {
         &self.slots
+    }
+
+    /// The edge lists of design segment `segment`, or `None` when both of
+    /// its edges are free.
+    pub fn segment_edges(&self, segment: &str) -> Option<&EdgeMaterials> {
+        self.segment_edges.get(segment)
     }
 
     pub fn n_envs(&self) -> usize {
@@ -675,6 +694,7 @@ pub fn build_environments(
                 stacks: vec![stack],
                 slots,
                 routing,
+                segment_edges: BTreeMap::new(),
             },
             pool,
             warnings,
@@ -828,10 +848,11 @@ pub fn build_environments(
         Some(r) => pool.with_insert_rules(r)?,
         None => pool,
     };
-    // The edge materials are the shared design's, checked once here: a
-    // joint run never removes a layer (removal is refused while K > 1,
-    // and the floor is an LM bound), and a needle lands strictly inside
-    // its host, so the design's edges hold for the whole run.
+    // The edge lists are per segment, checked once here on each segment's
+    // own first and last film in every environment: a joint run never
+    // removes a layer (removal is refused while K > 1, and the floor is an
+    // LM bound), and a needle lands strictly inside its host, so the
+    // segments' edges hold for the whole run.
     if req.seed_edges.is_some() {
         return Err(
             "seed_edges: a multi-environment design cannot seed its edges yet; \
@@ -839,15 +860,27 @@ pub fn build_environments(
                 .into(),
         );
     }
-    if req.outer.is_some() || req.inner.is_some() {
-        let edges = pool.edge_materials(req.outer.as_deref(), req.inner.as_deref())?;
-        let design_spans = routing.iter().map(|per| per[0]);
-        let spans = stacks[0].spans();
-        edges.check(
-            stacks[0].films(),
-            design_spans.clone().min().map(|i| &spans[i]),
-            design_spans.max().map(|i| &spans[i]),
-        )?;
+    let segment_edges = segment_edge_lists(req, &pool)?;
+    for (id, edges) in &segment_edges {
+        let mine: Vec<usize> = (0..slots.len())
+            .filter(|&s| slots[s].segment == *id)
+            .collect();
+        let (top, bottom) = (mine[0], mine[mine.len() - 1]);
+        for (e, stack) in stacks.iter().enumerate() {
+            let spans = stack.spans();
+            edges
+                .check(
+                    stack.films(),
+                    Some(&spans[routing[top][e]]),
+                    Some(&spans[routing[bottom][e]]),
+                )
+                .map_err(|err| {
+                    format!(
+                        "environment {:?}, design segment {id:?}: {err}",
+                        req.environments[e].name
+                    )
+                })?;
+        }
     }
 
     let names = req.environments.iter().map(|e| e.name.clone()).collect();
@@ -857,10 +890,55 @@ pub fn build_environments(
             stacks,
             slots,
             routing,
+            segment_edges,
         },
         pool,
         warnings,
     ))
+}
+
+/// Each design segment's edge lists, resolved against the pool.
+///
+/// The request-level `outer`/`inner` predate per-segment lists. With one
+/// design segment they are that segment's lists; with several they would
+/// not say which segment they mean, so they refuse, and so does a request
+/// that sets both a request-level list and the segment's own.
+fn segment_edge_lists(
+    req: &DesignRequest,
+    pool: &MaterialPool,
+) -> Result<BTreeMap<Arc<str>, EdgeMaterials>, String> {
+    let global = req.outer.is_some() || req.inner.is_some();
+    if global && req.design.len() > 1 {
+        return Err(format!(
+            "outer/inner: with {} design segments the request-level edge \
+             lists are ambiguous - set \"outer\"/\"inner\" on each design \
+             segment instead",
+            req.design.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for (id, seg) in &req.design {
+        let own = seg.outer.is_some() || seg.inner.is_some();
+        if global && own {
+            return Err(format!(
+                "outer/inner: design segment {id:?} sets its own edge lists \
+                 and the request sets them too - give them in one place"
+            ));
+        }
+        let (outer, inner) = if own {
+            (seg.outer.as_deref(), seg.inner.as_deref())
+        } else {
+            (req.outer.as_deref(), req.inner.as_deref())
+        };
+        if outer.is_none() && inner.is_none() {
+            continue;
+        }
+        let edges = pool
+            .edge_materials(outer, inner)
+            .map_err(|e| format!("design segment {id:?}: {e}"))?;
+        out.insert(Arc::from(id.as_str()), edges);
+    }
+    Ok(out)
 }
 
 /// Resolve a demand's `environment` tag to an index.
@@ -971,7 +1049,16 @@ mod tests {
             substrate_name: "sub".to_string(),
             design: design
                 .into_iter()
-                .map(|(id, layers)| (id.to_string(), DesignSegmentCfg { layers }))
+                .map(|(id, layers)| {
+                    (
+                        id.to_string(),
+                        DesignSegmentCfg {
+                            layers,
+                            outer: None,
+                            inner: None,
+                        },
+                    )
+                })
                 .collect(),
             environments: envs,
         }
@@ -1665,6 +1752,84 @@ mod tests {
         );
         let e = build_environments(&r, &WL).err().unwrap();
         assert!(e.contains("\"Z\" is not a pool material"), "{e}");
+    }
+
+    /// J1: each segment's lists are checked on its own first and last film
+    /// in every environment. Here the segments run a-then-b in one
+    /// environment and b-then-a behind a laminate in the other, so the
+    /// assembly's outermost design film is a different segment's edge in
+    /// each.
+    #[test]
+    fn edge_lists_belong_to_their_segment() {
+        let two_segments = || {
+            with_pool(req(
+                vec![
+                    ("a", vec![film("L", 100.0), film("H", 80.0)]),
+                    ("b", vec![film("M", 60.0), film("G", 40.0)]),
+                ],
+                vec![
+                    EnvironmentCfg {
+                        name: "ab".to_string(),
+                        stack: vec![design_seg("a"), design_seg("b")],
+                    },
+                    EnvironmentCfg {
+                        name: "ba".to_string(),
+                        stack: vec![
+                            fixed_seg(vec![fixed("G", 300.0, 1)]),
+                            design_seg("b"),
+                            design_seg("a"),
+                        ],
+                    },
+                ],
+            ))
+        };
+        let set = |r: &mut DesignRequest, id: &str, outer: &str, inner: &str| {
+            let seg = r.design.get_mut(id).unwrap();
+            seg.outer = Some(vec![outer.into()]);
+            seg.inner = Some(vec![inner.into()]);
+        };
+
+        let mut r = two_segments();
+        set(&mut r, "a", "L", "H");
+        set(&mut r, "b", "M", "G");
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let a = envs.segment_edges("a").unwrap();
+        assert_eq!(&*a.outer.as_ref().unwrap()[0].0, "L");
+        assert_eq!(&*a.inner.as_ref().unwrap()[0].0, "H");
+        assert!(envs.segment_edges("b").is_some());
+
+        // b's top film is M wherever b sits, so a list without M refuses
+        // and names the segment.
+        set(&mut r, "b", "H", "G");
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(
+            e.contains("design segment \"b\"") && e.contains("outer") && e.contains("\"M\""),
+            "{e}"
+        );
+
+        // One segment free, the other listed.
+        let mut r = two_segments();
+        r.design.get_mut("b").unwrap().inner = Some(vec!["G".into()]);
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        assert!(envs.segment_edges("a").is_none());
+        assert!(envs.segment_edges("b").unwrap().outer.is_none());
+
+        // Request-level lists do not say which of two segments they mean.
+        let mut r = two_segments();
+        r.outer = Some(vec!["L".into()]);
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(e.contains("ambiguous"), "{e}");
+
+        // With one segment they are its lists, but not on top of its own.
+        let mut r = two_cover_req();
+        r.outer = Some(vec!["L".into()]);
+        r.design.get_mut("coat").unwrap().inner = Some(vec!["H".into()]);
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(e.contains("one place"), "{e}");
+        r.outer = None;
+        r.design.get_mut("coat").unwrap().outer = Some(vec!["L".into()]);
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        assert!(envs.segment_edges("coat").is_some());
     }
 
     #[test]
@@ -2403,6 +2568,8 @@ mod tests {
             "coat".to_string(),
             DesignSegmentCfg {
                 layers: vec![film("L", 10.0)],
+                outer: None,
+                inner: None,
             },
         );
         let e = build_environments(&r, &WL).unwrap_err();

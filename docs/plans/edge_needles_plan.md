@@ -224,6 +224,12 @@ multi-environment runs. Order of work at the end.
    one correction to the item: an interface-sliced plain film is
    singleton-bulk and can be an edge, only graded and gradient spans
    cannot.
-4. J1: per-segment edge lists.
+4. J1: per-segment edge lists. Built: `DesignSegmentCfg::outer`/`inner`,
+   resolved by `segment_edge_lists` and checked in `build_environments`
+   on each segment's first and last span in every environment;
+   `CompiledEnvironments::segment_edges` keeps them for step 6.
+   Request-level lists are the single segment's, ambiguous (refused)
+   with several. `seed_edges` stays refused on the joint door: seeding a
+   segment edge is a joint boundary insertion, so it comes with step 6.
 5. Segment `inverted` and `repeat` through the Architect.
 6. Joint boundary needles (§B5 with the cases above).
