@@ -486,6 +486,8 @@ def design_from_program(program, materials=None):
                 entry = {"design": str(ref)}
                 if part.get("repeat") is not None:
                     entry["repeat"] = part["repeat"]
+                if part.get("inverted"):
+                    entry["inverted"] = True
                 stack.append(entry)
             elif rows is not None:
                 stack.append({"layers": _program_rows(
@@ -591,12 +593,12 @@ def _environments_request(design, environments, materials, wl,
                     "one of 'design' or 'layers'."
                 )
             if has_design:
-                unknown = set(part) - {"design", "repeat"}
+                unknown = set(part) - {"design", "repeat", "inverted"}
                 if unknown:
                     raise ValueError(
                         f"environment {name!r}: stack entry {j} has unknown "
                         f"keys {sorted(unknown)} (a design reference takes "
-                        "'design' and 'repeat')."
+                        "'design', 'repeat' and 'inverted')."
                     )
                 ref = {"design": str(part["design"])}
                 if "repeat" in part:
@@ -608,6 +610,15 @@ def _environments_request(design, environments, materials, wl,
                             f"must be an integer >= 1, got {repeat!r}."
                         )
                     ref["repeat"] = repeat
+                if "inverted" in part:
+                    inverted = part["inverted"]
+                    if not isinstance(inverted, bool):
+                        raise ValueError(
+                            f"environment {name!r}: stack entry {j}: "
+                            f"'inverted' must be True or False, got {inverted!r}."
+                        )
+                    if inverted:
+                        ref["inverted"] = True
                 stack.append(ref)
                 continue
             rows = []
@@ -776,8 +787,16 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         reference places another. Copies are one design: each film is one
         parameter (its first copy in the first environment; the others
         follow it, ``optimize`` false in the returned stack), and a needle
-        lands in every copy. One environment with copies runs jointly, so
-        cleanup and inflate refuse there too. The shared design films
+        lands in every copy. ``{"design": id, "inverted": True}`` places
+        the segment turned over, last film first, as the Architect expands
+        an inverted block: each interface slice and roughness stays with
+        the plane it belongs to, a needle lands at the mirror depth, and
+        the segment's ``outer`` list still applies to its first film, which
+        now faces away from the light. Graded films cannot be inverted, and
+        a film whose interface slice one copy can place and another cannot
+        (the first film of a stack, the last of an inverted copy) refuses.
+        One environment with copies or an inverted segment runs jointly,
+        so cleanup and inflate refuse there too. The shared design films
         are the free variables; everything in a ``layers`` segment is
         fixed surroundings, and the row schema forces ``optimize`` and
         ``needle`` false there — an explicit ``true`` refuses, and since

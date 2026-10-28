@@ -167,7 +167,7 @@ pub fn build_boundary_sites(
 /// inside a multi-row span is not a scan site — the same predicate
 /// `insert_needle_seed` enforces at the door. Unbooked row lists (empty
 /// `spans`) are all-admissible: there is no span information to consult.
-fn span_admissible(spans: &[Span], film_idx: usize) -> bool {
+pub(crate) fn span_admissible(spans: &[Span], film_idx: usize) -> bool {
     if spans.is_empty() || film_idx >= spans[spans.len() - 1].end {
         return true;
     }

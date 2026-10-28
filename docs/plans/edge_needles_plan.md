@@ -242,12 +242,23 @@ multi-environment runs. Order of work at the end.
      per placement (`n_placements`). One environment with copies is
      joint (`is_joint`). Forward copies only, so the per-row copy holds,
      and the Architect is not needed yet.
-   - 5b, `inverted`, through the Architect. An inverted run takes its
-     interface slice and roughness from the neighbour, and the slice is
-     carved from that neighbour's rows (`owner_of` in `expand`), so an
-     inverted copy is not a row-reversed forward copy. It is re-expanded
-     as its own unit from the segment's layer thicknesses, both at each
-     evaluation and after a needle, and its scan grid is laid out in
-     forward depth (`d - z`) so its buckets meet the forward copy's. The
+   - 5b, `inverted`, through the Architect. Built. An inverted run takes
+     its interface slice and roughness from the neighbour, and the slice
+     is carved from that neighbour's rows (`owner_of` in `expand`), so an
+     inverted copy is not a row-reversed forward copy.
+     `DesignStack::from_design_oriented` compiles it with `inv` entries;
+     `CompiledEnvironments` keeps `inverted[env][span]` and one `Face` per
+     design film (group-applied nk, coherence, roughness and slice), and
+     `fill` re-emits each maximal inverted run whole through
+     `structure::expand` at every expansion and sync (a primary's bulk
+     rows keep their thickness). The scan grid of an inverted bulk is
+     laid out from the forward top (`b - k*step`) and its buckets keyed by
+     `round(u/step)`, so they meet the forward copy's; the bucket depth is
+     the forward depth, and `split_design` / `insert_seed` split an
+     inverted copy at `b - u` and swap the top and bottom routing. The
      primary is environment 0's first copy, even when it is inverted.
+     Every copy of a film must agree on whether its own slice is emitted
+     (`check_slices`); graded films are not inverted. Edge lists need no
+     change: they are checked per slot, so outer stays with the first
+     film.
 6. Joint boundary needles (§B5 with the cases above).

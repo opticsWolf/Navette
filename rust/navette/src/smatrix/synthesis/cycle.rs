@@ -607,30 +607,36 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             // Only the rows that accept this needle. A design row has the
             // same index in every environment, so every environment keeps
             // the same rows.
-            let all = build_scan_sites(st.films(), st.spans(), cfg.scan_step_nm);
+            let all = envs.scan_sites(e, st, stack, cfg.scan_step_nm);
             let sites = pool.sites_for(mi, st, &all)?;
             let res = needle_pass_scan(&input, &sites)?;
-            // `build_scan_sites` walks rows in order and emits steps
-            // 1..n_steps inside each admissible row, so the running count
-            // per row IS the step index — and it is the same index in
-            // every environment, because a design row has the same
-            // thickness everywhere by construction (`expand` copies it).
+            // The scan walks rows in order and emits steps 1..n_steps
+            // inside each admissible forward row, so the running count per
+            // row IS the step index — and it is the same index in every
+            // environment, because a design row has the same thickness
+            // everywhere by construction (`expand` copies it). An inverted
+            // copy's grid runs the other way; its step index is read back
+            // from the depth into the forward film, which is also the
+            // depth the bucket keeps.
             let mut step: HashMap<usize, usize> = HashMap::new();
             for (site, &p) in res.sites.iter().zip(res.p_profile.iter()) {
                 let n = step.entry(site.film_idx).or_insert(0);
-                let ordinal = *n;
+                let mut ordinal = *n;
                 *n += 1;
                 let Some((slot, copy)) = envs.copy_of_row(e, site.film_idx) else {
                     continue; // surroundings: inadmissible, and never shared
                 };
+                let mut depth = site.depth_into_layer_nm;
+                if let Some(u) = envs.forward_depth(e, site.film_idx, depth, stack) {
+                    depth = u;
+                    ordinal = ((u / cfg.scan_step_nm).round() as usize).saturating_sub(1);
+                }
                 if e == 0 && copy == 0 {
                     n_sites += 1; // the design's own sites, each once
                 }
-                let entry = buckets.entry((mi, slot, ordinal)).or_insert((
-                    site.depth_into_layer_nm,
-                    0.0,
-                    0,
-                ));
+                let entry = buckets
+                    .entry((mi, slot, ordinal))
+                    .or_insert((depth, 0.0, 0));
                 entry.1 += p;
                 entry.2 += 1;
             }

@@ -100,10 +100,24 @@ All notable changes to Navette are recorded here. Work items reference
   the returned stack). A needle lands in every copy, its gain summed over
   all of them. One environment with copies runs on the joint path, with
   the joint path's refusals (cleanup, inflate, `thin_layer_policy
-  'remove'`). Segment edge lists are checked on every copy. Inverted
-  copies are still to come. The program bridge (`design_from_program`)
-  now carries `repeat` and a segment's `outer` / `inner`; it dropped the
-  edge lists before.
+  'remove'`). Segment edge lists are checked on every copy. The program
+  bridge (`design_from_program`) now carries `repeat` and a segment's
+  `outer` / `inner`; it dropped the edge lists before.
+- **Inverted design segments.** A design reference also takes
+  `inverted` (`{"design": "coat", "inverted": true}`): the segment is
+  placed turned over, last film first, as the Architect expands an
+  inverted block. Interface slices and roughness stay with their planes,
+  so a turned copy is not the forward rows reversed; it is re-emitted
+  through the expander from the design at every evaluation. A needle
+  lands in a turned copy at the mirror depth, with its gain summed over
+  every copy. The first copy in the first environment is the free one
+  whichever way it faces. A segment's `outer` list still belongs to its
+  first film, which in a turned copy faces away from the light. Refused:
+  `inverted` on a fixed segment, a graded film in an inverted copy, and a
+  film whose interface slice one copy can place and another cannot (the
+  first film of a stack and the last of a turned copy have no plane of
+  their own). A turned segment runs on the joint path, even alone. The
+  program bridge carries `inverted`.
 - **Boundary needles.** `NeedleCycleConfig(boundary_needles=True)` also
   scans every span boundary, the outer edges included. A needle there is
   a new film between two layers, so it reaches films too thin for an

@@ -555,7 +555,7 @@ impl DesignStack {
     /// and beats flattening silently. Span-aware graded optimization is
     /// future work (D2).
     pub fn from_design(
-        mut ambient: LayerSpec,
+        ambient: LayerSpec,
         substrate: LayerSpec,
         films: &[crate::structure::Layer],
         nk: &std::collections::HashMap<std::sync::Arc<str>, Vec<num_complex::Complex64>>,
@@ -563,7 +563,55 @@ impl DesignStack {
         wavelengths: &[f64],
         background: &std::collections::HashSet<String>,
     ) -> Result<(Self, Vec<String>), String> {
+        Self::from_design_oriented(
+            ambient,
+            substrate,
+            films,
+            &[],
+            nk,
+            groups,
+            wavelengths,
+            background,
+        )
+    }
+
+    /// [`Self::from_design`] with an orientation per film: `inverted[i]`
+    /// emits film `i` as an entry of an inverted run, the way the
+    /// Architect expands an inverted block (its planes take the traversal
+    /// predecessor's interface and roughness). Empty means all forward.
+    ///
+    /// A profiled film cannot be inverted here: its span recipe re-emits
+    /// it alone, and an inverted entry's emission reaches into the span
+    /// before it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_design_oriented(
+        mut ambient: LayerSpec,
+        substrate: LayerSpec,
+        films: &[crate::structure::Layer],
+        inverted: &[bool],
+        nk: &std::collections::HashMap<std::sync::Arc<str>, Vec<num_complex::Complex64>>,
+        groups: &std::collections::HashMap<String, crate::structure::Group>,
+        wavelengths: &[f64],
+        background: &std::collections::HashSet<String>,
+    ) -> Result<(Self, Vec<String>), String> {
         use std::collections::HashMap;
+        if !inverted.is_empty() && inverted.len() != films.len() {
+            return Err(format!(
+                "DesignStack::from_design: {} orientations for {} films",
+                inverted.len(),
+                films.len()
+            ));
+        }
+        let inv_at = |i: usize| inverted.get(i).copied().unwrap_or(false);
+        for (i, l) in films.iter().enumerate() {
+            if inv_at(i) && (l.inhomogen || l.gradient.is_some()) {
+                return Err(format!(
+                    "DesignStack::from_design: film '{}' is graded - an inverted \
+                     copy cannot carry a profile",
+                    l.material
+                ));
+            }
+        }
         // Two things are corrected-and-announced here rather than
         // refused, and this is the only place either can be: an absorbing
         // incident medium (R3.4), and a graded/gradient film the pipeline
@@ -735,18 +783,23 @@ impl DesignStack {
                 .collect(),
             wavelengths.to_vec(),
         )?;
-        let seq: Vec<(crate::structure::Layer, bool)> =
-            flat.iter().cloned().map(|l| (l, false)).collect();
+        let seq: Vec<(crate::structure::Layer, bool)> = flat
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, l)| (l, inv_at(i)))
+            .collect();
         // F0.1 / §8.15: `expand`'s backwards-rescale branch (entry `k`
         // rescaling the previous span's already-emitted rows) is reachable
-        // only through `inv = true` entries. The design path builds `inv =
-        // false` throughout, so emission is purely local — the property
-        // F1.7's per-span refresh rests on. Assert it beside the expansion
-        // (debug-only; cannot move a fingerprint).
+        // only through `inv = true` entries. Only plain films are inverted
+        // (refused above), so every profiled span's emission is purely
+        // local — the property F1.7's per-span refresh rests on. Assert it
+        // beside the expansion (debug-only; cannot move a fingerprint).
         debug_assert!(
-            seq.iter().all(|(_, inv)| !*inv),
-            "from_design builds inv = false throughout; a true entry would \
-             make emission reach backwards into previous spans"
+            seq.iter()
+                .all(|(l, inv)| !*inv || !(l.inhomogen || l.gradient.is_some())),
+            "from_design inverts plain films only; an inverted profiled entry \
+             would make its refresh reach backwards into previous spans"
         );
         let (sa, spans, sa_bulk_nk, owner_of) = crate::structure::expand_with_recipe_inputs(
             &seq,
@@ -1518,6 +1571,31 @@ impl DesignStack {
     /// `from_design` does not produce.
     pub(crate) fn set_row_optimize(&mut self, row: usize, optimize: bool) {
         self.films[row].optimize = optimize;
+    }
+
+    /// Overwrite a row's emitted physics in place: index, coherence and
+    /// roughness, and the thickness when `d_nm` is given. Name, flags and
+    /// spans are left alone. The joint compile re-emits inverted copies of
+    /// the design through this; nothing else may change a row's index.
+    pub(crate) fn rewrite_row(
+        &mut self,
+        row: usize,
+        d_nm: Option<f64>,
+        nk: &[Complex64],
+        coherent: bool,
+        rough_type: i32,
+        rough_val: f64,
+    ) {
+        let f = &mut self.films[row];
+        if let Some(d) = d_nm {
+            f.d_nm = d;
+        }
+        if *f.nk != *nk {
+            f.nk = nk.into();
+        }
+        f.coherent = coherent;
+        f.rough_type = rough_type;
+        f.rough_val = rough_val;
     }
 
     /// Set the thickness of film `film_idx` (used by the thickness optimizer).

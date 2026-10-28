@@ -457,3 +457,70 @@ def test_a_bad_repeat_refuses_at_the_door(ref, needles):
         design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
         environments=[{"name": "twice", "stack": [ref]}],
         pipeline_config=PipelineConfig(**CFG)), *needles)
+
+
+# --------------------------------------------------------------------------
+# Inverted segments
+# --------------------------------------------------------------------------
+
+def _both_ways(first_inverted=False):
+    coat, turned = {"design": "coat"}, {"design": "coat", "inverted": True}
+    if first_inverted:
+        coat, turned = turned, coat
+    return [{"name": "twice",
+             "stack": [coat, {"layers": [(G, 40.0, "spacer")]}, turned]}]
+
+
+@pytest.mark.parametrize("first_inverted", [False, True])
+def test_an_inverted_segment_is_the_coat_turned_over(first_inverted):
+    """The coat forward and turned over in one environment: after a needle
+    the turned copy is the forward copy's films in reverse, bit for bit,
+    and only the first copy is free."""
+    res = run_needle(
+        targets=_repeat_targets(), angles_deg=[0.0], wavelengths=WL,
+        design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
+        environments=_both_ways(first_inverted),
+        pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"))
+    films = res["stack"].films()
+    n = (len(films) - 1) // 2
+    assert n > 2 and len(films) == 2 * n + 1, len(films)
+    first, spacer, second = films[:n], films[n], films[n + 1:]
+    assert spacer["thickness"] == 40.0
+    for a, b in zip(first, reversed(second)):
+        assert a["material"] == b["material"]
+        assert _hex(a["thickness"]) == _hex(b["thickness"])
+        assert a["optimize"] and not b["optimize"]
+
+
+def test_a_document_inverted_reference_is_the_keyword_run(tmp_path):
+    """`inverted` crosses the program bridge."""
+    doc = json.loads(json.dumps(DOCUMENT))
+    doc["sections"]["environments"] = [{"name": "twice", "stack": [
+        {"design": "coat"},
+        {"design": "coat", "inverted": True},
+    ]}]
+    prog = load_program(_write(tmp_path, doc), WL)
+    design, environments = design_from_program(prog)
+    assert environments[0]["stack"][1] == {"design": "coat", "inverted": True}
+
+    kw = dict(targets=_repeat_targets(), angles_deg=[0.0], wavelengths=WL,
+              pipeline_config=PipelineConfig(**CFG), substrate=(G, "sub"))
+    from_file = run_needle(design=design, environments=environments, **kw)
+    from_kwargs = run_needle(
+        design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
+        environments=[{"name": "twice", "stack": [
+            {"design": "coat"}, {"design": "coat", "inverted": True}]}],
+        **kw)
+    assert _hex(from_file["final_mf"]) == _hex(from_kwargs["final_mf"])
+
+
+@pytest.mark.parametrize("ref, needles", [
+    ({"design": "coat", "inverted": 1}, ("'inverted'", "True or False")),
+    ({"design": "coat", "turned": True}, ("unknown keys", "turned")),
+])
+def test_a_bad_inverted_refuses_at_the_door(ref, needles):
+    _refuses(lambda: run_needle(
+        targets=_repeat_targets(), angles_deg=[0.0], wavelengths=WL,
+        design={"coat": [(L, 100.0, "L"), (H, 80.0, "H")]},
+        environments=[{"name": "twice", "stack": [ref]}],
+        pipeline_config=PipelineConfig(**CFG)), *needles)
