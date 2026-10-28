@@ -11,3 +11,4 @@
 *.pyd binary
 *.so binary
 *.npy binary
+*.npz binary

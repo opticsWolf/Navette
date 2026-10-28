@@ -1,0 +1,4222 @@
+{
+ "format_version": 1,
+ "navette_version": "0.8.1",
+ "git_commit": "b24b06c64d45b5648cf9732ca853195a2593a0e4",
+ "git_dirty": false,
+ "generated_utc": "2026-10-28T10:04:52+00:00",
+ "numpy_version": "2.5.3",
+ "python_version": "3.13.14",
+ "platform": "Windows-11-10.0.26200-SP0",
+ "npz_sha256": "57fded75f01c578433b84acd0c7d654143e4abb60c406db34ef46b329e507aeb",
+ "grids": {
+  "uv": [
+   250.0,
+   271.42857142857144,
+   292.85714285714283,
+   314.2857142857143,
+   335.7142857142857,
+   357.1428571428571,
+   378.57142857142856,
+   400.0
+  ],
+  "vis": [
+   400.0,
+   457.14285714285717,
+   514.2857142857143,
+   571.4285714285714,
+   628.5714285714286,
+   685.7142857142858,
+   742.8571428571429,
+   800.0
+  ],
+  "nir": [
+   800.0,
+   971.4285714285714,
+   1142.857142857143,
+   1314.2857142857142,
+   1485.7142857142858,
+   1657.142857142857,
+   1828.5714285714284,
+   2000.0
+  ]
+ },
+ "angles_deg": [
+  0.0,
+  15.0,
+  30.0,
+  45.0,
+  60.0,
+  75.0,
+  89.0
+ ],
+ "tolerances": {
+  "abs": 1e-12,
+  "ratio_and_angle": 1e-09,
+  "dispersion_rel": 1e-08
+ },
+ "cases": {
+  "bare_glass": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "bare_si": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Si",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "bare_ag": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ag",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "bare_tir": {
+   "definition": {
+    "layers": [
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "film_sio2": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 250.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "film_tio2_abs": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "TiO2",
+      "thickness": 80.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "film_ag": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ag",
+      "thickness": 25.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "film_ftir": {
+   "definition": {
+    "layers": [
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "air",
+      "thickness": 300.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "qw_mirror": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "ar_broadband": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 92.0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 16.0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 13.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "mdm_ag": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 80.0
+     },
+     {
+      "material": "Ag",
+      "thickness": 15.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 80.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "edge_filter": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 41.2
+     },
+     {
+      "material": "SiO2",
+      "thickness": 77.9
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 58.3
+     },
+     {
+      "material": "SiO2",
+      "thickness": 101.4
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 63.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 88.8
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 49.7
+     },
+     {
+      "material": "SiO2",
+      "thickness": 120.5
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 66.1
+     },
+     {
+      "material": "SiO2",
+      "thickness": 93.3
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 55.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 84.2
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 70.6
+     },
+     {
+      "material": "SiO2",
+      "thickness": 97.1
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 61.9
+     },
+     {
+      "material": "SiO2",
+      "thickness": 110.0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 52.4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 79.5
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 68.8
+     },
+     {
+      "material": "SiO2",
+      "thickness": 104.7
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 30.3
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_linear": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "roughness": 2.0,
+      "rough_type": 1
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_step": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "roughness": 2.0,
+      "rough_type": 2
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_exponential": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "roughness": 2.0,
+      "rough_type": 3
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_gaussian": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "roughness": 2.0,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_nevot_croce": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "roughness": 2.0,
+      "rough_type": 5
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_mixed_ml": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "roughness": 0.5,
+      "rough_type": 1
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05,
+      "roughness": 0.75,
+      "rough_type": 2
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "roughness": 1.0,
+      "rough_type": 3
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05,
+      "roughness": 1.25,
+      "rough_type": 4
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "roughness": 1.5,
+      "rough_type": 5
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05,
+      "roughness": 1.75,
+      "rough_type": 1
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "roughness": 2.0,
+      "rough_type": 2
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05,
+      "roughness": 2.25,
+      "rough_type": 3
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "roughness": 2.5,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05,
+      "roughness": 2.75,
+      "rough_type": 5
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "roughness": 3.0,
+      "rough_type": 1
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2,
+      "roughness": 1.0,
+      "rough_type": 4
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_cap_binds": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 3.0,
+      "roughness": 4.0,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 100.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "roughness_cap": 2.0
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "rough_cap_off": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 3.0,
+      "roughness": 4.0,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 100.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "roughness_cap": 0.0
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 0.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "inh_fixed": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "TiO2",
+      "thickness": 150.0,
+      "inhomogen": true,
+      "inh_delta": 0.1
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "inh_ratecapped": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 180.0,
+      "inhomogen": true,
+      "inh_mode": {
+       "RateCapped": {
+        "rate": 0.05,
+        "ref_thickness": 100.0,
+        "cap": 0.3
+       }
+      }
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "inh_multilayer": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.04
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.04
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.04
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.04
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.04
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.04
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "gradient_bruggeman": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 150.0,
+      "gradient": {
+       "material_a": "Ta2O5",
+       "material_b": "SiO2",
+       "ema": "Bruggeman",
+       "mode": {
+        "FixedSpan": {
+         "f_start": 0.0,
+         "f_end": 1.0
+        }
+       }
+      }
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "gradient_looyenga_rate": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "TiO2",
+      "thickness": 200.0,
+      "gradient": {
+       "material_a": "TiO2",
+       "material_b": "SiO2",
+       "ema": "Looyenga",
+       "mode": {
+        "RateCapped": {
+         "f_start": 0.1,
+         "rate": 0.3,
+         "ref_thickness": 100.0,
+         "f_min": 0.0,
+         "f_max": 0.8
+        }
+       }
+      }
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "gradient_maxwell_garnett": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "gradient": {
+       "material_a": "Ta2O5",
+       "material_b": "SiO2",
+       "ema": "MaxwellGarnett",
+       "mode": {
+        "FixedSpan": {
+         "f_start": 0.2,
+         "f_end": 0.7
+        }
+       },
+       "sublayers": 8
+      }
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "interface_slices": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "interface": true,
+      "interface_thickness": 5.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0,
+      "interface": true,
+      "interface_thickness": 3.0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0,
+      "interface": true,
+      "interface_thickness": 5.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ]
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "group_scaled": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.02,
+      "interface": true,
+      "interface_thickness": 1.0,
+      "roughness": 0.5,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.02,
+      "interface": true,
+      "interface_thickness": 1.0,
+      "roughness": 0.5,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.02,
+      "interface": true,
+      "interface_thickness": 1.0,
+      "roughness": 0.5,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.02,
+      "interface": true,
+      "interface_thickness": 1.0,
+      "roughness": 0.5,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.02,
+      "interface": true,
+      "interface_thickness": 1.0,
+      "roughness": 0.5,
+      "rough_type": 4
+     },
+     {
+      "material": "SiO2",
+      "thickness": 94.05
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 64.47,
+      "inhomogen": true,
+      "inh_delta": 0.02,
+      "interface": true,
+      "interface_thickness": 1.0,
+      "roughness": 0.5,
+      "rough_type": 4
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "groups": {
+     "Ta2O5": {
+      "thick_factor": 1.03,
+      "thick_summand": -0.7,
+      "n_factor": 0.99,
+      "k_factor": 1.0,
+      "inh_delta_summand": 0.01,
+      "roughness_summand": 0.4,
+      "interface_summand": 0.5
+     },
+     "SiO2": {
+      "thick_factor": 0.98,
+      "thick_summand": 0.3,
+      "n_factor": 1.01
+     }
+    }
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ],
+    "sim.<f8": [
+     "sim_PDtp",
+     "sim_PDts",
+     "sim_Rp",
+     "sim_Rs",
+     "sim_Tp",
+     "sim_Ts",
+     "sim_phi_tp",
+     "sim_phi_ts"
+    ]
+   }
+  },
+  "incoh_substrate_fb": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 1000000.0,
+      "coherent": false
+     },
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "coherence_mode": 0
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251670937896959,
+    "vis": 2251670937896959,
+    "nir": 2251670937896959
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ]
+   }
+  },
+  "incoh_substrate_cm": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 90.0
+     },
+     {
+      "material": "glass",
+      "thickness": 1000000.0,
+      "coherent": false
+     },
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "coherence_mode": 1
+   },
+   "options": {
+    "coherence_mode": 1,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ]
+   }
+  },
+  "incoh_interior_cm": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "TiO2",
+      "thickness": 80.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 50000.0,
+      "coherent": false
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 100.0
+     },
+     {
+      "material": "glass",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "coherence_mode": 1
+   },
+   "options": {
+    "coherence_mode": 1,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ]
+   }
+  },
+  "fully_coherent_thick": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 120.0
+     },
+     {
+      "material": "glass",
+      "thickness": 20000.0,
+      "coherent": false
+     },
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "coherence_mode": 2
+   },
+   "options": {
+    "coherence_mode": 2,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ]
+   }
+  },
+  "combined_cm": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "TiO2",
+      "thickness": 85.0,
+      "inhomogen": true,
+      "inh_delta": 0.05,
+      "roughness": 1.0,
+      "rough_type": 5
+     },
+     {
+      "material": "SiO2",
+      "thickness": 110.0,
+      "interface": true,
+      "interface_thickness": 2.0,
+      "roughness": 1.5,
+      "rough_type": 4
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 140.0,
+      "gradient": {
+       "material_a": "Ta2O5",
+       "material_b": "SiO2",
+       "ema": "Bruggeman",
+       "mode": {
+        "FixedSpan": {
+         "f_start": 0.0,
+         "f_end": 1.0
+        }
+       }
+      }
+     },
+     {
+      "material": "Ag",
+      "thickness": 8.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 60.0,
+      "roughness": 0.8,
+      "rough_type": 1
+     },
+     {
+      "material": "glass",
+      "thickness": 1000000.0,
+      "coherent": false
+     },
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "groups": {
+     "SiO2": {
+      "thick_factor": 1.02,
+      "roughness_summand": 0.2
+     }
+    },
+    "coherence_mode": 1
+   },
+   "options": {
+    "coherence_mode": 1,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251799813685247,
+    "vis": 2251799813685247,
+    "nir": 2251799813685247
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "DOP_R",
+     "DOP_T",
+     "Delta_R",
+     "Delta_T",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Retardance_R",
+     "Retardance_T",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "S2_R",
+     "S2_T",
+     "S3_R",
+     "S3_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "cross_R",
+     "cross_T",
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ]
+   }
+  },
+  "combined_fb": {
+   "definition": {
+    "layers": [
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 0
+     },
+     {
+      "material": "TiO2",
+      "thickness": 85.0,
+      "inhomogen": true,
+      "inh_delta": 0.05,
+      "roughness": 1.0,
+      "rough_type": 5
+     },
+     {
+      "material": "SiO2",
+      "thickness": 110.0,
+      "interface": true,
+      "interface_thickness": 2.0,
+      "roughness": 1.5,
+      "rough_type": 4
+     },
+     {
+      "material": "Ta2O5",
+      "thickness": 140.0,
+      "gradient": {
+       "material_a": "Ta2O5",
+       "material_b": "SiO2",
+       "ema": "Bruggeman",
+       "mode": {
+        "FixedSpan": {
+         "f_start": 0.0,
+         "f_end": 1.0
+        }
+       }
+      }
+     },
+     {
+      "material": "Ag",
+      "thickness": 8.0
+     },
+     {
+      "material": "SiO2",
+      "thickness": 60.0,
+      "roughness": 0.8,
+      "rough_type": 1
+     },
+     {
+      "material": "glass",
+      "thickness": 1000000.0,
+      "coherent": false
+     },
+     {
+      "material": "air",
+      "thickness": 0.0,
+      "layer_type": 2
+     }
+    ],
+    "groups": {
+     "SiO2": {
+      "thick_factor": 1.02,
+      "roughness_summand": 0.2
+     }
+    },
+    "coherence_mode": 0
+   },
+   "options": {
+    "coherence_mode": 0,
+    "roughness_cap": 2.0
+   },
+   "request_mask": {
+    "uv": 2251670937896959,
+    "vis": 2251670937896959,
+    "nir": 2251670937896959
+   },
+   "layout": {
+    "out.<f8": [
+     "A_avg",
+     "A_p",
+     "A_s",
+     "Diattenuation_R",
+     "Diattenuation_T",
+     "FOD_R_p",
+     "FOD_R_s",
+     "FOD_T_p",
+     "FOD_T_s",
+     "GDD_R_p",
+     "GDD_R_s",
+     "GDD_T_p",
+     "GDD_T_s",
+     "GD_R_p",
+     "GD_R_s",
+     "GD_T_p",
+     "GD_T_s",
+     "PDtp",
+     "PDts",
+     "Psi_R",
+     "Psi_T",
+     "R_avg",
+     "Rp",
+     "Rs",
+     "S0_R",
+     "S0_T",
+     "S1_R",
+     "S1_T",
+     "TOD_R_p",
+     "TOD_R_s",
+     "TOD_T_p",
+     "TOD_T_s",
+     "T_avg",
+     "Tp",
+     "Ts",
+     "phi_rbp",
+     "phi_rbs",
+     "phi_rp",
+     "phi_rs",
+     "phi_tbp",
+     "phi_tbs",
+     "phi_tp",
+     "phi_ts"
+    ],
+    "out.<c16": [
+     "rbp_c",
+     "rbs_c",
+     "rp_c",
+     "rs_c",
+     "tbp_c",
+     "tbs_c",
+     "tp_c",
+     "ts_c"
+    ]
+   }
+  }
+ }
+}
