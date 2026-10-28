@@ -335,9 +335,9 @@ fn kind_contribution(kind: TargetKind, scaled_diff: f64, tol: f64, band: f64) ->
 #[pyfunction]
 #[pyo3(signature = (sim_weaver, target_weaver, missing_penalty=1e6))]
 /// Merit of simulated weaves vs targets (exact/above/below residuals).
-/// A target key with no simulated curve costs `missing_penalty` and warns:
-/// keys match bit for bit and target angles are radians, so a simulation
-/// keyed in degrees would otherwise match nothing without a word.
+/// A target key the simulation weaver does not hold costs `missing_penalty`
+/// and warns: keys match bit for bit and target angles are radians, so a
+/// simulation keyed in degrees would otherwise match nothing without a word.
 pub fn calculate_merit(
     py: Python<'_>,
     sim_weaver: &PyOpticalWeaver,
@@ -347,142 +347,18 @@ pub fn calculate_merit(
     let sim_core = sim_weaver.inner.clone();
     let tw_core = target_weaver.inner.clone();
 
-    let (merit, missing) = py.detach(move || {
-        let mut total_merit = 0.0;
-        let mut missing: Vec<OpticalKey> = Vec::new();
-        let target_keys = tw_core.inner.inner.keys();
-        let meta_guard = tw_core.target_metadata.read();
+    // The keys `merit_sum` will charge missing_penalty for, found by a
+    // lookup per key so the sum itself carries no bookkeeping. (A key the
+    // weaver holds with no data is charged too, but not named here.)
+    let missing: Vec<OpticalKey> = tw_core
+        .inner
+        .inner
+        .keys()
+        .into_iter()
+        .filter(|k| !sim_core.inner.contains_key(k))
+        .collect();
 
-        for key in target_keys {
-            let sim_res = sim_core.get_weaved(&key);
-            let (sim_wl, sim_val) = match sim_res {
-                Ok((w, v)) if !w.is_empty() => (w, v),
-                _ => {
-                    total_merit += missing_penalty;
-                    missing.push(key.clone());
-                    continue;
-                }
-            };
-
-            let target_frames = match tw_core.inner.inner.frames_for_key(&key) {
-                Some(f) => f,
-                None => continue,
-            };
-
-            for frm in target_frames {
-                let t_wl = frm.wavelength();
-                if t_wl.is_empty() {
-                    continue;
-                }
-
-                let entry = match meta_guard.get(&frm.uid).and_then(|m| m.entries.get(&key)) {
-                    Some(e) => e,
-                    None => continue,
-                };
-
-                // Skip frames whose grid does not overlap the simulated curve.
-                if sim_wl.last().is_none_or(|&l| l < t_wl[0])
-                    || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
-                {
-                    continue;
-                }
-
-                // Fast path: when the target grid coincides bit-for-bit with a
-                // contiguous block of the simulated grid, read simulated values
-                // directly — no interpolation, no per-point division. Mirrors the
-                // OpticalWeaver `candidate == frame_wl` alignment shortcut, and is
-                // the common case when the solver is sampled on the target grid.
-                let offset = sim_wl.partition_point(|&x| x < t_wl[0]);
-                let aligned = offset + t_wl.len() <= sim_wl.len()
-                    && wl_bits_eq(&sim_wl[offset..offset + t_wl.len()], t_wl);
-
-                // Misaligned case: two-pointer interpolation. `sim_idx` advances
-                // monotonically across the sorted target grid, giving O(n + m)
-                // instead of an O(m log n) per-point binary search.
-                // Frame-local sum: user weight + count normalization apply
-                // ONCE per frame below (defaults 1.0/None = legacy sum).
-                // Integral frames instead accumulate mean diff/tol/band and
-                // apply the kind ONCE to the mean (see `kind_contribution`).
-                let mut frame_sum = 0.0;
-                let mut int_d = 0.0;
-                let mut int_tol = 0.0;
-                let mut int_bw = 0.0;
-                let mut sim_idx = 0;
-                for i in 0..t_wl.len() {
-                    let sim_raw = if aligned {
-                        sim_val[offset + i]
-                    } else {
-                        let target_w = t_wl[i];
-                        while sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx + 1] < target_w {
-                            sim_idx += 1;
-                        }
-                        if sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx] <= target_w {
-                            let w0 = sim_wl[sim_idx];
-                            let w1 = sim_wl[sim_idx + 1];
-                            let v0 = sim_val[sim_idx];
-                            let v1 = sim_val[sim_idx + 1];
-                            if (w1 - w0).abs() < 1e-14 {
-                                v0
-                            } else {
-                                v0 + (target_w - w0) * (v1 - v0) / (w1 - w0)
-                            }
-                        } else if sim_idx < sim_wl.len() {
-                            sim_val[sim_idx]
-                        } else {
-                            sim_val[sim_val.len() - 1]
-                        }
-                    };
-
-                    let target_scaled = entry.normalized_targets[i];
-
-                    let scaled_diff = match entry.resolved_mode {
-                        ResolvedNormMode::Phase => {
-                            // Wrap the residual to [-pi, pi] without trig — cheaper
-                            // than the equivalent sin/cos/atan2 formulation.
-                            let diff = sim_raw - target_scaled;
-                            diff - std::f64::consts::TAU * (diff / std::f64::consts::TAU).round()
-                        }
-                        ResolvedNormMode::Log => {
-                            sim_raw.max(1e-12).log10() * entry.norm_factor - target_scaled
-                        }
-                        ResolvedNormMode::Linear | ResolvedNormMode::Complex => {
-                            sim_raw * entry.norm_factor - target_scaled
-                        }
-                    };
-
-                    let tol = entry.tolerances[i];
-
-                    if entry.integral {
-                        // Mean branch: accumulate raw ingredients; the kind
-                        // applies ONCE to the mean after the loop.
-                        int_d += scaled_diff;
-                        int_tol += tol;
-                        int_bw += entry.band.get(i).copied().unwrap_or(0.0);
-                    } else {
-                        frame_sum += kind_contribution(
-                            entry.kind,
-                            scaled_diff,
-                            tol,
-                            entry.band.get(i).copied().unwrap_or(0.0),
-                        );
-                    }
-                }
-                if entry.integral {
-                    // Single mean residual R = mean(d)/mean(tol); kinds
-                    // constrain the MEAN (integral-`a` = lower bound on the
-                    // average). Weight multiplies; count is moot (rejected
-                    // at ingestion — the mean already is one).
-                    let n = t_wl.len() as f64;
-                    let tol_bar = (int_tol / n).max(1e-300);
-                    total_merit += entry.weight
-                        * kind_contribution(entry.kind, int_d / n, tol_bar, int_bw / n);
-                } else {
-                    total_merit += frame_sum * entry.weight / entry.count_norm.unwrap_or(1.0);
-                }
-            }
-        }
-        (total_merit, missing)
-    });
+    let merit = py.detach(move || merit_sum(&sim_core, &tw_core, missing_penalty));
     if let Some(first) = missing.first() {
         let (angle, polarization, spectral) = first.as_tuple();
         let msg = format!(
@@ -500,4 +376,148 @@ bit and target angles are radians: key the simulation weaver in radians",
         )?;
     }
     Ok(merit)
+}
+
+/// The merit sum proper: one `missing_penalty` per target key with no
+/// simulated curve, plus every frame's residual sum. Never inlined, so the
+/// code around its call cannot change how the inner loop compiles (folding
+/// the missing-key warning into `calculate_merit` once cost 15%).
+#[inline(never)]
+fn merit_sum(
+    sim_core: &navette::spectralweave::opticalweaver::OpticalWeaver,
+    tw_core: &TargetWeaver,
+    missing_penalty: f64,
+) -> f64 {
+    let mut total_merit = 0.0;
+    let target_keys = tw_core.inner.inner.keys();
+    let meta_guard = tw_core.target_metadata.read();
+
+    for key in target_keys {
+        let sim_res = sim_core.get_weaved(&key);
+        let (sim_wl, sim_val) = match sim_res {
+            Ok((w, v)) if !w.is_empty() => (w, v),
+            _ => {
+                total_merit += missing_penalty;
+                continue;
+            }
+        };
+
+        let target_frames = match tw_core.inner.inner.frames_for_key(&key) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        for frm in target_frames {
+            let t_wl = frm.wavelength();
+            if t_wl.is_empty() {
+                continue;
+            }
+
+            let entry = match meta_guard.get(&frm.uid).and_then(|m| m.entries.get(&key)) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            // Skip frames whose grid does not overlap the simulated curve.
+            if sim_wl.last().is_none_or(|&l| l < t_wl[0])
+                || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
+            {
+                continue;
+            }
+
+            // Fast path: when the target grid coincides bit-for-bit with a
+            // contiguous block of the simulated grid, read simulated values
+            // directly — no interpolation, no per-point division. Mirrors the
+            // OpticalWeaver `candidate == frame_wl` alignment shortcut, and is
+            // the common case when the solver is sampled on the target grid.
+            let offset = sim_wl.partition_point(|&x| x < t_wl[0]);
+            let aligned = offset + t_wl.len() <= sim_wl.len()
+                && wl_bits_eq(&sim_wl[offset..offset + t_wl.len()], t_wl);
+
+            // Misaligned case: two-pointer interpolation. `sim_idx` advances
+            // monotonically across the sorted target grid, giving O(n + m)
+            // instead of an O(m log n) per-point binary search.
+            // Frame-local sum: user weight + count normalization apply
+            // ONCE per frame below (defaults 1.0/None = legacy sum).
+            // Integral frames instead accumulate mean diff/tol/band and
+            // apply the kind ONCE to the mean (see `kind_contribution`).
+            let mut frame_sum = 0.0;
+            let mut int_d = 0.0;
+            let mut int_tol = 0.0;
+            let mut int_bw = 0.0;
+            let mut sim_idx = 0;
+            for i in 0..t_wl.len() {
+                let sim_raw = if aligned {
+                    sim_val[offset + i]
+                } else {
+                    let target_w = t_wl[i];
+                    while sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx + 1] < target_w {
+                        sim_idx += 1;
+                    }
+                    if sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx] <= target_w {
+                        let w0 = sim_wl[sim_idx];
+                        let w1 = sim_wl[sim_idx + 1];
+                        let v0 = sim_val[sim_idx];
+                        let v1 = sim_val[sim_idx + 1];
+                        if (w1 - w0).abs() < 1e-14 {
+                            v0
+                        } else {
+                            v0 + (target_w - w0) * (v1 - v0) / (w1 - w0)
+                        }
+                    } else if sim_idx < sim_wl.len() {
+                        sim_val[sim_idx]
+                    } else {
+                        sim_val[sim_val.len() - 1]
+                    }
+                };
+
+                let target_scaled = entry.normalized_targets[i];
+
+                let scaled_diff = match entry.resolved_mode {
+                    ResolvedNormMode::Phase => {
+                        // Wrap the residual to [-pi, pi] without trig — cheaper
+                        // than the equivalent sin/cos/atan2 formulation.
+                        let diff = sim_raw - target_scaled;
+                        diff - std::f64::consts::TAU * (diff / std::f64::consts::TAU).round()
+                    }
+                    ResolvedNormMode::Log => {
+                        sim_raw.max(1e-12).log10() * entry.norm_factor - target_scaled
+                    }
+                    ResolvedNormMode::Linear | ResolvedNormMode::Complex => {
+                        sim_raw * entry.norm_factor - target_scaled
+                    }
+                };
+
+                let tol = entry.tolerances[i];
+
+                if entry.integral {
+                    // Mean branch: accumulate raw ingredients; the kind
+                    // applies ONCE to the mean after the loop.
+                    int_d += scaled_diff;
+                    int_tol += tol;
+                    int_bw += entry.band.get(i).copied().unwrap_or(0.0);
+                } else {
+                    frame_sum += kind_contribution(
+                        entry.kind,
+                        scaled_diff,
+                        tol,
+                        entry.band.get(i).copied().unwrap_or(0.0),
+                    );
+                }
+            }
+            if entry.integral {
+                // Single mean residual R = mean(d)/mean(tol); kinds
+                // constrain the MEAN (integral-`a` = lower bound on the
+                // average). Weight multiplies; count is moot (rejected
+                // at ingestion — the mean already is one).
+                let n = t_wl.len() as f64;
+                let tol_bar = (int_tol / n).max(1e-300);
+                total_merit +=
+                    entry.weight * kind_contribution(entry.kind, int_d / n, tol_bar, int_bw / n);
+            } else {
+                total_merit += frame_sum * entry.weight / entry.count_norm.unwrap_or(1.0);
+            }
+        }
+    }
+    total_merit
 }
