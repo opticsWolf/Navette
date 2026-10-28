@@ -9,6 +9,38 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
+- **Angles: radians inside, the unit named at every door.** Every
+  calculation in Rust and Python works in radians (`Radians`, a
+  range-checked newtype in `smatrix/angle.rs`). Every Python door that
+  takes an angle has two keyword-only arguments, and exactly one must be
+  given; both or neither raises a `ValueError` naming the pair:
+  - Grids, `angles_deg=` / `angles_rad=`: `ScatterMatrix`,
+    `solve_structure`, `SmatrixContext`, `NeedlePipeline`, `run_design`,
+    `run_design_environments`, `run_needle`, `SimCurves`,
+    `sim_curves_from_arrays`, `build_needle_targets`, and
+    `TargetWeaver.add_angular_target`.
+  - Single angles, `angle_deg=` / `angle_rad=`: `SpectralTarget`,
+    `ColorTarget`, `MeritSpec.add_key`, `reference_rotation`,
+    `apply_reference_rotation`, and `TargetWeaver.add_spectral_target`.
+    `AngularTarget` takes `angles_deg=` / `angles_rad=`. The angle is no
+    longer positional, so the arguments after it move up one place.
+  - The range is [0, pi/2] (0 to 90 degrees). A value outside it or NaN
+    is an error that gives the index, the value and the unit, so degrees
+    passed as radians fail at once.
+  - Target JSON uses `"angle_deg"` / `"angle_rad"` (`"angles_deg"` /
+    `"angles_rad"` for angular targets). The old `"angle"` key is rejected
+    with a message naming the new keys.
+  - `TargetWeaver` keys hold radians, and `export_entries` reports
+    `angle_rad`. `calculate_merit` warns when a target key has no
+    simulated curve, which is what a simulation keyed in degrees would
+    cause.
+  - Removed: `angles_in_radians`, `angles=`, `angle=`, and the helpers
+    `deg_to_sin`, `angles_to_sin`, `angles_as_degrees`,
+    `reference_rotation_radians`. `ScatterMatrix.sin_theta` and
+    `Solver.sin_theta` are new. There is no default angle: omitting it
+    is the same error as giving both. `ColorTarget` is the one exception,
+    where neither means normal incidence. See
+    `docs/plans/angle_units_plan.md`.
 - **Needle synthesis draws from a material pool, not a contrast map.**
   The `contrast` map (film name -> one seed material) is gone. A run now
   has one pool of needle materials, and the needle scan tries every

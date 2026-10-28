@@ -1,7 +1,7 @@
 # Angle units — one unit inside, explicit units at the door
 
-Status: commit 1 (Rust core) and commit 2 (Python boundary) built; commit 3
-(docs) open. This replaces the `angles_in_radians` bool
+Status: built. Commit 1 (Rust core), commit 2 (Python boundary) and
+commit 3 (docs). This replaces the `angles_in_radians` bool
 (253d8f6). Backwards compatibility is not a goal: names, keyword
 arguments and target JSON keys change.
 
@@ -207,8 +207,10 @@ Counted on 253d8f6 (`.py`, `.md`, `.ipynb`, outside `.venv` and `target/`):
 | `AngularTarget(` | 8 | 6 |
 | `angles_in_radians` | 54 | 8 |
 
-Not every use passes an angle. Calls that leave the angle out get the
-normal-incidence default. On that default, see the open question in A9.
+Not every use passes an angle. As built, there is no default: a call
+that leaves the angle out raises, like one that gives both units, so
+those callers now pass `angles_deg=[0.0]` (or `angle_deg=0.0`)
+explicitly. `ColorTarget` is the one exception (A3).
 
 Rust: 93 `MeritKey { .. }` literals, most of them tests with
 `angle: 0.0`. They become `angle: Radians::ZERO` (a `const`).
@@ -255,8 +257,9 @@ fingerprint.
 
 ## A9. Open questions for the user
 
-- **Normal-incidence default.** Today an omitted angle means 0°. Should
-  an omitted angle stay valid and mean 0 (0 is the same in both units,
-  so it cannot be misread), or should every door require an angle? The
-  plan assumes 0 stays a default, because it is unambiguous.
-- **A one-ulp re-pin** (A5), if either fingerprint moves.
+Both are settled:
+
+- **Normal-incidence default.** Settled in commit 2: every door requires
+  an angle, apart from `ColorTarget` (A7).
+- **A one-ulp re-pin** (A5). Not needed: the golden baseline and the
+  needle pin reproduced bit for bit.

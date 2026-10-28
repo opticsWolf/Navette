@@ -169,8 +169,8 @@ surface, under a laminate, behind a cover glass; each of those is an
 name:
 
 ```python
-tc.add(SpectralTarget(wl, R_bare,  tol, 0.0, "s", "R", environment="bare"))
-tc.add(SpectralTarget(wl, R_lam,   tol, 0.0, "s", "R", environment="laminated"))
+tc.add(SpectralTarget(wl, R_bare, tol, "s", "R", angle_deg=0.0, environment="bare"))
+tc.add(SpectralTarget(wl, R_lam,  tol, "s", "R", angle_deg=0.0, environment="laminated"))
 spec = build_merit_spec(tc, environments=["bare", "laminated"])
 ```
 

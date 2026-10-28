@@ -84,7 +84,7 @@ which is random). The raw `core_engine` pyfunction runs the same kernels as
 
 * **Wavelength ranges**, solved separately: UV 250-400, VIS 400-800,
   NIR 800-2000 nm, 8 points each (`np.linspace`).
-* **Angles**: 0, 15, 30, 45, 60, 75, 89 degrees.
+* **Angles**: 0, 15, 30, 45, 60, 75, 89 degrees, passed as `angles_deg=`.
 * **Materials**: closed-form dispersion (Cauchy dielectrics, a TiO2 with a
   UV absorption tail, a Drude silver, a dispersive Si), so every channel is
   wavelength dependent.
@@ -128,8 +128,9 @@ flips it. Drop the mark and regenerate in the same change.
    (and the `run_design` driver) gave `SimCurves` sin(theta) as its angle
    axis, but `MeritSpec` keys are in degrees and `SimCurves::angle_row`
    compares the two directly. With more than one angle, every key at a
-   non-zero angle scored against the last angle's curves. The evaluator now
-   labels the axis in degrees; the solver still runs on sin(theta).
+   non-zero angle scored against the last angle's curves. Keys and the
+   axis are now both `Radians` (`docs/plans/angle_units_plan.md`); the
+   solver still runs on sin(theta).
 2. **Synthesis T into an absorbing substrate.** `SmatrixContext.simulate`'s
    `Ts`/`Tp` disagree with the Poynting transmittance the engine returns
    (and `1 - R`): T = 84 on bare Ag at 400 nm, 1e-5 off on Si. R and the
