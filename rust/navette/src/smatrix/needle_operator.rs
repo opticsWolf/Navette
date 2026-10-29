@@ -61,8 +61,9 @@ use std::f64::consts::PI;
 
 pub use crate::smatrix::optics_core::cexp_fast;
 use crate::smatrix::optics_core::{
-    C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN, cplx, csqrt_fast, forward_branch, nevot_croce_factors,
-    redheffer_product_complex_field_inner, redheffer_product_real_inner, w_function_inner,
+    C_NM_PER_FS, DBL_EPS, EPS_COS, LOG_MIN, LOG_MIN_SQ, cplx, csqrt_fast, forward_branch,
+    nevot_croce_factors, redheffer_product_complex_field_inner, redheffer_product_real_inner,
+    w_function_inner,
 };
 
 /// S-matrix element in the crate-wide convention.
@@ -121,7 +122,7 @@ fn interface_matrix(
     let y_next = admittance(is_s, n[i + 1], cos[i + 1]);
 
     let den = y_c + y_next;
-    let den_safe = if den.norm() < LOG_MIN {
+    let den_safe = if den.norm_sqr() < LOG_MIN_SQ {
         cplx(LOG_MIN, LOG_MIN)
     } else {
         den
@@ -169,6 +170,12 @@ fn interface_matrix(
 /// * `s_right[j]` — block exit up to the BOTTOM plane of layer j
 ///   (interface j|j+1 and everything below; layer j itself excluded).
 /// * `beta_nm[j]` — k0·n·cosθ per nm of physical depth, Im >= 0 branch.
+/// * `phase[j]` — the propagator through interior layer j, `exp(iβ d_j)`,
+///   or `None` where the sweeps skip the layer (d ≤ 1e-12 nm, or a block
+///   boundary).
+/// * `s_right_top[j]` — block exit up to the TOP plane of layer j (layer j
+///   included): `prop(phase[j]) ⊗ s_right[j]`, the right sweep's own
+///   intermediate. Identity where `phase[j]` is `None`.
 /// * `start`/`end` — the active block `[start, end)`; entries outside the
 ///   range are identity placeholders. Layers `start` and `end-1` act as the
 ///   block's boundary half-spaces; needle hosts must lie strictly inside.
@@ -180,9 +187,11 @@ fn interface_matrix(
 pub struct StackFields {
     pub s_left: Vec<S4>,
     pub s_right: Vec<S4>,
+    pub s_right_top: Vec<S4>,
     pub n: Vec<Complex64>,
     pub cos: Vec<Complex64>,
     pub beta_nm: Vec<Complex64>,
+    pub phase: Vec<Option<Complex64>>,
     pub ds: Vec<f64>,
     pub start: usize,
     pub end: usize,
@@ -234,8 +243,72 @@ pub fn build_stack_fields_range(
     pol: i32,
 ) -> StackFields {
     assert!(start_idx < end_idx && end_idx < n_slice.len());
+    let common = fields_common(start_idx, end_idx, n_slice, d_slice, lam, nsin_fi);
+    fields_sweep(
+        start_idx,
+        end_idx,
+        n_slice,
+        d_slice,
+        rv_slice,
+        rt_slice,
+        lam,
+        pol == 0,
+        common,
+    )
+}
+
+/// [`build_stack_fields_range`] for both polarizations, `(s, p)`. The
+/// polarization-independent part (cos θ, β, the layer propagators) is
+/// computed once; each field set is the one the single-polarization build
+/// returns, to the bit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_stack_fields_range_dual(
+    start_idx: usize,
+    end_idx: usize,
+    n_slice: &[Complex64],
+    d_slice: &[f64],
+    rv_slice: &[f64],
+    rt_slice: &[i32],
+    lam: f64,
+    nsin_fi: Complex64,
+) -> (StackFields, StackFields) {
+    assert!(start_idx < end_idx && end_idx < n_slice.len());
+    let common = fields_common(start_idx, end_idx, n_slice, d_slice, lam, nsin_fi);
+    let s = fields_sweep(
+        start_idx,
+        end_idx,
+        n_slice,
+        d_slice,
+        rv_slice,
+        rt_slice,
+        lam,
+        true,
+        common.clone(),
+    );
+    let p = fields_sweep(
+        start_idx, end_idx, n_slice, d_slice, rv_slice, rt_slice, lam, false, common,
+    );
+    (s, p)
+}
+
+/// cos θ, β and the interior propagators of a block: everything a field
+/// build needs that does not depend on the polarization.
+#[derive(Clone)]
+struct FieldsCommon {
+    cos: Vec<Complex64>,
+    beta_nm: Vec<Complex64>,
+    phase: Vec<Option<Complex64>>,
+}
+
+fn fields_common(
+    start_idx: usize,
+    end_idx: usize,
+    n_slice: &[Complex64],
+    d_slice: &[f64],
+    lam: f64,
+    nsin_fi: Complex64,
+) -> FieldsCommon {
     let two_pi_lam = 2.0 * PI / lam;
-    let is_s = pol == 0;
     let nl = n_slice.len();
 
     let cos: Vec<Complex64> = n_slice.iter().map(|&n| cos_from_nsin(nsin_fi, n)).collect();
@@ -252,6 +325,41 @@ pub fn build_stack_fields_range(
         })
         .collect();
 
+    // Both sweeps compose the same interior-layer propagators, so each is
+    // built once (None for a layer the sweeps skip).
+    let mut phase: Vec<Option<Complex64>> = vec![None; nl];
+    for i in start_idx + 1..end_idx {
+        if d_slice[i] > 1e-12 {
+            phase[i] = Some(cexp_fast(cplx(0.0, 1.0) * beta_nm[i] * d_slice[i]));
+        }
+    }
+    FieldsCommon {
+        cos,
+        beta_nm,
+        phase,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fields_sweep(
+    start_idx: usize,
+    end_idx: usize,
+    n_slice: &[Complex64],
+    d_slice: &[f64],
+    rv_slice: &[f64],
+    rt_slice: &[i32],
+    lam: f64,
+    is_s: bool,
+    common: FieldsCommon,
+) -> StackFields {
+    let two_pi_lam = 2.0 * PI / lam;
+    let nl = n_slice.len();
+    let FieldsCommon {
+        cos,
+        beta_nm,
+        phase,
+    } = common;
+
     let id = || {
         (
             cplx(0.0, 0.0),
@@ -262,42 +370,48 @@ pub fn build_stack_fields_range(
     };
     let mut s_left: Vec<S4> = vec![id(); nl];
     let mut s_right: Vec<S4> = vec![id(); nl];
+    let mut s_right_top: Vec<S4> = vec![id(); nl];
+
+    // Both sweeps compose the same interfaces, so each is built once: the
+    // same call on the same inputs, so the same bits.
+    let ifm: Vec<S4> = (0..nl)
+        .map(|i| {
+            if (start_idx..end_idx).contains(&i) {
+                interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s)
+            } else {
+                id()
+            }
+        })
+        .collect();
 
     // s_left: block entrance → top of layer j.
     for i in start_idx..end_idx {
         let mut sg = s_left[i];
-        if i > start_idx && d_slice[i] > 1e-12 {
-            sg = star(
-                sg,
-                prop(cexp_fast(cplx(0.0, 1.0) * beta_nm[i] * d_slice[i])),
-            );
+        if let Some(pp) = phase[i] {
+            sg = star(sg, prop(pp));
         }
-        sg = star(
-            sg,
-            interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s),
-        );
+        sg = star(sg, ifm[i]);
         s_left[i + 1] = sg;
     } // s_right: block exit → bottom of layer j.
     for i in (start_idx..end_idx).rev() {
         let mut sg = s_right[i + 1];
-        if i + 1 < end_idx && d_slice[i + 1] > 1e-12 {
-            sg = star(
-                prop(cexp_fast(cplx(0.0, 1.0) * beta_nm[i + 1] * d_slice[i + 1])),
-                sg,
-            );
+        if i + 1 < end_idx
+            && let Some(pp) = phase[i + 1]
+        {
+            sg = star(prop(pp), sg);
+            s_right_top[i + 1] = sg;
         }
-        sg = star(
-            interface_matrix(i, n_slice, &cos, rv_slice, rt_slice, two_pi_lam, is_s),
-            sg,
-        );
+        sg = star(ifm[i], sg);
         s_right[i] = sg;
     }
     StackFields {
         s_left,
         s_right,
+        s_right_top,
         n: n_slice.to_vec(),
         cos,
         beta_nm,
+        phase,
         ds: d_slice.to_vec(),
         start: start_idx,
         end: end_idx,
@@ -357,7 +471,7 @@ fn star_dual(
 ) -> (CDual, CDual, CDual, CDual) {
     let one = CDual::cst(cplx(1.0, 0.0));
     let mut denom = one.sub(a.3.mul(b.0));
-    if denom.v.norm() < LOG_MIN {
+    if denom.v.norm_sqr() < LOG_MIN_SQ {
         let phase = denom.v / (denom.v.abs() + 1e-300);
         let repl = cplx(LOG_MIN, 0.0) * phase + 1e-300;
         let fac = repl / denom.v;
@@ -508,6 +622,76 @@ pub fn needle_slopes4_ddz(
 
     let m = star_dual(star_dual(du, needle), dl);
     [m.0.d, m.1.d, m.2.d, m.3.d]
+}
+
+/// Thickness slopes (∂r_front/∂d_j, ∂t_fwd/∂d_j) of host layer `j`: the
+/// channels 0 and 2 of [`needle_slopes4_ddz`] for a needle of the host's
+/// own material at the layer's top plane, which is what growing the layer
+/// is to first order.
+///
+/// The same numbers for less work. At ξ = 0 the upper propagator is the
+/// identity, the lower part is the right sweep's own `s_right_top[j]`, and
+/// a needle of the host material has ρ̂ = 0 and τ̂ = iβ′, so the first dual
+/// product is written out (each surviving operation is the one `star_dual`
+/// performs, operand for operand). The second computes only the two
+/// channels read. Channels 1 (∂t_back) and 3 (∂r_back) are what
+/// back-incidence demands (RB/TB/AB) would read; the thickness Jacobian
+/// does not cover those yet, so they are not built. The polarization is
+/// the one `fields` was built for.
+pub(crate) fn thickness_slopes_ddz(fields: &StackFields, j: usize, lam: f64) -> [Complex64; 2] {
+    let two_pi_lam = 2.0 * PI / lam;
+    debug_assert!(
+        fields.start < j && j < fields.end,
+        "thickness host layer {j} must be interior to the active block ({}, {})",
+        fields.start,
+        fields.end
+    );
+
+    let u = fields.s_left[j];
+    // prop(exp(iβd)) ⊗ s_right[j]: the right sweep built it already, with
+    // the same propagator, unless it skipped a layer this thin.
+    let l = match fields.phase[j] {
+        Some(_) => fields.s_right_top[j],
+        None => {
+            let pr = cexp_fast(cplx(0.0, 1.0) * fields.beta_nm[j] * fields.ds[j]);
+            star(prop(pr), fields.s_right[j])
+        }
+    };
+    // `needle_slopes` for n′ = n_host: r₁₂ is exactly 0, so τ̂ = iβ′ with
+    // β′ = k0·n·cosθ, taken from the same cos θ (not the Im ≥ 0 β).
+    let tau_hat = cplx(0.0, 1.0) * (two_pi_lam * fields.n[j] * fields.cos[j]);
+
+    // U ⊗ N with N = (0 + 0δ, 1 + τ̂δ, 1 + τ̂δ, 0 + 0δ) and U constant.
+    // Its r_front slope is 0, and only the second product's slopes are read.
+    let x = tau_hat * u.3;
+    let a1 = CDual {
+        v: u.1,
+        d: u.1 * tau_hat,
+    };
+    let a2 = CDual {
+        v: u.2,
+        d: tau_hat * u.2,
+    };
+    let a3 = CDual { v: u.3, d: x + x };
+
+    // (U ⊗ N) ⊗ L, channels r_front and t_fwd only.
+    let one = CDual::cst(cplx(1.0, 0.0));
+    let l0 = CDual::cst(l.0);
+    let l2 = CDual::cst(l.2);
+    let mut denom = one.sub(a3.mul(l0));
+    if denom.v.norm_sqr() < LOG_MIN_SQ {
+        let phase = denom.v / (denom.v.abs() + 1e-300);
+        let repl = cplx(LOG_MIN, 0.0) * phase + 1e-300;
+        let fac = repl / denom.v;
+        denom = CDual {
+            v: repl,
+            d: denom.d * fac,
+        };
+    }
+    let inv_denom = denom.recip();
+    let term = a1.mul(l0).mul(a2).mul(inv_denom);
+    let s_tf = l2.mul(a2).mul(inv_denom);
+    [term.d, s_tf.d]
 }
 
 /// Front-reflection needle sensitivity — thin wrapper over
@@ -2961,5 +3145,69 @@ mod tests {
             p[0],
             expect
         );
+    }
+
+    /// The thickness kernel is channels 0 and 2 of the four-channel one for
+    /// a host-material needle at the top plane, to the bit: every host, both
+    /// polarizations, abrupt and rough (all five models), lossless and
+    /// absorbing, oblique and past the critical angle, and a host too thin
+    /// for the sweeps to propagate. The dual build is the two single ones.
+    #[test]
+    fn thickness_slopes_are_the_four_channel_slopes_to_the_bit() {
+        let same = |a: Complex64, b: Complex64| a.re == b.re && a.im == b.im;
+        let same4 =
+            |a: S4, b: S4| same(a.0, b.0) && same(a.1, b.1) && same(a.2, b.2) && same(a.3, b.3);
+        let mut thin = stack_a();
+        thin.1[2] = 1e-13;
+        let mut checked = 0;
+        for (n, d, _, _) in [stack_a(), stack_absorbing(), thin] {
+            let nl = n.len();
+            for rtype in 0..=5 {
+                let rv: Vec<f64> = (0..nl)
+                    .map(|i| {
+                        if rtype == 0 {
+                            0.0
+                        } else {
+                            0.5 + 0.3 * i as f64
+                        }
+                    })
+                    .collect();
+                let rt = vec![rtype; nl];
+                for (n0, sin_t) in [(1.0, 0.0), (1.0, 0.6), (1.6, 0.9)] {
+                    let mut ns = n.clone();
+                    ns[0] = n_(n0, 0.0);
+                    let nsin = ns[0] * cplx(sin_t, 0.0);
+                    for lam in [420.0, LAM, 830.0] {
+                        let dual =
+                            build_stack_fields_range_dual(0, nl - 1, &ns, &d, &rv, &rt, lam, nsin);
+                        for pol in [0, 1] {
+                            let f = build_stack_fields(&ns, &d, &rv, &rt, lam, nsin, pol);
+                            let g = if pol == 0 { &dual.0 } else { &dual.1 };
+                            for k in 0..nl {
+                                assert!(
+                                    same4(f.s_left[k], g.s_left[k])
+                                        && same4(f.s_right[k], g.s_right[k])
+                                        && same4(f.s_right_top[k], g.s_right_top[k]),
+                                    "dual build differs at layer {k}, pol {pol}"
+                                );
+                            }
+                            for j in 1..nl - 1 {
+                                let s4 = needle_slopes4_ddz(&f, nsin, j, 0.0, f.n[j], pol, lam);
+                                let [dr, dt] = thickness_slopes_ddz(&f, j, lam);
+                                assert!(
+                                    same(dr, s4[0]) && same(dt, s4[2]),
+                                    "rtype {rtype} n0 {n0} sin {sin_t} lam {lam} pol {pol} j {j}: \
+                                     ({dr}, {dt}) vs ({}, {})",
+                                    s4[0],
+                                    s4[2]
+                                );
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 6 * 3 * 3 * 2 * 3);
     }
 }

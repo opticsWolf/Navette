@@ -20,7 +20,7 @@ use rayon::prelude::*;
 
 use crate::smatrix::coherent_block::solve_coherent_block_fields_dual;
 use crate::smatrix::needle_operator::{
-    block_flux_factors, build_stack_fields_range, needle_slopes4_ddz,
+    block_flux_factors, build_stack_fields_range_dual, thickness_slopes_ddz,
 };
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
@@ -187,13 +187,12 @@ impl SmatrixContext {
                 (pt, dep)
             })
             .collect();
+        let (pts, rows): (Vec<Pt>, Vec<Vec<f64>>) = swept.into_iter().unzip();
         let deposits = if n_par == 0 {
             None
         } else {
-            let rows: Vec<Vec<f64>> = swept.iter().map(|(_, d)| d.clone()).collect();
             Some(CurveDeposits::from_point_rows(rows, n_par)?)
         };
-        let pts: Vec<Pt> = swept.into_iter().map(|(p, _)| p).collect();
 
         let mk = |id: CurveId| -> Arc<[f64]> {
             let idx = id.index();
@@ -299,30 +298,29 @@ fn deposit_row(
     n_par: usize,
 ) -> Vec<f64> {
     let mut row = vec![0.0f64; 4 * n_par];
-    for pol in [0i32, 1i32] {
+    let (fields_s, fields_p) = build_stack_fields_range_dual(
+        start,
+        end,
+        n_slice,
+        &sa.thicknesses,
+        &sa.rough_vals,
+        &sa.rough_types,
+        lam,
+        nsin_fi,
+    );
+    for (pol, fields) in [(0i32, &fields_s), (1i32, &fields_p)] {
         let pi = pol as usize;
-        let fields = build_stack_fields_range(
-            start,
-            end,
-            n_slice,
-            &sa.thicknesses,
-            &sa.rough_vals,
-            &sa.rough_types,
-            lam,
-            nsin_fi,
-            pol,
-        );
         let m = fields.s_left[fields.end];
-        let f_fwd = block_flux_factors(&fields, pol)[2];
+        let f_fwd = block_flux_factors(fields, pol)[2];
         let r_conj = m.0.conj();
         let t_conj = m.2.conj();
         for (kp, &fi) in par_films.iter().enumerate() {
             // Film `fi` is solver slot `fi + 1` (ambient occupies slot 0).
             let j = fi + 1;
-            let s4 = needle_slopes4_ddz(&fields, nsin_fi, j, 0.0, fields.n[j], pol, lam);
+            let [dr, dt] = thickness_slopes_ddz(fields, j, lam);
             // d|z|²/dd = 2·Re(conj(z)·dz/dd).
-            row[pi * n_par + kp] = 2.0 * (r_conj * s4[0]).re;
-            row[(2 + pi) * n_par + kp] = 2.0 * f_fwd * (t_conj * s4[2]).re;
+            row[pi * n_par + kp] = 2.0 * (r_conj * dr).re;
+            row[(2 + pi) * n_par + kp] = 2.0 * f_fwd * (t_conj * dt).re;
         }
     }
     row
@@ -2205,5 +2203,246 @@ mod tests {
             "the within-cycle staleness stays under the documented 5% (drift {drift},              stale {m_stale}, fresh {m_fresh})"
         );
         let _ = m_fresh;
+    }
+
+    /// Where one LM iteration's time goes, part by part (a profile, not a
+    /// check: `--ignored --nocapture` in a release build). The problem is
+    /// `bench_lm_breakdown.py`'s: an `n_films` H/L AR coating on 61
+    /// wavelengths at normal incidence, Rs and Rp demanded zero.
+    /// `NAVETTE_PROFILE_FILMS` sets the film count (default 16).
+    #[test]
+    #[ignore]
+    fn profile_lm_parts() {
+        use std::time::Instant;
+        let n_films: usize = std::env::var("NAVETTE_PROFILE_FILMS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
+        let nw = 61;
+        let wl: Vec<f64> = (0..nw).map(|i| 400.0 + 5.0 * i as f64).collect();
+        let mut spec = MeritSpec::new();
+        for curve in [CurveId::Rs, CurveId::Rp] {
+            let k = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve,
+            });
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                env_idx: 0,
+                wavelengths: wl.clone().into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Linear,
+                norm_factor: 1.0,
+                normalized_targets: vec![0.0; nw].into(),
+                tolerances: vec![0.002; nw].into(),
+                band: vec![].into(),
+                phase: false,
+                differential_passes: None,
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+        }
+        let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+        ambient.optimize = false;
+        ambient.needle = false;
+        let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, nw);
+        substrate.optimize = false;
+        substrate.needle = false;
+        let films = (0..n_films)
+            .map(|i| {
+                let (name, n) = if i % 2 == 0 { ("H", 2.35) } else { ("L", 1.46) };
+                let d = 550.0 / (4.0 * n) * (1.0 + 0.3 * (1.7 * i as f64 + 0.4).sin());
+                LayerSpec::constant(name, n, 0.0, d, nw)
+            })
+            .collect();
+        let stack = DesignStack::with_films(ambient, substrate, films).unwrap();
+        let ctx = SmatrixContext {
+            wavls: wl.clone(),
+            sin_theta: vec![0.0],
+            spec: spec.clone(),
+            clamp_min_nm: 2.0,
+            clamp_max_nm: 1000.0,
+            lm: LmConfig::default(),
+            clamp_accumulator: ClampReport::default(),
+            envs: None,
+            thin_layer_policy: ThinLayerPolicy::Remove,
+        };
+        let params = build_params(&stack);
+        let x: Vec<f64> = params.iter().map(|p| p.value0(&stack)).collect();
+        let rows: Vec<usize> = (0..n_films).collect();
+        let src = DepositJacobian {
+            ctx: ctx.clone(),
+            base_stack: stack.clone(),
+            params: params.clone(),
+            n_wav: nw,
+        };
+
+        fn time<T>(reps: usize, mut f: impl FnMut() -> T) -> f64 {
+            for _ in 0..reps / 10 + 1 {
+                std::hint::black_box(f());
+            }
+            let t0 = Instant::now();
+            for _ in 0..reps {
+                std::hint::black_box(f());
+            }
+            t0.elapsed().as_secs_f64() / reps as f64 * 1e6
+        }
+        let reps = 2000;
+        let sim = ctx.simulate(&stack).unwrap();
+        let (sim_d, dep) = ctx.simulate_with_deposits(&stack, &rows).unwrap();
+        let sens = spec.curve_sensitivity(&sim_d).unwrap();
+        let mut out = Vec::new();
+        let mut jac = Vec::new();
+        let parts = [
+            (
+                "clone + apply_params",
+                time(reps, || {
+                    let mut st = stack.clone();
+                    apply_params(&mut st, &params, &x).unwrap();
+                    st
+                }),
+            ),
+            ("solver_arrays", time(reps, || stack.solver_arrays())),
+            ("simulate", time(reps, || ctx.simulate(&stack).unwrap())),
+            (
+                "residuals",
+                time(reps, || {
+                    out.clear();
+                    spec.residuals(&sim, &mut out).unwrap();
+                }),
+            ),
+            (
+                "simulate_with_deposits",
+                time(reps, || ctx.simulate_with_deposits(&stack, &rows).unwrap()),
+            ),
+            (
+                "curve_sensitivity",
+                time(reps, || spec.curve_sensitivity(&sim_d).unwrap()),
+            ),
+            (
+                "assemble_jacobian_mapped",
+                time(reps, || {
+                    assemble_jacobian_mapped(&sens, &dep, nw, &params, &mut jac).unwrap()
+                }),
+            ),
+            (
+                "DepositJacobian::fill",
+                time(reps, || src.fill(&x, &mut jac).unwrap()),
+            ),
+        ];
+        // One spectral point of the deposit sweep, piece by piece.
+        let sa = stack.solver_arrays();
+        let nl = sa.n_layers as usize;
+        let lam = wl[nw / 2];
+        let base = (nw / 2) * nl * 2;
+        let n_slice: Vec<Complex64> = (0..nl)
+            .map(|l| {
+                Complex64::new(
+                    sa.n_stack_cache[base + l * 2],
+                    sa.n_stack_cache[base + l * 2 + 1],
+                )
+            })
+            .collect();
+        let inv_n: Vec<Complex64> = n_slice.iter().map(|&n| 1.0 / n).collect();
+        let nsin = n_slice[0] * Complex64::new(0.0, 0.0);
+        use crate::smatrix::needle_operator::build_stack_fields_range;
+        let fields = build_stack_fields_range(
+            0,
+            nl - 1,
+            &n_slice,
+            &sa.thicknesses,
+            &sa.rough_vals,
+            &sa.rough_types,
+            lam,
+            nsin,
+            0,
+        );
+        let point = [
+            (
+                "point: dual solve",
+                time(reps * 10, || {
+                    solve_coherent_block_fields_dual(
+                        0,
+                        nl - 1,
+                        &n_slice,
+                        &inv_n,
+                        &sa.thicknesses,
+                        &sa.rough_vals,
+                        &sa.rough_types,
+                        lam,
+                        nsin,
+                    )
+                }),
+            ),
+            (
+                "point: fields build (1 pol)",
+                time(reps * 10, || {
+                    build_stack_fields_range(
+                        0,
+                        nl - 1,
+                        &n_slice,
+                        &sa.thicknesses,
+                        &sa.rough_vals,
+                        &sa.rough_types,
+                        lam,
+                        nsin,
+                        0,
+                    )
+                }),
+            ),
+            (
+                "point: fields build (s + p)",
+                time(reps * 10, || {
+                    build_stack_fields_range_dual(
+                        0,
+                        nl - 1,
+                        &n_slice,
+                        &sa.thicknesses,
+                        &sa.rough_vals,
+                        &sa.rough_types,
+                        lam,
+                        nsin,
+                    )
+                }),
+            ),
+            (
+                "point: slopes, all films (1 pol)",
+                time(reps * 10, || {
+                    (1..nl - 1)
+                        .map(|j| thickness_slopes_ddz(&fields, j, lam)[0])
+                        .sum::<Complex64>()
+                }),
+            ),
+            (
+                "point: deposit_row (2 pols)",
+                time(reps * 10, || {
+                    deposit_row(&n_slice, &sa, 0, nl - 1, lam, nsin, &rows, n_films)
+                }),
+            ),
+        ];
+        let mut c = ctx.clone();
+        let lm_us = time(5, || {
+            let mut st = stack.clone();
+            c.optimize_thicknesses_report(&mut st).unwrap()
+        });
+        let mut st = stack.clone();
+        let (_, rep) = c.optimize_thicknesses_report(&mut st).unwrap();
+        let rep = rep.unwrap();
+        eprintln!(
+            "--- {n_films} films, {nw} wavelengths, {} threads ---",
+            rayon::current_num_threads()
+        );
+        for (name, us) in parts.into_iter().chain(point) {
+            eprintln!("  {name:32} {us:10.3} us");
+        }
+        eprintln!(
+            "  LM: {lm_us:.0} us, {} iterations, {} evals, {} jacobians -> {:.1} us/iteration",
+            rep.iterations,
+            rep.evals,
+            rep.analytic_jacobians,
+            lm_us / rep.iterations.max(1) as f64
+        );
     }
 }

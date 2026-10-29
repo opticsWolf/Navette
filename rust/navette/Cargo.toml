@@ -69,3 +69,6 @@ argmin-math = { version = "0.5", default-features = false, features = [
 # npz/flate2 stack so the dev build stays clean on older toolchains.
 ndarray-npy = { version = "0.8", default-features = false }
 approx = "0.5"
+# The allocator the Python extension ships with (navette-py), so timings
+# taken in this crate's tests match the extension's.
+mimalloc = "0.1"

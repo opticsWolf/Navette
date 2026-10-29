@@ -20,6 +20,11 @@ use crate::smatrix::angle::Radians;
 pub const SQRT3: f64 = 1.73205080757;
 /// Denominator regularization floor shared by the field-amplitude star product.
 pub const LOG_MIN: f64 = 1e-100;
+/// `LOG_MIN²`: the guards below compare `|z|² < LOG_MIN²` rather than
+/// `|z| < LOG_MIN`, which is the same test without a `hypot` (exact but
+/// slow) on the solver's hottest line. The two can disagree only for a
+/// `|z|` within a rounding step of 1e-100.
+pub const LOG_MIN_SQ: f64 = LOG_MIN * LOG_MIN;
 /// p-pol cosθ magnitude guard (matches coherent_block).
 pub const EPS_COS: f64 = 1e-12;
 /// Machine epsilon used by the intensity/cross star regularization (inv := 0).
@@ -523,7 +528,7 @@ pub fn redheffer_product_complex_field_inner(
     r_b_back: Complex64,
 ) -> (Complex64, Complex64, Complex64, Complex64) {
     let mut denom = Complex64::new(1.0, 0.0) - r_a_back * r_b_front;
-    if denom.abs() < LOG_MIN {
+    if denom.norm_sqr() < LOG_MIN_SQ {
         // Phase-preserving regularization (matches the reference implementation).
         let phase = denom / (denom.abs() + 1e-300);
         denom = Complex64::new(LOG_MIN, 0.0) * phase + 1e-300;
