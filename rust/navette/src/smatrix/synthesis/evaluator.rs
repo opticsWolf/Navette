@@ -14,6 +14,7 @@
 //! clamp_all(clamp_min, clamp_max) sweep that REMOVES sub-min layers.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -479,20 +480,29 @@ impl SmatrixContext {
         // Which *solver* consumes them is `self.lm.backend`'s business, and
         // `run_optimizer`'s: the built-in LM is the default and the only one
         // with bounds semantics of its own (R4.4c).
-        let res = match self.lm.jacobian {
+        //
+        // The pool is sized by how coarse one parallel task is: a grid
+        // point's solver layers, times the columns a differenced Jacobian
+        // runs at once, times the environments a joint run simulates.
+        let differenced =
+            self.lm.jacobian == JacobianMode::Fd || multi || self.spec.sensitivity_incomplete();
+        let task_layers = stack.solver_arrays().n_layers as usize
+            * if differenced { params.len().max(1) } else { 1 }
+            * self.envs.as_ref().map_or(1, |e| e.names().len());
+        let res = in_lm_pool(task_layers, || match self.lm.jacobian {
             JacobianMode::Analytic => {
-                let src = DepositJacobian {
-                    ctx: self.clone(),
-                    base_stack: stack.clone(),
-                    params: params.clone(),
-                    n_wav: self.wavls.len(),
-                };
-                run_optimizer(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)?
+                let src = DepositJacobian::new(
+                    self.clone(),
+                    stack.clone(),
+                    params.clone(),
+                    self.wavls.len(),
+                );
+                run_optimizer(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)
             }
             JacobianMode::Fd => {
-                run_optimizer(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)?
+                run_optimizer(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)
             }
-        };
+        })?;
 
         // Write back, then clamp sweep (removes sub-min, caps above-max).
         // F0.2: the sweep's report accumulates into the context and the
@@ -562,6 +572,71 @@ impl Param {
     }
 }
 
+/// Threads for one optimizer run, and twice that for coarse tasks (see
+/// [`COARSE_TASK_LAYERS`]). Measured with the LM breakdown bench on 32
+/// logical CPUs: 8 is the best or within noise of it for every case, from 4
+/// films to 601 wavelengths (base_16f: 8 → 27.9 ms, 16 → 37.4, 32 → 47.2),
+/// except the two coarse-task cases, which take 16.
+const LM_THREADS: usize = 8;
+
+/// Solver layers per parallel task from which the doubled pool pays: the
+/// inhomogeneous 16-film case (8 → 120 ms, 16 → 107) and a differenced
+/// 16-parameter Jacobian (8 → 106 ms, 16 → 87). Plain stacks up to 32
+/// films (34 layers) stay at [`LM_THREADS`].
+const COARSE_TASK_LAYERS: usize = 64;
+
+/// Run `f` (one optimizer run) on a rayon worker of a small pool.
+///
+/// Two costs this avoids, both per parallel call and both paid hundreds of
+/// times per run. Called from outside a pool, every sweep is injected into
+/// the global queue while the caller sleeps on an OS latch; on a worker it
+/// is pushed locally. And a big pool wakes threads that cost more to
+/// coordinate than their share of the sweep saves. The pool has
+/// [`LM_THREADS`] threads (doubled at [`COARSE_TASK_LAYERS`]), or
+/// `NAVETTE_LM_THREADS` rounded up to a power of two, capped at the global
+/// pool's size (so `RAYON_NUM_THREADS` still bounds it); the pools are
+/// built once and kept. Results do not depend on the thread count: every
+/// sweep collects in index order.
+///
+/// Already on a worker (a caller that parallelizes over runs), `f` runs
+/// where it is, so the caller's own parallelism is left alone.
+fn in_lm_pool<R: Send>(task_layers: usize, f: impl FnOnce() -> R + Send) -> R {
+    use std::sync::OnceLock;
+    const N_POOLS: usize = usize::BITS as usize;
+    static POOLS: [OnceLock<Option<rayon::ThreadPool>>; N_POOLS] =
+        [const { OnceLock::new() }; N_POOLS];
+
+    if rayon::current_thread_index().is_some() {
+        return f();
+    }
+    let global = rayon::current_num_threads();
+    let auto = if task_layers >= COARSE_TASK_LAYERS {
+        2 * LM_THREADS
+    } else {
+        LM_THREADS
+    };
+    let want = std::env::var("NAVETTE_LM_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(auto)
+        .max(1)
+        .next_power_of_two();
+    if want >= global {
+        return rayon::scope(|_| f());
+    }
+    let pool = POOLS[want.trailing_zeros() as usize].get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(want)
+            .thread_name(move |i| format!("navette-lm{want}-{i}"))
+            .build()
+            .ok()
+    });
+    match pool {
+        Some(p) => p.install(f),
+        None => rayon::scope(|_| f()),
+    }
+}
+
 /// The parameter list for one `optimize_thicknesses` call.
 ///
 /// Span parameters first-class: each scalable span contributes ONE
@@ -618,12 +693,27 @@ pub(crate) fn apply_params(
 /// Declines (`Ok(None)`) when the merit spec has rows whose dependence the
 /// sensitivity pass does not carry — phase targets and color demands. That is
 /// a property of the spec, not of `x`, so a declining source declines every
-/// iteration and the run is simply the finite-difference run.
+/// iteration and the run is simply the finite-difference run. The first
+/// decline is remembered, so the later calls skip the deposits sweep whose
+/// answer they already know.
 struct DepositJacobian {
     ctx: SmatrixContext,
     base_stack: DesignStack,
     params: Vec<Param>,
     n_wav: usize,
+    declined: AtomicBool,
+}
+
+impl DepositJacobian {
+    fn new(ctx: SmatrixContext, base_stack: DesignStack, params: Vec<Param>, n_wav: usize) -> Self {
+        Self {
+            ctx,
+            base_stack,
+            params,
+            n_wav,
+            declined: AtomicBool::new(false),
+        }
+    }
 }
 
 impl JacobianSource for DepositJacobian {
@@ -634,7 +724,7 @@ impl JacobianSource for DepositJacobian {
         // -film name and summing them across environments is F2.3. Until
         // then the joint run is a finite-difference run, which is the
         // documented decline, not a silent single-environment Jacobian.
-        if self.ctx.envs.is_some() {
+        if self.ctx.envs.is_some() || self.declined.load(Ordering::Relaxed) {
             return Ok(None);
         }
         let mut st = self.base_stack.clone();
@@ -656,6 +746,7 @@ impl JacobianSource for DepositJacobian {
             .curve_sensitivity(&sim)
             .map_err(|c| format!("missing curve {c:?}"))?;
         if !sens.is_complete() {
+            self.declined.store(true, Ordering::Relaxed);
             return Ok(None);
         }
         assemble_jacobian_mapped(&sens, &dep, self.n_wav, &self.params, jac)?;
@@ -1629,12 +1720,12 @@ mod tests {
             let mut spec = MeritSpec::new();
             demand(&mut spec, angle_of(SINS[0]), CurveId::Rs, 0.0);
             demand(&mut spec, angle_of(SINS[1]), CurveId::As, 0.0);
-            let covered = DepositJacobian {
-                ctx: ctx3(spec),
-                base_stack: stack.clone(),
-                params: vec![Param::Row(0), Param::Row(1), Param::Row(2)],
-                n_wav: WLS.len(),
-            };
+            let covered = DepositJacobian::new(
+                ctx3(spec),
+                stack.clone(),
+                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                WLS.len(),
+            );
             let mut jac = Vec::new();
             let m = covered
                 .fill(&x, &mut jac)
@@ -1647,16 +1738,19 @@ mod tests {
                 "a covered spec gave a flat J"
             );
 
-            let phase = DepositJacobian {
-                ctx: ar_ctx_pd(),
-                base_stack: stack,
-                params: vec![Param::Row(0)],
-                n_wav: WLS.len(),
-            };
+            let phase = DepositJacobian::new(ar_ctx_pd(), stack, vec![Param::Row(0)], WLS.len());
             assert!(
                 phase.fill(&[118.0], &mut jac).unwrap().is_none(),
                 "a phase spec must decline, not answer"
             );
+            assert!(phase.declined.load(Ordering::Relaxed));
+            // Remembered: a later x declines too (without the sweep), and a
+            // covered source never latches.
+            assert!(phase.fill(&[140.0], &mut jac).unwrap().is_none());
+            assert!(!covered.declined.load(Ordering::Relaxed));
+            // The up-front predicate the pool sizing reads agrees with both.
+            assert!(phase.ctx.spec.sensitivity_incomplete());
+            assert!(!covered.ctx.spec.sensitivity_incomplete());
         }
 
         #[test]
@@ -2272,12 +2366,7 @@ mod tests {
         let params = build_params(&stack);
         let x: Vec<f64> = params.iter().map(|p| p.value0(&stack)).collect();
         let rows: Vec<usize> = (0..n_films).collect();
-        let src = DepositJacobian {
-            ctx: ctx.clone(),
-            base_stack: stack.clone(),
-            params: params.clone(),
-            n_wav: nw,
-        };
+        let src = DepositJacobian::new(ctx.clone(), stack.clone(), params.clone(), nw);
 
         fn time<T>(reps: usize, mut f: impl FnMut() -> T) -> f64 {
             for _ in 0..reps / 10 + 1 {

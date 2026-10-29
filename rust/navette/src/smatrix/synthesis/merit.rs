@@ -825,6 +825,13 @@ impl MeritSpec {
         Ok(())
     }
 
+    /// True if [`Self::curve_sensitivity`] leaves rows uncovered: a phase
+    /// target or a color demand. Known up front, with no simulation; the
+    /// evaluator sizes its thread pool for a differenced Jacobian on it.
+    pub(crate) fn sensitivity_incomplete(&self) -> bool {
+        self.uses_phase() || !self.color.is_empty()
+    }
+
     /// True if any demand samples complex amplitudes (phase or
     /// differential-phase). The evaluator uses this to skip complex-row
     /// assembly for intensity-only specs — virtually-free values are always
