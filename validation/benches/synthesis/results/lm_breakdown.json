@@ -12,9 +12,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 3.413999220356345e-05,
+      "t_eval": 3.13800061121583e-05,
       "lm": {
-        "wall": 0.0533135998994112,
+        "wall": 0.028290399815887213,
         "iterations": 200,
         "evals": 306,
         "analytic_jacobians": 200,
@@ -22,37 +22,37 @@
         "merit": 456469.7200083762
       },
       "fd": {
-        "wall": 0.10999580007046461,
+        "wall": 0.08720019995234907,
         "iterations": 200,
         "evals": 6785,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 138967.87806286794
       },
-      "eval_share": 0.19595070739925388,
-      "rest_share": 0.8040492926007461,
-      "rest_per_iter_in_evals": 6.278086126898185,
+      "eval_share": 0.3394183869019775,
+      "rest_share": 0.6605816130980225,
+      "rest_per_iter_in_evals": 2.97771101107689,
       "budget": {
         "20": {
-          "wall": 0.005760699976235628,
+          "wall": 0.0035653000231832266,
           "merit": 777419.4161524344,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.015615099808201194,
+          "wall": 0.008193399989977479,
           "merit": 731311.1251056724,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.05518489982932806,
+          "wall": 0.028878199867904186,
           "merit": 456469.7200083762,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.2981670000590384,
+          "wall": 0.1592796000186354,
           "merit": 455076.0397033068,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -71,9 +71,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 2.686500083655119e-05,
+      "t_eval": 2.4954997934401034e-05,
       "lm": {
-        "wall": 0.004242900060489774,
+        "wall": 0.0028680001851171255,
         "iterations": 45,
         "evals": 67,
         "analytic_jacobians": 46,
@@ -81,37 +81,37 @@
         "merit": 329674.5629228751
       },
       "fd": {
-        "wall": 0.005219999933615327,
+        "wall": 0.0029047001153230667,
         "iterations": 29,
         "evals": 278,
         "analytic_jacobians": 0,
         "termination": "Cost",
         "merit": 353185.6587368615
       },
-      "eval_share": 0.4242275402171868,
-      "rest_share": 0.5757724597828131,
-      "rest_per_iter_in_evals": 2.0207580522942314,
+      "eval_share": 0.5829793422891943,
+      "rest_share": 0.4170206577108057,
+      "rest_per_iter_in_evals": 1.065041895420629,
       "budget": {
         "20": {
-          "wall": 0.0026853999588638544,
+          "wall": 0.0013786000199615955,
           "merit": 329674.7626609061,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.0045061002019792795,
+          "wall": 0.002987300045788288,
           "merit": 329674.5629228751,
           "iterations": 45,
           "termination": "Cost"
         },
         "200": {
-          "wall": 0.00416370015591383,
+          "wall": 0.002844500122591853,
           "merit": 329674.5629228751,
           "iterations": 45,
           "termination": "Cost"
         },
         "1000": {
-          "wall": 0.004600200103595853,
+          "wall": 0.002900900086387992,
           "merit": 329674.5629228751,
           "iterations": 45,
           "termination": "Cost"
@@ -130,9 +130,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 2.872999757528305e-05,
+      "t_eval": 2.7119996957480907e-05,
       "lm": {
-        "wall": 0.007130800047889352,
+        "wall": 0.004775100154802203,
         "iterations": 59,
         "evals": 72,
         "analytic_jacobians": 60,
@@ -140,37 +140,37 @@
         "merit": 781966.1463518635
       },
       "fd": {
-        "wall": 0.046429800102487206,
+        "wall": 0.034728100057691336,
         "iterations": 200,
         "evals": 3436,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 792505.2270979953
       },
-      "eval_share": 0.2900880422292381,
-      "rest_share": 0.709911957770762,
-      "rest_per_iter_in_evals": 2.9864493205031866,
+      "eval_share": 0.40892122000308256,
+      "rest_share": 0.5910787799969174,
+      "rest_per_iter_in_evals": 1.7639497340806534,
       "budget": {
         "20": {
-          "wall": 0.002897599944844842,
+          "wall": 0.0019471000414341688,
           "merit": 781989.3182163318,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.006413300056010485,
+          "wall": 0.004294300219044089,
           "merit": 781966.146381623,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.006993799936026335,
+          "wall": 0.004971300018951297,
           "merit": 781966.1463518635,
           "iterations": 59,
           "termination": "Cost"
         },
         "1000": {
-          "wall": 0.006702800048515201,
+          "wall": 0.004830199992284179,
           "merit": 781966.1463518635,
           "iterations": 59,
           "termination": "Cost"
@@ -189,9 +189,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 4.3020001612603664e-05,
+      "t_eval": 4.273999948054552e-05,
       "lm": {
-        "wall": 0.07363150012679398,
+        "wall": 0.05438140011392534,
         "iterations": 200,
         "evals": 211,
         "analytic_jacobians": 200,
@@ -199,37 +199,37 @@
         "merit": 244694.39548728315
       },
       "fd": {
-        "wall": 0.2766708000563085,
+        "wall": 0.2638761999551207,
         "iterations": 200,
         "evals": 13216,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 249642.63243794304
       },
-      "eval_share": 0.12327903580163833,
-      "rest_share": 0.8767209641983617,
-      "rest_per_iter_in_evals": 7.502821637229088,
+      "eval_share": 0.1658313296734309,
+      "rest_share": 0.834168670326569,
+      "rest_per_iter_in_evals": 5.306885911893702,
       "budget": {
         "20": {
-          "wall": 0.009099300019443035,
+          "wall": 0.0063946000300347805,
           "merit": 414454.0445188224,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.020859200041741133,
+          "wall": 0.014647400006651878,
           "merit": 305489.55235538475,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.07808519992977381,
+          "wall": 0.054902799893170595,
           "merit": 244694.39548728315,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.5460102001670748,
+          "wall": 0.3405189998447895,
           "merit": 223504.19597447454,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -248,9 +248,9 @@
         "phase": false
       },
       "n_residuals": 402,
-      "t_eval": 6.396500393748283e-05,
+      "t_eval": 6.388500332832336e-05,
       "lm": {
-        "wall": 0.11092890007421374,
+        "wall": 0.08985089999623597,
         "iterations": 200,
         "evals": 437,
         "analytic_jacobians": 200,
@@ -258,37 +258,37 @@
         "merit": 1152182.0013117967
       },
       "fd": {
-        "wall": 0.24764560000039637,
+        "wall": 0.24212290020659566,
         "iterations": 200,
         "evals": 6817,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 333041.18559576164
       },
-      "eval_share": 0.2519875947744821,
-      "rest_share": 0.7480124052255178,
-      "rest_per_iter_in_evals": 6.486061771733165,
+      "eval_share": 0.31071192893612465,
+      "rest_share": 0.6892880710638754,
+      "rest_per_iter_in_evals": 4.847237247798706,
       "budget": {
         "20": {
-          "wall": 0.012141700135543942,
+          "wall": 0.01074449997395277,
           "merit": 1278832.849596045,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.029928999952971935,
+          "wall": 0.026605699909850955,
           "merit": 1173100.649744204,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.11307980003766716,
+          "wall": 0.10549609991721809,
           "merit": 1152182.0013117967,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.5672442000359297,
+          "wall": 0.5267908999230713,
           "merit": 1147893.4739526277,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -307,9 +307,9 @@
         "phase": false
       },
       "n_residuals": 1202,
-      "t_eval": 0.00024431500351056455,
+      "t_eval": 0.00026692000683397054,
       "lm": {
-        "wall": 0.2724834999535233,
+        "wall": 0.27861549984663725,
         "iterations": 200,
         "evals": 431,
         "analytic_jacobians": 200,
@@ -317,37 +317,37 @@
         "merit": 956943.1709814266
       },
       "fd": {
-        "wall": 0.6513503000605851,
+        "wall": 0.7579933998640627,
         "iterations": 200,
         "evals": 6786,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 2392806.138042366
       },
-      "eval_share": 0.3864445609771381,
-      "rest_share": 0.6135554390228619,
-      "rest_per_iter_in_evals": 3.4214790544625857,
+      "eval_share": 0.4129078353816137,
+      "rest_share": 0.5870921646183863,
+      "rest_per_iter_in_evals": 3.0640823601308673,
       "budget": {
         "20": {
-          "wall": 0.026038800133392215,
+          "wall": 0.0270108999684453,
           "merit": 965874.6639177077,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.0678252000361681,
+          "wall": 0.06937259994447231,
           "merit": 959422.9735330893,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.2761725999880582,
+          "wall": 0.27852299995720387,
           "merit": 956943.1709814266,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 1.3820311999879777,
+          "wall": 1.3882577000185847,
           "merit": 956779.3271654951,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -368,9 +368,9 @@
         "phase": false
       },
       "n_residuals": 366,
-      "t_eval": 5.2574998699128626e-05,
+      "t_eval": 5.590500077232718e-05,
       "lm": {
-        "wall": 0.060367299942299724,
+        "wall": 0.05669889994896948,
         "iterations": 147,
         "evals": 165,
         "analytic_jacobians": 148,
@@ -378,37 +378,37 @@
         "merit": 4762316.602246237
       },
       "fd": {
-        "wall": 0.20175800006836653,
+        "wall": 0.2354993000626564,
         "iterations": 200,
         "evals": 6637,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 4149753.802935006
       },
-      "eval_share": 0.1437015535504792,
-      "rest_share": 0.8562984464495208,
-      "rest_per_iter_in_evals": 6.688524192647008,
+      "eval_share": 0.1626896665673606,
+      "rest_share": 0.8373103334326394,
+      "rest_per_iter_in_evals": 5.776876609271509,
       "budget": {
         "20": {
-          "wall": 0.008847600081935525,
+          "wall": 0.008384699933230877,
           "merit": 7044895.406320611,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.021275700069963932,
+          "wall": 0.019889699993655086,
           "merit": 5037960.870455613,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.06224930007010698,
+          "wall": 0.05688800010830164,
           "merit": 4762316.602246237,
           "iterations": 147,
           "termination": "Cost"
         },
         "1000": {
-          "wall": 0.060521600069478154,
+          "wall": 0.05687790014781058,
           "merit": 4762316.602246237,
           "iterations": 147,
           "termination": "Cost"
@@ -430,9 +430,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 3.605500096455216e-05,
+      "t_eval": 3.326500300318003e-05,
       "lm": {
-        "wall": 0.06286709988489747,
+        "wall": 0.04360509989783168,
         "iterations": 200,
         "evals": 405,
         "analytic_jacobians": 200,
@@ -440,37 +440,37 @@
         "merit": 234808.15414886453
       },
       "fd": {
-        "wall": 0.12729059997946024,
+        "wall": 0.12454920005984604,
         "iterations": 200,
         "evals": 6798,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 107021.33752096973
       },
-      "eval_share": 0.23227213307721742,
-      "rest_share": 0.7677278669227826,
-      "rest_per_iter_in_evals": 6.6932219113939135,
+      "eval_share": 0.30896216836686663,
+      "rest_share": 0.6910378316331334,
+      "rest_per_iter_in_evals": 4.529200505207104,
       "budget": {
         "20": {
-          "wall": 0.006095400080084801,
+          "wall": 0.004131400026381016,
           "merit": 236387.00165381568,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.01429750001989305,
+          "wall": 0.010214400012046099,
           "merit": 234919.90356597785,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.0618879001121968,
+          "wall": 0.04373869998380542,
           "merit": 234808.15414886453,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.3211850000079721,
+          "wall": 0.22451079986058176,
           "merit": 234790.92711769068,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -492,9 +492,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 3.6339997313916685e-05,
+      "t_eval": 3.418000414967537e-05,
       "lm": {
-        "wall": 0.06247650017030537,
+        "wall": 0.0423824000172317,
         "iterations": 200,
         "evals": 409,
         "analytic_jacobians": 200,
@@ -502,37 +502,37 @@
         "merit": 580635.9474520119
       },
       "fd": {
-        "wall": 0.12361170002259314,
+        "wall": 0.11807029996998608,
         "iterations": 200,
         "evals": 6829,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 182678.82257721937
       },
-      "eval_share": 0.23789839156925485,
-      "rest_share": 0.7621016084307451,
-      "rest_per_iter_in_evals": 6.551106877858726,
+      "eval_share": 0.3298449755448827,
+      "rest_share": 0.6701550244551173,
+      "rest_per_iter_in_evals": 4.154882222313048,
       "budget": {
         "20": {
-          "wall": 0.005718000000342727,
+          "wall": 0.004364300053566694,
           "merit": 589013.2048481245,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.014687999850139022,
+          "wall": 0.00977730005979538,
           "merit": 581680.0398008479,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.06201900006271899,
+          "wall": 0.043499100022017956,
           "merit": 580635.9474520119,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.3159183000680059,
+          "wall": 0.2155284001491964,
           "merit": 575540.3744901255,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -554,9 +554,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 0.00014073000056669116,
+      "t_eval": 0.00016436000587418675,
       "lm": {
-        "wall": 0.1196137999650091,
+        "wall": 0.11448989994823933,
         "iterations": 200,
         "evals": 234,
         "analytic_jacobians": 200,
@@ -564,37 +564,37 @@
         "merit": 270424.6919795428
       },
       "fd": {
-        "wall": 0.19281770009547472,
+        "wall": 0.23997449991293252,
         "iterations": 92,
         "evals": 3095,
         "analytic_jacobians": 0,
         "termination": "Cost",
         "merit": 128715.07373522813
       },
-      "eval_share": 0.2753095390518407,
-      "rest_share": 0.7246904609481594,
-      "rest_per_iter_in_evals": 3.079761937161536,
+      "eval_share": 0.33592693671623003,
+      "rest_share": 0.66407306328377,
+      "rest_per_iter_in_evals": 2.3129002146628763,
       "budget": {
         "20": {
-          "wall": 0.013762500137090683,
+          "wall": 0.013383700046688318,
           "merit": 286516.17065979383,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.031016499968245625,
+          "wall": 0.029206099919974804,
           "merit": 282110.2278319202,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.1259790000040084,
+          "wall": 0.11528620007447898,
           "merit": 270424.6919795428,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.6298890998587012,
+          "wall": 0.5880588998552412,
           "merit": 261996.38755706465,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -616,9 +616,9 @@
         "phase": false
       },
       "n_residuals": 122,
-      "t_eval": 4.3100002221763135e-05,
+      "t_eval": 4.065500106662512e-05,
       "lm": {
-        "wall": 0.06956049986183643,
+        "wall": 0.055000900058075786,
         "iterations": 200,
         "evals": 414,
         "analytic_jacobians": 200,
@@ -626,37 +626,37 @@
         "merit": 79640.58256683324
       },
       "fd": {
-        "wall": 0.1522135001141578,
+        "wall": 0.16338269994594157,
         "iterations": 200,
         "evals": 6811,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 113681.20898959556
       },
-      "eval_share": 0.25651628374222646,
-      "rest_share": 0.7434837162577735,
-      "rest_per_iter_in_evals": 5.999663141074294,
+      "eval_share": 0.30601627289391015,
+      "rest_share": 0.6939837271060899,
+      "rest_per_iter_in_evals": 4.694346158537878,
       "budget": {
         "20": {
-          "wall": 0.006907799979671836,
+          "wall": 0.0053437999449670315,
           "merit": 89960.27498635714,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.017088500084355474,
+          "wall": 0.014017000095918775,
           "merit": 81077.44739926435,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.07000409997999668,
+          "wall": 0.05472330003976822,
           "merit": 79640.58256683324,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.37022200017236173,
+          "wall": 0.28092829999513924,
           "merit": 79395.40463331355,
           "iterations": 1000,
           "termination": "MaxIterations"
@@ -675,9 +675,9 @@
         "phase": true
       },
       "n_residuals": 183,
-      "t_eval": 3.783999709412455e-05,
+      "t_eval": 3.492499236017466e-05,
       "lm": {
-        "wall": 0.12958760000765324,
+        "wall": 0.10574980010278523,
         "iterations": 200,
         "evals": 6639,
         "analytic_jacobians": 0,
@@ -685,37 +685,37 @@
         "merit": 453481.42181245354
       },
       "fd": {
-        "wall": 0.12159420014359057,
+        "wall": 0.10421699983999133,
         "iterations": 200,
         "evals": 6639,
         "analytic_jacobians": 0,
         "termination": "MaxIterations",
         "merit": 453481.42181245354
       },
-      "eval_share": 1.9386094093343518,
+      "eval_share": 2.1926001189017157,
       "rest_share": 0.0,
       "rest_per_iter_in_evals": 0.0,
       "budget": {
         "20": {
-          "wall": 0.015937400050461292,
+          "wall": 0.010824099881574512,
           "merit": 457225.01054222597,
           "iterations": 20,
           "termination": "MaxIterations"
         },
         "50": {
-          "wall": 0.03844440006650984,
+          "wall": 0.02772649982944131,
           "merit": 455572.3009850853,
           "iterations": 50,
           "termination": "MaxIterations"
         },
         "200": {
-          "wall": 0.14227409986779094,
+          "wall": 0.10483209998346865,
           "merit": 453481.42181245354,
           "iterations": 200,
           "termination": "MaxIterations"
         },
         "1000": {
-          "wall": 0.24524970003403723,
+          "wall": 0.1574595000129193,
           "merit": 453481.026299061,
           "iterations": 299,
           "termination": "Cost"
@@ -728,7 +728,7 @@
     "navette_version": "0.8.1",
     "python": "3.13.14",
     "platform": "Windows-11-10.0.26200-SP0",
-    "commit": "396c239f69b6b2ce749cfa3af483697a0f6a76db",
-    "recorded_utc": "2026-10-29T09:33:41+00:00"
+    "commit": "d011ab33efa77d81d9863835e0441b22bdf65b69",
+    "recorded_utc": "2026-10-29T10:22:11+00:00"
   }
 }
