@@ -1,0 +1,734 @@
+{
+  "cases": [
+    {
+      "case": {
+        "name": "base_16f",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 3.413999220356345e-05,
+      "lm": {
+        "wall": 0.0533135998994112,
+        "iterations": 200,
+        "evals": 306,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 456469.7200083762
+      },
+      "fd": {
+        "wall": 0.10999580007046461,
+        "iterations": 200,
+        "evals": 6785,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 138967.87806286794
+      },
+      "eval_share": 0.19595070739925388,
+      "rest_share": 0.8040492926007461,
+      "rest_per_iter_in_evals": 6.278086126898185,
+      "budget": {
+        "20": {
+          "wall": 0.005760699976235628,
+          "merit": 777419.4161524344,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.015615099808201194,
+          "merit": 731311.1251056724,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.05518489982932806,
+          "merit": 456469.7200083762,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.2981670000590384,
+          "merit": 455076.0397033068,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "films_4",
+        "n_films": 4,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 2.686500083655119e-05,
+      "lm": {
+        "wall": 0.004242900060489774,
+        "iterations": 45,
+        "evals": 67,
+        "analytic_jacobians": 46,
+        "termination": "Cost",
+        "merit": 329674.5629228751
+      },
+      "fd": {
+        "wall": 0.005219999933615327,
+        "iterations": 29,
+        "evals": 278,
+        "analytic_jacobians": 0,
+        "termination": "Cost",
+        "merit": 353185.6587368615
+      },
+      "eval_share": 0.4242275402171868,
+      "rest_share": 0.5757724597828131,
+      "rest_per_iter_in_evals": 2.0207580522942314,
+      "budget": {
+        "20": {
+          "wall": 0.0026853999588638544,
+          "merit": 329674.7626609061,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.0045061002019792795,
+          "merit": 329674.5629228751,
+          "iterations": 45,
+          "termination": "Cost"
+        },
+        "200": {
+          "wall": 0.00416370015591383,
+          "merit": 329674.5629228751,
+          "iterations": 45,
+          "termination": "Cost"
+        },
+        "1000": {
+          "wall": 0.004600200103595853,
+          "merit": 329674.5629228751,
+          "iterations": 45,
+          "termination": "Cost"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "films_8",
+        "n_films": 8,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 2.872999757528305e-05,
+      "lm": {
+        "wall": 0.007130800047889352,
+        "iterations": 59,
+        "evals": 72,
+        "analytic_jacobians": 60,
+        "termination": "Cost",
+        "merit": 781966.1463518635
+      },
+      "fd": {
+        "wall": 0.046429800102487206,
+        "iterations": 200,
+        "evals": 3436,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 792505.2270979953
+      },
+      "eval_share": 0.2900880422292381,
+      "rest_share": 0.709911957770762,
+      "rest_per_iter_in_evals": 2.9864493205031866,
+      "budget": {
+        "20": {
+          "wall": 0.002897599944844842,
+          "merit": 781989.3182163318,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.006413300056010485,
+          "merit": 781966.146381623,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.006993799936026335,
+          "merit": 781966.1463518635,
+          "iterations": 59,
+          "termination": "Cost"
+        },
+        "1000": {
+          "wall": 0.006702800048515201,
+          "merit": 781966.1463518635,
+          "iterations": 59,
+          "termination": "Cost"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "films_32",
+        "n_films": 32,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 4.3020001612603664e-05,
+      "lm": {
+        "wall": 0.07363150012679398,
+        "iterations": 200,
+        "evals": 211,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 244694.39548728315
+      },
+      "fd": {
+        "wall": 0.2766708000563085,
+        "iterations": 200,
+        "evals": 13216,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 249642.63243794304
+      },
+      "eval_share": 0.12327903580163833,
+      "rest_share": 0.8767209641983617,
+      "rest_per_iter_in_evals": 7.502821637229088,
+      "budget": {
+        "20": {
+          "wall": 0.009099300019443035,
+          "merit": 414454.0445188224,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.020859200041741133,
+          "merit": 305489.55235538475,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.07808519992977381,
+          "merit": 244694.39548728315,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.5460102001670748,
+          "merit": 223504.19597447454,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "wl_201",
+        "n_films": 16,
+        "n_wl": 201,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 402,
+      "t_eval": 6.396500393748283e-05,
+      "lm": {
+        "wall": 0.11092890007421374,
+        "iterations": 200,
+        "evals": 437,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 1152182.0013117967
+      },
+      "fd": {
+        "wall": 0.24764560000039637,
+        "iterations": 200,
+        "evals": 6817,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 333041.18559576164
+      },
+      "eval_share": 0.2519875947744821,
+      "rest_share": 0.7480124052255178,
+      "rest_per_iter_in_evals": 6.486061771733165,
+      "budget": {
+        "20": {
+          "wall": 0.012141700135543942,
+          "merit": 1278832.849596045,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.029928999952971935,
+          "merit": 1173100.649744204,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.11307980003766716,
+          "merit": 1152182.0013117967,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.5672442000359297,
+          "merit": 1147893.4739526277,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "wl_601",
+        "n_films": 16,
+        "n_wl": 601,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 1202,
+      "t_eval": 0.00024431500351056455,
+      "lm": {
+        "wall": 0.2724834999535233,
+        "iterations": 200,
+        "evals": 431,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 956943.1709814266
+      },
+      "fd": {
+        "wall": 0.6513503000605851,
+        "iterations": 200,
+        "evals": 6786,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 2392806.138042366
+      },
+      "eval_share": 0.3864445609771381,
+      "rest_share": 0.6135554390228619,
+      "rest_per_iter_in_evals": 3.4214790544625857,
+      "budget": {
+        "20": {
+          "wall": 0.026038800133392215,
+          "merit": 965874.6639177077,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.0678252000361681,
+          "merit": 959422.9735330893,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.2761725999880582,
+          "merit": 956943.1709814266,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 1.3820311999879777,
+          "merit": 956779.3271654951,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "angles_3",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0,
+          30.0,
+          60.0
+        ],
+        "flags": {},
+        "phase": false
+      },
+      "n_residuals": 366,
+      "t_eval": 5.2574998699128626e-05,
+      "lm": {
+        "wall": 0.060367299942299724,
+        "iterations": 147,
+        "evals": 165,
+        "analytic_jacobians": 148,
+        "termination": "Cost",
+        "merit": 4762316.602246237
+      },
+      "fd": {
+        "wall": 0.20175800006836653,
+        "iterations": 200,
+        "evals": 6637,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 4149753.802935006
+      },
+      "eval_share": 0.1437015535504792,
+      "rest_share": 0.8562984464495208,
+      "rest_per_iter_in_evals": 6.688524192647008,
+      "budget": {
+        "20": {
+          "wall": 0.008847600081935525,
+          "merit": 7044895.406320611,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.021275700069963932,
+          "merit": 5037960.870455613,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.06224930007010698,
+          "merit": 4762316.602246237,
+          "iterations": 147,
+          "termination": "Cost"
+        },
+        "1000": {
+          "wall": 0.060521600069478154,
+          "merit": 4762316.602246237,
+          "iterations": 147,
+          "termination": "Cost"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "rough_gauss",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {
+          "roughness": 1.0,
+          "rough_type": 4
+        },
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 3.605500096455216e-05,
+      "lm": {
+        "wall": 0.06286709988489747,
+        "iterations": 200,
+        "evals": 405,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 234808.15414886453
+      },
+      "fd": {
+        "wall": 0.12729059997946024,
+        "iterations": 200,
+        "evals": 6798,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 107021.33752096973
+      },
+      "eval_share": 0.23227213307721742,
+      "rest_share": 0.7677278669227826,
+      "rest_per_iter_in_evals": 6.6932219113939135,
+      "budget": {
+        "20": {
+          "wall": 0.006095400080084801,
+          "merit": 236387.00165381568,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.01429750001989305,
+          "merit": 234919.90356597785,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.0618879001121968,
+          "merit": 234808.15414886453,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.3211850000079721,
+          "merit": 234790.92711769068,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "rough_nevot",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {
+          "roughness": 1.0,
+          "rough_type": 5
+        },
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 3.6339997313916685e-05,
+      "lm": {
+        "wall": 0.06247650017030537,
+        "iterations": 200,
+        "evals": 409,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 580635.9474520119
+      },
+      "fd": {
+        "wall": 0.12361170002259314,
+        "iterations": 200,
+        "evals": 6829,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 182678.82257721937
+      },
+      "eval_share": 0.23789839156925485,
+      "rest_share": 0.7621016084307451,
+      "rest_per_iter_in_evals": 6.551106877858726,
+      "budget": {
+        "20": {
+          "wall": 0.005718000000342727,
+          "merit": 589013.2048481245,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.014687999850139022,
+          "merit": 581680.0398008479,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.06201900006271899,
+          "merit": 580635.9474520119,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.3159183000680059,
+          "merit": 575540.3744901255,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "inhomogen",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {
+          "inhomogen": true,
+          "inh_delta": 0.05
+        },
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 0.00014073000056669116,
+      "lm": {
+        "wall": 0.1196137999650091,
+        "iterations": 200,
+        "evals": 234,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 270424.6919795428
+      },
+      "fd": {
+        "wall": 0.19281770009547472,
+        "iterations": 92,
+        "evals": 3095,
+        "analytic_jacobians": 0,
+        "termination": "Cost",
+        "merit": 128715.07373522813
+      },
+      "eval_share": 0.2753095390518407,
+      "rest_share": 0.7246904609481594,
+      "rest_per_iter_in_evals": 3.079761937161536,
+      "budget": {
+        "20": {
+          "wall": 0.013762500137090683,
+          "merit": 286516.17065979383,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.031016499968245625,
+          "merit": 282110.2278319202,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.1259790000040084,
+          "merit": 270424.6919795428,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.6298890998587012,
+          "merit": 261996.38755706465,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "interface",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {
+          "interface": true,
+          "interface_thickness": 2.0
+        },
+        "phase": false
+      },
+      "n_residuals": 122,
+      "t_eval": 4.3100002221763135e-05,
+      "lm": {
+        "wall": 0.06956049986183643,
+        "iterations": 200,
+        "evals": 414,
+        "analytic_jacobians": 200,
+        "termination": "MaxIterations",
+        "merit": 79640.58256683324
+      },
+      "fd": {
+        "wall": 0.1522135001141578,
+        "iterations": 200,
+        "evals": 6811,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 113681.20898959556
+      },
+      "eval_share": 0.25651628374222646,
+      "rest_share": 0.7434837162577735,
+      "rest_per_iter_in_evals": 5.999663141074294,
+      "budget": {
+        "20": {
+          "wall": 0.006907799979671836,
+          "merit": 89960.27498635714,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.017088500084355474,
+          "merit": 81077.44739926435,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.07000409997999668,
+          "merit": 79640.58256683324,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.37022200017236173,
+          "merit": 79395.40463331355,
+          "iterations": 1000,
+          "termination": "MaxIterations"
+        }
+      }
+    },
+    {
+      "case": {
+        "name": "phase_PDts",
+        "n_films": 16,
+        "n_wl": 61,
+        "angles": [
+          0.0
+        ],
+        "flags": {},
+        "phase": true
+      },
+      "n_residuals": 183,
+      "t_eval": 3.783999709412455e-05,
+      "lm": {
+        "wall": 0.12958760000765324,
+        "iterations": 200,
+        "evals": 6639,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 453481.42181245354
+      },
+      "fd": {
+        "wall": 0.12159420014359057,
+        "iterations": 200,
+        "evals": 6639,
+        "analytic_jacobians": 0,
+        "termination": "MaxIterations",
+        "merit": 453481.42181245354
+      },
+      "eval_share": 1.9386094093343518,
+      "rest_share": 0.0,
+      "rest_per_iter_in_evals": 0.0,
+      "budget": {
+        "20": {
+          "wall": 0.015937400050461292,
+          "merit": 457225.01054222597,
+          "iterations": 20,
+          "termination": "MaxIterations"
+        },
+        "50": {
+          "wall": 0.03844440006650984,
+          "merit": 455572.3009850853,
+          "iterations": 50,
+          "termination": "MaxIterations"
+        },
+        "200": {
+          "wall": 0.14227409986779094,
+          "merit": 453481.42181245354,
+          "iterations": 200,
+          "termination": "MaxIterations"
+        },
+        "1000": {
+          "wall": 0.24524970003403723,
+          "merit": 453481.026299061,
+          "iterations": 299,
+          "termination": "Cost"
+        }
+      }
+    }
+  ],
+  "provenance": {
+    "build_profile": "release",
+    "navette_version": "0.8.1",
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "commit": "396c239f69b6b2ce749cfa3af483697a0f6a76db",
+    "recorded_utc": "2026-10-29T09:33:41+00:00"
+  }
+}
