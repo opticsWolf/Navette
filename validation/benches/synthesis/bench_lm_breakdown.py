@@ -35,8 +35,8 @@ each step goes, not by what a step costs.
 Cases vary one thing at a time from a 16-film AR coating on 61
 wavelengths at normal incidence: film count, wavelength count, angle
 count, a layer feature (roughness, inhomogeneity, interface slices), and
-a differential-phase target, which the analytic chain cannot express (the
-whole run is then differenced, whatever `jacobian` says).
+a differential-phase target, which the analytic chain reads through the
+real and imaginary parts of the complex t row and the total thickness.
 
 Run explicitly:  python validation/benches/synthesis/bench_lm_breakdown.py
 Fewer cases:     ... bench_lm_breakdown.py --quick

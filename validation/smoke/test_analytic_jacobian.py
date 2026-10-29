@@ -121,17 +121,30 @@ def test_the_analytic_path_spends_far_fewer_residual_evaluations(interior):
     assert an["evals"] < fd["evals"]
 
 
-def test_a_phase_demand_falls_back_to_differences():
-    # Phase rows have no curve sensitivity, so the source declines and the
-    # driver differences — the run still has to work, and has to say so.
-    tc = TargetCollection()
-    tc.add(SpectralTarget(_WL, np.zeros(_WL.size), np.full(_WL.size, 0.05),
-                          "s", "PDts", kind="e", phase=True, angle_deg=0.0))
-    spec = build_merit_spec(tc)
-    mf, report, d = _run(spec, "analytic")
-    assert report["analytic_jacobians"] == 0
-    assert np.isfinite(mf)
-    assert len(d) == len(_START)
+def test_a_phase_demand_takes_the_analytic_path_to_the_same_optimum():
+    # Phase rows differentiate through Re/Im of the complex t row and, for a
+    # differential reference, the total thickness. Targets read off the
+    # reference stack as in `interior`: with zero target and tolerance one an
+    # Exact phase residual is the wrapped phase itself.
+    def phase_spec(targets, tol):
+        tc = TargetCollection()
+        tc.add(SpectralTarget(_WL, targets, np.full(_WL.size, tol), "s",
+                              "PDts", kind="e", phase=True, angle_deg=0.0))
+        return build_merit_spec(tc)
+
+    flat = phase_spec(np.zeros(_WL.size), 1.0)
+    ref, _ = stack_from_layers(_layers(_REFERENCE), _WL, {}, names=_NAMES)
+    phi = np.asarray(flat.residuals(_ctx(flat, "analytic").simulate(ref)),
+                     dtype=float)
+    spec = phase_spec(phi, 0.05)
+
+    mf_an, an, d_an = _run(spec, "analytic")
+    mf_fd, fd, d_fd = _run(spec, "fd")
+    assert an["analytic_jacobians"] > 0
+    assert fd["analytic_jacobians"] == 0
+    assert mf_an < 1e-10 and mf_fd < 1e-10
+    for a, b in zip(d_an, d_fd):
+        assert a == pytest.approx(b, abs=1e-3)
 
 
 def test_an_unknown_jacobian_mode_is_refused():

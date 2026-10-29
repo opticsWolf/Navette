@@ -141,6 +141,9 @@ impl SmatrixContext {
             tfp: Complex64,
         }
         let n_par = par_films.len();
+        // Amplitude deposits for phase demands, only when the spec has any:
+        // an intensity-only sweep collects the same four channels as before.
+        let with_phase = n_par > 0 && self.spec.uses_phase();
         let swept: Vec<(Pt, Vec<f64>)> = (0..na * nw)
             .into_par_iter()
             .map(|k| {
@@ -183,7 +186,9 @@ impl SmatrixContext {
                 let dep = if n_par == 0 {
                     Vec::new()
                 } else {
-                    deposit_row(&n_slice, &sa, start, end, lam, nsin_fi, par_films, n_par)
+                    deposit_row(
+                        &n_slice, &sa, start, end, lam, nsin_fi, par_films, n_par, with_phase,
+                    )
                 };
                 (pt, dep)
             })
@@ -274,7 +279,8 @@ impl SmatrixContext {
 }
 
 /// ∂(Rs, Rp, Ts, Tp)/∂(thickness) at one grid point, laid out
-/// `[channel · n_par + par]` for [`CurveDeposits::from_point_rows`].
+/// `[channel · n_par + par]` for [`CurveDeposits::from_point_rows`]; with
+/// `with_phase`, then ∂(Re, Im) of the complex forward `t_s` and `t_p`.
 ///
 /// Increasing film `j`'s thickness is the needle operator with the needle
 /// material set to the host's own index: r₁₂ = 0, so ρ̂ vanishes and
@@ -297,8 +303,9 @@ fn deposit_row(
     nsin_fi: Complex64,
     par_films: &[usize],
     n_par: usize,
+    with_phase: bool,
 ) -> Vec<f64> {
-    let mut row = vec![0.0f64; 4 * n_par];
+    let mut row = vec![0.0f64; if with_phase { 8 } else { 4 } * n_par];
     let (fields_s, fields_p) = build_stack_fields_range_dual(
         start,
         end,
@@ -322,6 +329,10 @@ fn deposit_row(
             // d|z|²/dd = 2·Re(conj(z)·dz/dd).
             row[pi * n_par + kp] = 2.0 * (r_conj * dr).re;
             row[(2 + pi) * n_par + kp] = 2.0 * f_fwd * (t_conj * dt).re;
+            if with_phase {
+                row[(4 + 2 * pi) * n_par + kp] = dt.re;
+                row[(5 + 2 * pi) * n_par + kp] = dt.im;
+            }
         }
     }
     row
@@ -481,15 +492,17 @@ impl SmatrixContext {
         // `run_optimizer`'s: the built-in LM is the default and the only one
         // with bounds semantics of its own (R4.4c).
         //
-        // The pool is sized by how coarse one parallel task is: a grid
-        // point's solver layers, times the columns a differenced Jacobian
+        // The pool is sized by the work one parallel call spreads: grid
+        // points × solver layers, times the columns a differenced Jacobian
         // runs at once, times the environments a joint run simulates.
         let differenced =
             self.lm.jacobian == JacobianMode::Fd || multi || self.spec.sensitivity_incomplete();
-        let task_layers = stack.solver_arrays().n_layers as usize
+        let work = self.sin_theta.len()
+            * self.wavls.len()
+            * stack.solver_arrays().n_layers as usize
             * if differenced { params.len().max(1) } else { 1 }
             * self.envs.as_ref().map_or(1, |e| e.names().len());
-        let res = in_lm_pool(task_layers, || match self.lm.jacobian {
+        let res = in_lm_pool(work, || match self.lm.jacobian {
             JacobianMode::Analytic => {
                 let src = DepositJacobian::new(
                     self.clone(),
@@ -572,35 +585,58 @@ impl Param {
     }
 }
 
-/// Threads for one optimizer run, and twice that for coarse tasks (see
-/// [`COARSE_TASK_LAYERS`]). Measured with the LM breakdown bench on 32
-/// logical CPUs: 8 is the best or within noise of it for every case, from 4
-/// films to 601 wavelengths (base_16f: 8 → 27.9 ms, 16 → 37.4, 32 → 47.2),
-/// except the two coarse-task cases, which take 16.
+/// Threads for one optimizer run up to [`LM_BASE_WORK`]; the pool doubles at
+/// every further 16× of work. Measured on 32 logical CPUs, ms per LM
+/// iteration at 8 / 16 / 32 threads (work = points × layers × columns):
+///
+/// | case                         | work  | 8     | 16    | 32    |
+/// |------------------------------|-------|-------|-------|-------|
+/// | 16 films, 61 λ               | 1.1k  | 0.14  | 0.19  | 0.24  |
+/// | 80 films, 61 λ               | 5.0k  | 1.36  | 1.46  | 1.66  |
+/// | 16 graded films, 61 λ        | 8.4k  | 0.60  | 0.54  | 0.54  |
+/// | 80 films, 401 λ              | 33k   | 6.34  | 5.81  | 6.10  |
+/// | 32 graded films (1196), 61 λ | 73k   | 5.10  | 3.87  | 3.81  |
+/// | 80 graded films (2990), 61 λ | 183k  | 17.3  | 22.4  | 13.8  |
+/// | 16 films, 1001 λ × 30 angles | 541k  | 63.0  | 49.1  | 45.5  |
+/// | 32 graded films, 201 λ × 30  | 7.3M  | 587   | 381   | 313   |
+///
+/// A small sweep loses to the cost of waking and coordinating threads that
+/// get a few points each; a large one is throughput-bound and takes every
+/// thread there is.
 const LM_THREADS: usize = 8;
 
-/// Solver layers per parallel task from which the doubled pool pays: the
-/// inhomogeneous 16-film case (8 → 120 ms, 16 → 107) and a differenced
-/// 16-parameter Jacobian (8 → 106 ms, 16 → 87). Plain stacks up to 32
-/// films (34 layers) stay at [`LM_THREADS`].
-const COARSE_TASK_LAYERS: usize = 64;
+/// Work below which [`LM_THREADS`] is the pool: the 16-film case on 601
+/// wavelengths (10.8k) sits at the crossover, a tie between 8 and 16.
+const LM_BASE_WORK: usize = 8192;
+
+/// The pool for `work`: [`LM_THREADS`], doubled per 16× of work above
+/// [`LM_BASE_WORK`] (8k → 16, 131k → 32, 2.1M → 64), before the cap.
+fn lm_threads_for(work: usize) -> usize {
+    let mut threads = LM_THREADS;
+    let mut bound = LM_BASE_WORK;
+    while work >= bound && threads < 1 << 16 {
+        threads *= 2;
+        bound = bound.saturating_mul(16);
+    }
+    threads
+}
 
 /// Run `f` (one optimizer run) on a rayon worker of a small pool.
 ///
 /// Two costs this avoids, both per parallel call and both paid hundreds of
 /// times per run. Called from outside a pool, every sweep is injected into
 /// the global queue while the caller sleeps on an OS latch; on a worker it
-/// is pushed locally. And a big pool wakes threads that cost more to
-/// coordinate than their share of the sweep saves. The pool has
-/// [`LM_THREADS`] threads (doubled at [`COARSE_TASK_LAYERS`]), or
-/// `NAVETTE_LM_THREADS` rounded up to a power of two, capped at the global
+/// is pushed locally. And a big pool on a small sweep wakes threads that
+/// cost more to coordinate than their share saves. The pool has
+/// [`lm_threads_for`]`(work)` threads, or `NAVETTE_LM_THREADS` rounded up
+/// to a power of two, capped at the global
 /// pool's size (so `RAYON_NUM_THREADS` still bounds it); the pools are
 /// built once and kept. Results do not depend on the thread count: every
 /// sweep collects in index order.
 ///
 /// Already on a worker (a caller that parallelizes over runs), `f` runs
 /// where it is, so the caller's own parallelism is left alone.
-fn in_lm_pool<R: Send>(task_layers: usize, f: impl FnOnce() -> R + Send) -> R {
+fn in_lm_pool<R: Send>(work: usize, f: impl FnOnce() -> R + Send) -> R {
     use std::sync::OnceLock;
     const N_POOLS: usize = usize::BITS as usize;
     static POOLS: [OnceLock<Option<rayon::ThreadPool>>; N_POOLS] =
@@ -610,15 +646,10 @@ fn in_lm_pool<R: Send>(task_layers: usize, f: impl FnOnce() -> R + Send) -> R {
         return f();
     }
     let global = rayon::current_num_threads();
-    let auto = if task_layers >= COARSE_TASK_LAYERS {
-        2 * LM_THREADS
-    } else {
-        LM_THREADS
-    };
     let want = std::env::var("NAVETTE_LM_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(auto)
+        .unwrap_or_else(|| lm_threads_for(work))
         .max(1)
         .next_power_of_two();
     if want >= global {
@@ -691,7 +722,7 @@ pub(crate) fn apply_params(
 /// stack at `x`, take one sweep with deposits, and multiply the two halves.
 ///
 /// Declines (`Ok(None)`) when the merit spec has rows whose dependence the
-/// sensitivity pass does not carry — phase targets and color demands. That is
+/// sensitivity pass does not carry — color demands and back phase targets. That is
 /// a property of the spec, not of `x`, so a declining source declines every
 /// iteration and the run is simply the finite-difference run. The first
 /// decline is remembered, so the later calls skip the deposits sweep whose
@@ -761,6 +792,17 @@ mod tests {
     use crate::smatrix::angle::{Radians, deg, degs};
     use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
     use crate::smatrix::synthesis::structure::LayerSpec;
+
+    #[test]
+    fn lm_pool_doubles_per_sixteenfold_work() {
+        assert_eq!(lm_threads_for(0), 8);
+        assert_eq!(lm_threads_for(8191), 8);
+        assert_eq!(lm_threads_for(8192), 16);
+        assert_eq!(lm_threads_for(131_071), 16);
+        assert_eq!(lm_threads_for(131_072), 32);
+        assert_eq!(lm_threads_for(2_097_152), 64);
+        assert!(lm_threads_for(usize::MAX) <= 1 << 16);
+    }
 
     fn ar_spec(angle: f64, wl: f64) -> MeritSpec {
         let mut spec = MeritSpec::new();
@@ -1195,6 +1237,72 @@ mod tests {
             demand_at(spec, angle, curve, vec![target; WLS.len()]);
         }
 
+        /// A phase demand on `curve` at `angle` over `wls`, target 0 rad;
+        /// differential with `passes`, or absolute.
+        fn phase_demand(
+            spec: &mut MeritSpec,
+            angle: Radians,
+            curve: CurveId,
+            wls: Vec<f64>,
+            passes: Option<f64>,
+            integral: bool,
+        ) {
+            let n = wls.len();
+            let k = spec.add_key(MeritKey { angle, curve });
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                env_idx: 0,
+                wavelengths: wls.into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: vec![0.0; n].into(),
+                tolerances: vec![0.05; n].into(),
+                band: vec![].into(),
+                phase: true,
+                differential_passes: passes,
+                integral,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+        }
+
+        /// An Rs demand plus a color demand: the one kind of spec the
+        /// sensitivity pass still cannot cover.
+        fn color_spec() -> MeritSpec {
+            use crate::smatrix::synthesis::color_merit::{
+                ColorDemand, ColorDistance, ColorQuantity, ColorReference, E313_CX_D65_10,
+                E313_CZ_D65_10,
+            };
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, angle_of(SINS[0]), CurveId::Rs, 0.0);
+            let k = spec.add_key(MeritKey {
+                angle: angle_of(SINS[0]),
+                curve: CurveId::Rs,
+            });
+            let n = WLS.len();
+            spec.add_color_demand(
+                ColorDemand::new(
+                    k as u32,
+                    vec![[0.3, 0.4, 0.2]; n],
+                    WLS.to_vec(),
+                    vec![1.0; n],
+                    WLS.to_vec(),
+                    ColorQuantity::XyY,
+                    ColorReference::Triple([0.33, 0.33, 0.1]),
+                    ColorDistance::Channels,
+                    1.0,
+                    E313_CX_D65_10,
+                    E313_CZ_D65_10,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            spec
+        }
+
         /// As `demand`, with a per-wavelength target vector.
         fn demand_at(spec: &mut MeritSpec, angle: Radians, curve: CurveId, targets: Vec<f64>) {
             let k = spec.add_key(MeritKey { angle, curve });
@@ -1371,10 +1479,176 @@ mod tests {
         }
 
         #[test]
-        fn a_phase_demand_refuses_the_analytic_path_instead_of_zeroing_it() {
+        fn phase_deposits_are_a_finite_difference_of_the_complex_rows() {
+            // The amplitude half of a phase Jacobian: ∂(Re, Im) of the complex
+            // forward t_s, t_p against `simulate()`'s complex rows differenced
+            // in thickness. Only a phase spec collects them.
+            let mut spec = MeritSpec::new();
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[0]),
+                CurveId::Ts,
+                WLS.to_vec(),
+                None,
+                false,
+            );
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Tp,
+                WLS.to_vec(),
+                None,
+                false,
+            );
+            let ctx = ctx3(spec);
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (_, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            assert_eq!(dep.n_channels(), 8);
+            let (_, plain) = ctx3(ar_spec(0.0, 560.0))
+                .simulate_with_deposits(&stack, &par)
+                .unwrap();
+            assert_eq!(
+                plain.n_channels(),
+                4,
+                "an intensity spec grew phase deposits"
+            );
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let a = ctx.simulate(&sp).unwrap();
+                let b = ctx.simulate(&sm).unwrap();
+                for (k, id) in [CurveId::Ts, CurveId::Tp].into_iter().enumerate() {
+                    let ca = a.complex_curve(id).unwrap();
+                    let cb = b.complex_curve(id).unwrap();
+                    for pt in 0..ca.len() {
+                        let fd = (ca[pt] - cb[pt]) / (2.0 * h);
+                        for (ch, f) in [(4 + 2 * k, fd.re), (5 + 2 * k, fd.im)] {
+                            let an = dep.get(ch, pt, kp);
+                            let dev = (an - f).abs() / fd.norm().max(1e-6);
+                            worst = worst.max(dev);
+                            assert!(
+                                dev < 1e-6,
+                                "film {fi}, {id:?} ch {ch}, point {pt}: {an} vs {f}"
+                            );
+                            if f.abs() > 1e-6 {
+                                live += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(live > 40, "only {live} live entries");
+            println!("  phase deposits: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn the_assembled_phase_jacobian_matches_a_finite_difference_of_the_residuals() {
+            // Phase rows end to end: absolute and differential (through D),
+            // aligned and interpolated grids, pointwise and integral, both
+            // polarizations, next to an intensity demand; plain and through
+            // the optimizer's parameter map.
+            let off = vec![500.0, 540.0, 580.0, 620.0];
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Rs, 0.01);
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[0]),
+                CurveId::Ts,
+                WLS.to_vec(),
+                Some(1.0),
+                false,
+            );
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Tp,
+                off.clone(),
+                None,
+                false,
+            );
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Ts,
+                off,
+                Some(2.0),
+                true,
+            );
+            assert!(!spec.sensitivity_incomplete());
+            let ctx = ctx3(spec);
+
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+            let mut jac = Vec::new();
+            assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
+            let m = sens.rows.len();
+            assert_eq!(m, WLS.len() + WLS.len() + 4 + 1);
+
+            let src = DepositJacobian::new(
+                ctx.clone(),
+                stack.clone(),
+                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                WLS.len(),
+            );
+            let mut mapped = Vec::new();
+            assert_eq!(src.fill(&d, &mut mapped).unwrap(), Some(m));
+            for (a, b) in jac.iter().zip(&mapped) {
+                assert!((a - b).abs() <= 1e-12 * a.abs().max(1.0), "{a} vs {b}");
+            }
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let mut rp = Vec::new();
+                let mut rm = Vec::new();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sp).unwrap(), &mut rp)
+                    .unwrap();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sm).unwrap(), &mut rm)
+                    .unwrap();
+                let fd: Vec<f64> = rp
+                    .iter()
+                    .zip(&rm)
+                    .map(|(p, q)| (p - q) / (2.0 * h))
+                    .collect();
+                let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                for i in 0..m {
+                    let an = jac[i * par.len() + kp];
+                    let dev = (an - fd[i]).abs() / scale;
+                    worst = worst.max(dev);
+                    assert!(dev < 1e-6, "row {i}, film {fi}: {an} vs {}", fd[i]);
+                    if fd[i].abs() > 1e-6 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 30, "only {live} live entries");
+            println!("  phase J: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn a_color_demand_refuses_the_analytic_path_instead_of_zeroing_it() {
             // The fallback contract: an uncovered row must stop the assembly, not
             // come back as a row of zeros that the LM would read as "flat".
-            let ctx = ar_ctx_pd();
+            let ctx = ctx3(color_spec());
             let stack = stack3(118.0, 203.0, 64.0);
             let par = [0usize];
             let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
@@ -1711,9 +1985,10 @@ mod tests {
         #[test]
         fn the_deposit_source_declines_exactly_the_specs_it_cannot_cover() {
             // The coverage gate, at the seam the optimizer actually uses. A spec
-            // whose channels are all deposited answers with a Jacobian; one with a
-            // phase target answers `None`, which is what makes the run fall back
-            // to differences instead of optimizing against zeros.
+            // whose channels are all deposited answers with a Jacobian, a phase
+            // spec included; one with a color demand answers `None`, which is
+            // what makes the run fall back to differences instead of optimizing
+            // against zeros.
             let stack = stack3(118.0, 203.0, 64.0);
             let x = [118.0, 203.0, 64.0];
 
@@ -1738,18 +2013,38 @@ mod tests {
                 "a covered spec gave a flat J"
             );
 
-            let phase = DepositJacobian::new(ar_ctx_pd(), stack, vec![Param::Row(0)], WLS.len());
-            assert!(
-                phase.fill(&[118.0], &mut jac).unwrap().is_none(),
-                "a phase spec must decline, not answer"
+            let mut pspec = MeritSpec::new();
+            phase_demand(
+                &mut pspec,
+                angle_of(SINS[0]),
+                CurveId::Ts,
+                WLS.to_vec(),
+                Some(1.0),
+                false,
             );
-            assert!(phase.declined.load(Ordering::Relaxed));
+            let phase =
+                DepositJacobian::new(ctx3(pspec), stack.clone(), vec![Param::Row(0)], WLS.len());
+            assert_eq!(phase.fill(&[118.0], &mut jac).unwrap(), Some(WLS.len()));
+            assert!(
+                jac.iter().any(|v| v.abs() > 1e-9),
+                "a phase spec gave a flat J"
+            );
+
+            let color =
+                DepositJacobian::new(ctx3(color_spec()), stack, vec![Param::Row(0)], WLS.len());
+            assert!(
+                color.fill(&[118.0], &mut jac).unwrap().is_none(),
+                "a color spec must decline, not answer"
+            );
+            assert!(color.declined.load(Ordering::Relaxed));
             // Remembered: a later x declines too (without the sweep), and a
             // covered source never latches.
-            assert!(phase.fill(&[140.0], &mut jac).unwrap().is_none());
+            assert!(color.fill(&[140.0], &mut jac).unwrap().is_none());
             assert!(!covered.declined.load(Ordering::Relaxed));
-            // The up-front predicate the pool sizing reads agrees with both.
-            assert!(phase.ctx.spec.sensitivity_incomplete());
+            assert!(!phase.declined.load(Ordering::Relaxed));
+            // The up-front predicate the pool sizing reads agrees with all three.
+            assert!(color.ctx.spec.sensitivity_incomplete());
+            assert!(!phase.ctx.spec.sensitivity_incomplete());
             assert!(!covered.ctx.spec.sensitivity_incomplete());
         }
 
@@ -2507,7 +2802,7 @@ mod tests {
             (
                 "point: deposit_row (2 pols)",
                 time(reps * 10, || {
-                    deposit_row(&n_slice, &sa, 0, nl - 1, lam, nsin, &rows, n_films)
+                    deposit_row(&n_slice, &sa, 0, nl - 1, lam, nsin, &rows, n_films, false)
                 }),
             ),
         ];

@@ -825,11 +825,16 @@ impl MeritSpec {
         Ok(())
     }
 
-    /// True if [`Self::curve_sensitivity`] leaves rows uncovered: a phase
-    /// target or a color demand. Known up front, with no simulation; the
-    /// evaluator sizes its thread pool for a differenced Jacobian on it.
+    /// True if [`Self::curve_sensitivity`] leaves rows uncovered: a color
+    /// demand, or a phase target on a back-incidence curve. Known up front,
+    /// with no simulation; the evaluator sizes its thread pool for a
+    /// differenced Jacobian on it.
     pub(crate) fn sensitivity_incomplete(&self) -> bool {
-        self.uses_phase() || !self.color.is_empty()
+        !self.color.is_empty()
+            || self
+                .targets
+                .iter()
+                .any(|t| t.phase && self.keys[t.key_idx as usize].curve.is_back())
     }
 
     /// True if any demand samples complex amplitudes (phase or
@@ -1336,10 +1341,27 @@ impl MeritSpec {
 // Row-wise curve sensitivity (R4.5, work item i)
 // ---------------------------------------------------------------------------
 
+/// Which quantity a [`CurveTerm`] differentiates against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TermPart {
+    /// The intensity curve value itself.
+    Value,
+    /// The real part of the curve's complex amplitude (phase demands).
+    Re,
+    /// The imaginary part of the curve's complex amplitude (phase demands).
+    Im,
+    /// The coating's total thickness D, which a differential-phase
+    /// reference reads directly. ∂D/∂(film thickness) is 1 for every film,
+    /// so the term ignores `angle_row`/`wavelength`.
+    TotalThickness,
+}
+
 /// How one residual row depends on one simulated curve value.
 ///
 /// `curve`/`angle_row`/`wavelength` address a single entry of `SimCurves`
-/// (`curve[angle_row * n_wav + wavelength]`); `d_residual` is ∂r/∂(that
+/// (`curve[angle_row * n_wav + wavelength]`), and `part` says which
+/// quantity at that entry: the intensity, or the real or imaginary part of
+/// the complex amplitude a phase demand reads; `d_residual` is ∂r/∂(that
 /// value). A row with an empty term list does not move when the curves move
 /// — an inactive constraint, a target grid that misses the simulation, or a
 /// kind sitting in its dead zone.
@@ -1349,6 +1371,7 @@ pub struct CurveTerm {
     pub angle_row: usize,
     pub wavelength: usize,
     pub d_residual: f64,
+    pub part: TermPart,
 }
 
 /// ∂r/∂(simulated curve) for every residual row, in `residuals()` order.
@@ -1504,11 +1527,14 @@ impl MeritSpec {
     ///
     /// Mirrors `residuals()` exactly in row order and count, so the two index
     /// together. Covered: pointwise and integral targets over intensity and
-    /// absorption curves, every constraint kind and every real transform.
-    /// **Not** covered, and listed in `uncovered`: phase targets (`arg()` of a
-    /// complex row, plus a differential reference that depends on the stack's
-    /// total thickness directly rather than through any curve) and color
-    /// demands (a spectrum-wide integral through the CIE chain —
+    /// absorption curves, every constraint kind and every real transform,
+    /// and front phase targets: `arg()` of a complex row, through the real
+    /// and imaginary parts of that row ([`TermPart::Re`]/[`TermPart::Im`]),
+    /// plus a differential reference through the stack's total thickness
+    /// ([`TermPart::TotalThickness`]). **Not** covered, and listed in
+    /// `uncovered`: back-incidence phase targets (no amplitude deposits
+    /// exist for them) and color demands (a spectrum-wide integral through
+    /// the CIE chain —
     /// `build_needle_targets` already emits *that* derivative, in the
     /// per-solver-point shape the needle pass wants rather than per row).
     ///
@@ -1521,12 +1547,11 @@ impl MeritSpec {
     /// `sensitivity_is_a_finite_difference_of_residuals`, which differences
     /// `residuals()` itself: any drift between them fails it.
     pub fn curve_sensitivity(&self, sim: &SimCurves) -> Result<MeritSensitivity, CurveId> {
-        // No reference-row-length guard here, unlike `merit`/`residuals`,
-        // and that is deliberate, not an oversight (review PD G4): the
-        // reference is additive and independent of the curve, so it drops
-        // out of d(residual)/d(curve) — `curve_sensitivity_into` never
-        // reads `n_front_re`/`n_back_re`, so a malformed length cannot
-        // hurt this path.
+        // No reference-row-length guard here, unlike `merit`/`residuals`
+        // (review PD G4): the reference is additive and independent of the
+        // curve, so it drops out of d(residual)/d(curve). Its wavenumber
+        // does scale the d(residual)/dD term, and a malformed `n_front_re`
+        // there turns the phase rows uncovered rather than misread.
         let mut s = MeritSensitivity {
             rows: Vec::with_capacity(self.n_residuals()),
             uncovered: Vec::new(),
@@ -1613,13 +1638,21 @@ impl MeritSpec {
             {
                 continue;
             }
-            // A phase target occupies its rows like any other; they are just
-            // unexplained. Reported as uncovered rather than left empty, so a
-            // phase demand is never quietly read as covered-and-constant.
+            // A front phase target has its own chain (`phase_rows_into`). A
+            // back one has no amplitude deposits behind it: its rows are
+            // reported uncovered rather than left empty, so it is never
+            // quietly read as covered-and-constant.
             if t.phase {
-                for _ in 0..n_rows {
-                    out.uncovered.push(out.rows.len());
-                    out.rows.push(Vec::new());
+                let n_ref_ok = |row: &[f64]| row.len() == 1 || row.len() == n_wav;
+                if key.curve.is_back()
+                    || (t.differential_passes.is_some() && !n_ref_ok(&sim.n_front_re))
+                {
+                    for _ in 0..n_rows {
+                        out.uncovered.push(out.rows.len());
+                        out.rows.push(Vec::new());
+                    }
+                } else {
+                    phase_rows_into(sim, key, ang_row, t, out);
                 }
                 continue;
             }
@@ -1716,22 +1749,176 @@ fn push_terms(
         return;
     }
     for &(curve, _, sgn) in channels {
-        let mut emit = |wavelength: usize, w: f64| {
-            if w != 0.0 {
-                terms.push(CurveTerm {
-                    curve,
-                    angle_row,
-                    wavelength,
-                    d_residual: w,
-                });
-            }
+        push_part_terms(terms, curve, TermPart::Value, angle_row, r, scale * sgn);
+    }
+}
+
+/// [`push_terms`] for one curve and part: `scale` spread over the simulated
+/// points the sample reads, by its interpolation weights.
+fn push_part_terms(
+    terms: &mut Vec<CurveTerm>,
+    curve: CurveId,
+    part: TermPart,
+    angle_row: usize,
+    r: &SampleRef,
+    scale: f64,
+) {
+    let mut emit = |wavelength: usize, w: f64| {
+        if w != 0.0 {
+            terms.push(CurveTerm {
+                curve,
+                angle_row,
+                wavelength,
+                d_residual: w,
+                part,
+            });
+        }
+    };
+    match *r {
+        SampleRef::Direct(i) => emit(i, scale),
+        SampleRef::Interp(i, f) => {
+            emit(i, scale * (1.0 - f));
+            emit(i + 1, scale * f);
+        }
+    }
+}
+
+/// The rows of one front phase target, in `residuals_into`'s order.
+///
+/// The residual reads `arg(z) − ref` with `z` the complex row sampled at the
+/// target wavelength (`(1−f)·z₀ + f·z₁` between grid points) and, for a
+/// differential demand, `ref = passes · k(λ, n, θ) · D`. With `c = conj(z)/|z|²`,
+///
+/// ```text
+///     ∂arg z / ∂Re z = Im c        ∂arg z / ∂Im z = Re c
+///     ∂ref / ∂D      = passes · k
+/// ```
+///
+/// so each row is linear in the real and imaginary parts of the grid
+/// amplitudes it reads, plus one total-thickness term. The wrap of the
+/// residual to [−π, π] is piecewise the identity. `z = 0` has no phase and
+/// no derivative; its terms are zero.
+fn phase_rows_into(
+    sim: &SimCurves,
+    key: &MeritKey,
+    ang_row: usize,
+    t: &MeritTarget,
+    out: &mut MeritSensitivity,
+) {
+    let sim_wl: &[f64] = &sim.wavelengths;
+    let n_wav = sim_wl.len();
+    let t_wl: &[f64] = &t.wavelengths;
+    // The caller checked that the row exists before it pushed anything.
+    let full = sim
+        .complex_curve(key.curve)
+        .expect("phase_rows_into: complex row checked by the caller");
+    let crow = &full[ang_row * n_wav..(ang_row + 1) * n_wav];
+    let n_ref: &[f64] = &sim.n_front_re;
+    let (aligned, offset) = alignment(t_wl, sim_wl);
+    let rscale = (t.weight / t.count_norm.unwrap_or(1.0)).sqrt();
+
+    // Per point: where it reads, the Re/Im coefficients of ∂raw, the
+    // reference's ∂raw/∂D, and the values the kind derivative needs.
+    let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
+    let mut coef: Vec<(f64, f64, f64)> = Vec::with_capacity(t_wl.len());
+    let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut sim_idx = 0usize;
+    for i in 0..t_wl.len() {
+        let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
+        let z = match r {
+            SampleRef::Direct(j) => crow[j],
+            SampleRef::Interp(j, f) => crow[j] + (crow[j + 1] - crow[j]) * f,
         };
-        match *r {
-            SampleRef::Direct(i) => emit(i, scale * sgn),
-            SampleRef::Interp(i, f) => {
-                emit(i, scale * sgn * (1.0 - f));
-                emit(i + 1, scale * sgn * f);
+        let mut raw = z.arg();
+        let mut d_ref = 0.0;
+        if let Some(passes) = t.differential_passes {
+            let n = if n_ref.len() == 1 {
+                n_ref[0]
+            } else {
+                r.read(n_ref)
+            };
+            let k =
+                passes * crate::smatrix::optics_core::reference_wavenumber(t_wl[i], n, key.angle);
+            raw -= k * sim.total_d;
+            d_ref = -k;
+        }
+        let m2 = z.norm_sqr();
+        let (d_re, d_im) = if m2 > 0.0 {
+            let c = z.conj() / m2;
+            (c.im, c.re)
+        } else {
+            (0.0, 0.0)
+        };
+        let target_scaled = t.normalized_targets[i];
+        let diff = match t.transform {
+            SimTransform::Phase => {
+                let d = raw - target_scaled;
+                d - std::f64::consts::TAU * (d / std::f64::consts::TAU).round()
             }
+            SimTransform::Log => raw.max(1e-12).log10() * t.norm_factor - target_scaled,
+            SimTransform::Linear | SimTransform::Complex => raw * t.norm_factor - target_scaled,
+        };
+        refs.push(r);
+        coef.push((d_re, d_im, d_ref));
+        raws.push(raw);
+        diffs.push(diff);
+    }
+
+    let push_point = |terms: &mut Vec<CurveTerm>, i: usize, scale: f64| {
+        if scale == 0.0 {
+            return;
+        }
+        let (d_re, d_im, d_ref) = coef[i];
+        push_part_terms(
+            terms,
+            key.curve,
+            TermPart::Re,
+            ang_row,
+            &refs[i],
+            scale * d_re,
+        );
+        push_part_terms(
+            terms,
+            key.curve,
+            TermPart::Im,
+            ang_row,
+            &refs[i],
+            scale * d_im,
+        );
+        let w = scale * d_ref;
+        if w != 0.0 {
+            terms.push(CurveTerm {
+                curve: key.curve,
+                angle_row: ang_row,
+                wavelength: 0,
+                d_residual: w,
+                part: TermPart::TotalThickness,
+            });
+        }
+    };
+
+    let n = t_wl.len() as f64;
+    if t.integral {
+        let mean_d = diffs.iter().sum::<f64>() / n;
+        let mean_tol = (t.tolerances.iter().take(t_wl.len()).sum::<f64>() / n).max(1e-300);
+        let mean_bw = t.band.iter().take(t_wl.len()).sum::<f64>() / n;
+        let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
+        let mut terms: Vec<CurveTerm> = Vec::new();
+        for i in 0..t_wl.len() {
+            let dt = d_transform(t.transform, raws[i], t.norm_factor);
+            push_point(&mut terms, i, rscale * dk * dt / n);
+        }
+        out.rows.push(terms);
+    } else {
+        for i in 0..t_wl.len() {
+            let tol = t.tolerances[i];
+            let bw = t.band.get(i).copied().unwrap_or(0.0);
+            let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
+            let dt = d_transform(t.transform, raws[i], t.norm_factor);
+            let mut terms: Vec<CurveTerm> = Vec::new();
+            push_point(&mut terms, i, rscale * dk * dt);
+            out.rows.push(terms);
         }
     }
 }
@@ -3646,7 +3833,11 @@ mod tests {
                 .map(|terms| {
                     terms
                         .iter()
-                        .filter(|t| t.curve == curve && t.angle_row * n_wav + t.wavelength == flat)
+                        .filter(|t| {
+                            t.part == TermPart::Value
+                                && t.curve == curve
+                                && t.angle_row * n_wav + t.wavelength == flat
+                        })
                         .map(|t| t.d_residual)
                         .sum()
                 })
@@ -3898,14 +4089,125 @@ mod tests {
             compare(&spec, &sim, 1e-6, "grid-miss");
         }
 
+        /// Smooth complex rows that stay well away from 0 and from the
+        /// branch cut, so a central difference of `arg` is clean.
+        fn phase_sim(bump: Option<(TermPart, usize, f64)>) -> SimCurves {
+            let mut sim = base_sim();
+            let mut c: Vec<Complex64> = (0..NA * NW)
+                .map(|k| {
+                    let a = 0.4 + 0.35 * ((k as f64) * 0.3).sin();
+                    Complex64::from_polar(0.7 + 0.1 * (k as f64 * 0.5).cos(), a)
+                })
+                .collect();
+            match bump {
+                Some((TermPart::Re, flat, h)) => c[flat].re += h,
+                Some((TermPart::Im, flat, h)) => c[flat].im += h,
+                Some((TermPart::TotalThickness, _, h)) => sim.total_d += h,
+                Some((TermPart::Value, ..)) | None => {}
+            }
+            sim.set_complex(CurveId::Ts, Arc::from(c)).unwrap();
+            sim
+        }
+
         #[test]
-        fn a_phase_target_is_reported_uncovered_not_zero() {
+        fn phase_rows_are_a_finite_difference_of_the_complex_rows_and_d() {
+            // arg() of an interpolated complex row, minus a differential
+            // reference through D: every row against `residuals()` differenced
+            // in Re z, Im z and D. Aligned and off-grid targets, absolute and
+            // differential, pointwise and integral, two kinds, both angles.
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            let mut spec = MeritSpec::new();
+            for (ai, angle) in [Radians::ZERO, deg(30.0)].into_iter().enumerate() {
+                let k = spec.add_key(MeritKey {
+                    angle,
+                    curve: CurveId::Ts,
+                });
+                for (grid, passes, integral, kind) in [
+                    (wl(), None, false, ConstraintKind::Exact),
+                    (
+                        off.clone(),
+                        Some(1.0 + ai as f64),
+                        false,
+                        ConstraintKind::Exact,
+                    ),
+                    (wl(), Some(2.0), true, ConstraintKind::Exact),
+                    (off.clone(), None, false, ConstraintKind::CenterBand),
+                ] {
+                    let n = grid.len();
+                    let mut t = target(k as u32, grid, kind, SimTransform::Phase, integral, 1.3);
+                    t.phase = true;
+                    t.differential_passes = passes;
+                    t.normalized_targets = vec![0.1; n].into();
+                    spec.add_target(t).unwrap();
+                }
+            }
+
+            let sim = phase_sim(None);
+            let s = spec.curve_sensitivity(&sim).unwrap();
+            assert!(s.is_complete(), "uncovered {:?}", s.uncovered);
+            let mut r0 = Vec::new();
+            spec.residuals(&sim, &mut r0).unwrap();
+            assert_eq!(s.rows.len(), r0.len());
+
+            let column = |part: TermPart, flat: usize| -> Vec<f64> {
+                s.rows
+                    .iter()
+                    .map(|terms| {
+                        terms
+                            .iter()
+                            .filter(|t| {
+                                t.part == part
+                                    && (part == TermPart::TotalThickness
+                                        || t.angle_row * NW + t.wavelength == flat)
+                            })
+                            .map(|t| t.d_residual)
+                            .sum()
+                    })
+                    .collect()
+            };
+            let fd = |part: TermPart, flat: usize, h: f64| -> Vec<f64> {
+                let (mut p, mut m) = (Vec::new(), Vec::new());
+                spec.residuals(&phase_sim(Some((part, flat, h))), &mut p)
+                    .unwrap();
+                spec.residuals(&phase_sim(Some((part, flat, -h))), &mut m)
+                    .unwrap();
+                p.iter().zip(&m).map(|(a, b)| (a - b) / (2.0 * h)).collect()
+            };
+
+            let mut probes: Vec<(TermPart, usize, f64)> = Vec::new();
+            for flat in 0..NA * NW {
+                probes.push((TermPart::Re, flat, 1e-7));
+                probes.push((TermPart::Im, flat, 1e-7));
+            }
+            probes.push((TermPart::TotalThickness, 0, 1e-4));
+            let mut live = 0usize;
+            let mut worst = 0.0f64;
+            for (part, flat, h) in probes {
+                let f = fd(part, flat, h);
+                let a = column(part, flat);
+                let scale = f.iter().fold(1.0f64, |acc, v| acc.max(v.abs()));
+                for (i, (x, y)) in a.iter().zip(&f).enumerate() {
+                    let dev = (x - y).abs() / scale;
+                    worst = worst.max(dev);
+                    assert!(dev < 1e-6, "row {i}, {part:?}[{flat}]: {x} vs {y}");
+                    if y.abs() > 1e-9 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 100, "only {live} live entries");
+            println!("  phase rows: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn a_back_phase_target_is_reported_uncovered_not_zero() {
             // The whole point of `uncovered`: a caller must fall back to a finite
-            // difference, not conclude that the phase rows are constant.
+            // difference, not conclude that the phase rows are constant. Back
+            // amplitudes have no deposits, so a back phase demand stays there.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
                 angle: Radians::ZERO,
-                curve: CurveId::Rs,
+                curve: CurveId::TBs,
             });
             let mut t = target(
                 k as u32,
@@ -3917,6 +4219,7 @@ mod tests {
             );
             t.phase = true;
             spec.add_target(t).unwrap();
+            assert!(spec.sensitivity_incomplete());
 
             let mut sim = base_sim();
             let cplx: Vec<Complex64> = (0..NA * NW)
@@ -3927,7 +4230,7 @@ mod tests {
                     )
                 })
                 .collect();
-            sim.set_complex(CurveId::Rs, Arc::from(cplx)).unwrap();
+            sim.set_complex(CurveId::TBs, Arc::from(cplx)).unwrap();
             let s = spec.curve_sensitivity(&sim).unwrap();
             assert!(!s.is_complete());
             assert_eq!(s.uncovered.len(), NW);
