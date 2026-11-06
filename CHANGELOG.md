@@ -71,6 +71,18 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Fixed
 
+- **A negative grading strength solved flat; it is now the reversed
+  ramp.** The sub-layer refinement read the signed delta, so a
+  `RateCapped` drift with a negative rate (allowed, by design) lost rows
+  and collapsed to one sub-layer past delta -0.2: a 400 nm film solved
+  homogeneous, against 23 rows for its positive twin. The refinement now
+  reads `|delta|`. `RateCapped` also capped only the positive side, so a
+  negative drift saturated at twice the positive strength; it is now
+  bounded to `[-cap, cap]`. Fixed mode accepts a negative `inh_delta` (it
+  was refused for the collapse, not for the physics: real films grade
+  both ways) and the window is `(-2, 2)`. Rows run from the incidence
+  face, so `+d` raises the index toward the substrate and `-d` lowers it.
+  Positive values are unchanged bit for bit.
 - **Synthesis T into an absorbing substrate was wrong.** The synthesis
   forward model (`SmatrixContext.simulate`, every needle and LM run) took
   Ts/Tp from the backward channel, |t_back|²·Re(y_0)/Re(y_exit). That

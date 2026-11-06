@@ -10,8 +10,10 @@ misbehaved later, somewhere else:
 * ``inh_delta < 0`` drove the refinement factor negative, which saturates to
   a sub-layer count of 1: the grading was dropped and the film solved as
   homogeneous. Writing ``-0.2`` to mean "ramp the other way" is the obvious
-  way to hit that.
-* ``inh_delta >= 2`` put rows of ``n = -0.59, k = -0.0125`` into the solver
+  way to hit that. It was refused from 0.6.28; after 0.8.1 the refinement
+  reads ``|inh_delta|`` and a negative value is the reversed ramp it was
+  always meant to be (real films grade both ways).
+* ``|inh_delta| >= 2`` put rows of ``n = -0.59, k = -0.0125`` into the solver
   (measured on a 2.35 + 0.05i film at delta 2.5). Negative k is optical gain.
 
 The rule now lives once, as ``Layer::property_issues``, and every door that
@@ -63,9 +65,10 @@ _MATS = DictMaterialProvider({
     (dict(roughness=float("nan")), "Non-finite roughness"),
     (dict(interface_thickness=-2.0), "Negative interface thickness"),
     (dict(interface_thickness=float("inf")), "Non-finite interface thickness"),
-    (dict(inh_delta=-0.2), "Negative inh_delta"),
-    (dict(inh_delta=2.0), "outside [0, 2)"),
-    (dict(inh_delta=2.5), "outside [0, 2)"),
+    (dict(inh_delta=2.0), "outside (-2, 2)"),
+    (dict(inh_delta=2.5), "outside (-2, 2)"),
+    (dict(inh_delta=-2.0), "outside (-2, 2)"),
+    (dict(inh_delta=-2.5), "outside (-2, 2)"),
     (dict(inh_delta=float("nan")), "Non-finite inh_delta"),
     (dict(rough_type=99), "invalid discriminant"),
     (dict(rough_type=-1), "invalid discriminant"),
@@ -85,20 +88,57 @@ def re_escape(s: str) -> str:
 def test_the_refusals_explain_themselves():
     """A range check that only prints the range teaches nothing.
 
-    ``inh_delta`` is the case that needs it: both ends fail for reasons a
-    caller cannot guess from "[0, 2)".
+    ``inh_delta`` is the case that needs it: the limit is a reason a caller
+    cannot guess from "(-2, 2)".
     """
-    with pytest.raises(ValueError) as neg:
-        Layer(100.0, "TiO2", inhomogen=True, inh_delta=-0.2)
-    msg = str(neg.value)
-    assert "magnitude, not a direction" in msg
-    assert "homogeneous" in msg, "must say what silently happened before"
-
     with pytest.raises(ValueError) as big:
         Layer(100.0, "TiO2", inhomogen=True, inh_delta=2.5)
     msg = str(big.value)
     assert "optical gain" in msg, "the reason 2 is the limit, not a taste"
     assert msg.isascii(), "the message must survive a cp1252 console"
+
+
+def test_a_negative_grading_is_the_reversed_ramp_not_a_flat_film():
+    """The sign is a direction; the refinement reads the magnitude.
+
+    Up to 0.8.1 a negative ``RateCapped`` rate (allowed, by design) went
+    through the signed refinement and solved flat past -0.2: one sub-layer
+    against 23 for its twin at 400 nm. Fixed mode refused the sign instead.
+    """
+    for t in (100.0, 400.0, 1000.0):
+        pos = Layer(t, "TiO2", inhomogen=True, inh_delta=0.2)
+        neg = Layer(t, "TiO2", inhomogen=True, inh_delta=-0.2)
+        assert neg.inh_delta == -0.2
+        assert neg.sub_layer_count == pos.sub_layer_count > 1
+        rc = {"RateCapped": {"rate": 0.05, "ref_thickness": 100.0, "cap": 0.3}}
+        rn = {"RateCapped": {"rate": -0.05, "ref_thickness": 100.0, "cap": 0.3}}
+        assert (Layer(t, "TiO2", inhomogen=True, inh_mode=rn).sub_layer_count
+                == Layer(t, "TiO2", inhomogen=True, inh_mode=rc).sub_layer_count)
+
+    # And it reaches the solver graded: R of the reversed ramp is neither
+    # the flat film's nor the positive ramp's, and it moves about as far
+    # from flat. (An Exact demand for zero at tolerance one returns R.)
+    from navette._smatrix import LmConfig, SmatrixContext
+    from navette.spectralweave.target import SpectralTarget, TargetCollection
+    from navette.synthesis import build_merit_spec
+
+    tc = TargetCollection()
+    tc.add(SpectralTarget(_WLS, np.zeros(_WLS.size), np.ones(_WLS.size),
+                          "s", "R", kind="e", angle_deg=0.0))
+    spec = build_merit_spec(tc)
+    ctx = SmatrixContext(spec, _WLS, 1e-9, 1000.0, LmConfig(), angles_deg=np.array([0.0]))
+
+    def reflectance(**flags):
+        stack, _ = _build(**flags)
+        return np.asarray(spec.residuals(ctx.simulate(stack)), dtype=float)
+
+    flat = reflectance()
+    up = reflectance(inhomogen=True, inh_delta=0.2)
+    down = reflectance(inhomogen=True, inh_delta=-0.2)
+    assert np.max(np.abs(down - flat)) > 1e-3, "the reversed ramp solved flat"
+    assert np.max(np.abs(down - up)) > 1e-3
+    ratio = np.max(np.abs(down - flat)) / np.max(np.abs(up - flat))
+    assert 0.3 < ratio < 3.0, ratio
 
 
 def test_sigma_is_refused_rather_than_absolute_valued():
@@ -148,7 +188,7 @@ def test_the_setters_are_gated_too():
     layer = Layer(100.0, "TiO2")
     for attr, value, fragment in [("roughness", -3.0, "Negative roughness"),
                                   ("thickness", float("nan"), "Non-finite thickness"),
-                                  ("inh_delta", 3.0, "outside [0, 2)"),
+                                  ("inh_delta", 3.0, "outside (-2, 2)"),
                                   ("interface_thickness", -1.0, "Negative interface")]:
         with pytest.raises(ValueError, match=re_escape(fragment)):
             setattr(layer, attr, value)
@@ -222,7 +262,7 @@ def test_the_synthesis_assembler_applies_the_same_rule():
     """
     with pytest.raises(ValueError, match="Negative roughness"):
         _build(roughness=-5.0)
-    with pytest.raises(ValueError, match=re_escape("outside [0, 2)")):
+    with pytest.raises(ValueError, match=re_escape("outside (-2, 2)")):
         _build(inhomogen=True, inh_delta=2.5)
 
 

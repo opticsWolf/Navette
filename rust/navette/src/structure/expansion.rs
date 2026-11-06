@@ -910,6 +910,69 @@ mod tests {
         }
     }
 
+    /// The ramp's orientation, and its sign: rows run from the incidence
+    /// side, so `+d` puts `1 - d/2` on the ambient face and `1 + d/2` on
+    /// the substrate face, and `-d` emits the same rows mirrored. Both
+    /// modes; a negative `RateCapped` rate grades as far as its twin.
+    #[test]
+    fn a_negative_delta_mirrors_the_positive_ramp() {
+        let graded = |inh_delta: f64, inh_mode: InhMode| {
+            let mut l = Layer::film(200.0, "TiO2");
+            l.inhomogen = true;
+            l.inh_delta = inh_delta;
+            l.inh_mode = inh_mode;
+            let layers = vec![
+                (Layer::film(0.0, "glass"), false),
+                (l, false),
+                (Layer::film(0.0, "glass"), false),
+            ];
+            let (sa, spans) = expand(
+                &layers,
+                &mats(),
+                &WL,
+                &HashMap::new(),
+                ExpandOptions::deterministic(),
+            )
+            .unwrap();
+            let rows: Vec<Vec<Complex64>> = (spans[1].start..spans[1].end)
+                .map(|i| sa.row(i).to_vec())
+                .collect();
+            rows
+        };
+        use crate::structure::gradient::InhMode;
+        let bulk = [Complex64::new(2.35, 0.01), Complex64::new(2.33, 0.008)];
+        let rc = |rate: f64| InhMode::RateCapped {
+            rate,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        for (pos, neg) in [
+            (graded(0.2, InhMode::Fixed), graded(-0.2, InhMode::Fixed)),
+            (graded(0.0, rc(0.05)), graded(0.0, rc(-0.05))),
+        ] {
+            let n = pos.len();
+            assert!(n > 1);
+            assert_eq!(neg.len(), n, "a reversed ramp lost rows");
+            // +d: lower index at the incidence face, higher at the substrate.
+            for w in 0..WL.len() {
+                assert!((pos[0][w] / bulk[w]).re < 1.0 && (pos[n - 1][w] / bulk[w]).re > 1.0);
+            }
+            for i in 0..n {
+                for w in 0..WL.len() {
+                    let (a, b) = (neg[i][w], pos[n - 1 - i][w]);
+                    assert!((a - b).norm() < 1e-12, "row {i}: {a} vs {b}");
+                }
+            }
+        }
+        // Fixed d = 0.2 is the half-amplitude 0.1 at either face.
+        let fixed = graded(0.2, InhMode::Fixed);
+        close_c(
+            &fixed[0],
+            &[0.9 * bulk[0].re, 0.9 * bulk[1].re],
+            &[0.9 * bulk[0].im, 0.9 * bulk[1].im],
+        );
+    }
+
     /// Oracle twin: scaling + slice + grading + roughness (Python FULL).
     #[test]
     fn full_stack_matches_python() {
