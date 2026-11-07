@@ -64,6 +64,26 @@ All notable changes to Navette are recorded here. Work items reference
   derived from a layer (graded sublayers, interface slices) still merge
   only on name and index, so they stay apart. The first row's properties
   win.
+- **The grading sign is the literature's: `+inh_delta` raises the index
+  toward the outer surface.** The inhomogeneity is defined as
+  `δ = (n_outer − n_substrate) / n̄` (Borgogno et al., Appl. Opt. 23, 3567
+  (1984); the OptiLayer glossary). Navette's `inh_delta` was `−δ`: rows run
+  from the incidence face and the first carried `1 − d/2`. It now carries
+  `1 + d/2`, so the same number means the same film as in the literature.
+  - `d` and `−d` are exact negations, so a migrated film solves bit for bit
+    as before.
+  - The structure state schema and the program envelope go to **v3**.
+    v1/v2 states and programs (and legacy flat documents) still load; the
+    reader negates `inh_delta`, the `RateCapped` rate, `inh_delta_summand`
+    and the `abs_mean_delta_g/h` offsets of `inh_delta_error_params`, so
+    each file describes the same films. Note that `Layer.film`'s default
+    `inh_delta` of 0.1 reads back as -0.1 on an ungraded legacy layer.
+  - Not versioned, so not migrated: design-request JSON, flag dicts, and
+    values passed in code. A positive value there now grades the other way.
+  - The program config accepts `inh_delta` in `[-1, 1]` (it refused
+    negatives with `[0, 1]`).
+  - The forward golden's graded cases take negated inputs, so the stored
+    arrays are unchanged.
 - The needle pin's trajectory moves deliberately (cycle 2 now inserts H
   into an earlier L needle); both platform digests are re-recorded, Linux
   from CI. `bench_eval` reports
@@ -80,9 +100,8 @@ All notable changes to Navette are recorded here. Work items reference
   negative drift saturated at twice the positive strength; it is now
   bounded to `[-cap, cap]`. Fixed mode accepts a negative `inh_delta` (it
   was refused for the collapse, not for the physics: real films grade
-  both ways) and the window is `(-2, 2)`. Rows run from the incidence
-  face, so `+d` raises the index toward the substrate and `-d` lowers it.
-  Positive values are unchanged bit for bit.
+  both ways) and the window is `(-2, 2)`. (The sign itself then flipped;
+  see Changed.)
 - **Synthesis T into an absorbing substrate was wrong.** The synthesis
   forward model (`SmatrixContext.simulate`, every needle and LM run) took
   Ts/Tp from the backward channel, |t_back|²·Re(y_0)/Re(y_exit). That

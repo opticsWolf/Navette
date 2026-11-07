@@ -104,11 +104,15 @@ _GRAD_LOOYENGA = {"material_a": "TiO2", "material_b": "SiO2", "ema": "Looyenga",
                                           "f_min": 0.0, "f_max": 0.8}}}
 _GRAD_MG = {"material_a": "Ta2O5", "material_b": "SiO2", "ema": "MaxwellGarnett",
             "mode": {"FixedSpan": {"f_start": 0.2, "f_end": 0.7}}, "sublayers": 8}
-_RATE_INH = {"RateCapped": {"rate": 0.05, "ref_thickness": 100.0, "cap": 0.3}}
+# The grading values (inh_delta, this rate, inh_delta_summand) are negative
+# because the baseline was recorded under the pre-v3 sign, where they were
+# positive: v3 flipped the sign to the literature's, and the negation is
+# exact, so these are the same films and the stored arrays stand unchanged.
+_RATE_INH = {"RateCapped": {"rate": -0.05, "ref_thickness": 100.0, "cap": 0.3}}
 
 _GROUPS_SCALED = {
   "Ta2O5": {"thick_factor": 1.03, "thick_summand": -0.7, "n_factor": 0.99,
-            "k_factor": 1.0, "inh_delta_summand": 0.01, "roughness_summand": 0.4,
+            "k_factor": 1.0, "inh_delta_summand": -0.01, "roughness_summand": 0.4,
             "interface_summand": 0.5},
   "SiO2": {"thick_factor": 0.98, "thick_summand": 0.3, "n_factor": 1.01},
 }
@@ -117,7 +121,7 @@ _GROUPS_SCALED = {
 def _combined() -> List[Dict[str, Any]]:
   return [
     _amb(),
-    _f("TiO2", 85.0, inhomogen=True, inh_delta=0.05, roughness=1.0, rough_type=5),
+    _f("TiO2", 85.0, inhomogen=True, inh_delta=-0.05, roughness=1.0, rough_type=5),
     _f("SiO2", 110.0, interface=True, interface_thickness=2.0, roughness=1.5, rough_type=4),
     _f("Ta2O5", 140.0, gradient=_GRAD_BRUGGEMAN),
     _f("Ag", 8.0),
@@ -163,10 +167,10 @@ CASES: Dict[str, Dict[str, Any]] = {
   "rough_cap_off": {"layers": [_amb(), _f("Ta2O5", 3.0, roughness=4.0, rough_type=4),
                                _f("SiO2", 100.0), _sub()], "roughness_cap": 0.0},
   # -- inhomogeneity / graded index --
-  "inh_fixed": {"layers": [_amb(), _f("TiO2", 150.0, inhomogen=True, inh_delta=0.1), _sub()]},
+  "inh_fixed": {"layers": [_amb(), _f("TiO2", 150.0, inhomogen=True, inh_delta=-0.1), _sub()]},
   "inh_ratecapped": {"layers": [_amb(), _f("Ta2O5", 180.0, inhomogen=True, inh_mode=_RATE_INH),
                                 _sub()]},
-  "inh_multilayer": {"layers": [_amb(), *_qw_mirror(inhomogen=True, inh_delta=0.04), _sub()]},
+  "inh_multilayer": {"layers": [_amb(), *_qw_mirror(inhomogen=True, inh_delta=-0.04), _sub()]},
   "gradient_bruggeman": {"layers": [_amb(), _f("Ta2O5", 150.0, gradient=_GRAD_BRUGGEMAN), _sub()]},
   "gradient_looyenga_rate": {"layers": [_amb(), _f("TiO2", 200.0, gradient=_GRAD_LOOYENGA),
                                         _sub()]},
@@ -179,7 +183,7 @@ CASES: Dict[str, Dict[str, Any]] = {
                                   _sub()]},
   # -- group scaling (thickness, n/k, and every summand made load-bearing) --
   "group_scaled": {"layers": [_amb(), *[
-    dict(l, inhomogen=True, inh_delta=0.02, interface=True, interface_thickness=1.0,
+    dict(l, inhomogen=True, inh_delta=-0.02, interface=True, interface_thickness=1.0,
          roughness=0.5, rough_type=4) if l["material"] == "Ta2O5" else l
     for l in _qw_mirror()], _sub()], "groups": _GROUPS_SCALED},
   # -- incoherent / thick layers and the three coherence modes --

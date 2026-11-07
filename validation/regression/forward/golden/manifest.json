@@ -1,9 +1,9 @@
 {
  "format_version": 1,
  "navette_version": "0.8.1",
- "git_commit": "22cd32ee2c46747c6ac4b1de3f54255f13b29c14",
+ "git_commit": "89513cdd77c93cfbe0cad12f2a6ff7cab53a1c20",
  "git_dirty": true,
- "generated_utc": "2026-10-28T17:33:53+00:00",
+ "generated_utc": "2026-11-06T08:03:58+00:00",
  "numpy_version": "2.5.3",
  "python_version": "3.13.14",
  "platform": "Windows-11-10.0.26200-SP0",
@@ -2459,7 +2459,7 @@
       "material": "TiO2",
       "thickness": 150.0,
       "inhomogen": true,
-      "inh_delta": 0.1
+      "inh_delta": -0.1
      },
      {
       "material": "glass",
@@ -2571,7 +2571,7 @@
       "inhomogen": true,
       "inh_mode": {
        "RateCapped": {
-        "rate": 0.05,
+        "rate": -0.05,
         "ref_thickness": 100.0,
         "cap": 0.3
        }
@@ -2685,7 +2685,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.04
+      "inh_delta": -0.04
      },
      {
       "material": "SiO2",
@@ -2695,7 +2695,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.04
+      "inh_delta": -0.04
      },
      {
       "material": "SiO2",
@@ -2705,7 +2705,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.04
+      "inh_delta": -0.04
      },
      {
       "material": "SiO2",
@@ -2715,7 +2715,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.04
+      "inh_delta": -0.04
      },
      {
       "material": "SiO2",
@@ -2725,7 +2725,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.04
+      "inh_delta": -0.04
      },
      {
       "material": "SiO2",
@@ -2735,7 +2735,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.04
+      "inh_delta": -0.04
      },
      {
       "material": "glass",
@@ -3332,7 +3332,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.02,
+      "inh_delta": -0.02,
       "interface": true,
       "interface_thickness": 1.0,
       "roughness": 0.5,
@@ -3346,7 +3346,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.02,
+      "inh_delta": -0.02,
       "interface": true,
       "interface_thickness": 1.0,
       "roughness": 0.5,
@@ -3360,7 +3360,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.02,
+      "inh_delta": -0.02,
       "interface": true,
       "interface_thickness": 1.0,
       "roughness": 0.5,
@@ -3374,7 +3374,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.02,
+      "inh_delta": -0.02,
       "interface": true,
       "interface_thickness": 1.0,
       "roughness": 0.5,
@@ -3388,7 +3388,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.02,
+      "inh_delta": -0.02,
       "interface": true,
       "interface_thickness": 1.0,
       "roughness": 0.5,
@@ -3402,7 +3402,7 @@
       "material": "Ta2O5",
       "thickness": 64.47,
       "inhomogen": true,
-      "inh_delta": 0.02,
+      "inh_delta": -0.02,
       "interface": true,
       "interface_thickness": 1.0,
       "roughness": 0.5,
@@ -3420,7 +3420,7 @@
       "thick_summand": -0.7,
       "n_factor": 0.99,
       "k_factor": 1.0,
-      "inh_delta_summand": 0.01,
+      "inh_delta_summand": -0.01,
       "roughness_summand": 0.4,
       "interface_summand": 0.5
      },
@@ -3948,7 +3948,7 @@
       "material": "TiO2",
       "thickness": 85.0,
       "inhomogen": true,
-      "inh_delta": 0.05,
+      "inh_delta": -0.05,
       "roughness": 1.0,
       "rough_type": 5
      },
@@ -4095,7 +4095,7 @@
       "material": "TiO2",
       "thickness": 85.0,
       "inhomogen": true,
-      "inh_delta": 0.05,
+      "inh_delta": -0.05,
       "roughness": 1.0,
       "rough_type": 5
      },

@@ -150,8 +150,17 @@ class ErrorMask(IntEnum):
     INTERFACE = 5
 
 # State-schema version (structure get_state dicts + config states).
-# v2 = the current baseline; MIN_READABLE_SCHEMA_VERSION = 1 (F1.4).
+# v3 = the current baseline; MIN_READABLE_SCHEMA_VERSION = 1 (F1.4).
 # There is no past before v1: untagged states are malformed, not legacy.
+#
+# v3 flipped the grading sign to the literature's: +inh_delta raises the
+# index toward the outer surface (up to v2 it raised it toward the
+# substrate). That re-meaned inh_delta, the RateCapped rate,
+# inh_delta_summand and the inh_delta error offsets - but the old meaning
+# maps exactly onto the new one by negation, so the native reader negates
+# them in a v1/v2 state and the readable past stays open. A re-meaning
+# with such an exact map is a migration, not a misread; one without it
+# still moves MIN_READABLE up, as below.
 #
 # The gate is a RANGE [MIN_READABLE, SCHEMA_VERSION], not a point, and
 # the two refusals name their direction:
@@ -171,7 +180,7 @@ class ErrorMask(IntEnum):
 # MIN_READABLE up to the first version that had the new shape. Readers
 # refuse everything outside the range (no silent misreads), and every
 # state file written by this build carries SCHEMA_VERSION.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIN_READABLE_SCHEMA_VERSION = 1
 
 

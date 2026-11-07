@@ -21,7 +21,12 @@ is refused rather than silently preferred):
 | `RateCapped` | `f_start`, `rate`, `ref_thickness`, `f_min`, `f_max` | `f(z) = f_start + rate·z/ref_thickness`, clamped — a thick span saturates into a pure-material tail |
 
 Single-material drift (`inhomogen` + `inh_delta`) is the same idea with one
-material and has the same two modes.
+material and has the same two modes. Its sign follows the literature's
+inhomogeneity, `δ = (n_outer − n_substrate) / n̄`: `inh_delta > 0` raises the
+index toward the outer surface, `< 0` toward the substrate, and the complex
+index runs from `1 + δ/2` at the outer face to `1 − δ/2` at the substrate
+face. Up to 0.8.1 the sign was the opposite; states and programs written
+before schema v3 are negated on read.
 
 ## Spans are authored; rows are solved
 

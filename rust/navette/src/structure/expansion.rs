@@ -544,8 +544,13 @@ fn emit_entry(
         {
             current_delta = group.inh_delta_error(current_delta, rng.rng());
         }
+        // Rows run from the incidence face, so `1 + c` sits on the outer
+        // face and `1 - c` on the substrate face: `+d` raises the index
+        // toward the surface, the literature's sign for the inhomogeneity
+        // (delta = (n_outer - n_substrate) / n_mean; Borgogno et al., Appl.
+        // Opt. 23, 3567 (1984)). Up to 0.8.1 the ramp ran the other way.
         let mut factors: Vec<f64> = (0..sub)
-            .map(|i| 1.0 - current_delta + 2.0 * current_delta * f64::from(i) / f64::from(sub - 1))
+            .map(|i| 1.0 + current_delta - 2.0 * current_delta * f64::from(i) / f64::from(sub - 1))
             .collect();
         if *inv {
             factors.reverse();
@@ -911,8 +916,9 @@ mod tests {
     }
 
     /// The ramp's orientation, and its sign: rows run from the incidence
-    /// side, so `+d` puts `1 - d/2` on the ambient face and `1 + d/2` on
-    /// the substrate face, and `-d` emits the same rows mirrored. Both
+    /// side, so `+d` puts `1 + d/2` on the ambient face and `1 - d/2` on
+    /// the substrate face (the index rises toward the surface, the
+    /// literature's sign), and `-d` emits the same rows mirrored. Both
     /// modes; a negative `RateCapped` rate grades as far as its twin.
     #[test]
     fn a_negative_delta_mirrors_the_positive_ramp() {
@@ -953,9 +959,9 @@ mod tests {
             let n = pos.len();
             assert!(n > 1);
             assert_eq!(neg.len(), n, "a reversed ramp lost rows");
-            // +d: lower index at the incidence face, higher at the substrate.
+            // +d: higher index at the incidence face, lower at the substrate.
             for w in 0..WL.len() {
-                assert!((pos[0][w] / bulk[w]).re < 1.0 && (pos[n - 1][w] / bulk[w]).re > 1.0);
+                assert!((pos[0][w] / bulk[w]).re > 1.0 && (pos[n - 1][w] / bulk[w]).re < 1.0);
             }
             for i in 0..n {
                 for w in 0..WL.len() {
@@ -968,8 +974,8 @@ mod tests {
         let fixed = graded(0.2, InhMode::Fixed);
         close_c(
             &fixed[0],
-            &[0.9 * bulk[0].re, 0.9 * bulk[1].re],
-            &[0.9 * bulk[0].im, 0.9 * bulk[1].im],
+            &[1.1 * bulk[0].re, 1.1 * bulk[1].re],
+            &[1.1 * bulk[0].im, 1.1 * bulk[1].im],
         );
     }
 
@@ -983,7 +989,9 @@ mod tests {
         l.interface = true;
         l.interface_thickness = 6.0;
         l.inhomogen = true;
-        l.inh_delta = 0.2;
+        // The oracle was taken at +0.2 under the pre-v3 sign; -0.2 is the
+        // same film under the literature sign, so its numbers stand.
+        l.inh_delta = -0.2;
         layers.push((l, false));
         let mut groups = HashMap::new();
         let mut g = Group::new("TiO2");
@@ -1478,7 +1486,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     /// The frozen legacy arithmetic parameterized by the mode's delta:
-    /// the emitted ramp is `1 - delta_nom ..= 1 + delta_nom` with
+    /// the emitted ramp is `1 + delta_nom ..= 1 - delta_nom` with
     /// `delta_nom = (delta_layer + summand) * 0.5` (the RateCapped
     /// nominal clamped to [-cap, cap]), and the emitted row count is
     /// exactly `sub_layer_count()` (B6 reader 1: emission is the truth).
@@ -1509,7 +1517,7 @@ mod tests {
         let base = mats().nk("TiO2", &WL).unwrap();
         let sub = sp.end - sp.start;
         for i in 0..sub {
-            let f = 1.0 - 0.1 + 2.0 * 0.1 * i as f64 / (sub - 1) as f64;
+            let f = 1.0 + 0.1 - 2.0 * 0.1 * i as f64 / (sub - 1) as f64;
             let want: Vec<Complex64> = base.iter().map(|z| z * f).collect();
             assert_eq!(sa.row(sp.start + i), &want[..], "row {i} (f={f})");
         }

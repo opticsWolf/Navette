@@ -42,13 +42,18 @@ from .models import (
     NamedStructureConfig,
 )
 
-PROGRAM_SCHEMA_VERSION = 2
+PROGRAM_SCHEMA_VERSION = 3
 """The program envelope version this build WRITES (mirrors ``config.rs``).
 
 F2.4 bumped it to 2 for the ``design:`` / ``environments:`` sections. A v1
 build handed a v2 program does not refuse them — it drops them and
 optimizes a single-environment stack that looks entirely plausible — so the
 bump is what makes an old build fail loudly on a new document.
+
+v3 flips the grading sign to the literature's (``+inh_delta`` raises the
+index toward the outer surface). A v1/v2 document's ``inh_delta``,
+``inh_delta_summand`` and ``inh_delta_error_params`` offsets are negated on
+read, so it describes the same films.
 """
 
 MIN_READABLE_PROGRAM_SCHEMA_VERSION = 1

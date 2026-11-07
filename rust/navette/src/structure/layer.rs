@@ -21,7 +21,9 @@ use serde_json::Value;
 use crate::structure::enums::{LayerType, RoughnessType};
 use crate::structure::gradient::{GradientSpec, InhMode};
 use crate::structure::validation::ValidationIssue;
-use crate::structure::version::{SCHEMA_VERSION, check_schema_version};
+use crate::structure::version::{
+    SCHEMA_VERSION, check_schema_version, flip_grading, legacy_grading_sign,
+};
 
 /// Serialize a fieldless enum as its wire int (solver contract, not name).
 pub(crate) fn ser_int<T: Copy + Into<i32>, S: Serializer>(v: &T, s: S) -> Result<S::Ok, S::Error> {
@@ -73,9 +75,12 @@ pub struct Layer {
     pub rough_type: RoughnessType,
     /// Grading strength: the signed peak-to-peak fractional swing of the
     /// complex index across the film, window (-2, 2). Rows run from the
-    /// incidence side, so the first sub-layer carries `1 - d/2` and the
-    /// last `1 + d/2`: positive `d` raises the index toward the substrate
-    /// (it falls as the film grows), negative `d` lowers it. The sub-layer
+    /// incidence side, so the first sub-layer carries `1 + d/2` and the
+    /// last `1 - d/2`: positive `d` raises the index toward the outer
+    /// surface (it rises as the film grows), negative `d` toward the
+    /// substrate. This is the literature's sign, `d = (n_outer -
+    /// n_substrate) / n_mean`; up to 0.8.1 it was the opposite, and states
+    /// written before schema v3 are negated on read. The sub-layer
     /// refinement reads `|d|`.
     pub inh_delta: f64,
     /// Roughness rms sigma [nm].
@@ -247,9 +252,10 @@ impl Layer {
         }
 
         // Grading strength. Expansion ramps the whole complex index by factors
-        // `1 - d/2 ..= 1 + d/2`, so the physical window is (-2, 2). The sign is
-        // the ramp's direction: real films grade both ways (porous columnar
-        // growth lowers the index toward the top, densification raises it).
+        // `1 + d/2 ..= 1 - d/2`, so the physical window is (-2, 2). The sign is
+        // the ramp's direction, `+d` rising toward the surface: real films grade
+        // both ways (porous columnar growth lowers the index toward the top,
+        // densification raises it).
         // Up to 0.8.1 a negative value was refused, because the refinement
         // read the signed delta and collapsed to one row; it now reads |d|.
         if !self.inh_delta.is_finite() {
@@ -262,7 +268,7 @@ impl Layer {
             // d <= -2 does the same at the other face.
             issues.push(bad(format!(
                 "inh_delta {} is outside (-2, 2). The profile scales the complex index \
-         by 1 - d/2 ..= 1 + d/2, so |d| >= 2 drives Re(n) through zero at one \
+         by 1 + d/2 ..= 1 - d/2, so |d| >= 2 drives Re(n) through zero at one \
          face and flips the sign of k -- which is optical gain, not a graded film.",
                 self.inh_delta
             )));
@@ -461,6 +467,10 @@ impl<'de> Deserialize<'de> for Layer {
             .and_then(|v| v.as_u64())
             .map(|v| v as u32);
         check_schema_version(found, "Layer").map_err(serde::de::Error::custom)?;
+        // v3 flipped the grading sign; an older state is negated on read so
+        // it keeps the profile it described.
+        let legacy = legacy_grading_sign(found);
+        let sign = |x: f64| if legacy { flip_grading(x) } else { x };
         let get = |k: &str| map.get(k).cloned().unwrap_or(Value::Null);
         let req_f = |k: &str| {
             get(k).as_f64().ok_or_else(|| {
@@ -491,7 +501,7 @@ impl<'de> Deserialize<'de> for Layer {
                     ));
                 }
             },
-            inh_delta: req_f("inh_delta")?,
+            inh_delta: sign(req_f("inh_delta")?),
             roughness: req_f("roughness")?,
             interface: req_b("interface")?,
             interface_thickness: req_f("interface_thickness")?,
@@ -519,7 +529,18 @@ impl<'de> Deserialize<'de> for Layer {
             // state reads unchanged); present = the tagged mode.
             inh_mode: match get("inh_mode") {
                 Value::Null => InhMode::Fixed,
-                v => serde_json::from_value(v).map_err(serde::de::Error::custom)?,
+                v => match serde_json::from_value(v).map_err(serde::de::Error::custom)? {
+                    InhMode::RateCapped {
+                        rate,
+                        ref_thickness,
+                        cap,
+                    } => InhMode::RateCapped {
+                        rate: sign(rate),
+                        ref_thickness,
+                        cap,
+                    },
+                    mode => mode,
+                },
             },
         })
     }
@@ -598,7 +619,7 @@ mod tests {
         assert_eq!(v["layer_type"], json!(1));
         // F1.4: the writer tags at the current version; a plain layer's
         // key set is UNCHANGED from the v1 list (only-when-Some).
-        assert_eq!(v["schema_version"], json!(2));
+        assert_eq!(v["schema_version"], json!(3));
         // Unknown keys ignored; version enforced.
         let mut with_bogus = v.clone();
         with_bogus["bogus"] = json!(1);
@@ -926,6 +947,44 @@ mod tests {
         assert_eq!(back, capped);
     }
 
+    /// v3 flipped the grading sign: a v1/v2 state's `inh_delta` and
+    /// `RateCapped` rate are negated on read (same film, new sign), a v3
+    /// state reads as written, and an ungraded legacy state stays `+0.0`.
+    #[test]
+    fn a_pre_v3_state_keeps_its_grading_direction() {
+        let mut l = Layer::film(50.0, "TiO2");
+        l.inhomogen = true;
+        l.inh_delta = 0.2;
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let v3 = serde_json::to_value(&l).unwrap();
+        assert_eq!(serde_json::from_value::<Layer>(v3.clone()).unwrap(), l);
+        for old in [1, 2] {
+            let mut v = v3.clone();
+            v["schema_version"] = json!(old);
+            let back: Layer = serde_json::from_value(v).unwrap();
+            assert_eq!(back.inh_delta, -0.2, "v{old}");
+            assert_eq!(
+                back.inh_mode,
+                InhMode::RateCapped {
+                    rate: -0.05,
+                    ref_thickness: 100.0,
+                    cap: 0.3,
+                },
+                "v{old}"
+            );
+        }
+        let mut flat = Layer::film(50.0, "TiO2");
+        flat.inh_delta = 0.0;
+        let mut plain = serde_json::to_value(&flat).unwrap();
+        plain["schema_version"] = json!(2);
+        let back: Layer = serde_json::from_value(plain).unwrap();
+        assert!(back.inh_delta == 0.0 && back.inh_delta.is_sign_positive());
+    }
+
     /// F1.4: the state carries `gradient` only when the layer has one
     /// (the same additive-key policy as `inh_mode`), a v1-shaped state
     /// (no key at all, version tag 1) reads as a plain layer under the
@@ -941,11 +1000,18 @@ mod tests {
         let v = serde_json::to_value(&plain).unwrap();
         assert!(!v.as_object().unwrap().contains_key("gradient"));
 
-        // A v1-shaped state (tag 1, no gradient key) still reads.
+        // A v1-shaped state (tag 1, no gradient key) still reads, with its
+        // (default, ungraded) inh_delta negated like any pre-v3 grading.
         let mut v1 = v.clone();
         v1["schema_version"] = json!(1);
         let back: Layer = serde_json::from_value(v1).unwrap();
-        assert_eq!(back, plain);
+        assert_eq!(
+            back,
+            Layer {
+                inh_delta: -plain.inh_delta,
+                ..plain.clone()
+            }
+        );
         assert!(back.gradient.is_none());
 
         // A gradient layer: gains exactly the one key and round-trips.
