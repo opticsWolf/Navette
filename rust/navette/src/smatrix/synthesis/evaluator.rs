@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use crate::smatrix::coherent_block::solve_coherent_block_fields_dual;
+use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
     block_flux_factors, build_stack_fields_range_dual, thickness_slopes_ddz,
 };
@@ -32,6 +32,11 @@ use crate::smatrix::synthesis::merit::{CurveId, CurveSet, MeritSpec, Radians, Si
 use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
 use crate::smatrix::synthesis::thick_opt::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
+
+/// Largest exit-medium extinction coefficient a back-incidence demand
+/// accepts. Glass data with residual k ≈ 1e-7…1e-5 passes; coloured glass
+/// and every metal or semiconductor in its absorbing band is refused.
+pub const BACK_EXIT_MAX_K: f64 = 1e-3;
 
 /// Solver + merit context for one synthesis problem.
 #[derive(Clone)]
@@ -72,13 +77,64 @@ pub struct SmatrixContext {
 }
 
 impl SmatrixContext {
-    /// Rows `simulate_inner` fills: the four front s/p intensities, and the
-    /// complex forward t_s/t_p when the spec has phase demands. Absorption
-    /// demands derive from intensity pairs, so As/Ap are covered too.
+    /// Rows `simulate_inner` can fill: every front and back intensity
+    /// (s, p, unpolarized; absorption derives from the R/T pairs) and the
+    /// s/p complex amplitudes of R, T, RB and TB. Unpolarized phase has no
+    /// meaning and stays out.
     pub fn provides() -> CurveSet {
         CurveSet::default()
-            .with_intensity(&[CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp])
-            .with_complex(&[CurveId::Ts, CurveId::Tp])
+            .with_intensity(&[
+                CurveId::Rs,
+                CurveId::Rp,
+                CurveId::Ru,
+                CurveId::Ts,
+                CurveId::Tp,
+                CurveId::Tu,
+                CurveId::RBs,
+                CurveId::RBp,
+                CurveId::RBu,
+                CurveId::TBs,
+                CurveId::TBp,
+                CurveId::TBu,
+            ])
+            .with_complex(&[
+                CurveId::Rs,
+                CurveId::Rp,
+                CurveId::Ts,
+                CurveId::Tp,
+                CurveId::RBs,
+                CurveId::RBp,
+                CurveId::TBs,
+                CurveId::TBp,
+            ])
+    }
+
+    /// Refuse back-incidence demands when the exit medium absorbs over
+    /// their wavelengths. Incidence from inside a semi-infinite absorber
+    /// has no well-defined incident flux: `T_b = |t_b|²·Re(y_0)/Re(y_exit)`
+    /// divides by a vanishing `Re(y_exit)` (T_b = 84 from bare Ag at
+    /// 400 nm), and `R_b` and the back phases are referenced to a wave
+    /// that cannot reach the stack.
+    fn check_back_exit(&self, sa: &SolverArrays, nl: usize) -> Result<(), String> {
+        let Some((lo, hi)) = self.spec.back_demand_span() else {
+            return Ok(());
+        };
+        let exit = nl - 1;
+        for (w, &lam) in self.wavls.iter().enumerate() {
+            if lam < lo || lam > hi {
+                continue;
+            }
+            let k = sa.n_stack_cache[w * nl * 2 + exit * 2 + 1].abs();
+            if k > BACK_EXIT_MAX_K {
+                return Err(format!(
+                    "back-incidence demand: the exit medium absorbs at {lam} nm \
+                     (k = {k:.3e} > {BACK_EXIT_MAX_K:e}); incidence from inside a \
+                     semi-infinite absorber is undefined, so RB/TB/AB demands \
+                     need a transparent exit medium"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// W3: refuse a spec this evaluator cannot score, before any solve.
@@ -146,14 +202,20 @@ impl SmatrixContext {
         // intensity |t_fwd|²·Re(y_last)/Re(y_first), the engine's Ts. The
         // BACKWARD `.1`/`.5` agree with them only when both half-spaces are
         // transparent: into an absorbing substrate `.5` divides by its
-        // near-zero Re(y_last) (T = 84 on bare Ag at 400 nm).
+        // near-zero Re(y_last) (T = 84 on bare Ag at 400 nm). Back demands
+        // are therefore refused on an absorbing exit medium, below.
+        //
+        // Every point keeps both polarizations' whole BlockResult; which
+        // rows are assembled from them is decided once, from what the spec
+        // reads (`required_rows`), so an intensity-only spec builds exactly
+        // the four rows it always did.
+        let need = self.spec.required_rows();
+        if need.any_back() {
+            self.check_back_exit(&sa, nl)?;
+        }
         struct Pt {
-            rs: f64,
-            rp: f64,
-            ts: f64,
-            tp: f64,
-            tfs: Complex64,
-            tfp: Complex64,
+            s: BlockResult,
+            p: BlockResult,
         }
         let n_par = par_films.len();
         // Amplitude deposits for phase demands, only when the spec has any:
@@ -187,14 +249,7 @@ impl SmatrixContext {
                     lam,
                     nsin_fi,
                 );
-                let pt = Pt {
-                    rs: s_res.4,
-                    rp: p_res.4,
-                    ts: s_res.6,
-                    tp: p_res.6,
-                    tfs: s_res.2,
-                    tfp: p_res.2,
-                };
+                let pt = Pt { s: s_res, p: p_res };
                 // Thickness deposits, when asked for. Nothing above this line
                 // is touched by the request: the values are the same solver
                 // call either way, and the fingerprint says so.
@@ -215,32 +270,95 @@ impl SmatrixContext {
             Some(CurveDeposits::from_point_rows(rows, n_par)?)
         };
 
-        let mk = |id: CurveId| -> Arc<[f64]> {
-            let idx = id.index();
-            let pick = |p: &Pt| match id {
-                CurveId::Rs => p.rs,
-                CurveId::Rp => p.rp,
-                CurveId::Ts => p.ts,
-                CurveId::Tp => p.tp,
-                _ => unreachable!("only R/T s/p curves produced"),
+        // Intensity of one curve at one point. Front: `.4` = |r_f|², `.6` =
+        // |t_f|²·f_fwd (the engine's Rs/Ts). Back incidence (from the exit
+        // medium): `.7` = |r_b|², `.5` = |t_b|²·f_back — the conventions of
+        // the needle operators' RB/TB terms. Unpolarized is the engine's
+        // `0.5 * (s + p)` (R_avg/T_avg).
+        fn intensity(id: CurveId, p: &Pt) -> f64 {
+            match id {
+                CurveId::Rs => p.s.4,
+                CurveId::Rp => p.p.4,
+                CurveId::Ts => p.s.6,
+                CurveId::Tp => p.p.6,
+                CurveId::RBs => p.s.7,
+                CurveId::RBp => p.p.7,
+                CurveId::TBs => p.s.5,
+                CurveId::TBp => p.p.5,
+                _ => {
+                    let (a, b) = id
+                        .unpolarized_parts()
+                        .expect("absorption curves are derived, never stored");
+                    0.5 * (intensity(a, p) + intensity(b, p))
+                }
+            }
+        }
+        // Complex amplitude: r_f `.0`, t_f `.2`, r_b `.3`, t_b `.1` (the
+        // engine's rs_c…tp_c and rbs_c…tbp_c, first coherent block).
+        fn amplitude(id: CurveId, p: &Pt) -> Complex64 {
+            let r = match id {
+                CurveId::Rs | CurveId::Ts | CurveId::RBs | CurveId::TBs => &p.s,
+                _ => &p.p,
             };
-            let _ = idx;
-            let v: Vec<f64> = pts.iter().map(pick).collect();
-            v.into()
+            match id {
+                CurveId::Rs | CurveId::Rp => r.0,
+                CurveId::Ts | CurveId::Tp => r.2,
+                CurveId::RBs | CurveId::RBp => r.3,
+                CurveId::TBs | CurveId::TBp => r.1,
+                _ => unreachable!("complex rows exist for s/p R/T/RB/TB only"),
+            }
+        }
+        let row = |id: CurveId| -> Arc<[f64]> {
+            pts.iter()
+                .map(|p| intensity(id, p))
+                .collect::<Vec<f64>>()
+                .into()
         };
-        let mut curves = [None, None, None, None, None, None, None, None, None];
-        curves[CurveId::Rs.index()] = Some(mk(CurveId::Rs));
-        curves[CurveId::Rp.index()] = Some(mk(CurveId::Rp));
-        curves[CurveId::Ts.index()] = Some(mk(CurveId::Ts));
-        curves[CurveId::Tp.index()] = Some(mk(CurveId::Tp));
-        // Complex forward-t rows for (differential-)phase demands — ONLY
-        // when the spec asks (two allocations + O(grid) copies saved per
-        // merit call for intensity-only optimizations; the amplitudes
-        // themselves come from the dual solver regardless).
-        let mut cplx: [Option<Arc<[Complex64]>>; 6] = [None, None, None, None, None, None];
+        let crow = |id: CurveId| -> Arc<[Complex64]> {
+            pts.iter()
+                .map(|p| amplitude(id, p))
+                .collect::<Vec<Complex64>>()
+                .into()
+        };
+
+        // The four front s/p rows always (every caller reads them); the
+        // rest only when the spec reads them.
+        let mut curves: [Option<Arc<[f64]>>; 9] = Default::default();
+        let mut back: [Option<Arc<[f64]>>; 6] = Default::default();
+        for id in CurveId::ALL {
+            if id.is_absorption() {
+                continue;
+            }
+            let always = matches!(id, CurveId::Rs | CurveId::Rp | CurveId::Ts | CurveId::Tp);
+            if !(always || need.has_intensity(id)) {
+                continue;
+            }
+            match id.back_index() {
+                Some(i) => back[i] = Some(row(id)),
+                None => curves[id.index()] = Some(row(id)),
+            }
+        }
+        // Complex rows for (differential-)phase demands. Forward t keeps its
+        // pre-W2 gate (both rows whenever the spec has any phase demand);
+        // r_f and the back amplitudes are built only when read.
+        let mut cplx: [Option<Arc<[Complex64]>>; 6] = Default::default();
+        let mut cplx_back: [Option<Arc<[Complex64]>>; 4] = Default::default();
         if self.spec.uses_phase() {
-            cplx[CurveId::Ts.index()] = Some(pts.iter().map(|p| p.tfs).collect::<Vec<_>>().into());
-            cplx[CurveId::Tp.index()] = Some(pts.iter().map(|p| p.tfp).collect::<Vec<_>>().into());
+            cplx[CurveId::Ts.index()] = Some(crow(CurveId::Ts));
+            cplx[CurveId::Tp.index()] = Some(crow(CurveId::Tp));
+            for id in [CurveId::Rs, CurveId::Rp] {
+                if need.has_complex(id) {
+                    cplx[id.index()] = Some(crow(id));
+                }
+            }
+            for (i, id) in [CurveId::RBs, CurveId::RBp, CurveId::TBs, CurveId::TBp]
+                .into_iter()
+                .enumerate()
+            {
+                if need.has_complex(id) {
+                    cplx_back[i] = Some(crow(id));
+                }
+            }
         }
         // Stack metadata for the PD reference: the coating thickness D is
         // the sum of the INTERIOR thicknesses (`[1..nl-1]`) - the same
@@ -285,8 +403,9 @@ impl SmatrixContext {
                 n_front_re,
                 n_back_re,
                 curves,
+                back,
                 cplx,
-                ..Default::default()
+                cplx_back,
             },
             deposits,
         ))
@@ -295,7 +414,8 @@ impl SmatrixContext {
 
 /// ∂(Rs, Rp, Ts, Tp)/∂(thickness) at one grid point, laid out
 /// `[channel · n_par + par]` for [`CurveDeposits::from_point_rows`]; with
-/// `with_phase`, then ∂(Re, Im) of the complex forward `t_s` and `t_p`.
+/// `with_phase`, then ∂(Re, Im) of the complex forward `t_s`, `t_p`, then
+/// of the front reflection `r_s`, `r_p` (see `PHASE_DEPOSIT_CHANNELS`).
 ///
 /// Increasing film `j`'s thickness is the needle operator with the needle
 /// material set to the host's own index: r₁₂ = 0, so ρ̂ vanishes and
@@ -320,7 +440,7 @@ fn deposit_row(
     n_par: usize,
     with_phase: bool,
 ) -> Vec<f64> {
-    let mut row = vec![0.0f64; if with_phase { 8 } else { 4 } * n_par];
+    let mut row = vec![0.0f64; if with_phase { 12 } else { 4 } * n_par];
     let (fields_s, fields_p) = build_stack_fields_range_dual(
         start,
         end,
@@ -347,6 +467,8 @@ fn deposit_row(
             if with_phase {
                 row[(4 + 2 * pi) * n_par + kp] = dt.re;
                 row[(5 + 2 * pi) * n_par + kp] = dt.im;
+                row[(8 + 2 * pi) * n_par + kp] = dr.re;
+                row[(9 + 2 * pi) * n_par + kp] = dr.im;
             }
         }
     }
@@ -791,7 +913,9 @@ impl JacobianSource for DepositJacobian {
             .spec
             .curve_sensitivity(&sim)
             .map_err(|c| format!("missing curve {c:?}"))?;
-        if !sens.is_complete() {
+        // Uncovered rows (colour, back phase), or rows whose curves the
+        // sweep has no deposits for (back intensities): difference instead.
+        if !sens.is_complete() || !dep.covers(&sens) {
             self.declined.store(true, Ordering::Relaxed);
             return Ok(None);
         }
@@ -1515,12 +1639,16 @@ mod tests {
                 None,
                 false,
             );
+            // Front reflection phase (W2): r_s, r_p ride in slots 8..11.
+            for id in [CurveId::Rs, CurveId::Rp] {
+                phase_demand(&mut spec, angle_of(SINS[1]), id, WLS.to_vec(), None, false);
+            }
             let ctx = ctx3(spec);
             let d = [118.0, 203.0, 64.0];
             let stack = stack3(d[0], d[1], d[2]);
             let par = [0usize, 1, 2];
             let (_, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
-            assert_eq!(dep.n_channels(), 8);
+            assert_eq!(dep.n_channels(), 12);
             let (_, plain) = ctx3(ar_spec(0.0, 560.0))
                 .simulate_with_deposits(&stack, &par)
                 .unwrap();
@@ -1540,7 +1668,10 @@ mod tests {
                 sm.set_thickness(fi, d[fi] - h).unwrap();
                 let a = ctx.simulate(&sp).unwrap();
                 let b = ctx.simulate(&sm).unwrap();
-                for (k, id) in [CurveId::Ts, CurveId::Tp].into_iter().enumerate() {
+                for (k, id) in [CurveId::Ts, CurveId::Tp, CurveId::Rs, CurveId::Rp]
+                    .into_iter()
+                    .enumerate()
+                {
                     let ca = a.complex_curve(id).unwrap();
                     let cb = b.complex_curve(id).unwrap();
                     for pt in 0..ca.len() {
@@ -1560,7 +1691,7 @@ mod tests {
                     }
                 }
             }
-            assert!(live > 40, "only {live} live entries");
+            assert!(live > 80, "only {live} live entries");
             println!("  phase deposits: {live} live entries, worst rel dev {worst:.3e}");
         }
 
@@ -1657,6 +1788,241 @@ mod tests {
             }
             assert!(live > 30, "only {live} live entries");
             println!("  phase J: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        /// W2: the rows an intensity-only spec never asked for stay unbuilt,
+        /// and a spec that reads them gets them.
+        #[test]
+        fn new_rows_are_built_only_when_read() {
+            let stack = stack3(118.0, 203.0, 64.0);
+            let mut plain = MeritSpec::new();
+            demand(&mut plain, angle_of(SINS[1]), CurveId::Rs, 0.0);
+            let sim = ctx3(plain).simulate(&stack).unwrap();
+            assert!(sim.curve(CurveId::Ru).is_none());
+            assert!(sim.back.iter().all(Option::is_none));
+            assert!(sim.cplx.iter().all(Option::is_none));
+            assert!(sim.cplx_back.iter().all(Option::is_none));
+
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Au, 0.0);
+            demand(&mut spec, angle_of(SINS[1]), CurveId::ABp, 0.0);
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::RBs,
+                WLS.to_vec(),
+                None,
+                false,
+            );
+            let sim = ctx3(spec).simulate(&stack).unwrap();
+            for id in [CurveId::Ru, CurveId::Tu] {
+                assert!(sim.curve(id).is_some(), "{id:?}");
+            }
+            for id in [CurveId::RBp, CurveId::TBp] {
+                assert!(sim.back_curve(id).is_some(), "{id:?}");
+            }
+            assert!(sim.back_curve(CurveId::RBs).is_none());
+            assert!(sim.complex_back_curve(CurveId::RBs).is_some());
+            assert!(sim.complex_back_curve(CurveId::TBs).is_none());
+            assert!(sim.complex_curve(CurveId::Rs).is_none());
+        }
+
+        /// W2 values: unpolarized rows are the engine's `0.5 * (s + p)`
+        /// bit for bit; back transmission equals front transmission
+        /// (reciprocity, any stack), back reflection differs from front
+        /// reflection (the top film absorbs), and the back intensities are
+        /// the moduli of the back amplitudes.
+        #[test]
+        fn new_rows_follow_averages_reciprocity_and_their_amplitudes() {
+            let mut spec = MeritSpec::new();
+            for curve in [
+                CurveId::Ru,
+                CurveId::Tu,
+                CurveId::RBs,
+                CurveId::RBp,
+                CurveId::RBu,
+                CurveId::TBs,
+                CurveId::TBp,
+                CurveId::TBu,
+            ] {
+                demand(&mut spec, angle_of(SINS[1]), curve, 0.0);
+            }
+            for curve in [CurveId::RBs, CurveId::RBp, CurveId::TBs, CurveId::TBp] {
+                phase_demand(
+                    &mut spec,
+                    angle_of(SINS[1]),
+                    curve,
+                    WLS.to_vec(),
+                    None,
+                    false,
+                );
+            }
+            let sim = ctx3(spec).simulate(&stack3(118.0, 203.0, 64.0)).unwrap();
+            let f = |id: CurveId| -> Arc<[f64]> {
+                sim.curve(id)
+                    .or_else(|| sim.back_curve(id))
+                    .unwrap()
+                    .clone()
+            };
+            for (u, s, p) in [
+                (CurveId::Ru, CurveId::Rs, CurveId::Rp),
+                (CurveId::Tu, CurveId::Ts, CurveId::Tp),
+                (CurveId::RBu, CurveId::RBs, CurveId::RBp),
+                (CurveId::TBu, CurveId::TBs, CurveId::TBp),
+            ] {
+                let (u, s, p) = (f(u), f(s), f(p));
+                for k in 0..u.len() {
+                    assert_eq!(u[k].to_bits(), (0.5 * (s[k] + p[k])).to_bits());
+                }
+            }
+            let mut r_gap = 0.0f64;
+            for (fr, bk, rf, rb) in [
+                (CurveId::Ts, CurveId::TBs, CurveId::Rs, CurveId::RBs),
+                (CurveId::Tp, CurveId::TBp, CurveId::Rp, CurveId::RBp),
+            ] {
+                let (t, tb, r, rbk) = (f(fr), f(bk), f(rf), f(rb));
+                for k in 0..t.len() {
+                    assert!(
+                        (t[k] - tb[k]).abs() < 1e-12,
+                        "{fr:?}[{k}]: {} vs {}",
+                        t[k],
+                        tb[k]
+                    );
+                    r_gap = r_gap.max((r[k] - rbk[k]).abs());
+                }
+            }
+            assert!(
+                r_gap > 1e-4,
+                "absorbing film should break R_b = R_f ({r_gap})"
+            );
+            let rb_c = sim.complex_back_curve(CurveId::RBs).unwrap();
+            let rb = f(CurveId::RBs);
+            for k in 0..rb.len() {
+                assert_eq!(rb[k].to_bits(), rb_c[k].norm_sqr().to_bits());
+            }
+        }
+
+        /// W2: incidence from inside an absorbing exit medium is refused at
+        /// the first solve, over the back demands' wavelengths only.
+        #[test]
+        fn back_demands_refuse_an_absorbing_exit_medium() {
+            let nw = WLS.len();
+            let absorbing_sub = |k: f64| {
+                let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+                ambient.optimize = false;
+                ambient.needle = false;
+                let mut substrate = LayerSpec::constant("metal", 0.2, k, 0.0, nw);
+                substrate.optimize = false;
+                substrate.needle = false;
+                DesignStack::with_films(
+                    ambient,
+                    substrate,
+                    vec![LayerSpec::constant("L", 1.46, 0.0, 90.0, nw)],
+                )
+                .unwrap()
+            };
+            let mut back = MeritSpec::new();
+            demand(&mut back, angle_of(SINS[0]), CurveId::TBs, 0.0);
+            let err = ctx3(back).simulate(&absorbing_sub(3.0)).unwrap_err();
+            assert!(err.contains("exit medium absorbs"), "{err}");
+
+            // A front demand on the same stack is fine...
+            let mut front = MeritSpec::new();
+            demand(&mut front, angle_of(SINS[0]), CurveId::Rs, 0.0);
+            ctx3(front).simulate(&absorbing_sub(3.0)).unwrap();
+            // ...and so is a back demand on a nearly transparent exit.
+            let mut back = MeritSpec::new();
+            demand(&mut back, angle_of(SINS[0]), CurveId::RBp, 0.0);
+            ctx3(back).simulate(&absorbing_sub(1e-6)).unwrap();
+        }
+
+        /// W2 analytic Jacobian: unpolarized rows split onto their s/p
+        /// deposits, absorption on unpolarized companions, and front
+        /// reflection phase on the new r_f slots — all against a finite
+        /// difference of the residuals. A back demand declines instead.
+        #[test]
+        fn the_jacobian_covers_unpolarized_rows_and_reflection_phase() {
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Ru, 0.02);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::Tu, 0.9);
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Au, 0.01);
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Rs,
+                WLS.to_vec(),
+                None,
+                false,
+            );
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Rp,
+                vec![500.0, 540.0, 580.0, 620.0],
+                None,
+                false,
+            );
+            assert!(!spec.sensitivity_incomplete());
+            let ctx = ctx3(spec);
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(sens.is_complete() && dep.covers(&sens));
+            let mut jac = Vec::new();
+            assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
+            let m = sens.rows.len();
+
+            let h = 1e-4;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                ctx.spec
+                    .residuals(&ctx.simulate(&sp).unwrap(), &mut rp)
+                    .unwrap();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sm).unwrap(), &mut rm)
+                    .unwrap();
+                let fd: Vec<f64> = rp
+                    .iter()
+                    .zip(&rm)
+                    .map(|(p, q)| (p - q) / (2.0 * h))
+                    .collect();
+                let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                for i in 0..m {
+                    let an = jac[i * par.len() + kp];
+                    assert!(
+                        (an - fd[i]).abs() / scale < 1e-6,
+                        "row {i}, film {fi}: {an} vs {}",
+                        fd[i]
+                    );
+                    if fd[i].abs() > 1e-6 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 30, "only {live} live entries");
+
+            // A back intensity demand: covered rows, no deposits -> decline.
+            let mut back = MeritSpec::new();
+            demand(&mut back, angle_of(SINS[1]), CurveId::RBu, 0.1);
+            assert!(back.sensitivity_incomplete());
+            let ctx = ctx3(back);
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(!dep.covers(&sens));
+            let src = DepositJacobian::new(
+                ctx.clone(),
+                stack.clone(),
+                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                WLS.len(),
+            );
+            assert_eq!(src.fill(&d, &mut Vec::new()).unwrap(), None);
         }
 
         #[test]

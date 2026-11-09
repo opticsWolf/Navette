@@ -235,6 +235,19 @@ impl CurveId {
 }
 
 impl CurveId {
+    /// The s/p pair an unpolarized intensity averages: `X_u = ½(X_s + X_p)`
+    /// (the engine's `R_avg`/`T_avg`). `None` for polarized and absorption
+    /// curves (Au/ABu derive from their own unpolarized companions).
+    pub fn unpolarized_parts(self) -> Option<(CurveId, CurveId)> {
+        match self {
+            CurveId::Ru => Some((CurveId::Rs, CurveId::Rp)),
+            CurveId::Tu => Some((CurveId::Ts, CurveId::Tp)),
+            CurveId::RBu => Some((CurveId::RBs, CurveId::RBp)),
+            CurveId::TBu => Some((CurveId::TBs, CurveId::TBp)),
+            _ => None,
+        }
+    }
+
     /// Position in [`CurveId::ALL`] (the bit of a [`CurveSet`]).
     pub fn ordinal(self) -> usize {
         CurveId::ALL
@@ -277,6 +290,13 @@ impl CurveSet {
 
     pub fn has_complex(&self, id: CurveId) -> bool {
         self.complex & (1 << id.ordinal()) != 0
+    }
+
+    /// True if any row, intensity or complex, is a back-incidence row.
+    pub fn any_back(&self) -> bool {
+        CurveId::ALL
+            .iter()
+            .any(|&c| c.is_back() && (self.has_intensity(c) || self.has_complex(c)))
     }
 
     /// Readable listing, e.g. `Rs, Rp, Ts, Tp; complex Ts, Tp`.
@@ -889,16 +909,59 @@ impl MeritSpec {
         Ok(())
     }
 
-    /// True if [`Self::curve_sensitivity`] leaves rows uncovered: a color
-    /// demand, or a phase target on a back-incidence curve. Known up front,
-    /// with no simulation; the evaluator sizes its thread pool for a
+    /// True if the analytic Jacobian cannot cover this spec: a color demand
+    /// or a back phase target (rows [`Self::curve_sensitivity`] leaves
+    /// uncovered), or a back intensity demand (rows it covers, but with no
+    /// back-channel deposits behind them yet; plan W2 step 4). Known up
+    /// front, with no simulation; the evaluator sizes its thread pool for a
     /// differenced Jacobian on it.
     pub(crate) fn sensitivity_incomplete(&self) -> bool {
         !self.color.is_empty()
             || self
                 .targets
                 .iter()
-                .any(|t| t.phase && self.keys[t.key_idx as usize].curve.is_back())
+                .any(|t| self.keys[t.key_idx as usize].curve.is_back())
+    }
+
+    /// The rows this spec reads, as a [`CurveSet`]: what an evaluator must
+    /// fill (rows outside it can be skipped, which keeps intensity-only
+    /// specs on the exact pre-W2 sweep). Absorption demands read their
+    /// companion rows; colour demands read their key's intensity row.
+    pub fn required_rows(&self) -> CurveSet {
+        let mut set = CurveSet::default();
+        for t in &self.targets {
+            let curve = self.keys[t.key_idx as usize].curve;
+            set = if t.phase {
+                set.with_complex(&[curve])
+            } else if let Some((rc, tc)) = curve.absorption_companions() {
+                set.with_intensity(&[rc, tc])
+            } else {
+                set.with_intensity(&[curve])
+            };
+        }
+        for d in &self.color {
+            set = set.with_intensity(&[self.keys[d.key_idx as usize].curve]);
+        }
+        set
+    }
+
+    /// `[lo, hi]` of every back-incidence demand's wavelengths, or `None`
+    /// when the spec has none. The evaluator checks the exit medium over
+    /// this span (incidence from inside an absorber is refused).
+    pub fn back_demand_span(&self) -> Option<(f64, f64)> {
+        let mut span: Option<(f64, f64)> = None;
+        let wls = self
+            .targets
+            .iter()
+            .filter(|t| self.keys[t.key_idx as usize].curve.is_back())
+            .flat_map(|t| t.wavelengths.iter().copied());
+        for w in wls {
+            span = Some(match span {
+                None => (w, w),
+                Some((lo, hi)) => (lo.min(w), hi.max(w)),
+            });
+        }
+        span
     }
 
     /// True if any demand samples complex amplitudes (phase or

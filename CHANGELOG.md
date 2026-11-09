@@ -9,18 +9,24 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
-- **Synthesis refuses demands it cannot score, up front**
-  (`docs/plans/synthesis_targets_plan.md` W3). The synthesis evaluator
-  fills the front s/p intensities (Rs, Rp, Ts, Tp; As/Ap derive from
-  them) and the complex forward t (Ts/Tp phase, PDts/PDtp). A demand on
-  any other row (unpolarized R/T/A, back-incidence RB/TB/AB, front or
-  back reflection phase, colour on those curves) used to cost a constant
-  1e6 in `evaluate_merit` and fail the LM mid-run with "missing curve".
-  `SmatrixContext`, `NeedlePipeline`, `run_design`,
-  `run_design_environments` and `run_needle` now raise a `ValueError` at
-  construction that names each such curve once, with its angles (and
-  environment, in a joint run). The check is
-  `MeritSpec::check_supported` against `SmatrixContext::provides()`.
+- **Synthesis scores every target type, and refuses up front what it
+  cannot** (`docs/plans/synthesis_targets_plan.md` W2, W3). The
+  synthesis evaluator used to fill only Rs, Rp, Ts, Tp and the complex
+  forward t; a demand on unpolarized R/T/A, back-incidence RB/TB/AB, or
+  front/back reflection phase cost a constant 1e6 in `evaluate_merit`
+  and failed the LM mid-run with "missing curve". It now fills every row
+  the spec reads (unpolarized as the s/p average, as the engine; back
+  rows from the same block solve) and nothing more, so intensity-only
+  specs run unchanged. The analytic LM Jacobian covers unpolarized rows
+  and front reflection phase; back-incidence demands fall back to the
+  finite-difference Jacobian. Back demands raise a `ValueError` when the
+  exit medium absorbs (k > 1e-3) inside their span, where back
+  incidence is undefined. Any demand an evaluator does not produce is
+  refused at construction of `SmatrixContext`, `NeedlePipeline`,
+  `run_design`, `run_design_environments` and `run_needle`, naming each
+  curve once with its angles (and environment, in a joint run); the
+  check is `MeritSpec::check_supported` against
+  `SmatrixContext::provides()`.
 - **Angles: radians inside, the unit named at every door.** Every
   calculation in Rust and Python works in radians (`Radians`, a
   range-checked newtype in `smatrix/angle.rs`). Every Python door that

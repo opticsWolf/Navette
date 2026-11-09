@@ -26,15 +26,18 @@
 use crate::smatrix::synthesis::merit::{CurveId, CurveTerm, MeritSensitivity, TermPart};
 
 /// The four front intensity channels the coherent sweep produces, in the
-/// order [`CurveDeposits`] stores them. Everything else is either derived
-/// from these (absorption: A = 1 − R − T) or not simulated at all, in which
-/// case the residual pass has already failed on the missing curve.
+/// order [`CurveDeposits`] stores them. Absorption (A = 1 − R − T) reads
+/// them through its companions and the unpolarized curves through their
+/// s/p halves ([`CurveId::unpolarized_parts`], split at assembly). Back
+/// curves have no channel yet; the source declines them (see
+/// [`CurveDeposits::covers`]).
 pub const DEPOSIT_CHANNELS: [CurveId; 4] = [CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp];
 
 /// The complex amplitudes a phase demand reads, whose real and imaginary
 /// parts follow the intensity channels when the spec asks for phase:
-/// slots 4, 5 (Re, Im of `Ts`) and 6, 7 (Re, Im of `Tp`).
-pub const PHASE_DEPOSIT_CHANNELS: [CurveId; 2] = [CurveId::Ts, CurveId::Tp];
+/// slots 4, 5 (Re, Im of `Ts`), 6, 7 (`Tp`), 8, 9 (`Rs`) and 10, 11 (`Rp`).
+pub const PHASE_DEPOSIT_CHANNELS: [CurveId; 4] =
+    [CurveId::Ts, CurveId::Tp, CurveId::Rs, CurveId::Rp];
 
 /// Storage slot for a curve, or `None` when this pass carries no deposits
 /// for it.
@@ -68,7 +71,7 @@ pub(crate) fn term_channel(term: &CurveTerm) -> Option<usize> {
 /// `point = angle_row · n_wav + wavelength`; a "parameter" is a position in
 /// the optimizer's parameter vector, i.e. the k-th optimize-flagged film.
 ///
-/// Four channels ([`DEPOSIT_CHANNELS`]) for an intensity-only spec, eight
+/// Four channels ([`DEPOSIT_CHANNELS`]) for an intensity-only spec, twelve
 /// when the amplitudes of [`PHASE_DEPOSIT_CHANNELS`] follow.
 #[derive(Clone, Debug)]
 pub struct CurveDeposits {
@@ -80,12 +83,20 @@ pub struct CurveDeposits {
 
 impl CurveDeposits {
     /// Build from one row per grid point, each row laid out
-    /// `[channel · n_par + par]` (4·n_par or 8·n_par entries) — the shape
-    /// the parallel sweep collects.
+    /// `[channel · n_par + par]` (4·n_par entries, or 4 + 2k channels with
+    /// the first k of [`PHASE_DEPOSIT_CHANNELS`]) — the shape the parallel
+    /// sweep collects.
     pub fn from_point_rows(rows: Vec<Vec<f64>>, n_par: usize) -> Result<Self, String> {
         let n_points = rows.len();
+        let max_ch = 4 + 2 * PHASE_DEPOSIT_CHANNELS.len();
         let n_ch = match rows.first() {
-            Some(r) if n_par > 0 && r.len() == 8 * n_par => 8,
+            Some(r)
+                if n_par > 0
+                    && r.len() % n_par == 0
+                    && (4..=max_ch).step_by(2).any(|c| c * n_par == r.len()) =>
+            {
+                r.len() / n_par
+            }
             _ => 4,
         };
         let stride = n_ch * n_par;
@@ -115,9 +126,63 @@ impl CurveDeposits {
         self.n_par
     }
 
-    /// 4 (intensities) or 8 (intensities, then phase amplitudes).
+    /// 4 (intensities), or more with the phase amplitudes after them.
     pub fn n_channels(&self) -> usize {
         self.data.len()
+    }
+
+    /// True when every term of `sens` has a deposit channel here (after
+    /// the unpolarized split). A false answer is a decline, not an error:
+    /// the caller differences that iteration (a back-incidence demand
+    /// today, until the sweep carries back-channel deposits).
+    pub fn covers(&self, sens: &MeritSensitivity) -> bool {
+        let has = |t: &CurveTerm| term_channel(t).is_some_and(|c| c < self.data.len());
+        sens.rows.iter().flatten().all(|t| {
+            t.part == TermPart::TotalThickness
+                || match (t.part, t.curve.unpolarized_parts()) {
+                    (TermPart::Value, Some((a, b))) => {
+                        has(&CurveTerm { curve: a, ..*t }) && has(&CurveTerm { curve: b, ..*t })
+                    }
+                    _ => has(t),
+                }
+        })
+    }
+
+    /// `out += d_residual · ∂(curve)/∂θ` for one non-thickness term. An
+    /// unpolarized intensity is `½(X_s + X_p)` by the evaluator's contract,
+    /// so its column is the half-sum of the two polarized columns.
+    fn add_term(
+        &self,
+        out: &mut [f64],
+        term: &CurveTerm,
+        row: usize,
+        n_wav: usize,
+    ) -> Result<(), String> {
+        let d = term.d_residual;
+        match (term.part, term.curve.unpolarized_parts()) {
+            (TermPart::Value, Some((a, b))) => {
+                let half = 0.5 * d;
+                for part in [a, b] {
+                    let col = self.term_column(
+                        &CurveTerm {
+                            curve: part,
+                            ..*term
+                        },
+                        row,
+                        n_wav,
+                    )?;
+                    for (o, &g) in out.iter_mut().zip(col) {
+                        *o += half * g;
+                    }
+                }
+            }
+            _ => {
+                for (o, &g) in out.iter_mut().zip(self.term_column(term, row, n_wav)?) {
+                    *o += d * g;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The deposit column a term reads, or the reason there is none.
@@ -190,9 +255,7 @@ pub fn assemble_jacobian(
                 }
                 continue;
             }
-            for (o, &g) in out.iter_mut().zip(dep.term_column(term, i, n_wav)?) {
-                *o += d * g;
-            }
+            dep.add_term(out, term, i, n_wav)?;
         }
     }
     Ok(())
@@ -268,9 +331,7 @@ pub(crate) fn assemble_jacobian_mapped(
                 }
                 continue;
             }
-            for (s, &g) in scratch.iter_mut().zip(dep.term_column(term, i, n_wav)?) {
-                *s += d * g;
-            }
+            dep.add_term(&mut scratch, term, i, n_wav)?;
         }
         let out = &mut jac[i * n_out..(i + 1) * n_out];
         for (p, par) in params.iter().enumerate() {
