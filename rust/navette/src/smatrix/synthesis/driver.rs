@@ -219,6 +219,7 @@ pub fn run_design(
     lm: LmConfig,
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+    SmatrixContext::check_spec(spec)?;
     let (mut stack, warnings) = assemble_stack(
         ambient_name,
         ambient_nk,
@@ -312,6 +313,7 @@ pub fn run_environments(
     lm: LmConfig,
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+    SmatrixContext::check_spec(spec)?;
     let k = envs.n_envs();
     // A segment's edge lists live in the compile, not on the flat stack,
     // so boundary needles that could reach a segment edge take the joint

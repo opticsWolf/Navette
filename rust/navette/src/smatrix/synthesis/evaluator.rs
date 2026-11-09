@@ -28,7 +28,7 @@ use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::environments::CompiledEnvironments;
 use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::jacobian::assemble_jacobian_mapped;
-use crate::smatrix::synthesis::merit::{CurveId, MeritSpec, Radians, SimCurves};
+use crate::smatrix::synthesis::merit::{CurveId, CurveSet, MeritSpec, Radians, SimCurves};
 use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
 use crate::smatrix::synthesis::thick_opt::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
@@ -72,6 +72,21 @@ pub struct SmatrixContext {
 }
 
 impl SmatrixContext {
+    /// Rows `simulate_inner` fills: the four front s/p intensities, and the
+    /// complex forward t_s/t_p when the spec has phase demands. Absorption
+    /// demands derive from intensity pairs, so As/Ap are covered too.
+    pub fn provides() -> CurveSet {
+        CurveSet::default()
+            .with_intensity(&[CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp])
+            .with_complex(&[CurveId::Ts, CurveId::Tp])
+    }
+
+    /// W3: refuse a spec this evaluator cannot score, before any solve.
+    /// Every door that builds a `SmatrixContext` from user input calls it.
+    pub fn check_spec(spec: &MeritSpec) -> Result<(), String> {
+        spec.check_supported(&Self::provides())
+    }
+
     /// Simulate the stack on the fixed grid → SimCurves.
     ///
     /// Fully-coherent path: block = [0, nl−1) with the substrate as

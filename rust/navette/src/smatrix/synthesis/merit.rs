@@ -234,6 +234,70 @@ impl CurveId {
     }
 }
 
+impl CurveId {
+    /// Position in [`CurveId::ALL`] (the bit of a [`CurveSet`]).
+    pub fn ordinal(self) -> usize {
+        CurveId::ALL
+            .iter()
+            .position(|&c| c == self)
+            .expect("CurveId::ALL lists every variant")
+    }
+}
+
+/// Rows a simulation carries: one bit per [`CurveId`] for intensity rows
+/// and one for complex-amplitude rows (phase demands sample those).
+///
+/// A context states what it produces; [`MeritSpec::check_supported`]
+/// refuses a spec that needs more, up front, instead of the run paying the
+/// missing-curve penalty on every merit call (synthesis targets plan, W3).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct CurveSet {
+    intensity: u32,
+    complex: u32,
+}
+
+impl CurveSet {
+    pub fn with_intensity(mut self, ids: &[CurveId]) -> Self {
+        for &id in ids {
+            self.intensity |= 1 << id.ordinal();
+        }
+        self
+    }
+
+    pub fn with_complex(mut self, ids: &[CurveId]) -> Self {
+        for &id in ids {
+            self.complex |= 1 << id.ordinal();
+        }
+        self
+    }
+
+    pub fn has_intensity(&self, id: CurveId) -> bool {
+        self.intensity & (1 << id.ordinal()) != 0
+    }
+
+    pub fn has_complex(&self, id: CurveId) -> bool {
+        self.complex & (1 << id.ordinal()) != 0
+    }
+
+    /// Readable listing, e.g. `Rs, Rp, Ts, Tp; complex Ts, Tp`.
+    pub fn describe(&self) -> String {
+        let names = |bits: u32| {
+            CurveId::ALL
+                .iter()
+                .filter(|c| bits & (1 << c.ordinal()) != 0)
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut s = names(self.intensity);
+        if self.complex != 0 {
+            s.push_str("; complex ");
+            s.push_str(&names(self.complex));
+        }
+        s
+    }
+}
+
 /// Constraint activation — mirrors spectralweave `TargetKind`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConstraintKind {
@@ -849,6 +913,93 @@ impl MeritSpec {
     /// Gates the (trivial but non-zero) stack-metadata computation.
     pub fn uses_differential(&self) -> bool {
         self.targets.iter().any(|t| t.differential_passes.is_some())
+    }
+
+    /// Refuse a spec that demands rows `provides` lacks (W3).
+    ///
+    /// Without this, a demand on a row the context never fills reaches
+    /// `merit()` as the missing-curve penalty on every call (the run
+    /// "converges" on a constant) and the LM as a mid-run error. Every
+    /// offending demand is named once per (environment, curve, row kind)
+    /// with the angles it sits at, so an angular target over 90 angles is
+    /// one line, not 90.
+    pub fn check_supported(&self, provides: &CurveSet) -> Result<(), String> {
+        // (env, curve, what, angles in degrees)
+        let mut bad: Vec<(u32, CurveId, &'static str, Vec<f64>)> = Vec::new();
+        let mut note = |env: u32, curve: CurveId, what: &'static str, angle: Radians| {
+            let deg = angle.to_degrees();
+            match bad
+                .iter_mut()
+                .find(|b| b.0 == env && b.1 == curve && b.2 == what)
+            {
+                Some(b) => {
+                    if !b.3.iter().any(|&d| d.to_bits() == deg.to_bits()) {
+                        b.3.push(deg);
+                    }
+                }
+                None => bad.push((env, curve, what, vec![deg])),
+            }
+        };
+        for t in &self.targets {
+            let key = &self.keys[t.key_idx as usize];
+            let ok = if t.phase {
+                provides.has_complex(key.curve)
+            } else if let Some((rc, tc)) = key.curve.absorption_companions() {
+                provides.has_intensity(rc) && provides.has_intensity(tc)
+            } else {
+                provides.has_intensity(key.curve)
+            };
+            if !ok {
+                let what = if t.differential_passes.is_some() {
+                    "differential phase"
+                } else if t.phase {
+                    "phase"
+                } else {
+                    "intensity"
+                };
+                note(t.env_idx, key.curve, what, key.angle);
+            }
+        }
+        for d in &self.color {
+            let key = &self.keys[d.key_idx as usize];
+            if !provides.has_intensity(key.curve) {
+                note(d.env_idx, key.curve, "colour", key.angle);
+            }
+        }
+        if bad.is_empty() {
+            return Ok(());
+        }
+        let fmt_deg = |d: f64| {
+            let s = format!("{d:.3}");
+            let s = s.trim_end_matches('0').trim_end_matches('.');
+            format!("{s} deg")
+        };
+        let lines: Vec<String> = bad
+            .iter()
+            .map(|(env, curve, what, angles)| {
+                let at = angles
+                    .iter()
+                    .map(|&d| fmt_deg(d))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let env_s = if self.n_envs > 1 {
+                    match self.env_names.get(*env as usize) {
+                        Some(name) => format!(" in environment '{name}'"),
+                        None => format!(" in environment {env}"),
+                    }
+                } else {
+                    String::new()
+                };
+                format!("  {curve:?} {what} at {at}{env_s}")
+            })
+            .collect();
+        Err(format!(
+            "synthesis cannot score {} demand(s): the evaluator produces only {}; \
+             not yet supported:\n{}",
+            lines.len(),
+            provides.describe(),
+            lines.join("\n")
+        ))
     }
 
     /// Which reference sides the spec's differential demands actually
@@ -3120,6 +3271,104 @@ mod tests {
     // --- F2.2: the multi-environment doors -----------------------------
 
     /// `Rs = 0.5 ± 0.1` on one point, at environment `env`.
+    /// W3: the front s/p evaluator set (intensities + complex t).
+    fn front_sp() -> CurveSet {
+        CurveSet::default()
+            .with_intensity(&[CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp])
+            .with_complex(&[CurveId::Ts, CurveId::Tp])
+    }
+
+    #[test]
+    fn check_supported_accepts_what_is_produced() {
+        let mut spec = MeritSpec::new();
+        for curve in [CurveId::Rs, CurveId::Tp, CurveId::As, CurveId::Ap] {
+            let k = spec.add_key(MeritKey {
+                angle: deg(45.0),
+                curve,
+            }) as u32;
+            spec.add_target(env_entry(k, 0)).unwrap();
+        }
+        let k = spec.add_key(MeritKey {
+            angle: deg(45.0),
+            curve: CurveId::Ts,
+        }) as u32;
+        spec.add_target(entry_phase(
+            k,
+            vec![400.0],
+            vec![0.5],
+            vec![0.1],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        ))
+        .unwrap();
+        spec.check_supported(&front_sp()).unwrap();
+    }
+
+    #[test]
+    fn check_supported_names_each_missing_row_once() {
+        let mut spec = MeritSpec::new();
+        // Ru at three angles, twice at 45° (one line, angles deduped).
+        for a in [0.0, 45.0, 45.0, 60.0] {
+            let k = spec.add_key(MeritKey {
+                angle: deg(a),
+                curve: CurveId::Ru,
+            }) as u32;
+            spec.add_target(env_entry(k, 0)).unwrap();
+        }
+        // Au derives from Ru/Tu: refused. RBs: refused. Rs phase: refused
+        // (no complex r_f). Rs intensity: fine.
+        for curve in [CurveId::Au, CurveId::RBs, CurveId::Rs] {
+            let k = spec.add_key(MeritKey {
+                angle: deg(10.0),
+                curve,
+            }) as u32;
+            spec.add_target(env_entry(k, 0)).unwrap();
+        }
+        let k = spec.add_key(MeritKey {
+            angle: deg(10.0),
+            curve: CurveId::Rs,
+        }) as u32;
+        spec.add_target(entry_phase(
+            k,
+            vec![400.0],
+            vec![0.5],
+            vec![0.1],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        ))
+        .unwrap();
+        let err = spec.check_supported(&front_sp()).unwrap_err();
+        assert!(err.contains("cannot score 4 demand(s)"), "{err}");
+        assert!(
+            err.contains("Ru intensity at 0 deg, 45 deg, 60 deg"),
+            "{err}"
+        );
+        assert!(err.contains("Au intensity at 10 deg"), "{err}");
+        assert!(err.contains("RBs intensity at 10 deg"), "{err}");
+        assert!(err.contains("Rs phase at 10 deg"), "{err}");
+        assert!(!err.contains("Rs intensity"), "{err}");
+        assert!(err.contains("Rs, Rp, Ts, Tp; complex Ts, Tp"), "{err}");
+    }
+
+    #[test]
+    fn check_supported_names_the_environment() {
+        let mut spec = MeritSpec::new();
+        spec.set_env_roster(&["air".to_string(), "water".to_string()])
+            .unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Tu,
+        }) as u32;
+        spec.add_target(env_entry(k, 1)).unwrap();
+        let err = spec.check_supported(&front_sp()).unwrap_err();
+        assert!(
+            err.contains("Tu intensity at 0 deg in environment 'water'"),
+            "{err}"
+        );
+    }
+
     fn env_entry(key_idx: u32, env: u32) -> MeritTarget {
         let mut t = entry(
             key_idx,

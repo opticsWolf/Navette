@@ -9,6 +9,18 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
+- **Synthesis refuses demands it cannot score, up front**
+  (`docs/plans/synthesis_targets_plan.md` W3). The synthesis evaluator
+  fills the front s/p intensities (Rs, Rp, Ts, Tp; As/Ap derive from
+  them) and the complex forward t (Ts/Tp phase, PDts/PDtp). A demand on
+  any other row (unpolarized R/T/A, back-incidence RB/TB/AB, front or
+  back reflection phase, colour on those curves) used to cost a constant
+  1e6 in `evaluate_merit` and fail the LM mid-run with "missing curve".
+  `SmatrixContext`, `NeedlePipeline`, `run_design`,
+  `run_design_environments` and `run_needle` now raise a `ValueError` at
+  construction that names each such curve once, with its angles (and
+  environment, in a joint run). The check is
+  `MeritSpec::check_supported` against `SmatrixContext::provides()`.
 - **Angles: radians inside, the unit named at every door.** Every
   calculation in Rust and Python works in radians (`Radians`, a
   range-checked newtype in `smatrix/angle.rs`). Every Python door that

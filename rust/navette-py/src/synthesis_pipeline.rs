@@ -1289,6 +1289,7 @@ impl PySmatrixContext {
         if !(clamp_min >= 0.0) || !(clamp_max > clamp_min) {
             return Err(PyValueError::new_err("need 0 <= clamp_min < clamp_max"));
         }
+        SmatrixContext::check_spec(spec.inner()).map_err(PyValueError::new_err)?;
         Ok(PySmatrixContext {
             inner: SmatrixContext {
                 wavls: w.to_vec(),
@@ -1573,6 +1574,7 @@ impl PyNeedlePipeline {
         }
         .apply(&mut design, pool)
         .map_err(PyValueError::new_err)?;
+        SmatrixContext::check_spec(spec.inner()).map_err(PyValueError::new_err)?;
         let spectral =
             SpectralInputs::from_spec(spec.inner(), &a, w).map_err(PyValueError::new_err)?;
         let spectral_sines = spectral.sin_theta.clone();
