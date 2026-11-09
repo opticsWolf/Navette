@@ -140,10 +140,11 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | R_avg, T_avg, A_avg | = Ru/Tu/Au | via Ru | covered by Ru/Tu/Au above |
 | complex amplitudes rs, rp, ts, tp (+ back) | W2 keeps them | `needle_slopes4_ddz` per channel | building block, not a target |
 | φ_RS, φ_RP, φ_TS, φ_TP, φ_RB*, φ_TB* | = phase targets above | phi channels | covered above |
-| PD on reflection (PDrs, PDrp; `passes = 2`) | needs r_f (W2) | phi + gain shift (`reference_phase` handles 2 passes) | **easy** after W2: two labels |
-| Psi_R, Delta_R, Psi_T, Delta_T | from rp/rs (W2) | gradient form on complex amplitudes (new small operator `p_coherent_grad_c_from_fields`: Re(conj(g)·∂a)) | **moderate**: blocked by W1 + W2 + new operator |
+| PD on reflection (PDrs, PDrp; `passes = 2`) | needs r_f (W2) | phi + gain shift (`reference_phase` handles 2 passes) | **deferred** (decision 2026-11-09): reference-plane question for the round trip stays open, see §5 |
+| Delta_R, Delta_T | from the retardance curve | as retardance | **in W8a**: constant offset of retardance (`Delta_R = Ret_R − π`, `Delta_T = Ret_T`, wrapped), two extra labels |
+| Psi_R, Psi_T | from rp/rs (W2) | gradient form on complex amplitudes (new small operator `p_coherent_grad_c_from_fields`: Re(conj(g)·∂a)) | **moderate**: blocked by W1 + W2 + new operator |
 | Rs/Rp ratio, extinction ratio, diattenuation | from intensities | gradient form on R/T (W5) | **moderate**: blocked by W1/W5 |
-| retardance (φp − φs) | from complex rows | gradient form on two phases | **moderate**: blocked by W1/W5 |
+| retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **in scope, W8a**: blocked by W1 (phi buckets are per S-matrix element and feed both branches today) and W2 (Ret_R) |
 | DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
 | GD, GDD, TOD, FOD (R/T, s/p) | **not computed** in the synthesis evaluator (engine `dispmaps`) | **exists** in the engine (`phase_dispersion_sensitivity`, NREQ_DGD…DFOD) | **harder**: port the dispersion forward into `simulate_inner`, add curve ids, map the fold to Q rows; LM via FD first |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
@@ -541,7 +542,8 @@ default pool give identical runs; shared-scan cost equals one sweep
 | 5 | W4 point weights (+ helpers, docs) | 3 (fold emission point) | unchanged at all-ones |
 | 6 | W5 log and general transforms in the fold | 3 | unchanged |
 | 7 | W7 label identity, shared scans, needle groups, label-aware merges | 3 (both touch the scan loop in `cycle.rs`) | unchanged without groups/duplicate indices |
-| 8 | W8 new target types, in this order: PDrs/PDrp → Rs/Rp ratio, extinction, diattenuation → retardance → Psi/Delta (+ complex gradient operator) → DOP/Stokes → GD…FOD | 2, 3, 6 | unchanged |
+| 4a | W8a retardance Ret_R/Ret_T (+ Delta_R/Delta_T labels) | 2, 3 (not W5: own gradient-form phase operator) | unchanged |
+| 8 | W8 further target types, in this order: Rs/Rp ratio, extinction, diattenuation → Psi (+ complex gradient operator) → DOP/Stokes → GD…FOD. PDrs/PDrp deferred (§5) | 2, 3, 6 | unchanged |
 | 9 | W6 incoherent synthesis | 2, 3 | unchanged for coherent stacks |
 
 Steps 1-3 are the bug fixes and should land before any new feature on the
@@ -556,6 +558,73 @@ the W1 oracle test (fold P vs merit FD) is the acceptance gate. GD…FOD
 additionally need the dispersion forward in `simulate_inner` (port of the
 engine's `dispmaps`) and a fold onto the engine's existing Q-row needle
 sensitivities.
+
+### W8a — Retardance targets (feature, c; decision 2026-11-09)
+
+Neither retardance nor ellipsometric Δ is a synthesis target today (no
+`CurveId`, no fold). The engine defines both (`solver.rs`, `core_engine.rs`):
+
+- `Ret_R = arg(cross_r)`, `cross_r = r_p·conj(r_s)` → φ_rp − φ_rs, wrapped
+  to (−π, π].
+- `Ret_T = arg(cross_t)`, `cross_t = t_p·conj(t_s)·√(f_s f_p)`; the flux
+  factor is real positive, so `Ret_T = φ_tp − φ_ts`.
+- `Delta_R = atan2(−2 Im cross_r, −2 Re cross_r) = Ret_R − π` (wrapped);
+  `Delta_T = Ret_T` (docs/forward-golden.md). Synthesis follows the
+  engine's numbers exactly; the oracle test compares against them.
+
+**Design.**
+
+1. **Curves.** Derived curve ids `RetR`, `RetT` (labels `RetR`, `RetT`,
+   `DeltaR`, `DeltaT`; polarization field not used, refused if given as
+   anything but `u`/none). Delta labels compile to the same curve with a
+   constant offset (−π for R, 0 for T) applied to the target values before
+   wrapping, so one forward and one fold serve all four labels.
+2. **Forward.** From the complex rows: `arg(p·conj(s))`, not
+   `arg(p) − arg(s)`, so the wrap happens once. Ret_T needs only the t_f
+   rows kept today; Ret_R needs W2.3's r_f. Degenerate points follow the
+   engine exactly: `Retardance_R/T` have no floor (arg of a zero cross
+   term is 0), `Delta_R` is 0 where R_s < `RS_FLOOR` (1e-12). The fold
+   contributes zero gradient wherever |a|² < 1e-20 on either branch (the
+   existing phase-operator rule).
+3. **Merit.** Phase-style residual: `wrap(Ret − t)/tol`, same kinds and
+   `integral` handling as phase demands today. `norm_factor` must be 1
+   (raw radians), same rule as phase.
+4. **LM.** FD Jacobian first; an analytic deposit (`Im(conj(a)·∂a)/|a|²`
+   on p minus the same on s, both already in the phase deposit path)
+   follows behind an FD-vs-analytic test.
+5. **Needle fold.** Gradient form: `g = 2·w·wrap(Ret_op − t)` deposited
+   as **+g** into the p-branch phase-gradient bucket of the element and
+   **−g** into the s-branch one. New buckets `phi_grad: [[f64; 4]; 2]`
+   (branch × element) next to W1's per-branch `phi` pairs, and a new
+   operator `p_coherent_grad_phi_from_fields(…, channel, grad, …)` =
+   `grad · Im(conj(a)·∂a)/|a|²`. The existing
+   `p_coherent_phi_from_fields` becomes a thin call of it with
+   `grad = 2·w·wrap(φ − t)` (bitwise-identical, pinned by the existing
+   phase tests).
+6. **Capability (W3).** `RetR`/`DeltaR` require complex r_f s and p;
+   `RetT`/`DeltaT` require complex t_f s and p. Refuse on incoherent
+   stacks (phase through a spacer, §1.6).
+7. **Python.** `SpectralTarget(…, spectrum="RetR"|"RetT"|"DeltaR"|"DeltaT")`
+   and the same on `AngularTarget`; the wrapper only forwards labels.
+
+**Why W1 first.** The phase buckets are indexed by S-matrix element
+(0 = r_front, 1 = t_back, 2 = t_fwd, 3 = r_back) and both polarization
+branches consume them, so +g on p and −g on s would cancel in a shared
+bucket. Retardance is the cleanest demonstration that W1 is needed.
+
+**Tests.** Forward equals the engine's `Retardance_R/T` and `Delta_R/T`
+bitwise on a random stack at 0°, 45°, 70°; fold P vs merit FD (W1
+oracle) for RetR, RetT, DeltaR at 45° and 70°; at 0° (s ≡ p) the forward
+is identically 0 (R) and the fold P is 0; wrap crossing (target near ±π)
+gives the short-way residual; degenerate point gives zero contribution;
+a retardance-only synthesis on a quarter-wave-retarder benchmark
+(e.g. Ret_R = π/2 at 45°, 500-600 nm) converges.
+
+**Risks.** At normal incidence retardance is identically zero and the
+target is unreachable; warn (not refuse) when every angle of a retardance
+demand is 0°. Near |r_s| → 0 (Brewster-adjacent for p, or a strong
+anti-reflection for s) the phase gradient blows up as 1/|a|²; the floor
+plus a per-point tolerance (W4) is the user-side mitigation.
 
 ---
 
@@ -578,10 +647,15 @@ sensitivities.
 
 ## 5. Further and future gaps (not in W1-W7)
 
-1. **Ellipsometric and polarization targets in synthesis**: Psi/Delta,
-   Rs/Rp ratio, extinction ratio, DOP, retardance. Need `CurveId`s, complex
-   rows (W2.3 gives r_s, r_p), and gradient-form folds (W5). Natural next
-   step after W5.
+1. **Ellipsometric and polarization targets in synthesis**: Psi,
+   Rs/Rp ratio, extinction ratio, DOP (retardance and Delta moved into
+   W8a). Need `CurveId`s, complex rows (W2.3 gives r_s, r_p), and
+   gradient-form folds (W5). Natural next step after W5.
+1b. **Differential phase on reflection (PDrs, PDrp) — deferred
+   (decision 2026-11-09).** `reference_phase` already takes `passes = 2`;
+   the open question is the reference plane of the round trip
+   (implementation_plan_pd.md:721). Revisit once a user case fixes the
+   convention; the fold is the existing phi pair plus the gain shift.
 2. **Dispersion targets**: GD/GDD/TOD on reflection or transmission
    (chirped mirrors). The engine computes them (`dispmaps`); synthesis
    needs curve ids, a merit form and the needle derivative of GD (phase
