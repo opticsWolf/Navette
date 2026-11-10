@@ -174,9 +174,11 @@ def test_the_needle_fold_agrees_across_units():
   spec = build_merit_spec(_targets(angles_deg=DEG))
   deg = S.build_needle_targets(spec, WL, angles_deg=DEG)
   rad = S.build_needle_targets(spec, WL, angles_rad=RAD)
-  for k in ("r", "t"):
-    for part in ("targets", "weights"):
-      assert np.asarray(rad[k][part]).tobytes() == np.asarray(deg[k][part]).tobytes(), k
+  for pol in ("s", "p"):
+    for k in ("r", "t"):
+      for part in ("targets", "weights"):
+        a, b = rad[pol][k][part], deg[pol][k][part]
+        assert np.asarray(a).tobytes() == np.asarray(b).tobytes(), (pol, k)
 
 
 def _run(**angles):

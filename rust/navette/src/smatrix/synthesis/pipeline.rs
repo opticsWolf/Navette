@@ -457,22 +457,12 @@ mod tests {
     const NW: usize = 3;
 
     fn dummy_spectral() -> SpectralInputs {
-        let zero = || (vec![0.0f64; NW], vec![0.0f64; NW]);
+        let mut fold = PolFold::zeros(NW);
+        fold.r = (vec![0.0; NW], vec![1.0; NW]);
         SpectralInputs {
             wavls: vec![500.0; NW],
             sin_theta: vec![0.0],
-            folds: vec![NeedleTargets {
-                r: (vec![0.0; NW], vec![1.0; NW]),
-                t: zero(),
-                a: zero(),
-                rb: zero(),
-                tb: zero(),
-                ab: zero(),
-                phi: [zero(), zero(), zero(), zero()],
-                phi_gain_shift: [0.0; 4],
-                grad_r: vec![0.0f64; NW],
-                grad_t: vec![0.0f64; NW],
-            }],
+            folds: vec![NeedleTargets::shared(fold)],
             spec: MeritSpec::new(),
             angles: vec![Radians::ZERO],
         }
@@ -505,7 +495,7 @@ mod tests {
     }
 
     use crate::smatrix::synthesis::merit::MeritSpec;
-    use crate::smatrix::synthesis::needle_pass::NeedleTargets;
+    use crate::smatrix::synthesis::needle_pass::{NeedleTargets, PolFold};
 
     fn pipeline(cfg_over: impl FnOnce(&mut PipelineConfig)) -> NeedlePipeline {
         let mut cfg = PipelineConfig::default();

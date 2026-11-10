@@ -926,18 +926,30 @@ impl MeritSpec {
     /// The rows this spec reads, as a [`CurveSet`]: what an evaluator must
     /// fill (rows outside it can be skipped, which keeps intensity-only
     /// specs on the exact pre-W2 sweep). Absorption demands read their
-    /// companion rows; colour demands read their key's intensity row.
+    /// companion rows; colour demands read their key's intensity row. An
+    /// unpolarized demand also reads its s and p rows: the needle fold
+    /// shares its residual between the two branches.
     pub fn required_rows(&self) -> CurveSet {
         let mut set = CurveSet::default();
+        let rows_of = |curve: CurveId| -> Vec<CurveId> {
+            match curve.absorption_companions() {
+                Some((rc, tc)) => vec![rc, tc],
+                None => vec![curve],
+            }
+        };
         for t in &self.targets {
             let curve = self.keys[t.key_idx as usize].curve;
-            set = if t.phase {
-                set.with_complex(&[curve])
-            } else if let Some((rc, tc)) = curve.absorption_companions() {
-                set.with_intensity(&[rc, tc])
-            } else {
-                set.with_intensity(&[curve])
-            };
+            if t.phase {
+                set = set.with_complex(&[curve]);
+                continue;
+            }
+            let mut rows = rows_of(curve);
+            for c in rows.clone() {
+                if let Some((cs, cp)) = c.unpolarized_parts() {
+                    rows.extend([cs, cp]);
+                }
+            }
+            set = set.with_intensity(&rows);
         }
         for d in &self.color {
             set = set.with_intensity(&[self.keys[d.key_idx as usize].curve]);

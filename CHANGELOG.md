@@ -9,6 +9,44 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
+- **The needle P is the slope of the merit the LM minimises, at any
+  angle** (`docs/plans/synthesis_targets_plan.md` W1). The fold used to
+  hand one set of (target, weight) pairs to both polarization branches.
+  At normal incidence that came out right for s and p demands; off
+  normal it pulled on the wrong polarization, and colour on an
+  unpolarized curve got half its gradient. The fold now has one branch
+  per polarization. An s or p intensity demand folds at twice its
+  weight on its own branch (the intensity kernels return half the
+  slope). A phase demand folds at its weight on its own branch. An
+  unpolarized demand folds at its weight on both, each branch's target
+  shifted so that both share the u residual. A Rust oracle checks P
+  against a finite difference of the merit after a real needle
+  insertion, for every demand type at 0°, 30° and 60°.
+  - `build_needle_targets` returns `{"s": branch, "p": branch}`; each
+    branch has the keys the flat dict had. Feed `"s"` to
+    `needle_gradient(pol="s")` and `"p"` to `pol="p"`.
+  - `needle_gradient(gain_shift_phi=)` now adds the shift (it
+    subtracted it, opposite to the native cycle). It also spreads the
+    shift over the spectral points, so `P_PHI` summed over them carries
+    it once, not once per point.
+  - Fixed on the way: a differential-phase (`PDts`/`PDtp`) demand
+    handed the kernel its target without the reference phase, and its
+    gain shift used the unwrapped residual.
+  - Needle trajectories move. At normal incidence they move only in the
+    last bits of the predicted gains; off normal they change, and in a
+    six-problem comparison the final merits were the same or better:
+
+    | problem (6 macro cycles)   | before   | after    |
+    |----------------------------|----------|----------|
+    | pin targets, 0°/30°        | 9.058    | 9.058    |
+    | AR Rs, 0°                  | 0.7014   | 0.7014   |
+    | AR Ru, 45°                 | 14.55    | 14.55    |
+    | PBS Rs→1 / Rp→0, 45°       | 9483     | 4969     |
+    | bandpass Tu, 30°           | 93122    | 24319    |
+    | Ts 0.5 / Tp 0.9, 60°       | 2543     | 1.045    |
+
+    With a lossless H the oblique rows read AR Ru 9.92 → 8.87, PBS
+    9435 → 3641, bandpass 93688 → 21303, and mixed s/p 215 → 7.07.
 - **Synthesis scores every target type, and refuses up front what it
   cannot** (`docs/plans/synthesis_targets_plan.md` W2, W3). The
   synthesis evaluator used to fill only Rs, Rp, Ts, Tp and the complex

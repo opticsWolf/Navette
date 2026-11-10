@@ -88,7 +88,9 @@ def sim_of(rs=None, ts=None):
 
 
 SPEC = make_spec()
-FOLD = build_needle_targets(SPEC, WLS, sim_of(), angles_deg=ANGLES)
+# The s branch: an s-curve colour bucket carries 2*dF/dRs (the kernel
+# halves it), so P from this branch is the full merit slope.
+FOLD = build_needle_targets(SPEC, WLS, sim_of(), angles_deg=ANGLES)["s"]
 
 
 # --------------------------------------------------------------------------
@@ -128,8 +130,8 @@ for i in range(NW):
     rm = RS.copy(); rm[0, i] -= h
     fd_dfdr[i] = (merit_of_rs(rp) - merit_of_rs(rm)) / (2 * h)
 
-rel = np.max(np.abs(gr - fd_dfdr)) / max(np.max(np.abs(fd_dfdr)), 1e-300)
-report("grads_r == dF/dR by finite difference (<= 1e-6)", rel < 1e-6,
+rel = np.max(np.abs(0.5 * gr - fd_dfdr)) / max(np.max(np.abs(fd_dfdr)), 1e-300)
+report("grads_r == 2*dF/dR by finite difference (<= 1e-6)", rel < 1e-6,
        f"max rel dev {rel:.3e}")
 
 
@@ -222,12 +224,12 @@ for lay in (1, 2, 3):
     fd = (merit_of_thickness(th + step) - merit_of_thickness(th - step)) / (2 * h_th)
 
     p = grad_at(lay, with_color=True)["P_s"].ravel()
-    analytic = 2.0 * float(np.sum(p))
+    analytic = float(np.sum(p))
 
     ref = needle_gradient(st0, np.full(NW, LAY_N[lay]), [LAY_Z[lay]],
                           NeedleRequest.P, targets_r=np.zeros(NW),
                           weights_r=np.ones(NW))["P_s"].ravel()
-    chain = float(np.sum(gr * (ref / RS.ravel())))
+    chain = 0.5 * float(np.sum(gr * (ref / RS.ravel())))
 
     rel_fd = abs(analytic - fd) / max(abs(fd), abs(analytic), 1e-300)
     rel_ch = abs(analytic - chain) / max(abs(chain), 1e-300)
@@ -242,7 +244,7 @@ for lay in (1, 2, 3):
 # --------------------------------------------------------------------------
 print("=== 6. a transmission color demand rides P_T, not P ===")
 spec_t = make_spec(curve="Ts")
-fold_t = build_needle_targets(spec_t, WLS, sim_of(), angles_deg=ANGLES)
+fold_t = build_needle_targets(spec_t, WLS, sim_of(), angles_deg=ANGLES)["s"]
 gr_t = np.asarray(fold_t["grads_r"], float)
 gt_t = np.asarray(fold_t["grads_t"], float)
 report("grads_t is populated and grads_r is empty",

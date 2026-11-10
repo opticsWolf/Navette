@@ -195,13 +195,14 @@ def test_fold_mixed():
             "Ts": np.array([np.array([0.28, 0.29, 0.30])] * 3)}
     sim = sim_curves_from_arrays(WL, rows, angles_deg=angs)
     folded = build_needle_targets(spec, WL, sim, angles_deg=angs)
-    w = np.asarray(folded["r"]["weights"]).reshape(3, 3)
-    t = np.asarray(folded["r"]["targets"]).reshape(3, 3)
+    w = np.asarray(folded["s"]["r"]["weights"]).reshape(3, 3)
+    t = np.asarray(folded["s"]["r"]["targets"]).reshape(3, 3)
     s1 = r1
-    # integral demand (angle 5 -> row 1) folds uniform-gradient pairs:
-    # every 2*w*(s-t) must equal g = 2*W*(m-T)/N.
+    # integral demand (angle 5 -> row 1) folds uniform-gradient pairs; a
+    # polarized demand folds at twice the weight (the kernel returns half
+    # the slope), so every w*(s-t) must equal g = 2*W*(m-T)/N.
     g = 2 * (4.0 / 0.0025) * (0.6 - 0.5) / 3
-    gs = 2 * w[1] * (s1 - t[1])
+    gs = w[1] * (s1 - t[1])
     check("integral folded gradient uniform",
           bool(np.allclose(gs, g, rtol=1e-9)),
           f"got={np.round(gs, 4).tolist()} expect={g:.4f}")

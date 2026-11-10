@@ -2094,9 +2094,13 @@ pub fn needle_gradient(
                     None => return Err(String::from("internal error: missing output buffer")),
                 }
             }
+            // The shift is the slope of the whole merit, uniform in z: spread
+            // it over the points so their sum carries it once, as the cycle
+            // adds it to the summed P.
             if gain_shift_phi != 0.0 && name.starts_with("P_PHI") {
+                let per_point = gain_shift_phi / total_points as f64;
                 for v in flat.iter_mut() {
-                    *v -= gain_shift_phi;
+                    *v += per_point;
                 }
             }
             maps.push((name, flat));

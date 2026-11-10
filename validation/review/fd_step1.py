@@ -186,7 +186,7 @@ def build_spec_lin():
 
 spec_lin = build_spec_lin()
 native_lin = spec_lin.merit(sim0_native, 1e6)
-fold = build_needle_targets(spec_lin, WLS, sim0_native, angles_deg=np.array(ANGLES, float))
+fold = build_needle_targets(spec_lin, WLS, sim0_native, angles_deg=np.array(ANGLES, float))["s"]
 print(f"  native merit (linear spec) = {native_lin:.10g}")
 for ch in ("r", "t", "a", "phi0"):
     tt = np.asarray(fold[ch]["targets"]).ravel()
@@ -234,7 +234,9 @@ for lay in (1, 2, 3):
     p_t = np.asarray(ng["P_T_s"]).ravel()
     p_a = np.asarray(ng["P_A_s"]).ravel()
     p_phi = np.asarray(ng["P_PHI_s"]).ravel()
-    analytic = 2.0 * (p_r + p_t + p_a).sum() + p_phi.sum()
+    # The s branch folds polarized intensity at twice the weight (the
+    # kernels return half the slope), so P sums straight to dF/dtheta.
+    analytic = (p_r + p_t + p_a).sum() + p_phi.sum()
     rel = abs(analytic - fd) / max(abs(fd), abs(analytic), 1e-300)
     report(f"dF/dtheta_layer{lay}", rel < 1e-6,
            f"analytic={analytic:.10g} fd={fd:.10g} rel={rel:.2e}")

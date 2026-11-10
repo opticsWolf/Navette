@@ -2965,12 +2965,14 @@ mod tests {
         // the excursion's own merit response...
         assert!(
             drift < 0.5 * excursion,
-            "staleness {drift} < half the excursion response {excursion} (m0 {m0},              stale {m_stale}, fresh {m_fresh})"
+            "staleness {drift} < half the excursion response {excursion} (m0 {m0}, \
+             stale {m_stale}, fresh {m_fresh})"
         );
         // ...and under 5% of the merit it rides on.
         assert!(
             drift / m_stale.abs().max(1e-12) < 0.05,
-            "the within-cycle staleness stays under the documented 5% (drift {drift},              stale {m_stale}, fresh {m_fresh})"
+            "the within-cycle staleness stays under the documented 5% (drift {drift}, \
+             stale {m_stale}, fresh {m_fresh})"
         );
         let _ = m_fresh;
     }
@@ -3209,5 +3211,332 @@ mod tests {
             rep.analytic_jacobians,
             lm_us / rep.iterations.max(1) as f64
         );
+    }
+}
+
+/// W1's oracle: the needle P(z) the fold drives is the slope of the merit
+/// the LM minimises, `dM/dδ` for a needle of thickness δ inserted at z,
+/// for every demand type, at oblique incidence too. The reference inserts
+/// a real seed and differences the merit (one-sided Richardson: the seed
+/// cannot be thinner than zero).
+#[cfg(test)]
+mod needle_oracle {
+    use super::*;
+    use crate::smatrix::angle::{Radians, deg};
+    use crate::smatrix::synthesis::color_merit::{
+        ColorDemand, ColorDistance, ColorQuantity, ColorReference, E313_CX_D65_10, E313_CZ_D65_10,
+    };
+    use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
+    use crate::smatrix::synthesis::needle_pass::{
+        NeedlePassInput, build_needle_targets, build_scan_sites, needle_pass_scan,
+    };
+    use crate::smatrix::synthesis::structure::LayerSpec;
+    use num_complex::Complex64;
+
+    const WLS: [f64; 5] = [480.0, 520.0, 560.0, 600.0, 640.0];
+    const NEEDLE_N: f64 = 1.38;
+
+    /// air | H(2.30) | L(1.46) | Habs(2.30 + 0.004i) | glass(1.52).
+    fn stack() -> DesignStack {
+        let nw = WLS.len();
+        let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+        ambient.optimize = false;
+        ambient.needle = false;
+        let mut substrate = LayerSpec::constant("glass", 1.52, 0.0, 0.0, nw);
+        substrate.optimize = false;
+        substrate.needle = false;
+        DesignStack::with_films(
+            ambient,
+            substrate,
+            vec![
+                LayerSpec::constant("H", 2.30, 0.0, 118.0, nw),
+                LayerSpec::constant("L", 1.46, 0.0, 203.0, nw),
+                LayerSpec::constant("Habs", 2.30, 0.004, 64.0, nw),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn ctx(spec: MeritSpec, angle: Radians) -> SmatrixContext {
+        SmatrixContext {
+            wavls: WLS.to_vec(),
+            sin_theta: vec![angle.get().sin()],
+            spec,
+            clamp_min_nm: 2.0,
+            clamp_max_nm: 1000.0,
+            lm: LmConfig::default(),
+            clamp_accumulator: ClampReport::default(),
+            envs: None,
+            thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
+        }
+    }
+
+    /// One demand row: `curve` at `angle` over the grid.
+    #[derive(Clone, Copy)]
+    struct D {
+        curve: CurveId,
+        target: f64,
+        kind: ConstraintKind,
+        band: f64,
+        phase: bool,
+        passes: Option<f64>,
+        integral: bool,
+    }
+
+    fn d(curve: CurveId, target: f64) -> D {
+        D {
+            curve,
+            target,
+            kind: ConstraintKind::Exact,
+            band: 0.0,
+            phase: false,
+            passes: None,
+            integral: false,
+        }
+    }
+
+    fn add(spec: &mut MeritSpec, angle: Radians, x: D) {
+        let n = WLS.len();
+        let k = spec.add_key(MeritKey {
+            angle,
+            curve: x.curve,
+        });
+        spec.add_target(MeritTarget {
+            key_idx: k as u32,
+            env_idx: 0,
+            wavelengths: WLS.to_vec().into(),
+            kind: x.kind,
+            transform: if x.phase {
+                SimTransform::Phase
+            } else {
+                SimTransform::Linear
+            },
+            norm_factor: 1.0,
+            normalized_targets: vec![x.target; n].into(),
+            tolerances: vec![0.05; n].into(),
+            band: if x.band > 0.0 {
+                vec![x.band; n].into()
+            } else {
+                vec![].into()
+            },
+            phase: x.phase,
+            differential_passes: x.passes,
+            integral: x.integral,
+            weight: 1.0,
+            count_norm: None,
+        })
+        .unwrap();
+    }
+
+    fn add_color(spec: &mut MeritSpec, angle: Radians, curve: CurveId) {
+        let k = spec.add_key(MeritKey { angle, curve });
+        let n = WLS.len();
+        spec.add_color_demand(
+            ColorDemand::new(
+                k as u32,
+                vec![[0.3, 0.4, 0.2]; n],
+                WLS.to_vec(),
+                vec![1.0; n],
+                WLS.to_vec(),
+                ColorQuantity::XyY,
+                ColorReference::Triple([0.33, 0.33, 0.1]),
+                ColorDistance::Channels,
+                1.0,
+                E313_CX_D65_10,
+                E313_CZ_D65_10,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Fold P and the merit slope at a few interior sites of every film.
+    fn p_and_slope(spec: MeritSpec, angle: Radians) -> Vec<(f64, f64)> {
+        let c = ctx(spec, angle);
+        let st = stack();
+        let sim = c.simulate(&st).unwrap();
+        let fold = build_needle_targets(&c.spec, &[angle], &WLS, Some(&sim)).unwrap();
+        let sa = st.solver_arrays();
+        let nk = vec![Complex64::new(NEEDLE_N, 0.0); WLS.len()];
+        let sites: Vec<_> = build_scan_sites(st.films(), st.spans(), 37.0)
+            .into_iter()
+            .filter(|s| !s.boundary)
+            .collect();
+        let res = needle_pass_scan(
+            &NeedlePassInput {
+                n_stack_cache: &sa.n_stack_cache,
+                thicknesses: &sa.thicknesses,
+                rough_types: &sa.rough_types,
+                rough_vals: &sa.rough_vals,
+                n_layers: sa.n_layers as usize,
+                wavls: &WLS,
+                sin_theta: &c.sin_theta,
+                fold: &fold,
+                needle_n_per_wav: &nk,
+                start_idx: 0,
+                end_idx: (sa.n_layers - 1) as usize,
+                calc_s: true,
+                calc_p: true,
+            },
+            &sites,
+        )
+        .unwrap();
+        let m0 = c.evaluate_merit(&st).unwrap();
+        let merit_with = |site: &crate::smatrix::synthesis::needle_pass::ScanSite, delta: f64| {
+            let mut s = st.clone();
+            let seed = LayerSpec::constant("N", NEEDLE_N, 0.0, delta, WLS.len());
+            s.insert_needle_seed(site.film_idx, site.depth_into_layer_nm, seed)
+                .unwrap();
+            c.evaluate_merit(&s).unwrap()
+        };
+        let h = 1e-4;
+        sites
+            .iter()
+            .zip(&res.p_profile)
+            .map(|(site, &p)| {
+                let slope =
+                    (4.0 * merit_with(site, h) - merit_with(site, 2.0 * h) - 3.0 * m0) / (2.0 * h);
+                // The differential-phase shift is uniform in z (see
+                // `PolFold::phi_gain_shift`); the cycle adds it the same way.
+                (p + fold.phi_gain_shift(), slope)
+            })
+            .collect()
+    }
+
+    fn check(name: &str, spec: MeritSpec, angle: Radians) {
+        let pairs = p_and_slope(spec, angle);
+        let scale = pairs.iter().map(|&(_, s)| s.abs()).fold(0.0, f64::max);
+        assert!(scale > 1e-6, "{name}: the merit does not move");
+        for (i, &(p, s)) in pairs.iter().enumerate() {
+            assert!(
+                (p - s).abs() <= 1e-5 * scale,
+                "{name} at {:.0} deg, site {i}: P {p} vs merit slope {s}",
+                angle.get().to_degrees()
+            );
+        }
+    }
+
+    fn cases(angle: Radians) -> Vec<(&'static str, MeritSpec)> {
+        use ConstraintKind::*;
+        use CurveId::*;
+        let one = |x: D| {
+            let mut s = MeritSpec::new();
+            add(&mut s, angle, x);
+            s
+        };
+        let mut out = vec![
+            ("Rs", one(d(Rs, 0.3))),
+            ("Rp", one(d(Rp, 0.3))),
+            ("Ru", one(d(Ru, 0.3))),
+            ("Ts", one(d(Ts, 0.6))),
+            ("Tp", one(d(Tp, 0.6))),
+            ("Tu", one(d(Tu, 0.6))),
+            ("As", one(d(As, 0.05))),
+            ("Au", one(d(Au, 0.05))),
+            ("RBs", one(d(RBs, 0.3))),
+            ("TBp", one(d(TBp, 0.6))),
+            ("RBu", one(d(RBu, 0.3))),
+            ("TBu", one(d(TBu, 0.6))),
+            ("ABu", one(d(ABu, 0.05))),
+            (
+                "Rs phase",
+                one(D {
+                    phase: true,
+                    ..d(Rs, 0.5)
+                }),
+            ),
+            (
+                "Tp phase",
+                one(D {
+                    phase: true,
+                    ..d(Tp, 0.5)
+                }),
+            ),
+            (
+                "PDts",
+                one(D {
+                    phase: true,
+                    passes: Some(1.0),
+                    ..d(Ts, 0.5)
+                }),
+            ),
+            (
+                "Ru above",
+                one(D {
+                    kind: Above,
+                    ..d(Ru, 0.9)
+                }),
+            ),
+            (
+                "Ru below",
+                one(D {
+                    kind: Below,
+                    ..d(Ru, 0.0)
+                }),
+            ),
+            (
+                "Ru range",
+                one(D {
+                    kind: Range,
+                    band: 0.02,
+                    ..d(Ru, 0.6)
+                }),
+            ),
+            (
+                "Tu centre band",
+                one(D {
+                    kind: CenterBand,
+                    band: 0.5,
+                    ..d(Tu, 0.6)
+                }),
+            ),
+            (
+                "Ru integral",
+                one(D {
+                    integral: true,
+                    ..d(Ru, 0.3)
+                }),
+            ),
+            (
+                "Rp integral",
+                one(D {
+                    integral: true,
+                    ..d(Rp, 0.3)
+                }),
+            ),
+        ];
+        for (name, curve) in [("colour Rs", Rs), ("colour Ru", Ru), ("colour Tp", Tp)] {
+            let mut s = MeritSpec::new();
+            add_color(&mut s, angle, curve);
+            out.push((name, s));
+        }
+        // A polarizing beam splitter: the branches pull in opposite ways.
+        let mut pbs = MeritSpec::new();
+        add(&mut pbs, angle, d(Rs, 1.0));
+        add(&mut pbs, angle, d(Rp, 0.0));
+        out.push(("PBS", pbs));
+        out
+    }
+
+    #[test]
+    fn p_is_the_merit_slope_at_normal_incidence() {
+        for (name, spec) in cases(Radians::ZERO) {
+            check(name, spec, Radians::ZERO);
+        }
+    }
+
+    #[test]
+    fn p_is_the_merit_slope_at_30_deg() {
+        for (name, spec) in cases(deg(30.0)) {
+            check(name, spec, deg(30.0));
+        }
+    }
+
+    #[test]
+    fn p_is_the_merit_slope_at_60_deg() {
+        for (name, spec) in cases(deg(60.0)) {
+            check(name, spec, deg(60.0));
+        }
     }
 }

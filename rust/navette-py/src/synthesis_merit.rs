@@ -407,18 +407,20 @@ apply_reference_rotation)",
     )
 }
 
-/// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major).
-/// Returns a dict with `r/t/a/rb/tb/ab` pairs plus `phi0..phi3` (one pair
+/// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major),
+/// one set per polarization branch. Returns `{"s": {...}, "p": {...}}`;
+/// each branch dict has `r/t/a/rb/tb/ab` pairs plus `phi0..phi3` (one pair
 /// per S-matrix channel — emit one `P_PHI` call per used channel), plus
 /// `grads_r`/`grads_t`: the Option-B color buckets (`dF/dcurve` per
-/// angle-major point, weight/residual/U-curve-half already folded in).
-/// They are NOT a target/weight pair — pass them straight to
-/// `needle_gradient`'s `grads_r`/`grads_t`, which deposits them into the
-/// `P` / `P_T` channels. All-zero when the spec has no color demands.
-/// Omitting them is what made the documented Python fold →
-/// `needle_gradient` flow return a silent-zero color gradient (R4.2).
-/// The grid is `angles_deg=` or `angles_rad=` (exactly one); it is
-/// matched against the spec's keys in radians.
+/// angle-major point, weight/residual already folded in). They are NOT a
+/// target/weight pair — pass them straight to `needle_gradient`'s
+/// `grads_r`/`grads_t`, which deposits them into the `P` / `P_T` channels.
+/// All-zero when the spec has no color demands. Omitting them is what made
+/// the documented Python fold → `needle_gradient` flow return a
+/// silent-zero color gradient (R4.2). Feed branch `"s"` to
+/// `needle_gradient(pol="s")` and `"p"` to `pol="p"`: the two results sum
+/// to the merit's slope. The grid is `angles_deg=` or `angles_rad=`
+/// (exactly one); it is matched against the spec's keys in radians.
 #[pyfunction]
 #[pyo3(signature = (spec, wavelengths, sim=None, *, angles_deg=None, angles_rad=None))]
 pub fn build_needle_targets(
@@ -442,30 +444,42 @@ pub fn build_needle_targets(
         })
         .map_err(PyValueError::new_err)?;
     let d = PyDict::new(py);
-    let pair = |py: Python<'_>, name: &str, p: (Vec<f64>, Vec<f64>)| -> PyResult<()> {
+    d.set_item("s", branch_dict(py, nt.s)?)?;
+    d.set_item("p", branch_dict(py, nt.p)?)?;
+    Ok(d.unbind())
+}
+
+/// One polarization branch of a fold as the dict `build_needle_targets`
+/// documents.
+fn branch_dict(
+    py: Python<'_>,
+    f: navette::smatrix::synthesis::needle_pass::PolFold,
+) -> PyResult<Bound<'_, PyDict>> {
+    let d = PyDict::new(py);
+    let pair = |name: &str, p: (Vec<f64>, Vec<f64>)| -> PyResult<()> {
         let inner = PyDict::new(py);
         inner.set_item("targets", PyArray::from_vec(py, p.0))?;
         inner.set_item("weights", PyArray::from_vec(py, p.1))?;
         d.set_item(name, inner)?;
         Ok(())
     };
-    pair(py, "r", nt.r)?;
-    pair(py, "t", nt.t)?;
-    pair(py, "a", nt.a)?;
-    pair(py, "rb", nt.rb)?;
-    pair(py, "tb", nt.tb)?;
-    pair(py, "ab", nt.ab)?;
-    d.set_item("grads_r", PyArray::from_vec(py, nt.grad_r))?;
-    d.set_item("grads_t", PyArray::from_vec(py, nt.grad_t))?;
-    for (i, p) in nt.phi.into_iter().enumerate() {
+    pair("r", f.r)?;
+    pair("t", f.t)?;
+    pair("a", f.a)?;
+    pair("rb", f.rb)?;
+    pair("tb", f.tb)?;
+    pair("ab", f.ab)?;
+    d.set_item("grads_r", PyArray::from_vec(py, f.grad_r))?;
+    d.set_item("grads_t", PyArray::from_vec(py, f.grad_t))?;
+    for (i, p) in f.phi.into_iter().enumerate() {
         // Exact dM/dD correction for differential demands (0.0 otherwise):
         // subtract from the assembled P_PHI gradient (see `needle_gradient`
         // `gain_shift_phi`). Uniform in z — the needle site never moves.
         let inner = PyDict::new(py);
         inner.set_item("targets", PyArray::from_vec(py, p.0))?;
         inner.set_item("weights", PyArray::from_vec(py, p.1))?;
-        inner.set_item("gain_shift", nt.phi_gain_shift[i])?;
+        inner.set_item("gain_shift", f.phi_gain_shift[i])?;
         d.set_item(format!("phi{i}"), inner)?;
     }
-    Ok(d.unbind())
+    Ok(d)
 }

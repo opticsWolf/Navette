@@ -165,8 +165,15 @@ def _strip_keys(obj, drop):
 # Linux re-read for both changes at once from CI run 40737848279
 # (``4c2d969``, ubuntu-24.04, release build; the python and the
 # dependency-floors jobs printed the same digest).
+#
+# Re-recorded (Windows) for the polarization-correct needle fold (W1): the
+# fold now has one branch per polarization, an s or p demand folding at
+# twice its weight on its own branch where it used to fold at its weight
+# on both. At normal incidence that is the same sum in exact arithmetic,
+# not in the last bits of the predicted gains the phases record. Linux
+# still holds the pre-W1 digest until it is re-read from CI.
 RECORDED_DIGESTS = {
-    "Windows": "59c60c828f9c58cd73ec7fca28e18deafa880f5c8ce41071331ff060de2a8be4",
+    "Windows": "1c90eef35848e074ff094175c98a1181f5677b36979107b1300ae77f293ba021",
     "Linux": "a52946d7974d57d9edfb8d685f9af624b8dd09dec97a584d5a021f2e1203cdf7",
 }
 DIGEST = RECORDED_DIGESTS.get(platform.system())

@@ -15,13 +15,15 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
                       oblique 10°): solver-free Dphi merit == hand merit.
 4. ``dM/dD`` ........ FD slope of merit over total_d == analytic
                       Σ−2·kz·Δ/tol² == fold ``phi_gain_shift``.
-5. ``fold`` ......... phi2/phi3 buckets (Ts→ch2, Tp→ch3... see note), folded
-                      == merit for non-overlapping layouts; gain_shift exact.
+5. ``fold`` ......... phi2 bucket of each branch (Ts on "s", Tp on "p"):
+                      the kernel targets carry the reference, so folding
+                      them against the absolute phase == merit.
 6. ``zero-D`` ....... total_d = 0 → differential ≡ absolute bit-for-bit.
 7. ``errors`` ....... PD+phase=False rejected; PD pol mismatch rejected;
                       differential-without-phase (binding) rejected;
                       bad passes rejected; unknown label still rejected.
-8. ``fold-equiv`` ... fold(native differential) == fold(absolute on rotated).
+8. ``fold-equiv`` ... fold(native differential) == fold(absolute twin whose
+                      targets embed the reference), the twin with no shift.
 9. ``angular`` ...... angular PDts demand (missing from the header before
      PD1; renumbered so the PD1 additions append cleanly).
 10. ``dispersive-hand`` (PD1) - dispersive incidence medium through the
@@ -53,8 +55,8 @@ Strategy (each check prints OK/FAIL, non-zero exit on any FAIL):
      BITWISE unmoved by a non-zero half-space thickness (review G2);
      expected_keys round-trips.
 
-NOTE on channels: Ts→2, Tp→2 (front T element, s/p share the channel; the
-engine separates polarizations by branch, the fold by channel).
+NOTE on channels: Ts→2, Tp→2 (front T element); the fold dict carries one
+branch per polarization, ``folded["s"]`` and ``folded["p"]``.
 """
 
 import sys
@@ -223,13 +225,14 @@ def test_dmdD():
     analytic = float(np.sum(2 * r * (-kz / tol)))
     from navette.synthesis import build_needle_targets
     folded = build_needle_targets(spec, WL, sim, angles_deg=np.array([TH_DEG]))
-    gs = float(folded["phi2"]["gain_shift"])
+    gs = float(folded["s"]["phi2"]["gain_shift"])
     check("FD == analytic", abs(fd - analytic) < 1e-6 * max(1.0, abs(analytic)),
           f"fd={fd:.6f} analytic={analytic:.6f}")
     check("fold gain_shift == FD", abs(gs - fd) < 1e-6 * max(1.0, abs(fd)),
           f"gain_shift={gs:.6f}")
-    check("other channels zero",
-          all(float(folded[f"phi{i}"]["gain_shift"]) == 0.0 for i in [0, 1, 3]))
+    check("other channels and the p branch zero",
+          all(float(folded["s"][f"phi{i}"]["gain_shift"]) == 0.0 for i in [0, 1, 3])
+          and all(float(folded["p"][f"phi{i}"]["gain_shift"]) == 0.0 for i in range(4)))
 
 
 def test_fold_values():
@@ -251,14 +254,17 @@ def test_fold_values():
     from navette.synthesis import build_needle_targets
     folded = build_needle_targets(spec, WL, sim, angles_deg=angs)
     m = spec.merit(sim, 1e6)
-    # folded merit from (targets, weights) vs Dphi sims.
-    # channel 2 shared by s/p: evaluate per-angle rows explicitly
-    w2 = np.asarray(folded["phi2"]["weights"]).reshape(2, 3)
-    t2 = np.asarray(folded["phi2"]["targets"]).reshape(2, 3)
-    s_s = np.angle(rows[0]) - ref_array(theta=angs[0])
-    s_p = np.angle(rowp[0]) - ref_array(theta=angs[1])
-    fsum = (float(np.sum(w2[0] * (t2[0] - s_s) ** 2))
-            + float(np.sum(w2[1] * (t2[1] - s_p) ** 2)))
+    # folded merit from (targets, weights) vs the absolute phase: the kernel
+    # targets embed the reference. Ts sits on the s branch at angle 0, Tp on
+    # the p branch at angle 1.
+    ws = np.asarray(folded["s"]["phi2"]["weights"]).reshape(2, 3)
+    ts = np.asarray(folded["s"]["phi2"]["targets"]).reshape(2, 3)
+    wp = np.asarray(folded["p"]["phi2"]["weights"]).reshape(2, 3)
+    tp = np.asarray(folded["p"]["phi2"]["targets"]).reshape(2, 3)
+    check("branches hold their own rows",
+          float(np.sum(ws[1])) == 0.0 and float(np.sum(wp[0])) == 0.0)
+    fsum = (float(np.sum(ws[0] * (ts[0] - np.angle(rows[0])) ** 2))
+            + float(np.sum(wp[1] * (tp[1] - np.angle(rowp[0])) ** 2)))
     check("folded == merit", abs(fsum - m) < 1e-9 * max(1.0, m),
           f"folded={fsum:.6f} merit={m:.6f}")
 
@@ -335,7 +341,9 @@ def test_errors():
 
 
 def test_fold_equiv():
-    print("--- fold-equivalence: differential vs absolute-on-rotated ---")
+    print("--- fold-equivalence: differential vs its absolute twin ---")
+    # The kernel scores the absolute phase, so the differential demand folds
+    # as the absolute demand whose targets embed the reference.
     from navette.synthesis import build_needle_targets
     rows = solver_space_tfs("s")
     tc = pd_collection("e", None, 0.05, 0.01)
@@ -343,20 +351,20 @@ def test_fold_equiv():
     sim = sim_curves_from_arrays(WL, {},
                                  {"Ts": rows}, total_d=D_NM, n_front=1.0, angles_deg=np.array([TH_DEG]))
     f1 = build_needle_targets(spec, WL, sim, angles_deg=np.array([TH_DEG]))
-    rot = apply_reference_rotation(rows, WL, 1.0, D_NM, 1.0, angle_deg=TH_DEG)
     tc2 = TargetCollection()
-    t = np.angle(rows[0]) - ref_array() + 0.01
+    t = np.angle(rows[0]) + 0.01
     tc2.add(SpectralTarget(WL, t, np.full(3, 0.05), "s",
                            "T", kind="e", phase=True, angle_deg=TH_DEG))
     spec2 = build_merit_spec(tc2)
-    sim2 = sim_curves_from_arrays(WL, {}, {"Ts": rot}, angles_deg=np.array([TH_DEG]))
+    sim2 = sim_curves_from_arrays(WL, {}, {"Ts": rows}, angles_deg=np.array([TH_DEG]))
     f2 = build_needle_targets(spec2, WL, sim2, angles_deg=np.array([TH_DEG]))
-    same_t = np.allclose(f1["phi2"]["targets"], f2["phi2"]["targets"], atol=0)
-    same_w = np.allclose(f1["phi2"]["weights"], f2["phi2"]["weights"], atol=0)
+    same_t = np.allclose(f1["s"]["phi2"]["targets"], f2["s"]["phi2"]["targets"],
+                         rtol=0, atol=1e-12)
+    same_w = np.array_equal(f1["s"]["phi2"]["weights"], f2["s"]["phi2"]["weights"])
     check("fold targets identical", bool(same_t))
     check("fold weights identical", bool(same_w))
-    check("rotated fold gain_shift == 0",
-          float(f2["phi2"]["gain_shift"]) == 0.0)
+    check("absolute twin gain_shift == 0",
+          float(f2["s"]["phi2"]["gain_shift"]) == 0.0)
 
 
 def test_angular_pd():

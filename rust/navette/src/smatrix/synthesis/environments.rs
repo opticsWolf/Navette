@@ -3739,7 +3739,7 @@ mod tests {
                 .find(|(_, s)| s.film_idx == host && (s.depth_into_layer_nm - DEPTH).abs() < 1e-9)
                 .expect("the locus is on this environment's scan grid");
             analytic += res.p_profile[i];
-            analytic += fold.phi_gain_shift.iter().sum::<f64>();
+            analytic += fold.phi_gain_shift();
         }
 
         // Measurement: insert a thin seed there, everywhere at once, and

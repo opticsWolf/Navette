@@ -1,6 +1,7 @@
 # Synthesis targets: polarization, curve coverage, weighting, coherence
 
-Status: **draft for review** (2026-11-09). Nothing here is implemented.
+Status: **in progress.** W1, W2 and W3 are implemented (2026-11-10);
+W4-W8 are open. Drafted 2026-11-09.
 
 This plan follows a review of the needle / thin-film synthesis path
 (`smatrix/synthesis/*`) against five reported issues:
@@ -228,6 +229,30 @@ Synthesis calls none of them.
 
 **Goal:** the needle P(z) equals dM/dδ of the merit the LM minimises, for
 every demand type, at any angle.
+
+**Done.** Where the implementation differs from the design below:
+
+- The intensity kernels return w·(X − t)·∂X, half the slope; the phase
+  kernel returns the full slope. So an s or p intensity pair folds at
+  2w on its branch, and a phase pair at w.
+- An unpolarized demand stays a pair, not the gradient form: on each
+  branch at weight w, with target `X_b − (X_u − rt)`, so that
+  `X_b − t_b = X_u − rt` and both branches carry the shared u residual.
+  Without an operating point it folds `(rt, w)` on both, which is exact
+  where Rs = Rp. `required_rows` asks for the s/p rows of every
+  unpolarized demand, so the operating point is there whenever the fold
+  has a simulation.
+- Colour on an s or p curve deposits 2g on its branch; on a u curve, g on
+  both branches.
+- `phi_gain_shift` lives in each `PolFold`; `NeedleTargets::phi_gain_shift()`
+  sums it. Two older bugs surfaced: a differential-phase demand handed the
+  kernel its target without the reference phase, and its gain shift used
+  the unwrapped residual. Both are fixed.
+- The engine door added the shift with the wrong sign and once per point;
+  it now adds `shift / n_points` to each point.
+- Oracle: `evaluator.rs` `needle_oracle` checks P + shift against a
+  Richardson finite difference of the merit after a real needle insertion,
+  for 26 demand sets at 0°, 30° and 60° (≤ 1e-5 relative).
 
 **Fold layout.** Buckets per (quantity, polarization branch):
 

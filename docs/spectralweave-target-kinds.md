@@ -327,13 +327,16 @@ Evaluation points (all in solver convention — see the sign note below):
   (`uses_phase()` gates complex-row assembly, `uses_differential()` the
   metadata; intensity-only LM loops pay zero extra allocations).
   `total_d = 0` reproduces absolute phase bit-for-bit.
-- The merit Phase arm subtracts the reference before wrapping; the fold
-  passes PD demands to the `phi` buckets unchanged (same channel as the
-  absolute element) and additionally accumulates the exact `dM/dD`
-  correction `phi_gain_shift[ch] = Σ −2·kz·w·(s−rt)` (`kz =
-  passes·reference_wavenumber`). Subtract it from the assembled `P_PHI`
-  (`needle_gradient(…, gain_shift_phi=…)`); it is uniform in z, so the
-  needle site (`argmax`) never moves — only predicted-gain bookkeeping.
+- The merit Phase arm subtracts the reference before wrapping. The needle
+  kernel scores the absolute phase, so the fold hands it the target plus
+  the reference, `rt + ref(λ)` (same channel as the absolute element),
+  and additionally accumulates the exact `dM/dD` correction
+  `phi_gain_shift[ch] = Σ −2·kz·w·wrap(s−rt)` (`kz =
+  passes·reference_wavenumber`) on the demand's branch. Add it to the
+  assembled `P_PHI` (`needle_gradient(…, gain_shift_phi=…)` spreads it
+  over the points, so their sum carries it once); it is uniform in z, so
+  the needle site (`argmax`) never moves — only predicted-gain
+  bookkeeping.
 - Manual-sim recipe (zero core involvement, doubles as test oracle):
   `apply_reference_rotation` multiplies complex rows by `e^{−i·ref}`;
   an absolute-phase demand on rotated rows is exactly a differential

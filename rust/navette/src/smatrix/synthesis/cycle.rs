@@ -763,7 +763,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
             fold = f;
         }
         *refold_s += tock(t0);
-        gtot += fold.phi_gain_shift.iter().sum::<f64>();
+        gtot += fold.phi_gain_shift();
 
         let sa = st.solver_arrays();
         for (mi, mat) in pool.iter().enumerate() {
@@ -1069,7 +1069,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         // reference by δ, so the true slope is P(z*) + Σ gain_shift (0 for
         // absolute-phase demand sets; the site itself is unaffected, only
         // this bookkeeping).
-        let gtot: f64 = fold.phi_gain_shift.iter().sum();
+        let gtot: f64 = fold.phi_gain_shift();
         // (insertion, material, P if scored by P, improvement it promises)
         let mut best: Option<(Insertion, &LayerSpec, Option<f64>, f64)> =
             best.map(|(ins, mat, p)| {
@@ -1352,7 +1352,7 @@ mod tests {
     use crate::smatrix::angle::{Radians, deg, degs};
     // Only the tests build NeedleTargets by hand; the pass returns them.
     use crate::smatrix::synthesis::merit::{MeritSpec, SimCurves};
-    use crate::smatrix::synthesis::needle_pass::NeedleTargets;
+    use crate::smatrix::synthesis::needle_pass::{NeedleTargets, PolFold};
 
     /// Frozen context: merit constant, optimization a no-op (keeps the
     /// analytic AR condition intact so the scan sees exact zeros).
@@ -1393,25 +1393,14 @@ mod tests {
     }
 
     fn fold_with(bucket: &str, target: f64) -> NeedleTargets {
-        let zero = || (vec![0.0f64; 1], vec![0.0f64; 1]);
-        let demand = || (vec![target; 1], vec![1.0f64; 1]);
-        let (r, t) = match bucket {
-            "r" => (demand(), zero()),
-            "t" => (zero(), demand()),
+        let mut fold = PolFold::zeros(1);
+        let demand = (vec![target; 1], vec![1.0f64; 1]);
+        match bucket {
+            "r" => fold.r = demand,
+            "t" => fold.t = demand,
             _ => unreachable!(),
-        };
-        NeedleTargets {
-            r,
-            t,
-            a: zero(),
-            rb: zero(),
-            tb: zero(),
-            ab: zero(),
-            phi: [zero(), zero(), zero(), zero()],
-            phi_gain_shift: [0.0; 4],
-            grad_r: vec![0.0f64; 1],
-            grad_t: vec![0.0f64; 1],
         }
+        NeedleTargets::shared(fold)
     }
 
     fn entry(label: &str, n: f64) -> LayerSpec {

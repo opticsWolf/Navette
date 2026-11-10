@@ -78,9 +78,17 @@ def matched_sim():
 
 
 def folded_total(folded, rows, angles=ANGLES):
-    """Sum w*(t-s)^2 over buckets against the known sim rows."""
+    """Sum w*(t-s)^2 over the s branch's buckets against the known sim rows.
+
+    A polarized intensity demand folds at twice its merit weight (the
+    intensity kernels return half the slope), so the sum is halved.
+    """
     # absorptance derives from companions, like the core does
     full = dict(rows)
+    p = folded["p"]
+    assert all(float(np.sum(p[b]["weights"])) == 0.0
+               for b in ("r", "t", "a", "rb", "tb", "ab")), "p branch not empty"
+    folded = folded["s"]
     if "Rs" in rows and "Ts" in rows:
         full["As"] = 1.0 - rows["Rs"] - rows["Ts"]
     if "RBs" in rows and "TBs" in rows:
@@ -95,7 +103,7 @@ def folded_total(folded, rows, angles=ANGLES):
             total += float(np.sum(w * (t - full[code]) ** 2))
         else:
             assert float(np.sum(w)) == 0.0, f"unexpected {bucket} weight"
-    return total
+    return 0.5 * total
 
 
 def test_agreement():
@@ -167,9 +175,12 @@ def test_phase():
     check("wrapped phase merit", abs(m - expect) < 1e-9 * max(1.0, expect),
           f"got={m:.6f} expect={expect:.6f}")
     folded = build_needle_targets(spec, WL, sim, angles_deg=np.array([0.0]))
-    check("phi0 bucket active, others empty",
-          abs(float(folded["phi0"]["weights"][0]) - (1.0 / 0.01)) < 1e-9
-          and all(float(np.sum(folded[f"phi{i}"]["weights"])) == 0.0 for i in [1, 2, 3]))
+    # The phase kernel returns the full slope: the weight stays 1/tol².
+    s, p = folded["s"], folded["p"]
+    check("phi0 bucket of s active, others empty",
+          abs(float(s["phi0"]["weights"][0]) - (1.0 / 0.01)) < 1e-9
+          and all(float(np.sum(s[f"phi{i}"]["weights"])) == 0.0 for i in [1, 2, 3])
+          and all(float(np.sum(p[f"phi{i}"]["weights"])) == 0.0 for i in range(4)))
 
 
 def test_errors():

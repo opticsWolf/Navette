@@ -53,6 +53,13 @@ def spec_single(angle, curve, wl, norm_targets, tols, nf=1.0, kind="e", phase=Fa
     return s
 
 
+def fold(*args, pol="s", **kwargs):
+    """One branch of the fold. A polarized intensity demand folds at twice
+    its merit weight (the intensity kernels return half the slope); phase
+    demands and unpolarized ones fold at their merit weight."""
+    return build_needle_targets(*args, **kwargs)[pol]
+
+
 def sim_curve(angle, wl, code, val, total_d=0.0):
     wl = np.asarray(wl, dtype=np.float64)
     angs = np.atleast_1d(np.asarray(angle, dtype=np.float64))
@@ -75,7 +82,7 @@ def test_gain_shift():
         sim.set_complex("Ts", np.array([0.7 * np.exp(1j * 0.3)] * 2))
         return sim
 
-    nt = build_needle_targets(spec, np.array([400., 500.]), mk_sim(100.0), angles_deg=np.array([0.0]))
+    nt = fold(spec, np.array([400., 500.]), mk_sim(100.0), angles_deg=np.array([0.0]))
     expect = 8.0 * (TAU / 400.0 + TAU / 500.0)
     check("gain_shift_hand", abs(float(nt["phi2"]["gain_shift"]) - expect) < 1e-9,
           f"{float(nt['phi2']['gain_shift']):.6f} vs {expect:.6f}")
@@ -90,9 +97,9 @@ def test_gain_shift():
     spec = MeritSpec()
     k = spec.add_key("Rs", angle_deg=0.0)
     add(spec, k, [400.], [0.5], [0.1], weight=3.0, count=2.0)
-    nt = build_needle_targets(spec, np.array([400.0]), angles_deg=np.array([0.0]))
+    nt = fold(spec, np.array([400.0]), angles_deg=np.array([0.0]))
     check("fold_weight_count",
-          abs(float(np.asarray(nt["r"]["weights"])[0]) - 150.0) < 1e-9
+          abs(float(np.asarray(nt["r"]["weights"])[0]) - 300.0) < 1e-9
           and abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.5) < 1e-14)
 
     pspec = MeritSpec()
@@ -101,7 +108,7 @@ def test_gain_shift():
         transform="phase", phase=True, dp=1.0, weight=2.0)
     sim = SimCurves(np.array([400.]), 100.0, 1.0, 1.0, angles_deg=np.array([0.0]))
     sim.set_complex("Ts", np.array([0.7 * np.exp(1j * 0.3)]))
-    pnt = build_needle_targets(pspec, np.array([400.]), sim, angles_deg=np.array([0.0]))
+    pnt = fold(pspec, np.array([400.]), sim, angles_deg=np.array([0.0]))
     expect = -2.0 * (TAU / 400.0) * 800.0 * (-0.01)
     check("gain_shift_weighted",
           abs(float(pnt["phi2"]["gain_shift"]) - expect) < 1e-9, f"{expect:.6f}")
@@ -115,13 +122,13 @@ def test_integral_fold():
     add(spec, k, wl, [0.5, 0.5, 0.5], [0.1, 0.1, 0.1], integral=True)
     sim = SimCurves(wl, 0.0, 1.0, 1.0, angles_deg=np.array([0.0]))
     sim.set_curve("Rs", np.array([0.7, 0.6, 0.5]))
-    nt = build_needle_targets(spec, wl, sim, angles_deg=np.array([0.0]))
+    nt = fold(spec, wl, sim, angles_deg=np.array([0.0]))
     w = np.asarray(nt["r"]["weights"])
     t = np.asarray(nt["r"]["targets"])
     g = 2.0 * 100.0 * 0.1 / 3.0
-    ok = bool(np.allclose(w, 100.0 / 9.0, rtol=0, atol=1e-9))
+    ok = bool(np.allclose(w, 200.0 / 9.0, rtol=0, atol=1e-9))
     ok &= bool(np.allclose(t, np.array([0.7, 0.6, 0.5]) - 0.3, rtol=0, atol=1e-12))
-    ok &= bool(np.allclose(2 * w * (np.array([0.7, 0.6, 0.5]) - t), g, rtol=0, atol=1e-9))
+    ok &= bool(np.allclose(w * (np.array([0.7, 0.6, 0.5]) - t), g, rtol=0, atol=1e-9))
     h = 1e-6
     sim_hi = SimCurves(wl, 0.0, 1.0, 1.0, angles_deg=np.array([0.0]))
     sim_hi.set_curve("Rs", np.array([0.7 + h, 0.6 + h, 0.5 + h]))
@@ -136,15 +143,15 @@ def test_integral_fold():
     add(rspec, rk, wl, [0.5, 0.5, 0.5], [0.1, 0.1, 0.1], kind="r", integral=True)
     sim_in = SimCurves(wl, 0.0, 1.0, 1.0, angles_deg=np.array([0.0]))
     sim_in.set_curve("Rs", np.full(3, 0.54))
-    nt = build_needle_targets(rspec, wl, sim_in, angles_deg=np.array([0.0]))
+    nt = fold(rspec, wl, sim_in, angles_deg=np.array([0.0]))
     check("integral_range_skip", bool(np.all(np.asarray(nt["r"]["weights"]) == 0.0)))
     sim_out = SimCurves(wl, 0.0, 1.0, 1.0, angles_deg=np.array([0.0]))
     sim_out.set_curve("Rs", np.full(3, 0.7))
-    nt2 = build_needle_targets(rspec, wl, sim_out, angles_deg=np.array([0.0]))
+    nt2 = fold(rspec, wl, sim_out, angles_deg=np.array([0.0]))
     w2 = np.asarray(nt2["r"]["weights"])
     t2 = np.asarray(nt2["r"]["targets"])
     check("integral_range_edge",
-          bool(np.allclose(w2, 100.0 / 9.0, rtol=0, atol=1e-9))
+          bool(np.allclose(w2, 200.0 / 9.0, rtol=0, atol=1e-9))
           and bool(np.allclose(t2, 0.4, rtol=0, atol=1e-12)), f"{t2}")
 
 
@@ -152,31 +159,31 @@ def test_builders():
     print("--- targets_builder_* (12) ---")
     nf = 4.0 / 3.0
     spec = spec_single(0.0, "Rs", [400., 500.], [0.5 * nf, 1.0 * nf], [0.01, 0.02], nf=nf)
-    nt = build_needle_targets(spec, np.array([400., 500., 600.]), angles_deg=np.array([0.0]))
+    nt = fold(spec, np.array([400., 500., 600.]), angles_deg=np.array([0.0]))
     tgt = np.asarray(nt["r"]["targets"])
     wgt = np.asarray(nt["r"]["weights"])
     check("linear_fold_exact",
           abs(tgt[0] - 0.5) < 1e-14 and abs(tgt[1] - 1.0) < 1e-14
           and tgt[2] == 0.0 and wgt[2] == 0.0
-          and abs(wgt[0] - nf * nf / 1e-4) < 1e-9 and abs(wgt[1] - nf * nf / 4e-4) < 1e-6,
+          and abs(wgt[0] - 2 * nf * nf / 1e-4) < 1e-9 and abs(wgt[1] - 2 * nf * nf / 4e-4) < 1e-6,
           f"{tgt} {wgt}")
 
     spec = MeritSpec()
     k = spec.add_key("Rp", angle_deg=0.0)
     add(spec, k, [500.], [0.4 * 2.0], [0.1], nf=2.0)
     add(spec, k, [500.], [0.6 * 3.0], [0.2], nf=3.0)
-    nt = build_needle_targets(spec, np.array([500.]), angles_deg=np.array([0.0]))
-    wa, wb = 4.0 / 0.01, 9.0 / 0.04
+    nt = fold(spec, np.array([500.]), angles_deg=np.array([0.0]), pol="p")
+    wa, wb = 2 * 4.0 / 0.01, 2 * 9.0 / 0.04
     check("exact_overlap",
           abs(float(np.asarray(nt["r"]["targets"])[0]) - (wa * 0.4 + wb * 0.6) / (wa + wb)) < 1e-12
           and abs(float(np.asarray(nt["r"]["weights"])[0]) - (wa + wb)) < 1e-9)
 
     spec = spec_single(0.0, "Ru", [400.], [0.5], [0.1], kind="a")
-    nt = build_needle_targets(spec, np.array([400.]),
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Ru", 0.7), angles_deg=np.array([0.0]))
     check("above_masked", float(np.asarray(nt["r"]["weights"])[0]) == 0.0
           and float(np.asarray(nt["r"]["targets"])[0]) == 0.0)
-    nt = build_needle_targets(spec, np.array([400.]),
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Ru", 0.3), angles_deg=np.array([0.0]))
     check("above_active", float(np.asarray(nt["r"]["weights"])[0]) > 0.0
           and abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.5) < 1e-14)
@@ -184,61 +191,61 @@ def test_builders():
     spec = MeritSpec()
     k = spec.add_key("Rs", angle_deg=0.0)
     add(spec, k, [400.], [0.5], [0.1], band=[0.05], kind="r")
-    nt = build_needle_targets(spec, np.array([400.]),
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Rs", 0.52), angles_deg=np.array([0.0]))
     check("range_inband", float(np.asarray(nt["r"]["weights"])[0]) == 0.0)
-    nt = build_needle_targets(spec, np.array([400.]),
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Rs", 0.6), angles_deg=np.array([0.0]))
     check("range_upper", abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.55) < 1e-14
-          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 100.0) < 1e-9)
-    nt = build_needle_targets(spec, np.array([400.]),
+          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 200.0) < 1e-9)
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Rs", 0.3), angles_deg=np.array([0.0]))
     check("range_lower", abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.45) < 1e-14
-          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 100.0) < 1e-9)
-    nt = build_needle_targets(spec, np.array([400.]), angles_deg=np.array([0.0]))
+          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 200.0) < 1e-9)
+    nt = fold(spec, np.array([400.]), angles_deg=np.array([0.0]))
     check("range_nosim", abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.5) < 1e-14
-          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 100.0) < 1e-9)
+          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 200.0) < 1e-9)
 
     spec = MeritSpec()
     k = spec.add_key("Rs", angle_deg=0.0)
     add(spec, k, [400.], [0.5], [0.1], band=[0.05], kind="c")
-    nt = build_needle_targets(spec, np.array([400.]),
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Rs", 0.52), angles_deg=np.array([0.0]))
     check("centerband_inside", abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.5) < 1e-14
-          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 400.0) < 1e-9)
-    nt = build_needle_targets(spec, np.array([400.]),
+          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 800.0) < 1e-9)
+    nt = fold(spec, np.array([400.]),
                               sim_curve(0.0, [400.], "Rs", 0.6), angles_deg=np.array([0.0]))
     check("centerband_outside", abs(float(np.asarray(nt["r"]["targets"])[0]) - 0.55) < 1e-14
-          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 100.0) < 1e-9)
+          and abs(float(np.asarray(nt["r"]["weights"])[0]) - 200.0) < 1e-9)
 
     spec = spec_single(0.0, "Ts", [400.], [0.3], [0.1])
-    nt = build_needle_targets(spec, np.array([400.]), angles_deg=np.array([0.0]))
+    nt = fold(spec, np.array([400.]), angles_deg=np.array([0.0]))
     check("transmission_bucket", abs(float(np.asarray(nt["t"]["targets"])[0]) - 0.3) < 1e-14
-          and abs(float(np.asarray(nt["t"]["weights"])[0]) - 100.0) < 1e-9
+          and abs(float(np.asarray(nt["t"]["weights"])[0]) - 200.0) < 1e-9
           and float(np.asarray(nt["r"]["weights"])[0]) == 0.0
           and float(np.asarray(nt["a"]["weights"])[0]) == 0.0)
 
     spec = spec_single(0.0, "As", [400.], [0.2], [0.1])
     sim = sim_curve(0.0, [400.], "Rs", 0.6)
     sim.set_curve("Ts", np.array([0.3]))
-    nt = build_needle_targets(spec, np.array([400.]), sim, angles_deg=np.array([0.0]))
+    nt = fold(spec, np.array([400.]), sim, angles_deg=np.array([0.0]))
     check("absorption_companions", abs(float(np.asarray(nt["a"]["targets"])[0]) - 0.2) < 1e-14
-          and abs(float(np.asarray(nt["a"]["weights"])[0]) - 100.0) < 1e-9
+          and abs(float(np.asarray(nt["a"]["weights"])[0]) - 200.0) < 1e-9
           and float(np.asarray(nt["r"]["weights"])[0]) == 0.0)
     spec2 = spec_single(0.0, "As", [400.], [0.05], [0.1], kind="a")
-    nt2 = build_needle_targets(spec2, np.array([400.]), sim, angles_deg=np.array([0.0]))
+    nt2 = fold(spec2, np.array([400.]), sim, angles_deg=np.array([0.0]))
     check("absorption_above_masked", float(np.asarray(nt2["a"]["weights"])[0]) == 0.0)
 
     spec = spec_single(0.0, "RBs", [400.], [0.4], [0.1])
-    nt = build_needle_targets(spec, np.array([400.]), angles_deg=np.array([0.0]))
+    nt = fold(spec, np.array([400.]), angles_deg=np.array([0.0]))
     check("back_buckets", abs(float(np.asarray(nt["rb"]["targets"])[0]) - 0.4) < 1e-14
-          and abs(float(np.asarray(nt["rb"]["weights"])[0]) - 100.0) < 1e-9
+          and abs(float(np.asarray(nt["rb"]["weights"])[0]) - 200.0) < 1e-9
           and float(np.asarray(nt["r"]["weights"])[0]) == 0.0)
 
     ok = True
     for curve, ch in (("Rs", 0), ("Ts", 2)):
         spec = spec_single(0.0, curve, [400.], [1.0], [0.1], phase=True, transform="phase")
-        nt = build_needle_targets(spec, np.array([400.]), angles_deg=np.array([0.0]))
+        nt = fold(spec, np.array([400.]), angles_deg=np.array([0.0]))
         ok &= abs(float(np.asarray(nt[f"phi{ch}"]["targets"])[0]) - 1.0) < 1e-14
         ok &= abs(float(np.asarray(nt[f"phi{ch}"]["weights"])[0]) - 100.0) < 1e-9
         for i in range(4):

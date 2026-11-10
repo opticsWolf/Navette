@@ -16,31 +16,38 @@ the thickness optimizer and the needle fold), and builds native
     folded = build_needle_targets(spec, wl, sim,
                                   angles_deg=angles)  # needle inputs
 
-``folded`` carries one ``{"targets", "weights"}`` pair per quantity
-(``r``/``t``/``a``/``rb``/``tb``/``ab``, plus ``phi0..phi3`` with a
-``gain_shift``), which feed ``needle_gradient``'s matching keywords::
+``folded`` holds one branch per polarization, ``folded["s"]`` and
+``folded["p"]``. Each carries one ``{"targets", "weights"}`` pair per
+quantity (``r``/``t``/``a``/``rb``/``tb``/``ab``, plus ``phi0..phi3`` with
+a ``gain_shift``), which feed ``needle_gradient``'s matching keywords on
+that polarization::
 
     from navette.smatrix.needle import needle_gradient, NeedleRequest
 
-    g = needle_gradient(stack, needle_n, z_grid, NeedleRequest.P,
-                        targets_r=folded["r"]["targets"],
-                        weights_r=folded["r"]["weights"])
+    s = folded["s"]
+    g = needle_gradient(stack, needle_n, z_grid, NeedleRequest.P, pol="s",
+                        targets_r=s["r"]["targets"],
+                        weights_r=s["r"]["weights"])
+
+The two branches' results summed over the spectral points are the merit's
+slope ``dM/dδ`` for a needle at each depth, at any angle: an s or p demand
+sits on its own branch, an unpolarized one on both.
 
 **Color demands take one extra step.** A color demand (Lab/DE2000, White,
 Yellow, dominant wavelength, ...) integrates the whole spectrum into a
 single residual, so it has no per-point target — it folds instead to
-``folded["grads_r"]`` / ``folded["grads_t"]``, the analytic ``dF/dcurve``
-per solver point. Those are separate keyword arguments, and leaving them
-out yields a gradient with the color contribution silently missing::
+``grads_r`` / ``grads_t``, the analytic ``dF/dcurve`` per solver point.
+Those are separate keyword arguments, and leaving them out yields a
+gradient with the color contribution silently missing::
 
     g = needle_gradient(stack, needle_n, z_grid,
-                        NeedleRequest.P | NeedleRequest.P_T,
-                        targets_r=folded["r"]["targets"],
-                        weights_r=folded["r"]["weights"],
-                        targets_t=folded["t"]["targets"],
-                        weights_t=folded["t"]["weights"],
-                        grads_r=folded["grads_r"],     # <- color, R channel
-                        grads_t=folded["grads_t"])     # <- color, T channel
+                        NeedleRequest.P | NeedleRequest.P_T, pol="s",
+                        targets_r=s["r"]["targets"],
+                        weights_r=s["r"]["weights"],
+                        targets_t=s["t"]["targets"],
+                        weights_t=s["t"]["weights"],
+                        grads_r=s["grads_r"],     # <- color, R channel
+                        grads_t=s["grads_t"])     # <- color, T channel
 
 The deposits land in ``P_*`` and ``P_T_*`` respectively, so the returned
 arrays are the complete gradient of the pointwise **and** color demands —

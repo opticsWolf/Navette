@@ -409,10 +409,12 @@ def build_needle_targets(
 ) -> dict[str, Any]:
     """Per-channel `targets`/`weights` surfaces for `needle_gradient`.
 
-    Colour demands deposit into internal `grad_r`/`grad_t` buckets that this
-    dict does **not** carry; a hand-assembled Python needle cycle therefore
-    sees zero colour gradient. Use the `NeedlePipeline` / `run_design` path
-    when the spec has colour demands.
+    Returns `{"s": branch, "p": branch}`; feed `"s"` to
+    `needle_gradient(pol="s")` and `"p"` to `pol="p"`. Each branch holds
+    `r`/`t`/`a`/`rb`/`tb`/`ab` and `phi0..phi3` pairs (`phi*` with a
+    `gain_shift`) plus the colour buckets `grads_r`/`grads_t`. Summed over
+    both branches and the spectral points, the needle P is the merit's
+    slope `dM/dδ`.
     """
     ...
 
