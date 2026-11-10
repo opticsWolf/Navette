@@ -93,6 +93,16 @@ pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
             }),
             t.kind.as_str(),
         )?;
+        // W4: explicit weights and inline profiles check here; a named
+        // profile resolves at compile, where the registry is.
+        navette::smatrix::synthesis::targets::resolve_point_weights(
+            &t.weights,
+            &t.weight_profile,
+            &t.wavelengths,
+            None,
+            "SpectralTarget",
+        )
+        .map_err(PyValueError::new_err)?;
     }
     for t in &set.angular {
         check_target(
@@ -108,6 +118,14 @@ pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
             }),
             t.kind.as_str(),
         )?;
+        navette::smatrix::synthesis::targets::resolve_point_weights(
+            &t.weights,
+            &t.weight_profile,
+            &navette::smatrix::angle::to_degrees_vec(&t.angles),
+            None,
+            "AngularTarget",
+        )
+        .map_err(PyValueError::new_err)?;
     }
     // Color demands: full single-validator check (curve vocabulary, compat
     // matrix, table resolution) — key stamped at compile, unchecked here.

@@ -871,6 +871,7 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(needle_engine, m)?)?;
     m.add_class::<crate::synthesis_merit::PySimCurves>()?;
     m.add_class::<crate::synthesis_merit::PyMeritSpec>()?;
+    m.add_class::<crate::synthesis_weights::PyWeightProfile>()?;
     m.add_function(wrap_pyfunction!(
         crate::synthesis_merit::build_needle_targets,
         m

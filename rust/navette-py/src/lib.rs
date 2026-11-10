@@ -55,6 +55,7 @@ mod spectralweave_target;
 mod structure;
 mod synthesis_merit;
 pub(crate) mod synthesis_pipeline;
+mod synthesis_weights;
 
 use pyo3::prelude::*;
 use pyo3::{wrap_pyfunction, wrap_pymodule};

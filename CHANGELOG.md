@@ -204,6 +204,36 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Added
 
+- **Per-point weights: `weights` and `weight_profile`**
+  (`docs/plans/synthesis_targets_plan.md` W4). `SpectralTarget` and
+  `AngularTarget` take one weight per point (`weights=`) or a
+  `WeightProfile` over their axis (nm for spectral, degrees for angular):
+  `constant`, `ramp`, `gaussian`, `bands`, `table` (pchip or linear,
+  held flat past the ends) and `product` of those. Named profiles go in
+  `TargetCollection.weight_profiles` and a target names one. A pointwise
+  residual is scaled by √w_i; an integral target takes the weighted
+  mean of its diffs over the weighted mean of its tolerances; the needle
+  fold carries the same weights and stays the merit's slope. Tolerances
+  keep their meaning (scale, band), and shrinking a tolerance by √w to
+  emphasise a region is no longer needed. Profiles are evaluated and
+  validated in Rust when the merit spec compiles (finite, ≥ 0, right
+  length, not all zero). Weights on an integral angular target refuse,
+  and so does `TargetCollection.build_weaver` (the weaver path does not
+  read them). All ones is bit-identical to no weights.
+  `MeritSpec.add_target(point_weights=)` is the low-level door, and
+  `WeightProfile` is importable from `navette.spectralweave`.
+
+- **Log-normalized targets in needle synthesis**
+  (`docs/plans/synthesis_targets_plan.md` W5). The needle refused any
+  intensity demand with `normalization_mode="log"`, mid-run, and
+  `"auto"` picks log for any curve spanning 100× or more. Such a demand
+  now folds the tangent of its log residual at the operating point:
+  the needle gradient is the merit's (checked against the merit slope
+  for every kind, unpolarized, absorption, back side, weighted and
+  integral demands). Before the first simulation, and at the merit's
+  1e-12 clamp, a log demand folds nothing. `complex` normalization still
+  refuses.
+
 - **Retardance targets: `RetR`, `RetT`, `DeltaR`, `DeltaT`**
   (`docs/plans/synthesis_targets_plan.md` W8a). `Ret = arg(z_p·conj(z_s))`
   of r_f or t_f, the engine's `Retardance_R`/`Retardance_T`;

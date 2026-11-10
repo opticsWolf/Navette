@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Union
 
+import json as _json
+
 import numpy as np
 
 # Import the ultra-fast Rust implementation
@@ -18,6 +20,7 @@ try:
   from navette._spectralweave import TargetWeaver
   from navette._spectralweave import OpticalWeaver
   from navette._spectralweave import calculate_merit as _calculate_merit
+  from navette._smatrix import WeightProfile
 except ImportError as exc:  # pragma: no cover - native not built yet
   raise ImportError(
     "Targets need the compiled `navette._spectralweave` extension. "
@@ -81,6 +84,12 @@ class SpectralTarget:
     radians (phase) — see ``docs/spectralweave-target-kinds.md``.
     ``weight`` multiplies the target's merit sum (default 1; relative
     importance across targets — the 200-pt vs 10-pt density question).
+    ``weights`` (one per point) or ``weight_profile`` multiply ``weight``
+    point by point: a residual is scaled by ``√(weight·w_i/count)``, and an
+    integral target takes the weighted means ``Σw_i d_i/Σw_i`` over
+    ``Σw_i tol_i/Σw_i``. Tolerances keep their meaning (scale, band);
+    weights carry emphasis. A profile is evaluated on the target's axis:
+    wavelength in nm here, angle in degrees on :class:`AngularTarget`.
     ``normalize_count=True`` additionally divides by the target-level point
     count (spectral grid size, angular angle count), turning the sum into a
     mean: equal say regardless of sampling density. Both flow verbatim into
@@ -109,6 +118,12 @@ class SpectralTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
+    #: W4 point weights: one per point (``weights``) or a profile over
+    #: the target's axis (``weight_profile``: a :class:`WeightProfile`, or
+    #: the name of one in the collection's ``weight_profiles``). Give at
+    #: most one.
+    weights:      Union[np.ndarray, None] = None
+    weight_profile: Union["WeightProfile", str, None] = None
     #: The angle of incidence, in degrees or in radians: give exactly one
     #: (keyword-only). It is kept as given; the native layer converts.
     angle_deg:    Union[float, None] = field(default=None, kw_only=True)
@@ -122,6 +137,7 @@ class SpectralTarget:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64)).ravel().tolist()
         return {
             **_dump_environment(self.environment),
+            **_dump_weights(self.weights, self.weight_profile),
             "wavelengths": np.ascontiguousarray(np.asarray(self.wavelengths, dtype=np.float64)).ravel().tolist(),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
@@ -173,6 +189,12 @@ class AngularTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
+    #: W4 point weights: one per point (``weights``) or a profile over
+    #: the target's axis (``weight_profile``: a :class:`WeightProfile`, or
+    #: the name of one in the collection's ``weight_profiles``). Give at
+    #: most one.
+    weights:      Union[np.ndarray, None] = None
+    weight_profile: Union["WeightProfile", str, None] = None
     #: The angle grid, in degrees or in radians: give exactly one
     #: (keyword-only). It is kept as given; the native layer converts.
     angles_deg:   Union[np.ndarray, None] = field(default=None, kw_only=True)
@@ -186,6 +208,7 @@ class AngularTarget:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64)).ravel().tolist()
         return {
             **_dump_environment(self.environment),
+            **_dump_weights(self.weights, self.weight_profile),
             "wavelength": float(self.wavelength),
             **_dump_angle("angles", self.angles_deg, self.angles_rad),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
@@ -338,6 +361,22 @@ def _dump_environment(env):
     return {"environment": env}
 
 
+def _dump_weights(weights, profile) -> dict:
+    """W4: ``weights`` / ``weight_profile``, emitted only when set (so a
+    target without them dumps the JSON it always did). A
+    :class:`WeightProfile` travels as its JSON document, a name as the
+    string the compile resolves against ``weight_profiles``. No checks
+    here: the native validator owns them."""
+    out = {}
+    if weights is not None:
+        out["weights"] = np.ascontiguousarray(
+            np.asarray(weights, dtype=np.float64)).ravel().tolist()
+    if profile is not None:
+        out["weight_profile"] = (profile if isinstance(profile, str)
+                                 else _json.loads(profile.to_json()))
+    return out
+
+
 def _dump_table(spec: Union[str, dict], role: str):
     """Name passthrough (native resolves ``D65``/``1931_2deg`` from the
     embedded defaults) or explicit table dict with array normalization.
@@ -389,6 +428,8 @@ class TargetCollection:
     _spectral_targets: list[SpectralTarget] = field(default_factory=list)
     _angular_targets:  list[AngularTarget]  = field(default_factory=list)
     _color_targets:    list[ColorTarget]    = field(default_factory=list)
+    #: W4: named profiles a target's ``weight_profile`` may name.
+    weight_profiles:   dict[str, WeightProfile] = field(default_factory=dict)
 
     def add(self, target: BaseTarget) -> None:
         """Append a :class:`SpectralTarget`, :class:`AngularTarget`, or
@@ -432,6 +473,12 @@ class TargetCollection:
         """
         Compiles the defined targets into a Rust-native TargetWeaver.
         """
+        for t in (*self._spectral_targets, *self._angular_targets):
+            if t.weights is not None or t.weight_profile is not None:
+                raise ValueError(
+                    "build_weaver: point weights (weights / weight_profile) are "
+                    "read by the synthesis merit (build_merit_spec) only; "
+                    "calculate_merit would ignore them. Drop them for this path.")
         weaver = TargetWeaver(cache_size=cache_size, tolerance_floor=tolerance_floor)
 
         # Iterating in Python and passing to Rust here is fine because it

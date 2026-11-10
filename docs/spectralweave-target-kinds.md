@@ -88,6 +88,46 @@ terms), gradients superpose exactly across overlapping integral frames,
 and the PD gain-shift formula needs no changes (it lands on
 $−2W(\bar m−T)\overline{k_z}$ automatically).
 
+### Point weights (`weights`, `weight_profile`)
+
+`weight` is one number per target. Point weights put emphasis *along*
+the target, one weight $w_i \ge 0$ per point, multiplying `weight`:
+
+- pointwise: residual $r_i \cdot \sqrt{w_i}$, so the frame contributes
+  `weight × Σ w_i r_i² / count`;
+- integral: the weighted mean, $R = \frac{\Sigma w_i d_i/\Sigma w_i}
+  {\Sigma w_i tol_i/\Sigma w_i}$;
+- the needle fold multiplies each emitted pair's weight by $w_i$
+  (integral: $W w_j/(\Sigma w \cdot N)$ with the gap $N G$ unchanged), so
+  it stays the merit's slope (pinned by the needle oracle).
+
+Give them as an array (`weights=`, one per point), as a
+`WeightProfile` (`constant`, `ramp`, `gaussian`, `bands`, `table`
+(pchip | linear, held flat past the ends), `product` of those), or as the
+name of a profile in `TargetCollection.weight_profiles` — at most one of
+the two keywords. A profile is evaluated on the target's own axis:
+**wavelength in nm** for `SpectralTarget`, **angle in degrees** for
+`AngularTarget`. Everything resolves to point weights when the merit spec
+compiles; validation is native (finite, ≥ 0, right length, not all zero —
+mute a target with `weight=0` instead). All ones is bit-identical to no
+weights.
+
+Tolerance and weight now say different things. The tolerance is the
+**scale** of a point (and the band's companion); the weight is how much
+that point **matters**. For an Exact pointwise point the two are
+interchangeable — $w_i$ is exactly $tol_i \to tol_i/\sqrt{w_i}$ (pinned
+by test) — which is the old way to emphasise a region (shrink the
+tolerance there by $\sqrt{w}$). That trick is superseded: it also moves
+the band of `r`/`c` kinds and the scale of an integral's mean tolerance,
+where a weight leaves both alone.
+
+Limits: weights on an **integral angular** target are refused (each
+angle is its own single-point frame, so they would do nothing); colour
+demands take none (a weight inside the colour integral would change the
+colour); and the `TargetWeaver` path (`build_weaver` /
+`calculate_merit`) refuses targets that carry them — they are read by
+`build_merit_spec` only.
+
 ## Kinds (per point, merit space)
 
 Scaled residual `d = sim_scaled − target_scaled`, floored tolerance `tol`,
@@ -150,8 +190,28 @@ conservatively (exact at centre).
 
 Phase demands fold to one `(targets, weights)` pair per S-matrix channel
 (`phi[0..=3]` → one `P_PHI` call each). Intensity/absorption demands
-require linear normalization; phase demands accept linear or phase
-(wrapped residuals mirror the evaluator); anything else is an `Err`.
+accept linear or log normalization; phase demands accept linear or phase
+(wrapped residuals mirror the evaluator); anything else (`complex`) is an
+`Err`.
+
+**Log demands** fold the tangent of their residual. In log mode
+$d = \log_{10}(s)\cdot nf - t$; the kind table runs on that $d$ and gives
+a centre or edge $c$ (in $\log_{10}$ units) and a weight $w$. With
+$q = 1/(s_{op}\ln 10)$, the slope of $\log_{10}$ at the operating point,
+the demand emits the linear pair
+
+$$t_k = s_{op} - (\log_{10} s_{op} - c)/q, \qquad w_k = w\,q^2,$$
+
+which has the log residual's value and slope at $s_{op}$, so the needle
+gradient is the merit's (pinned by the oracle for every kind, U, A, the
+back side and the integral). An integral Log demand does the same per
+point: its centre gap is the mean residual $\bar d/nf$ and point $j$
+takes $q_j$ (gap $\div q_j$, weight $\times q_j^2$). Two differences from
+a linear demand: before the first simulation there is no operating point,
+so a Log demand **folds nothing** (no conservative centre form), and at
+or below the merit's $10^{-12}$ clamp it folds nothing either (the merit
+is flat there). `"auto"` resolves to log for any curve spanning 100× or
+more, so this is what makes such targets usable in needle runs at all.
 Phase demands must carry raw values with `norm_factor == 1` (the phase
 arm scales nothing — the converter unscales the resolved triple).
 

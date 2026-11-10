@@ -225,7 +225,8 @@ impl PyMeritSpec {
 
     #[pyo3(signature = (key_idx, wavelengths, normalized, tolerances, kind, transform,
                         norm_factor, band=None, phase=false, differential_passes=None,
-                        weight=1.0, count_norm=None, integral=false, retardance=false))]
+                        weight=1.0, count_norm=None, integral=false, retardance=false,
+                        point_weights=None))]
     /// Append one target frame. Arrays are per-point values on `wavelengths`.
     /// `differential_passes` (None = absolute phase; 1.0 = `PDts`/`PDtp`
     /// transmitted) subtracts the equivalent-medium reference (see
@@ -235,6 +236,8 @@ impl PyMeritSpec {
     /// `weight` scales the frame's merit sum; `count_norm` (target-level
     /// point count, resolved by the converter) divides it. `integral`
     /// constrains the mean of the scaled diffs (single residual).
+    /// `point_weights` (one per point, None = all ones) multiply `weight`
+    /// point by point; an integral target takes their weighted mean.
     #[allow(clippy::too_many_arguments)]
     fn add_target(
         &mut self,
@@ -252,7 +255,12 @@ impl PyMeritSpec {
         count_norm: Option<f64>,
         integral: bool,
         retardance: bool,
+        point_weights: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
+        let pw: Vec<f64> = match point_weights {
+            Some(a) => a.as_slice()?.to_vec(),
+            None => Vec::new(),
+        };
         let wl = wavelengths.as_slice()?;
         let nt = normalized.as_slice()?;
         let tol = tolerances.as_slice()?;
@@ -281,6 +289,7 @@ impl PyMeritSpec {
                 weight,
                 count_norm,
                 integral,
+                point_weights: Arc::from(pw),
             })
             .map_err(PyValueError::new_err)
     }

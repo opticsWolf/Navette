@@ -122,3 +122,33 @@ def test_a_quarter_wave_retarder_in_reflection():
     probe = _spec("DeltaR", wl, np.zeros(wl.size), 1.0, 45.0)
     delta = np.asarray(probe.residuals(_ctx(probe, wl).simulate(best[1])))
     np.testing.assert_allclose(delta, -np.pi / 2, atol=1e-6)
+
+
+def test_a_broadband_quarter_wave_retarder_needs_the_needle():
+    # The same demand on 500-600 nm: thickness refinement alone stalls at
+    # merit 900-2700 from quarter-wave and random starts. Needle synthesis
+    # from 600 nm H + 600 nm L reaches it to 0.15 deg (merit 0.019 over 21
+    # points); seeds 4 x 300 nm and 2 x 1000 nm stall at 8774 and 91, so
+    # the seed is part of the benchmark. The design is re-scored by the
+    # engine's own Retardance_R.
+    from navette.smatrix.smatrix import Request, ScatterMatrix
+    from navette.synthesis.pipeline import PipelineConfig, run_needle
+
+    wl = np.linspace(500.0, 600.0, 21)
+    h, l, glass = (np.full(wl.size, n + 0j) for n in (2.30, 1.46, 1.52))
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, np.full(wl.size, np.pi / 2), np.full(wl.size, 0.05),
+                          "u", "RetR", kind="e", phase=True, angle_deg=45.0))
+    cfg = PipelineConfig(max_macro_cycles=60, needles_per_cycle=2, max_film_layers=40,
+                         max_total_thickness_nm=6000.0)
+    out = run_needle(layers=[(h, 600.0), (l, 600.0)], names=["H0", "L0"], targets=tc,
+                     angles_deg=[45.0], wavelengths=wl, materials={"H": h, "L": l},
+                     pipeline_config=cfg, substrate=(glass, "glass"))
+    assert out["final_mf"] < 0.1, out["final_mf"]
+    films = out["stack"].to_dict()["films"]
+    rows = [np.ones(wl.size, complex)] + [np.asarray(f["nk"]) for f in films] + [glass]
+    d = [0.0] + [f["thickness"] for f in films] + [0.0]
+    sm = ScatterMatrix(np.vstack(rows), d, wavelengths=wl, angles_deg=[45.0])
+    ret = np.asarray(sm.compute(Request.RETARD_R)["Retardance_R"]).ravel()
+    assert np.max(np.abs(ret - np.pi / 2)) < 0.01
+    assert np.sum(((ret - np.pi / 2) / 0.05) ** 2) == pytest.approx(out["final_mf"], rel=1e-6)

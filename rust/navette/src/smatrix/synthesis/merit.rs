@@ -701,6 +701,20 @@ pub struct MeritTarget {
     /// residual `R = mean(d)/mean(tol)`), not each point. Kinds apply once
     /// to the mean. Rejected with `count_norm` (the mean already is one).
     pub integral: bool,
+    /// W4 point weights, one per wavelength (empty = all ones). A
+    /// pointwise residual is scaled by `√w_i` on top of `rscale`; an
+    /// integral target takes the weighted means `Σw_i d_i / Σw_i` and
+    /// `Σw_i tol_i / Σw_i`. All ones is the same arithmetic as empty,
+    /// bit for bit (`x·1.0 = x`, `Σ1.0 = n`).
+    pub point_weights: Arc<[f64]>,
+}
+
+impl MeritTarget {
+    /// The point weight at `i` (1 when the target has none).
+    #[inline]
+    pub fn point_weight(&self, i: usize) -> f64 {
+        self.point_weights.get(i).copied().unwrap_or(1.0)
+    }
 }
 
 /// Flat, immutable, Send+Sync target description.
@@ -941,6 +955,9 @@ impl MeritSpec {
         // double-dilute silently.
         if target.integral && target.count_norm.is_some() {
             return Err("integral targets reject count_norm (the mean already is one)".into());
+        }
+        if !target.point_weights.is_empty() {
+            super::weights::check_point_weights(&target.point_weights, n, "MeritTarget")?;
         }
         self.targets.push(target);
         Ok(())
@@ -1497,6 +1514,7 @@ impl MeritSpec {
             let mut acc_d = 0.0;
             let mut acc_tol = 0.0;
             let mut acc_bw = 0.0;
+            let mut acc_w = 0.0;
             for i in 0..t_wl.len() {
                 let sim_raw = match &input {
                     TargetInput::Intensity(row) => sample(row, i, &mut sim_idx),
@@ -1552,24 +1570,26 @@ impl MeritSpec {
 
                 let tol = t.tolerances[i];
                 let bw = t.band.get(i).copied().unwrap_or(0.0);
+                let pw = t.point_weight(i);
 
                 if t.integral {
                     // Mean branch: accumulate raw ingredients; the kind
-                    // applies ONCE to the mean after the loop.
-                    acc_d += scaled_diff;
-                    acc_tol += tol;
-                    acc_bw += bw;
+                    // applies ONCE to the (point-weighted) mean after the
+                    // loop.
+                    acc_d += pw * scaled_diff;
+                    acc_tol += pw * tol;
+                    acc_bw += pw * bw;
+                    acc_w += pw;
                 } else {
-                    out.push(kind_residual(t.kind, scaled_diff, tol, bw) * rscale);
+                    out.push(kind_residual(t.kind, scaled_diff, tol, bw) * rscale * pw.sqrt());
                 }
             }
             if t.integral {
                 // Single mean residual R = mean(d)/mean(tol); kinds
                 // constrain the MEAN (integral-`a` = lower bound on the
                 // average). Weight multiplies (count rejected at intake).
-                let n = t_wl.len() as f64;
-                let tol_bar = (acc_tol / n).max(1e-300);
-                out.push(kind_residual(t.kind, acc_d / n, tol_bar, acc_bw / n) * rscale);
+                let tol_bar = (acc_tol / acc_w).max(1e-300);
+                out.push(kind_residual(t.kind, acc_d / acc_w, tol_bar, acc_bw / acc_w) * rscale);
             }
         }
         // Color demands of this key group, in demand insertion order
@@ -1966,14 +1986,11 @@ impl MeritSpec {
                 diffs.push(diff);
             }
 
-            let n = t_wl.len() as f64;
             if t.integral {
                 // One row over the mean: ∂R/∂value = rscale · kind'(mean)
-                //                        · (1/n) · transform'(raw_i) · channel
-                //                        · sample weight.
-                let mean_d = diffs.iter().sum::<f64>() / n;
-                let mean_tol = (t.tolerances.iter().take(t_wl.len()).sum::<f64>() / n).max(1e-300);
-                let mean_bw = t.band.iter().take(t_wl.len()).sum::<f64>() / n;
+                //                        · (w_i/Σw) · transform'(raw_i)
+                //                        · channel · sample weight.
+                let (mean_d, mean_tol, mean_bw, w_sum) = weighted_means(t, &diffs);
                 let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
                 let mut terms: Vec<CurveTerm> = Vec::new();
                 for i in 0..t_wl.len() {
@@ -1983,7 +2000,7 @@ impl MeritSpec {
                         &channels,
                         ang_row,
                         &refs[i],
-                        rscale * dk * dt / n,
+                        rscale * dk * dt * t.point_weight(i) / w_sum,
                     );
                 }
                 out.rows.push(terms);
@@ -1994,7 +2011,13 @@ impl MeritSpec {
                     let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
                     let dt = d_transform(t.transform, raws[i], t.norm_factor);
                     let mut terms: Vec<CurveTerm> = Vec::new();
-                    push_terms(&mut terms, &channels, ang_row, &refs[i], rscale * dk * dt);
+                    push_terms(
+                        &mut terms,
+                        &channels,
+                        ang_row,
+                        &refs[i],
+                        rscale * t.point_weight(i).sqrt() * dk * dt,
+                    );
                     out.rows.push(terms);
                 }
             }
@@ -2218,16 +2241,13 @@ fn phase_rows_into(
         }
     };
 
-    let n = t_wl.len() as f64;
     if t.integral {
-        let mean_d = diffs.iter().sum::<f64>() / n;
-        let mean_tol = (t.tolerances.iter().take(t_wl.len()).sum::<f64>() / n).max(1e-300);
-        let mean_bw = t.band.iter().take(t_wl.len()).sum::<f64>() / n;
+        let (mean_d, mean_tol, mean_bw, w_sum) = weighted_means(t, &diffs);
         let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
         let mut terms: Vec<CurveTerm> = Vec::new();
         for i in 0..t_wl.len() {
             let dt = d_transform(t.transform, raws[i], t.norm_factor);
-            push_point(&mut terms, i, rscale * dk * dt / n);
+            push_point(&mut terms, i, rscale * dk * dt * t.point_weight(i) / w_sum);
         }
         out.rows.push(terms);
     } else {
@@ -2237,10 +2257,25 @@ fn phase_rows_into(
             let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
             let dt = d_transform(t.transform, raws[i], t.norm_factor);
             let mut terms: Vec<CurveTerm> = Vec::new();
-            push_point(&mut terms, i, rscale * dk * dt);
+            push_point(&mut terms, i, rscale * t.point_weight(i).sqrt() * dk * dt);
             out.rows.push(terms);
         }
     }
+}
+
+/// An integral target's point-weighted means of its diffs, tolerances and
+/// band, and the weight sum: the residual pass's accumulation, in the same
+/// order, so the derivative rows see the values the residual saw.
+fn weighted_means(t: &MeritTarget, diffs: &[f64]) -> (f64, f64, f64, f64) {
+    let (mut d, mut tol, mut bw, mut w) = (0.0, 0.0, 0.0, 0.0);
+    for (i, &di) in diffs.iter().enumerate() {
+        let pw = t.point_weight(i);
+        d += pw * di;
+        tol += pw * t.tolerances[i];
+        bw += pw * t.band.get(i).copied().unwrap_or(0.0);
+        w += pw;
+    }
+    (d / w, (tol / w).max(1e-300), bw / w, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -2387,6 +2422,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2415,6 +2451,7 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -3795,6 +3832,107 @@ mod tests {
         assert!((spec.merit(&sim2, 1e6) - 1.0).abs() < 1e-12);
     }
 
+    /// W4: one Rs key with `t` on it.
+    fn spec_with(t: impl FnOnce(u32) -> MeritTarget) -> MeritSpec {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        spec.add_target(t(k as u32)).unwrap();
+        spec
+    }
+
+    #[test]
+    fn point_weights_of_one_are_no_weights_bit_for_bit() {
+        let sim = sim_one_angle(&[0.71, 0.63, 0.52, 0.0, 0.0]);
+        for integral in [false, true] {
+            for kind in [ConstraintKind::Exact, ConstraintKind::Above] {
+                let plain = spec_with(|k| {
+                    let mut t = entry_integral(k, kind);
+                    t.integral = integral;
+                    t
+                });
+                let ones = spec_with(|k| {
+                    let mut t = entry_integral(k, kind);
+                    t.integral = integral;
+                    t.point_weights = vec![1.0; 3].into();
+                    t
+                });
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                plain.residuals(&sim, &mut a).unwrap();
+                ones.residuals(&sim, &mut b).unwrap();
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a), bits(&b), "integral={integral} {kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_point_weight_is_a_tolerance_rescaling_for_exact() {
+        // Pointwise Exact: (d/tol)²·w = (d/(tol/√w))².
+        let sim = sim_one_angle(&[0.71, 0.63, 0.52, 0.0, 0.0]);
+        let w = [4.0, 0.25, 9.0];
+        let weighted = spec_with(|k| {
+            let mut t = entry_integral(k, ConstraintKind::Exact);
+            t.integral = false;
+            t.point_weights = w.to_vec().into();
+            t
+        });
+        let rescaled = spec_with(|k| {
+            let mut t = entry_integral(k, ConstraintKind::Exact);
+            t.integral = false;
+            t.tolerances = w
+                .iter()
+                .map(|wi| 0.1 / wi.sqrt())
+                .collect::<Vec<_>>()
+                .into();
+            t
+        });
+        let (a, b) = (weighted.merit(&sim, 1e6), rescaled.merit(&sim, 1e6));
+        assert!((a - b).abs() <= 1e-12 * b, "{a} vs {b}");
+    }
+
+    #[test]
+    fn an_integral_takes_the_weighted_mean() {
+        // Sim [0.7, 0.5, 0.4] vs 0.5, weights [3, 1, 0] and tolerances
+        // [0.1, 0.3, 0.9]: mean d = (3·0.2 + 0)/4 = 0.15, mean tol =
+        // (3·0.1 + 0.3)/4 = 0.15, so R = 1; the zero-weight point (d = −0.1,
+        // tol 0.9) does not count.
+        let sim = sim_one_angle(&[0.7, 0.5, 0.4, 0.0, 0.0]);
+        let spec = spec_with(|k| {
+            let mut t = entry_integral(k, ConstraintKind::Exact);
+            t.tolerances = vec![0.1, 0.3, 0.9].into();
+            t.point_weights = vec![3.0, 1.0, 0.0].into();
+            t.weight = 2.0;
+            t
+        });
+        let mut r = Vec::new();
+        spec.residuals(&sim, &mut r).unwrap();
+        assert_eq!(r.len(), 1);
+        assert!((r[0] - 2f64.sqrt()).abs() < 1e-12, "{}", r[0]);
+    }
+
+    #[test]
+    fn point_weights_refuse_bad_shapes_at_add_target() {
+        for (w, want) in [
+            (vec![1.0, 1.0], "shape"),
+            (vec![1.0, -1.0, 1.0], ">= 0"),
+            (vec![0.0, 0.0, 0.0], "all zero"),
+            (vec![1.0, f64::NAN, 1.0], ">= 0"),
+        ] {
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rs,
+            });
+            let mut t = entry_integral(k as u32, ConstraintKind::Exact);
+            t.point_weights = w.into();
+            let e = spec.add_target(t).unwrap_err();
+            assert!(e.contains(want), "{e}");
+        }
+    }
+
     #[test]
     fn integral_kinds_mask_the_mean() {
         // Above: mean above target → silent; mean below → active.
@@ -4287,6 +4425,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral,
                 weight,
                 count_norm: None,
@@ -4431,6 +4570,50 @@ mod tests {
             .unwrap();
             assert_eq!(spec.n_residuals(), 1);
             compare(&spec, &base_sim(), 1e-6, "integral/Exact");
+        }
+
+        #[test]
+        fn point_weights_ride_through_every_kind() {
+            // W4: non-uniform point weights, pointwise (√w_i on each row)
+            // and integral (w_i/Σw on the one row), every kind, both
+            // transforms, against residuals() differenced.
+            let pw: Vec<f64> = (0..NW).map(|i| 0.25 + 0.5 * i as f64).collect();
+            for kind in [
+                ConstraintKind::Exact,
+                ConstraintKind::Above,
+                ConstraintKind::Below,
+                ConstraintKind::Range,
+                ConstraintKind::CenterBand,
+            ] {
+                for transform in [SimTransform::Linear, SimTransform::Log] {
+                    for integral in [false, true] {
+                        let mut spec = MeritSpec::new();
+                        let k = spec.add_key(MeritKey {
+                            angle: deg(30.0),
+                            curve: CurveId::Rs,
+                        });
+                        let mut t = target(k as u32, wl(), kind, transform, integral, 1.7);
+                        let level = if transform == SimTransform::Log {
+                            0.08f64.log10()
+                        } else {
+                            0.08
+                        };
+                        // Integral kinds act on the mean: put it off the
+                        // curve's mean so one-sided kinds are active.
+                        let level = if integral { level * 1.5 } else { level };
+                        t.normalized_targets = vec![level; NW].into();
+                        t.point_weights = pw.clone().into();
+                        spec.add_target(t).unwrap();
+                        let label = format!("weighted {kind:?}/{transform:?}/integral={integral}");
+                        // An inactive integral kind has no row terms at all.
+                        let mut r = Vec::new();
+                        spec.residuals(&base_sim(), &mut r).unwrap();
+                        if r.iter().any(|v| *v != 0.0) {
+                            compare(&spec, &base_sim(), 1e-6, &label);
+                        }
+                    }
+                }
+            }
         }
 
         #[test]
@@ -4657,6 +4840,8 @@ mod tests {
                     t.phase = true;
                     t.retardance = true;
                     t.normalized_targets = vec![tgt; n].into();
+                    // W4 point weights ride on the phase rows too.
+                    t.point_weights = (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
                     spec.add_target(t).unwrap();
                 }
             }

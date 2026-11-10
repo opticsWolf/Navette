@@ -637,12 +637,19 @@ pub fn build_needle_targets_env(
                     t.transform
                 ));
             }
-        } else if t.transform != crate::smatrix::synthesis::merit::SimTransform::Linear {
+        } else if !matches!(
+            t.transform,
+            crate::smatrix::synthesis::merit::SimTransform::Linear
+                | crate::smatrix::synthesis::merit::SimTransform::Log
+        ) {
             return Err(format!(
-                "needle pass requires linear-normalized targets; got {:?}",
+                "needle pass folds linear- or log-normalized intensity targets; got {:?}",
                 t.transform
             ));
         }
+        // W5: a Log demand folds the tangent of its residual at the
+        // operating point (`log_slope`); without one it folds nothing.
+        let log = t.transform == crate::smatrix::synthesis::merit::SimTransform::Log;
 
         // Angle row: argmin(|angles − key.angle|), first minimum wins —
         // same semantics as SimCurves::angle_row.
@@ -724,7 +731,7 @@ pub fn build_needle_targets_env(
             )?;
             continue;
         }
-        for &twl_i in twl.iter() {
+        for (i_pt, &twl_i) in twl.iter().enumerate() {
             // Interpolate normalized target, tolerance and band half-width
             // onto this solver wavelength (edge-clamped; ascending grids).
             let tgt_norm = interp_clamped(twl, &t.normalized_targets, twl_i);
@@ -749,7 +756,11 @@ pub fn build_needle_targets_env(
                 _ => None,
             };
             let d_opt: Option<f64> = s_op.map(|v| {
-                let mut d = v * t.norm_factor - tgt_norm;
+                let mut d = if log {
+                    v.max(1e-12).log10() * t.norm_factor - tgt_norm
+                } else {
+                    v * t.norm_factor - tgt_norm
+                };
                 if wrap_phase {
                     d -= std::f64::consts::TAU * (d / std::f64::consts::TAU).round();
                 }
@@ -801,11 +812,27 @@ pub fn build_needle_targets_env(
                 }
             };
             let Some((rt, w)) = folded else { continue };
+            // W5: the arms fold in log10 units (`rt` is log10 of the target
+            // or edge). Replace log10(s) by its tangent at s_op, slope q:
+            // the pair (s_op − (log10 s_op − rt)/q, w·q²) has the residual's
+            // value and slope there, so the kernel's gradient is the merit's.
+            let (rt, w) = if log {
+                let Some(s) = s_op else { continue };
+                let q = log_slope(s);
+                if q == 0.0 {
+                    continue;
+                }
+                (s - (s.max(1e-12).log10() - rt) / q, w * q * q)
+            } else {
+                (rt, w)
+            };
             // User weight + count normalization, applied once at emission:
             // folded merit scales by weight/count exactly, and the gain
             // shift below inherits the scaled `w` consistently. Defaults
-            // (1.0/None) are the identity — legacy folds bit-safe.
-            let w = w * t.weight / t.count_norm.unwrap_or(1.0);
+            // (1.0/None) are the identity — legacy folds bit-safe. The W4
+            // point weight multiplies the same way (the merit's √w_i on the
+            // residual is w_i on its square).
+            let w = w * t.weight * t.point_weight(i_pt) / t.count_norm.unwrap_or(1.0);
 
             let k = row * nw + solver_wav_index(wavelengths, twl_i);
             let ops = s_op.zip(sample_parts(&op, &op_parts, current_sim, twl_i, t, key));
@@ -940,6 +967,17 @@ fn reference_at(
     crate::smatrix::optics_core::reference_phase(twl_i, n, key.angle, sim.total_d, passes)
 }
 
+/// W5: `∂log10(s)/∂s` at the operating point — a Log demand's residual
+/// slope over `norm_factor`. Zero at or below the merit's 1e-12 clamp,
+/// where the residual is flat (`merit::d_transform`).
+fn log_slope(s: f64) -> f64 {
+    if s > 1e-12 {
+        1.0 / (s * std::f64::consts::LN_10)
+    } else {
+        0.0
+    }
+}
+
 /// A phase residual as the merit takes it: wrapped to [−π, π] in Phase
 /// mode (the kernel wraps its own the same way).
 fn residual(d: f64, wrap: bool) -> f64 {
@@ -1019,22 +1057,27 @@ fn fold_integral_demand(
     let n = twl.len() as f64;
     let nf = t.norm_factor;
     let wrap_phase = t.phase && t.transform == SimTransform::Phase;
-    // Pass 1: means of normalized target / tol / band.
+    let log = t.transform == SimTransform::Log;
+    // Pass 1: point-weighted means (W4) of normalized target / tol / band;
+    // `p_sum` = Σp_j, which is `n` exactly when the target has no weights.
     let mut t_bar = 0.0;
     let mut tol_sum = 0.0;
     let mut bw_sum = 0.0;
-    for &twl_i in twl {
-        t_bar += interp_clamped(twl, &t.normalized_targets, twl_i);
-        tol_sum += interp_clamped(twl, &t.tolerances, twl_i).max(1e-300);
-        bw_sum += if t.band.is_empty() {
+    let mut p_sum = 0.0;
+    for (j, &twl_i) in twl.iter().enumerate() {
+        let p = t.point_weight(j);
+        t_bar += p * interp_clamped(twl, &t.normalized_targets, twl_i);
+        tol_sum += p * interp_clamped(twl, &t.tolerances, twl_i).max(1e-300);
+        bw_sum += p * if t.band.is_empty() {
             0.0
         } else {
             interp_clamped(twl, &t.band, twl_i).max(0.0)
         };
+        p_sum += p;
     }
-    t_bar /= n;
-    let tol_bar = (tol_sum / n).max(1e-300);
-    let bw_bar = bw_sum / n;
+    t_bar /= p_sum;
+    let tol_bar = (tol_sum / p_sum).max(1e-300);
+    let bw_bar = bw_sum / p_sum;
     let t_raw = t_bar / nf;
     // Pass 2: op means (None before the first simulation).
     let mut s_vals: Vec<f64> = Vec::new();
@@ -1043,18 +1086,23 @@ fn fold_integral_demand(
             let mut m = 0.0;
             let mut d = 0.0;
             s_vals.reserve(twl.len());
-            for &twl_i in twl {
+            for (j, &twl_i) in twl.iter().enumerate() {
+                let p = t.point_weight(j);
                 let s = sample_op_value(rows, sim, twl_i, t, key, n_inc);
                 s_vals.push(s);
-                m += s;
+                m += p * s;
                 let tgt_j = interp_clamped(twl, &t.normalized_targets, twl_i);
-                let mut dj = s * nf - tgt_j;
+                let mut dj = if log {
+                    s.max(1e-12).log10() * nf - tgt_j
+                } else {
+                    s * nf - tgt_j
+                };
                 if wrap_phase {
                     dj -= std::f64::consts::TAU * (dj / std::f64::consts::TAU).round();
                 }
-                d += dj;
+                d += p * dj;
             }
-            Some((m / n, d / n))
+            Some((m / p_sum, d / p_sum))
         }
         _ => None,
     };
@@ -1099,24 +1147,40 @@ fn fold_integral_demand(
             }
         }
     };
-    if matches!(gap, IntGap::Skip) {
+    // A Log demand has no target-only form (W5): no operating point, no fold.
+    if matches!(gap, IntGap::Skip) || (log && opm.is_none()) {
         return Ok(());
     }
     let w_inside = t.weight * nf * nf / (bw_bar * bw_bar);
     // d_bar for the edge gap (opm is Some whenever we emit edge forms).
     let d_bar = opm.map(|(_, d)| d).unwrap_or(0.0);
+    // W5: a Log mean is over log10(s), so its centre gap is the mean
+    // residual itself, not a gap in s.
+    let centre_gap = |m: f64| if log { d_bar / nf } else { m - t_raw };
     for (j, &twl_i) in twl.iter().enumerate() {
+        // Weighted mean (W4): dM/dδ = 2·W·G·Σ(p_j/P)·∂s_j, so the pair at
+        // j keeps its gap N·G and takes weight W·p_j/(P·N) — W/N² when
+        // every p_j is 1, the same arithmetic bit for bit.
+        let p = t.point_weight(j);
+        let share = |w: f64| w * p / (p_sum * n);
+        // W5: a Log point's own tangent slope q_j scales the slope term:
+        // gap ÷q_j and weight ×q_j² give 2·W·G·(p_j/P)·q_j·∂s_j. Linear
+        // has q = 1, which leaves both exact.
+        let q = if log { log_slope(s_vals[j]) } else { 1.0 };
+        if q == 0.0 {
+            continue;
+        }
         let (rt_j, w_j) = match &gap {
             IntGap::Skip => unreachable!("returned above"),
             IntGap::Conservative => {
                 let tj = interp_clamped(twl, &t.normalized_targets, twl_i) / nf;
-                (tj, w_centre / (n * n))
+                (tj, share(w_centre))
             }
-            IntGap::CentreMean(m) => (s_vals[j] - n * (m - t_raw), w_centre / (n * n)),
-            IntGap::InsideMean(m) => (s_vals[j] - n * (m - t_raw), w_inside / (n * n)),
+            IntGap::CentreMean(m) => (s_vals[j] - n * centre_gap(*m) / q, share(w_centre) * q * q),
+            IntGap::InsideMean(m) => (s_vals[j] - n * centre_gap(*m) / q, share(w_inside) * q * q),
             IntGap::EdgeMean(bw_eff) => {
                 let g = d_bar.signum() * (d_bar.abs() - bw_eff) / nf;
-                (s_vals[j] - n * g, w_centre / (n * n))
+                (s_vals[j] - n * g / q, share(w_centre) * q * q)
             }
         };
         let k = row * nw + solver_wav_index(wavelengths, twl_i);
@@ -1869,6 +1933,7 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1891,6 +1956,7 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1925,6 +1991,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1977,6 +2044,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2073,6 +2141,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2165,6 +2234,7 @@ mod tests {
                 phase: true,
                 differential_passes: if differential { Some(1.0) } else { None },
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -2326,6 +2396,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 3.0,
             count_norm: Some(2.0),
@@ -2358,6 +2429,7 @@ mod tests {
                 phase: true,
                 differential_passes: Some(1.0),
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 2.0,
                 count_norm: None,
@@ -2405,6 +2477,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
             integral: true,
@@ -2543,6 +2616,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2783,33 +2857,56 @@ mod tests {
     }
 
     #[test]
-    fn targets_builder_rejects_log() {
-        // Log transform cannot fold → must be rejected.
-        let mut spec_log = MeritSpec::new();
-        let k = spec_log.add_key(MeritKey {
-            angle: Radians::ZERO,
-            curve: CurveId::Rs,
-        });
-        spec_log
-            .add_target(MeritTarget {
+    fn log_folds_nothing_without_an_operating_point_and_complex_refuses() {
+        // W5: a Log demand folds its tangent at the operating point, so
+        // before the first simulation it has nothing to fold. The oracle
+        // (`evaluator::needle_oracle`) checks the fold against the merit
+        // slope once there is one.
+        let spec_for = |transform: SimTransform, integral: bool| {
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rs,
+            });
+            spec.add_target(MeritTarget {
                 key_idx: k as u32,
                 env_idx: 0,
                 wavelengths: vec![400.0].into(),
                 kind: ConstraintKind::Exact,
-                transform: SimTransform::Log,
+                transform,
                 norm_factor: 1.0,
-                normalized_targets: vec![1.0].into(),
+                normalized_targets: vec![-1.0].into(),
                 tolerances: vec![0.01].into(),
                 band: vec![].into(),
                 phase: false,
                 differential_passes: None,
                 retardance: false,
-                integral: false,
+                point_weights: Vec::new().into(),
+                integral,
                 weight: 1.0,
                 count_norm: None,
             })
             .unwrap();
-        assert!(build_needle_targets(&spec_log, &[Radians::ZERO], &[400.0], None).is_err());
+            spec
+        };
+        for integral in [false, true] {
+            let nt = build_needle_targets(
+                &spec_for(SimTransform::Log, integral),
+                &[Radians::ZERO],
+                &[400.0],
+                None,
+            )
+            .unwrap();
+            assert!(nt.s.is_empty() && nt.p.is_empty(), "integral {integral}");
+        }
+        let err = build_needle_targets(
+            &spec_for(SimTransform::Complex, false),
+            &[Radians::ZERO],
+            &[400.0],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("linear- or log-normalized"), "{err}");
     }
 
     #[test]
@@ -3205,6 +3302,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 50.0,
             count_norm: None,

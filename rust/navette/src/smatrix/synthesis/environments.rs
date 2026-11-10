@@ -2130,6 +2130,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,

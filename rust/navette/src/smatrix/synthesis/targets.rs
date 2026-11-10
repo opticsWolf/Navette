@@ -16,6 +16,7 @@ use super::color_merit::{ColorDemand, ColorDistance, ColorQuantity, ColorReferen
 use super::merit::{
     ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimTransform,
 };
+use super::weights::{ProfileRef, WeightProfile, check_point_weights};
 use crate::color::tables::default_tables;
 use crate::spectralweave::opticalweaver::{OpticalKey, SpectralData};
 use crate::spectralweave::targetweaver::{TargetKind, TargetWeaver};
@@ -63,6 +64,14 @@ pub struct SpectralTarget {
     /// and look like a physics result.
     #[serde(default)]
     pub environment: Option<String>,
+    /// W4: one weight per wavelength, multiplying `weight` point by point
+    /// (see [`super::weights`]). Exclusive with `weight_profile`.
+    #[serde(default)]
+    pub weights: Option<Vec<f64>>,
+    /// W4: a weight profile over wavelength (nm), inline or by name from
+    /// the set's `weight_profiles`. Exclusive with `weights`.
+    #[serde(default)]
+    pub weight_profile: Option<ProfileRef>,
 }
 
 /// One angular constraint curve (value vs angle at fixed wavelength).
@@ -103,6 +112,14 @@ pub struct AngularTarget {
     /// and look like a physics result.
     #[serde(default)]
     pub environment: Option<String>,
+    /// W4: one weight per angle, multiplying `weight` point by point (see
+    /// [`super::weights`]). Exclusive with `weight_profile`.
+    #[serde(default)]
+    pub weights: Option<Vec<f64>>,
+    /// W4: a weight profile over the angle **in degrees**, inline or by
+    /// name from the set's `weight_profiles`. Exclusive with `weights`.
+    #[serde(default)]
+    pub weight_profile: Option<ProfileRef>,
 }
 
 /// Scalar (broadcast) or per-point band half-widths.
@@ -251,6 +268,10 @@ pub struct TargetSet {
     /// read is a tag that is not checked at all.
     #[serde(default)]
     pub environments: Vec<String>,
+    /// W4: named weight profiles a target's `weight_profile` may name, so
+    /// one emphasis is defined once and shared.
+    #[serde(default)]
+    pub weight_profiles: BTreeMap<String, WeightProfile>,
 }
 
 impl TargetSet {
@@ -350,6 +371,47 @@ fn check_integral(integral: bool, normalize_count: bool, label: &str) -> Result<
         ));
     }
     Ok(())
+}
+
+/// W4: a target's point weights on its own axis `x` (nm, or degrees for an
+/// angular target); empty when it gives neither `weights` nor
+/// `weight_profile`, which is the all-ones path, bit for bit. `profiles` is
+/// the set's named registry; `None` (the per-target validation hook, which
+/// has no registry) leaves a named reference for the compile to resolve.
+pub fn resolve_point_weights(
+    weights: &Option<Vec<f64>>,
+    profile: &Option<ProfileRef>,
+    x: &[f64],
+    profiles: Option<&BTreeMap<String, WeightProfile>>,
+    label: &str,
+) -> Result<Vec<f64>, String> {
+    let w = match (weights, profile) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "{label}: give weights or weight_profile, not both."
+            ));
+        }
+        (None, None) => return Ok(Vec::new()),
+        (Some(w), None) => w.clone(),
+        (None, Some(ProfileRef::Inline(p))) => p
+            .evaluate(x)
+            .map_err(|e| format!("{label}: weight_profile: {e}"))?,
+        (None, Some(ProfileRef::Name(name))) => {
+            let Some(registry) = profiles else {
+                return Ok(Vec::new());
+            };
+            let p = registry.get(name).ok_or_else(|| {
+                format!(
+                    "{label}: weight_profile {name:?} is not in weight_profiles (known: {:?})",
+                    registry.keys().collect::<Vec<_>>()
+                )
+            })?;
+            p.evaluate(x)
+                .map_err(|e| format!("{label}: weight_profile {name:?}: {e}"))?
+        }
+    };
+    check_point_weights(&w, x.len(), label)?;
+    Ok(w)
 }
 
 fn resolve_band(band: &Option<Band>, n: usize, label: &str) -> Result<Vec<f64>, String> {
@@ -785,6 +847,49 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     } else {
         set.environments.clone()
     };
+    for (name, p) in &set.weight_profiles {
+        p.validate()
+            .map_err(|e| format!("weight_profiles[{name:?}]: {e}"))?;
+    }
+    // W4: point weights per target, in the target's own point order.
+    let spectral_pw: Vec<Vec<f64>> = set
+        .spectral
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            resolve_point_weights(
+                &t.weights,
+                &t.weight_profile,
+                &t.wavelengths,
+                Some(&set.weight_profiles),
+                &format!("spectral[{i}]"),
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let angular_pw: Vec<Vec<f64>> = set
+        .angular
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let label = format!("angular[{i}]");
+            // An angular target compiles to one single-point frame per
+            // angle, so an integral one has no mean across angles for a
+            // weight to act on.
+            if t.integral && (t.weights.is_some() || t.weight_profile.is_some()) {
+                return Err(format!(
+                    "{label}: point weights on an integral angular target have no \
+                     effect (each angle is its own frame); drop them or integral."
+                ));
+            }
+            resolve_point_weights(
+                &t.weights,
+                &t.weight_profile,
+                &crate::smatrix::angle::to_degrees_vec(&t.angles),
+                Some(&set.weight_profiles),
+                &label,
+            )
+        })
+        .collect::<Result<_, _>>()?;
     let weaver = TargetWeaver::new(set.cache_size, set.tolerance_floor);
     for t in &set.spectral {
         ingest_spectral(&weaver, t)?;
@@ -968,6 +1073,25 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             .ok_or_else(|| format!("Invalid kind {:?}", e.kind))?;
         let transform =
             SimTransform::from_str(&mode).ok_or_else(|| format!("Invalid transform {mode:?}"))?;
+        // W4: the entry's point weights. A spectral entry has the target's
+        // grid in the target's order (the join above checked it point by
+        // point); an angular entry is one angle of its target.
+        let point_weights: Vec<f64> = if ti & 0x8000_0000 == 0 {
+            spectral_pw[ti].clone()
+        } else {
+            let ai = ti & 0x7fff_ffff;
+            let pw = &angular_pw[ai];
+            if pw.is_empty() {
+                Vec::new()
+            } else {
+                let j = set.angular[ai]
+                    .angles
+                    .iter()
+                    .position(|a| *a == e.angle)
+                    .expect("an angular entry is keyed by one of its target's angles");
+                vec![pw[j]]
+            }
+        };
         spec.add_target(MeritTarget {
             key_idx: ki,
             env_idx,
@@ -981,6 +1105,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             phase: t.2,
             differential_passes: diff.map(|(_, _, p)| p),
             retardance: ret.is_some(),
+            point_weights: Arc::from(point_weights),
             weight: t.3,
             count_norm: e.count_norm,
             integral: e.integral,
@@ -1022,6 +1147,7 @@ mod tests {
             color: vec![],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         }
     }
 
@@ -1040,6 +1166,8 @@ mod tests {
             phase: false,
             weight: 1.0,
             normalize_count: false,
+            weights: None,
+            weight_profile: None,
             integral: false,
         }
     }
@@ -1157,6 +1285,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
             integral: false,
@@ -1247,6 +1376,7 @@ mod tests {
             color: vec![],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         };
         let spec = compile_merit_spec(&set).unwrap();
         assert_eq!(spec.key_count(), 1);
@@ -1262,6 +1392,7 @@ mod tests {
             color: vec![],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         };
         set.spectral[0].weight = -1.0;
         assert!(compile_merit_spec(&set).is_err());
@@ -1300,6 +1431,101 @@ mod tests {
     /// retardance flag, raw radians, and the Delta offset folded into the
     /// targets (DeltaR = RetR - pi, wrapped; DeltaT = RetT). Without
     /// `phase=True` they refuse.
+    /// W4: explicit weights, an inline profile and a named one all land as
+    /// the same point weights; angular profiles read degrees; bad
+    /// combinations refuse naming the target.
+    #[test]
+    fn point_weights_compile_from_every_source() {
+        use serde_json::json;
+        let wl = vec![400.0, 500.0, 600.0];
+        let spectral = |extra: serde_json::Value| {
+            let mut t = json!({
+                "wavelengths": wl, "values": [0.1, 0.1, 0.1],
+                "tolerances": [0.01, 0.01, 0.01], "angle_deg": 0.0,
+                "polarization": "s", "spectral": "R",
+            });
+            t.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            t
+        };
+        let ramp = json!({"kind": "ramp", "lo": 400, "hi": 600, "w_lo": 1, "w_hi": 3});
+        let compile =
+            |doc: serde_json::Value| compile_merit_spec(&TargetSet::from_value(doc).unwrap());
+        let pw = |doc| compile(doc).unwrap().targets()[0].point_weights.to_vec();
+        let want = vec![1.0, 2.0, 3.0];
+        assert_eq!(
+            pw(json!({"spectral": [spectral(json!({"weights": want}))]})),
+            want
+        );
+        assert_eq!(
+            pw(json!({"spectral": [spectral(json!({"weight_profile": ramp}))]})),
+            want
+        );
+        assert_eq!(
+            pw(json!({
+                "weight_profiles": {"emph": ramp},
+                "spectral": [spectral(json!({"weight_profile": "emph"}))],
+            })),
+            want
+        );
+        assert!(pw(json!({"spectral": [spectral(json!({}))]})).is_empty());
+
+        // An angular target evaluates its profile in degrees, one point
+        // weight per single-angle frame.
+        let angular = json!({"angular": [{
+            "wavelength": 550.0, "angles_deg": [0.0, 30.0, 60.0],
+            "values": [0.1, 0.1, 0.1], "tolerances": [0.01, 0.01, 0.01],
+            "polarization": "s", "spectral": "R",
+            "weight_profile": {"kind": "ramp", "lo": 0, "hi": 60, "w_lo": 1, "w_hi": 3},
+        }]});
+        let spec = compile(angular.clone()).unwrap();
+        let mut got: Vec<(f64, f64)> = spec
+            .targets()
+            .iter()
+            .map(|t| {
+                (
+                    spec.keys()[t.key_idx as usize].angle.to_degrees(),
+                    t.point_weights[0],
+                )
+            })
+            .collect();
+        got.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for ((a, w), (wa, ww)) in got.iter().zip([(0.0, 1.0), (30.0, 2.0), (60.0, 3.0)]) {
+            assert!((a - wa).abs() < 1e-9 && (w - ww).abs() < 1e-12, "{got:?}");
+        }
+        let mut integral = angular;
+        integral["angular"][0]["integral"] = json!(true);
+        assert!(compile(integral).unwrap_err().contains("integral angular"));
+
+        for (doc, want) in [
+            (
+                json!({"spectral": [spectral(json!({"weights": want, "weight_profile": ramp}))]}),
+                "not both",
+            ),
+            (
+                json!({"spectral": [spectral(json!({"weight_profile": "nope"}))]}),
+                "\"nope\" is not in weight_profiles",
+            ),
+            (
+                json!({"spectral": [spectral(json!({"weights": [1.0, 2.0]}))]}),
+                "shape",
+            ),
+            (
+                json!({"spectral": [spectral(json!({"weights": [0.0, 0.0, 0.0]}))]}),
+                "all zero",
+            ),
+            (
+                json!({"weight_profiles": {"bad": {"kind": "constant", "value": -1}},
+                       "spectral": []}),
+                "weight_profiles[\"bad\"]",
+            ),
+        ] {
+            let e = compile(doc).unwrap_err();
+            assert!(e.contains(want), "{e}");
+        }
+    }
+
     #[test]
     fn retardance_labels_compile() {
         use std::f64::consts::PI;
@@ -1387,6 +1613,7 @@ mod tests {
             color: vec![color_target()],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         }
     }
 
@@ -1683,6 +1910,7 @@ mod tests {
             color: vec![t],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         };
         let spec = compile_merit_spec(&set).unwrap();
         let d = &spec.color_demands()[0];

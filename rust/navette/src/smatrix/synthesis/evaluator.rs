@@ -992,6 +992,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1053,6 +1054,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1183,6 +1185,7 @@ mod tests {
                 phase: true,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -1299,6 +1302,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1338,6 +1342,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1437,6 +1442,7 @@ mod tests {
                 phase: true,
                 differential_passes: passes,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
                 count_norm: None,
@@ -1495,6 +1501,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -2342,6 +2349,7 @@ mod tests {
                 phase: true,
                 differential_passes: None,
                 retardance: true,
+                point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
                 count_norm: None,
@@ -2506,6 +2514,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -2605,6 +2614,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -3483,6 +3493,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -3766,6 +3777,10 @@ mod needle_oracle {
         passes: Option<f64>,
         integral: bool,
         retardance: bool,
+        /// Non-uniform W4 point weights (0.5, 1.5, 2.5, ...) instead of none.
+        weighted: bool,
+        /// W5: a Log demand; `target` is then log10 of the level.
+        log: bool,
     }
 
     fn d(curve: CurveId, target: f64) -> D {
@@ -3778,6 +3793,16 @@ mod needle_oracle {
             passes: None,
             integral: false,
             retardance: false,
+            weighted: false,
+            log: false,
+        }
+    }
+
+    /// A Log demand on `curve` at the level `level` (log10 taken here).
+    fn lg(curve: CurveId, level: f64) -> D {
+        D {
+            log: true,
+            ..d(curve, level.log10())
         }
     }
 
@@ -3803,6 +3828,8 @@ mod needle_oracle {
             kind: x.kind,
             transform: if x.phase {
                 SimTransform::Phase
+            } else if x.log {
+                SimTransform::Log
             } else {
                 SimTransform::Linear
             },
@@ -3817,6 +3844,11 @@ mod needle_oracle {
             phase: x.phase,
             differential_passes: x.passes,
             retardance: x.retardance,
+            point_weights: if x.weighted {
+                (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into()
+            } else {
+                Vec::new().into()
+            },
             integral: x.integral,
             weight: 1.0,
             count_norm: None,
@@ -4033,6 +4065,116 @@ mod needle_oracle {
             },
         );
         out.push(("Rp phase pair across the wrap", wrap_pair));
+        // W4: non-uniform point weights, pointwise and integral, on an
+        // intensity pair, an unpolarized demand, a kind and a phase.
+        for (name, x) in [
+            ("Rs weighted", d(Rs, 0.3)),
+            ("Tu weighted", d(Tu, 0.6)),
+            (
+                "Ru range weighted",
+                D {
+                    kind: Range,
+                    band: 0.02,
+                    ..d(Ru, 0.6)
+                },
+            ),
+            (
+                "Tp phase weighted",
+                D {
+                    phase: true,
+                    ..d(Tp, 0.5)
+                },
+            ),
+            (
+                "Ru integral weighted",
+                D {
+                    integral: true,
+                    ..d(Ru, 0.3)
+                },
+            ),
+            (
+                "Rs above integral weighted",
+                D {
+                    kind: Above,
+                    integral: true,
+                    ..d(Rs, 0.9)
+                },
+            ),
+        ] {
+            out.push((
+                name,
+                one(D {
+                    weighted: true,
+                    ..x
+                }),
+            ));
+        }
+        // W5: Log demands fold their tangent at the operating point, on a
+        // pair, an unpolarized demand, absorption, the back side, the kinds,
+        // and the integral (plain and weighted). Levels sit near the sims'
+        // values so the one-sided kinds are active somewhere and idle
+        // elsewhere.
+        for (name, x) in [
+            ("Rs log", lg(Rs, 0.3)),
+            ("Tu log", lg(Tu, 0.6)),
+            ("Au log", lg(Au, 0.05)),
+            ("RBp log", lg(RBp, 0.3)),
+            (
+                "Ru log below",
+                D {
+                    kind: Below,
+                    ..lg(Ru, 0.01)
+                },
+            ),
+            (
+                "Tu log range",
+                D {
+                    kind: Range,
+                    band: 0.02,
+                    ..lg(Tu, 0.6)
+                },
+            ),
+            (
+                "Ru log centre band",
+                D {
+                    kind: CenterBand,
+                    band: 0.1,
+                    ..lg(Ru, 0.2)
+                },
+            ),
+            (
+                "Rs log weighted",
+                D {
+                    weighted: true,
+                    ..lg(Rs, 0.3)
+                },
+            ),
+            (
+                "Ru log integral",
+                D {
+                    integral: true,
+                    ..lg(Ru, 0.3)
+                },
+            ),
+            (
+                "Tp log integral weighted",
+                D {
+                    integral: true,
+                    weighted: true,
+                    ..lg(Tp, 0.9)
+                },
+            ),
+            (
+                "Rs log above integral",
+                D {
+                    kind: Above,
+                    integral: true,
+                    ..lg(Rs, 0.9)
+                },
+            ),
+        ] {
+            out.push((name, one(x)));
+        }
         // Retardance (W8a) is identically zero at normal incidence, so the
         // merit cannot move there; `retardance_is_flat_at_normal_incidence`
         // checks that instead.
@@ -4092,6 +4234,21 @@ mod needle_oracle {
                 }),
             ),
             ("RetR + Rs + Rp phase", both),
+            (
+                "RetR weighted",
+                one(D {
+                    weighted: true,
+                    ..ret(Rp, 0.4)
+                }),
+            ),
+            (
+                "RetT integral weighted",
+                one(D {
+                    integral: true,
+                    weighted: true,
+                    ..ret(Tp, -0.3)
+                }),
+            ),
         ]
     }
 

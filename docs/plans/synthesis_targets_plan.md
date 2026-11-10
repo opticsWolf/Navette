@@ -1,8 +1,8 @@
 # Synthesis targets: polarization, curve coverage, weighting, coherence
 
 Status: **in progress.** W1, W2 (including the back-channel deposits,
-step 4) and W3 are implemented (2026-11-10); W4-W8 are open. Drafted
-2026-11-09.
+step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5 and W8a are
+implemented (2026-11-10); W6, W7 and W8b-c are open. Drafted 2026-11-09.
 
 This plan follows a review of the needle / thin-film synthesis path
 (`smatrix/synthesis/*`) against five reported issues:
@@ -130,7 +130,7 @@ integral, angular, log and colour, through `build_merit_spec` →
 | Rs, Rp phase (front reflection) | ok | **penalty** | Err | ok | **easy** (W2: keep complex r_f `.0`; needle `phi[0]` exists) |
 | RBs/RBp/TBs/TBp phase | ok | **penalty** | Err | ok | **easy** (W2: keep `.3`/`.1`; `phi[3]`/`phi[1]` exist) |
 | colour on Ru, Tu | ok | **penalty** | Err | ok | **easy** after W2 |
-| `normalization_mode="log"` | ok | ok | ok | **Err** | **easy** after W1 (gradient form, W5) |
+| `normalization_mode="log"` | ok | ok | ok | ok | **done (W5)**: tangent pair at the op point |
 | colour on back curves (RB/TB) | **refused** (v1) | — | — | — | **easy** after W2 (lift the compile refusal; needs the back rows) |
 | colour on absorptance (A) | refused | — | — | — | out of scope (colour of absorbed light is not a measured colour) |
 
@@ -384,6 +384,20 @@ merit finite, LM runs, merit vs `ScatterMatrix` oracle at 1e-12).
 3. Needle-pass refusals (log transform, unsupported colour) move to the
    same up-front check, so a run never starts that cannot finish.
 
+**Status (2026-11-10).**
+
+1. **Done.** `SmatrixContext::provides` and `MeritSpec::check_supported`
+   name the demand and the reason; `run_design`, `run_environments` and
+   the Python doors call it before anything runs (`9332287`, `cfb51d2`).
+2. **Not done, deliberately.** `merit()` keeps the missing-curve penalty
+   (open question 2). After item 1 a curve the context never produces
+   cannot reach it; what is left is genuine runtime failure.
+3. **Resolved by W5** rather than moved: the needle folds Log demands
+   now, so there is no mid-run Log refusal left to move. Colour was
+   already compile-checked (front R/T, Exact, linear). The one
+   transform the needle still refuses is `complex`, which is a raw-scale
+   opt-out with no fold; it fails on the first fold, before any needle.
+
 ### W4 — Per-point weight profiles (feature, a)
 
 **Schema.** Optional `weights: Vec<f64>` on `SpectralTarget` and
@@ -447,6 +461,35 @@ hand computation; fold vs merit FD with non-uniform weights (W1 oracle).
 tolerance (scale/band) vs weight (emphasis), and the old
 tol₀/√w trick as superseded.
 
+**Done (step 5, 2026-11-10).** Where the implementation differs from the
+design above:
+
+- **Resolved at compile, not in the weaver.** `compile_merit_spec` reads
+  `weights` / `weight_profile` from the target set and hands each
+  `MeritTarget` its point weights; the TargetWeaver is unchanged. So
+  `build_weaver` / `calculate_merit` do not see weights, and
+  `TargetCollection.build_weaver` refuses targets that carry them rather
+  than ignore them.
+- **Angular profiles take degrees**, not radians: the axis a user writes
+  (`angles_deg`) is the one a profile is written against. Weights on an
+  **integral angular** target are refused: each angle is its own
+  single-point frame, so they would have no effect.
+- **Zero:** all-zero weights are refused (mute with `weight=0`); single
+  zeros are fine. `Product` takes `{"factors": [...]}` (serde needs a
+  named field under `deny_unknown_fields`).
+- **Fold:** pointwise `w·weight·w_i/count`; integral per-point
+  `W·w_j/(Σw·N)` with the gap `N·G` unchanged — written so that all ones
+  is the old `W/N²` bit for bit. The needle oracle has weighted
+  intensity, U, kind, phase, integral and retardance cases.
+- **Python:** `WeightProfile` lives in `navette._smatrix` and is exported
+  from `navette.spectralweave`; `MeritSpec.add_target(point_weights=)` is
+  the low-level door. Tests: `validation/smoke/test_point_weights.py`
+  (tolerance equivalence, three sources agree, refusals, a weighted
+  needle run re-scored by the engine).
+- A weighted run moves the landscape like a seed does: the 500–600 nm
+  QWR reaches 0.002 with the centre at 2× but stalls at 7 films (163)
+  at 4× from the same seed.
+
 ### W5 — Transform coverage in the needle pass (feature, c)
 
 The gradient form of W1 generalises: any residual r(R) folds as
@@ -460,6 +503,22 @@ g = w·r(R_op)·r'(R_op) into the branch's grad bucket. That covers:
 Activation (Above/Below/Range/CenterBand) uses the same op-point logic as
 today. Without an op point the demand folds nothing for non-linear forms
 (documented), which W1's "initial simulation in `from_spec`" makes moot.
+
+**Done for Log (step 6, 2026-11-10).** Not the grad bucket but the
+**tangent pair**: the kind arms run on the log residual as before (in
+log10 units), and the demand emits the linear pair that matches the
+residual's value and slope at the op point, `(s − (log10 s − c)/q, w·q²)`
+with `q = 1/(s ln 10)`. Same gradient as the gradient form, and it keeps
+every bucket the pairs already have (U sharing, A from companions, the
+back side) instead of only the front R/T grad buckets. The integral
+fold takes `q_j` per point (gap ÷ q_j, weight × q_j²; Linear has q = 1,
+bit for bit). No op point, or `s` at the 1e-12 clamp: nothing folds.
+`complex` stays refused. Ratio, extinction and contrast targets remain
+open and would use the same tangent construction (or the grad bucket
+where a pair has no single curve). Tests: needle-oracle Log cases (every
+kind, U, A, RB, weighted, integral), and
+`validation/smoke/test_needle_log_targets.py` (a log AR target through
+`run_needle`, re-scored by the engine).
 
 ### W6 — Incoherent synthesis (feature, e)
 
@@ -624,10 +683,14 @@ design below:
   now moves each wrapped-phase target to its representative nearest the
   operating phase (regression case "Rp phase pair across the wrap" in
   the needle oracle). The integral fold is unchanged.
-- The quarter-wave benchmark runs on 545-555 nm. On 500-600 nm, H/L on
-  glass, plain LM stalled at merit 900-2700 from quarter-wave and random
-  starts (analytic and FD agree); that band needs the needle, not a
-  thickness refinement.
+- The quarter-wave benchmark is in two parts. On 545-555 nm thickness
+  refinement alone reaches it (merit ~1e-26, best of seeded random
+  starts). On the plan's 500-600 nm, H/L on glass, refinement alone
+  stalled at merit 900-2700 from quarter-wave and random starts (analytic
+  and FD agree), and the needle reaches it: from 600 nm H + 600 nm L,
+  17 films, 3167 nm, merit 0.019 over 21 points, |RetR − π/2| ≤ 0.0026
+  rad by the engine's own `Retardance_R`. The seed matters: 4 × 300 nm
+  and 2 × 1000 nm stall at merit 8774 and 91.
 
 Tests: `retardance_follows_the_engine` (each label vs `solve_arrays` at
 0°, 45°, 70°, to 1e-10); the needle oracle at 45° and 70° plus
@@ -751,6 +814,31 @@ plus a per-point tolerance (W4) is the user-side mitigation.
 8. **Error locations for notebook users**: W3's Rust messages name the
    target by section and index (`spectral[3]`); the Python wrapper only
    forwards them. No validation logic in Python (Rust-first rule).
+9. **Integral phase fold** (found in W8a, open). `fold_integral_demand`
+   emits per-point pairs `t_j = s_j − N·G` on the shared phase bucket and
+   lets the phase kernel take `wrap(s_j − t_j) = wrap(N·G)`. Two problems
+   for a phase (or retardance) demand with `integral = true`:
+   - **The kernel wraps the scaled gap.** `N·G` is the mean residual times
+     the point count; once `|G| > π/N` the kernel's wrap folds it to a
+     different value, so P is wrong in size and possibly in sign, though
+     the merit's own mean residual is far from the wrap. With 50 points
+     this starts at a mean error of 3.6°.
+   - **The centre gap uses the unwrapped mean.** `CentreMean(m)` takes
+     `m − t̄` from raw phases, while the merit and the activation use the
+     mean of the wrapped residuals (`d_bar`); a band whose operating phase
+     crosses ±π gets a gap off by 2π·(points past the cut)/N.
+   - **Shared buckets** (the pointwise fix of W8a, not applied here): a
+     second phase demand on the same element averages targets across the
+     wrap.
+
+   Fix: emit the integral phase demand in gradient form, not as a pair:
+   the merit slope is `2·W·G_w·(1/N)·Σ_j ∂φ_j`, with `G_w` the wrapped
+   mean gap, so a per-branch phase-gradient bucket with
+   `grad_j = 2·W·G_w/N` (and the retardance ±) is exact and has no wrap
+   to get wrong. That is the `phi_grad` bucket W8a's design proposed and
+   the pair form avoided; it also gives W5 a home for phase transforms.
+   Tests: W1 oracle cases for an integral Rp phase demand with
+   `|G| > π/N`, one whose band crosses ±π, and an integral RetR.
 
 ---
 
@@ -773,8 +861,9 @@ plus a per-point tolerance (W4) is the user-side mitigation.
    or keep a static conservative fold?
 2. W3: should `merit()` keep the 1e6 penalty at all after W3, or become a
    hard error everywhere?
-3. W4: ship named set-level profiles in the first version (proposed), or
-   per-target `weights` / `weight_profile` only?
+3. ~~W4: ship named set-level profiles in the first version (proposed), or
+   per-target `weights` / `weight_profile` only?~~ Shipped with named
+   profiles (`weight_profiles`).
 4. W6: is a coated back side (two coated faces) needed, or is "uncoated
    back surface" enough for the first version?
 5. W7.3: do a group's thickness factor/summand apply to a needle's

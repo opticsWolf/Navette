@@ -200,6 +200,9 @@ def build_merit_spec(collection: TargetCollection,
     }
     if environments:
         doc["environments"] = [str(n) for n in environments]
+    if collection.weight_profiles:
+        doc["weight_profiles"] = {str(name): _json.loads(p.to_json())
+                                  for name, p in collection.weight_profiles.items()}
     return _compile(_json.dumps(doc))
 
 def apply_reference_rotation(cplx, wavelengths,
