@@ -86,6 +86,22 @@ normalization (raw radians, ``nf = 1``). See
 ``docs/spectralweave-target-kinds.md`` for conventions (solver
 forward-propagation sign, needle gain shift).
 
+Retardance labels (``polarization="u"``, ``phase=True`` required):
+
+============  ====================================================
+label         meaning
+============  ====================================================
+``"RetR"``    arg(r_p · conj(r_s)), the engine's ``Retardance_R``
+``"RetT"``    arg(t_p · conj(t_s)), the engine's ``Retardance_T``
+``"DeltaR"``  ``RetR − π`` wrapped, the engine's ``Delta_R``
+``"DeltaT"``  ``RetT``, the engine's ``Delta_T``
+============  ====================================================
+
+They key on the p curve (``Rp``/``Tp``) and read its s partner too; a
+Delta target is compiled as the retardance target shifted by its offset,
+so one forward and one needle fold serve all four. At normal incidence the
+retardance is identically 0: a demand at 0° only compiles with a warning.
+
 Any other label raises ``ValueError`` — the synthesis side speaks this fixed
 vocabulary (the weaver itself accepts anything). Targets with
 ``phase=True`` become phase demands on the mapped curve's S-matrix element

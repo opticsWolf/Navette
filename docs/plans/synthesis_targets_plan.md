@@ -143,10 +143,10 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | complex amplitudes rs, rp, ts, tp (+ back) | W2 keeps them | `needle_slopes4_ddz` per channel | building block, not a target |
 | φ_RS, φ_RP, φ_TS, φ_TP, φ_RB*, φ_TB* | = phase targets above | phi channels | covered above |
 | PD on reflection (PDrs, PDrp; `passes = 2`) | needs r_f (W2) | phi + gain shift (`reference_phase` handles 2 passes) | **deferred** (decision 2026-11-09): reference-plane question for the round trip stays open, see §5 |
-| Delta_R, Delta_T | from the retardance curve | as retardance | **in W8a**: constant offset of retardance (`Delta_R = Ret_R − π`, `Delta_T = Ret_T`, wrapped), two extra labels |
+| Delta_R, Delta_T | from the retardance curve | as retardance | **done (W8a)**: constant offset of retardance (`Delta_R = Ret_R − π`, `Delta_T = Ret_T`, wrapped), two extra labels |
 | Psi_R, Psi_T | from rp/rs (W2) | gradient form on complex amplitudes (new small operator `p_coherent_grad_c_from_fields`: Re(conj(g)·∂a)) | **moderate**: blocked by W1 + W2 + new operator |
 | Rs/Rp ratio, extinction ratio, diattenuation | from intensities | gradient form on R/T (W5) | **moderate**: blocked by W1/W5 |
-| retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **in scope, W8a**: blocked by W1 (phi buckets are per S-matrix element and feed both branches today) and W2 (Ret_R) |
+| retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **done (W8a)**: pair fold on the per-branch phase buckets |
 | DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
 | GD, GDD, TOD, FOD (R/T, s/p) | **not computed** in the synthesis evaluator (engine `dispmaps`) | **exists** in the engine (`phase_dispersion_sensitivity`, NREQ_DGD…DFOD) | **harder**: port the dispersion forward into `simulate_inner`, add curve ids, map the fold to Q rows; LM via FD first |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
@@ -597,6 +597,43 @@ engine's `dispmaps`) and a fold onto the engine's existing Q-row needle
 sensitivities.
 
 ### W8a — Retardance targets (feature, c; decision 2026-11-09)
+
+**Done (step 4a, 2026-11-10).** Where the implementation differs from the
+design below:
+
+- No new `CurveId`s. A `retardance: bool` flag on `MeritTarget` keys the
+  demand on the p amplitude (`Rp`, `Tp`, `RBp`, `TBp`) and reads its s
+  partner; the label compiler sets it and shifts the target by the Delta
+  offset. `MeritSpec.add_target(retardance=True)` is the raw door.
+- No new gradient operator. The fold is a pair on W1's per-branch phase
+  buckets: with `r = wrap(Ret_op − t)`, the p branch gets target
+  `φp_op − r` and the s branch `φs_op + r`, both at weight w. The phase
+  kernel's slope `2w·wrap(φ − t')·∂φ` then sums to `2w·r·(∂φp − ∂φs)`,
+  the merit slope. A point with no operating point or either |a|² ≤ 1e-20
+  folds nothing.
+- `DeltaR` does not apply the engine's `RS_FLOOR` (Delta_R = 0 where
+  Rs < 1e-12): the merit stays smooth there, and the two agree everywhere
+  else.
+- The LM Jacobian is analytic from the start: `Im(c)`, `Re(c)` on the p
+  complex row and their negatives on the s row, `c = conj(z)/|z|²`, zero
+  where `|p·conj(s)|² = 0`. Pinned against FD in `merit.rs` and
+  `evaluator.rs`.
+- Found on the way: two phase demands sharing an element bucket fold to
+  the weighted mean of their targets, which is only the merit slope when
+  each target lies within π of the operating phase. The pointwise fold
+  now moves each wrapped-phase target to its representative nearest the
+  operating phase (regression case "Rp phase pair across the wrap" in
+  the needle oracle). The integral fold is unchanged.
+- The quarter-wave benchmark runs on 545-555 nm. On 500-600 nm, H/L on
+  glass, plain LM stalled at merit 900-2700 from quarter-wave and random
+  starts (analytic and FD agree); that band needs the needle, not a
+  thickness refinement.
+
+Tests: `retardance_follows_the_engine` (each label vs `solve_arrays` at
+0°, 45°, 70°, to 1e-10); the needle oracle at 45° and 70° plus
+`retardance_is_flat_at_normal_incidence`; wrap crossing and
+sensitivity-vs-FD in `merit.rs`; `validation/smoke/test_retardance_targets.py`
+for the Python labels, refusals, the 0° warning and two syntheses.
 
 Neither retardance nor ellipsometric Δ is a synthesis target today (no
 `CurveId`, no fold). The engine defines both (`solver.rs`, `core_engine.rs`):

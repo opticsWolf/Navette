@@ -427,6 +427,34 @@ fn emit(
     }
 }
 
+/// Emit a retardance demand `w·wrap(Ret − rt)²`, `Ret = φp − φs` of one
+/// element, at point `k` as two phase pairs on that element's bucket.
+///
+/// With `r = wrap(Ret_op − rt)`, the p branch gets `(φp_op − r, w)` and the
+/// s branch `(φs_op + r, w)`: the phase kernel's full slope then returns
+/// `2w·r·∂φp` and `−2w·r·∂φs`, which sum to `dM/dδ`. `ops` carries
+/// `(Ret_op, [φs_op, φp_op])` at this demand wavelength; without it (no
+/// operating point, or either amplitude at zero) the demand emits nothing:
+/// unlike an intensity, a retardance has no target-only form.
+fn emit_retardance(
+    folds: &mut [PolFold; 2],
+    bucket: BucketKind,
+    k: usize,
+    rt: f64,
+    w: f64,
+    ops: Option<(f64, [f64; 2])>,
+) {
+    let Some((ret, [phi_s, phi_p])) = ops else {
+        return;
+    };
+    let r = residual(ret - rt, true);
+    for (b, rt_b) in [(0, phi_s + r), (1, phi_p - r)] {
+        let p = folds[b].pair_mut(bucket);
+        p.1[k] += w;
+        p.0[k] += w * rt_b;
+    }
+}
+
 /// Demand bucket: absorption derives from companions, intensities fold to
 /// their own quantity, phase demands to their element pair.
 #[derive(Clone, Copy)]
@@ -440,6 +468,8 @@ enum OpRows<'a> {
     Intensity(&'a [f64]),
     Absorption(&'a [f64], &'a [f64]),
     Phase(&'a [Complex64]),
+    /// Retardance: the key's p row and its s partner.
+    Retardance(&'a [Complex64], &'a [Complex64]),
 }
 
 /// Operating-point sample in demand space (Δφ with the reference subtracted
@@ -489,6 +519,11 @@ fn sample_op_value(
                 );
             }
             a
+        }
+        OpRows::Retardance(p, s) => {
+            let zp = cinterp_clamped(&sim.wavelengths, p, twl_i);
+            let zs = cinterp_clamped(&sim.wavelengths, s, twl_i);
+            (zp * zs.conj()).arg()
         }
     }
 }
@@ -627,7 +662,20 @@ pub fn build_needle_targets_env(
         // the demand angle (the old code sampled the whole row-major
         // array, misreading multi-angle sims).
         let op: Option<OpRows> =
-            current_sim.and_then(|sim| op_rows(sim, key.curve, key.angle, t.phase));
+            current_sim.and_then(
+                |sim| match crate::smatrix::synthesis::merit::retardance_partner(t, key.curve) {
+                    Some(s) => match (
+                        op_rows(sim, key.curve, key.angle, true),
+                        op_rows(sim, s, key.angle, true),
+                    ) {
+                        (Some(OpRows::Phase(p)), Some(OpRows::Phase(s))) => {
+                            Some(OpRows::Retardance(p, s))
+                        }
+                        _ => None,
+                    },
+                    None => op_rows(sim, key.curve, key.angle, t.phase),
+                },
+            );
         // An unpolarized demand also samples its s and p rows: the branches
         // share its residual (see `emit`).
         let op_parts: Option<[OpRows; 2]> = match (current_sim, branch_parts(key.curve)) {
@@ -760,9 +808,22 @@ pub fn build_needle_targets_env(
             let w = w * t.weight / t.count_norm.unwrap_or(1.0);
 
             let k = row * nw + solver_wav_index(wavelengths, twl_i);
-            let ops = s_op.zip(sample_parts(&op_parts, current_sim, twl_i, t, key));
-            let rt_kernel = rt + reference_at(t, key, current_sim, n_inc, twl_i);
-            emit(&mut folds, route, bucket, k, rt_kernel, w, ops);
+            let ops = s_op.zip(sample_parts(&op, &op_parts, current_sim, twl_i, t, key));
+            let mut rt_kernel = rt + reference_at(t, key, current_sim, n_inc, twl_i);
+            // A phase pair shares its element's bucket with every other
+            // phase demand there, and the bucket folds to the weighted mean
+            // of their targets. That mean is the mean of the wrapped
+            // residuals only when each target sits within pi of the
+            // operating phase, so take the 2*pi representative nearest it.
+            // Alone, the kernel's own wrap makes this a no-op.
+            if wrap_phase && let Some(s) = s_op {
+                rt_kernel += std::f64::consts::TAU * ((s - rt) / std::f64::consts::TAU).round();
+            }
+            if t.retardance {
+                emit_retardance(&mut folds, bucket, k, rt_kernel, w, ops);
+            } else {
+                emit(&mut folds, route, bucket, k, rt_kernel, w, ops);
+            }
             // Differential gain shift, exact at the op point: dM/dD
             // contribution −2·kz·w·(s−rt) with the emitted pair (holds for
             // every kind arm — verified per-arm in the
@@ -889,14 +950,25 @@ fn residual(d: f64, wrap: bool) -> f64 {
     }
 }
 
-/// The s and p operating values of an unpolarized demand at `twl_i`.
+/// The s and p operating values of an unpolarized demand at `twl_i`, or
+/// the s and p phases of a retardance demand. A retardance with either
+/// amplitude at the phase kernel's zero floor has no phase and no parts.
 fn sample_parts(
+    op: &Option<OpRows>,
     parts: &Option<[OpRows; 2]>,
     sim: Option<&SimCurves>,
     twl_i: f64,
     t: &MeritTarget,
     key: &MeritKey,
 ) -> Option<[f64; 2]> {
+    if let (Some(OpRows::Retardance(p, s)), Some(sim)) = (op, sim) {
+        let zp = cinterp_clamped(&sim.wavelengths, p, twl_i);
+        let zs = cinterp_clamped(&sim.wavelengths, s, twl_i);
+        if zp.norm_sqr() <= 1e-20 || zs.norm_sqr() <= 1e-20 {
+            return None;
+        }
+        return Some([zs.arg(), zp.arg()]);
+    }
     let (Some([ps, pp]), Some(sim)) = (parts, sim) else {
         return None;
     };
@@ -1048,12 +1120,17 @@ fn fold_integral_demand(
             }
         };
         let k = row * nw + solver_wav_index(wavelengths, twl_i);
-        let ops = s_vals
-            .get(j)
-            .copied()
-            .zip(sample_parts(op_parts, current_sim, twl_i, t, key));
+        let ops =
+            s_vals
+                .get(j)
+                .copied()
+                .zip(sample_parts(op, op_parts, current_sim, twl_i, t, key));
         let rt_kernel = rt_j + reference_at(t, key, current_sim, n_inc, twl_i);
-        emit(folds, route, bucket, k, rt_kernel, w_j, ops);
+        if t.retardance {
+            emit_retardance(folds, bucket, k, rt_kernel, w_j, ops);
+        } else {
+            emit(folds, route, bucket, k, rt_kernel, w_j, ops);
+        }
         // Gain shift with the EMITTED pair (exact dM/dD at the op point —
         // the uniform-gradient construction makes the per-emission formula
         // land on −2·W·(m−T)·mean(kz)). No-sim arm has no op value →
@@ -1791,6 +1868,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1812,6 +1890,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1845,6 +1924,7 @@ mod tests {
             band: band.to_vec().into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1896,6 +1976,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: Some(1.0),
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1991,6 +2072,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: Some(1.0),
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2082,6 +2164,7 @@ mod tests {
                 band: vec![].into(),
                 phase: true,
                 differential_passes: if differential { Some(1.0) } else { None },
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -2242,6 +2325,7 @@ mod tests {
             band: vec![].into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 3.0,
             count_norm: Some(2.0),
@@ -2273,6 +2357,7 @@ mod tests {
                 band: vec![].into(),
                 phase: true,
                 differential_passes: Some(1.0),
+                retardance: false,
                 integral: false,
                 weight: 2.0,
                 count_norm: None,
@@ -2319,6 +2404,7 @@ mod tests {
             band: vec![].into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             weight: 1.0,
             count_norm: None,
             integral: true,
@@ -2456,6 +2542,7 @@ mod tests {
             band: vec![].into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2716,6 +2803,7 @@ mod tests {
                 band: vec![].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -3116,6 +3204,7 @@ mod tests {
             band: vec![].into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 50.0,
             count_norm: None,

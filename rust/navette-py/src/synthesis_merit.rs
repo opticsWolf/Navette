@@ -180,12 +180,24 @@ impl PyMeritSpec {
 /// Compile a target set (JSON) into a native `MeritSpec` (thin over
 /// `targets::compile_merit_spec`): the `build_merit_spec` path.
 #[pyfunction]
-pub(crate) fn compile_merit_spec(request_json: &str) -> PyResult<PyMeritSpec> {
+pub(crate) fn compile_merit_spec(py: Python<'_>, request_json: &str) -> PyResult<PyMeritSpec> {
     let set = navette::smatrix::synthesis::targets::TargetSet::from_json(request_json)
         .map_err(|e| PyValueError::new_err(format!("compile_merit_spec: invalid request: {e}")))?;
-    navette::smatrix::synthesis::targets::compile_merit_spec(&set)
+    let spec = navette::smatrix::synthesis::targets::compile_merit_spec(&set)
         .map(PyMeritSpec::from_inner)
-        .map_err(PyValueError::new_err)
+        .map_err(PyValueError::new_err)?;
+    // Warned, not refused (W8a): a retardance demand at 0 deg only is
+    // unreachable, not malformed.
+    let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+    for msg in navette::smatrix::synthesis::targets::retardance_warnings(&set) {
+        PyErr::warn(
+            py,
+            &user_warning,
+            std::ffi::CString::new(msg)?.as_c_str(),
+            1,
+        )?;
+    }
+    Ok(spec)
 }
 
 #[pymethods]
@@ -213,11 +225,13 @@ impl PyMeritSpec {
 
     #[pyo3(signature = (key_idx, wavelengths, normalized, tolerances, kind, transform,
                         norm_factor, band=None, phase=false, differential_passes=None,
-                        weight=1.0, count_norm=None, integral=false))]
+                        weight=1.0, count_norm=None, integral=false, retardance=false))]
     /// Append one target frame. Arrays are per-point values on `wavelengths`.
     /// `differential_passes` (None = absolute phase; 1.0 = `PDts`/`PDtp`
     /// transmitted) subtracts the equivalent-medium reference (see
-    /// `SimCurves` metadata); requires `phase=true`.
+    /// `SimCurves` metadata); requires `phase=true`. `retardance` samples
+    /// `arg(z_p · conj(z_s))` on a p key (`Rp`/`Tp`/`RBp`/`TBp`); requires
+    /// `phase=true` and no `differential_passes`.
     /// `weight` scales the frame's merit sum; `count_norm` (target-level
     /// point count, resolved by the converter) divides it. `integral`
     /// constrains the mean of the scaled diffs (single residual).
@@ -237,6 +251,7 @@ impl PyMeritSpec {
         weight: f64,
         count_norm: Option<f64>,
         integral: bool,
+        retardance: bool,
     ) -> PyResult<()> {
         let wl = wavelengths.as_slice()?;
         let nt = normalized.as_slice()?;
@@ -262,6 +277,7 @@ impl PyMeritSpec {
                 band: Arc::from(b.as_slice()),
                 phase,
                 differential_passes,
+                retardance,
                 weight,
                 count_norm,
                 integral,

@@ -1888,6 +1888,7 @@ mod tests {
             band: vec![].into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,

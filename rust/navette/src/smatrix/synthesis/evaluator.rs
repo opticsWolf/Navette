@@ -991,6 +991,7 @@ mod tests {
             band: vec![].into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1051,6 +1052,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: Some(1.0),
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1180,6 +1182,7 @@ mod tests {
                 band: vec![].into(),
                 phase: true,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -1295,6 +1298,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: Some(1.0),
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1333,6 +1337,7 @@ mod tests {
             band: vec![].into(),
             phase: true,
             differential_passes: Some(1.0),
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1431,6 +1436,7 @@ mod tests {
                 band: vec![].into(),
                 phase: true,
                 differential_passes: passes,
+                retardance: false,
                 integral,
                 weight: 1.0,
                 count_norm: None,
@@ -1488,6 +1494,7 @@ mod tests {
                 band: vec![].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -2229,6 +2236,209 @@ mod tests {
             println!("  back J: {live} live entries, worst rel dev {worst:.3e}");
         }
 
+        /// W8a forward: the four retardance labels, compiled with target 0
+        /// and tolerance 1, leave residuals equal to the engine's
+        /// `Retardance_R/T` and `Delta_R/T` on the same stack, at 0°, 45°
+        /// and 70°. At 0° Ret_R is identically 0 (s ≡ p).
+        #[test]
+        fn retardance_follows_the_engine() {
+            use crate::smatrix::core_engine::{
+                REQ_DELTA_R, REQ_DELTA_T, REQ_RETARD_R, REQ_RETARD_T,
+            };
+            use crate::smatrix::synthesis::targets::{TargetSet, compile_merit_spec};
+            use num_complex::Complex64;
+            let stack = stack3(118.0, 203.0, 64.0);
+            let sa = stack.solver_arrays();
+            let (nl, nw) = (sa.n_layers as usize, WLS.len());
+            let indices: Vec<Complex64> = (0..nl * nw)
+                .map(|i| {
+                    let (l, w) = (i / nw, i % nw);
+                    let b = (w * nl + l) * 2;
+                    Complex64::new(sa.n_stack_cache[b], sa.n_stack_cache[b + 1])
+                })
+                .collect();
+            let wrap = |d: f64| d - std::f64::consts::TAU * (d / std::f64::consts::TAU).round();
+            for angle_deg in [0.0, 45.0, 70.0] {
+                let (sol, _) = crate::smatrix::solver::solve_arrays(
+                    &indices,
+                    &sa.thicknesses,
+                    &vec![false; nl],
+                    &sa.rough_types,
+                    &sa.rough_vals,
+                    &WLS,
+                    &[deg(angle_deg)],
+                    REQ_RETARD_R | REQ_RETARD_T | REQ_DELTA_R | REQ_DELTA_T,
+                    2,
+                )
+                .unwrap();
+                let engine = |key: &str| -> Vec<f64> {
+                    sol.f64maps
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .unwrap()
+                        .1
+                        .clone()
+                };
+                for (label, key) in [
+                    ("RetR", "Retardance_R"),
+                    ("RetT", "Retardance_T"),
+                    ("DeltaR", "Delta_R"),
+                    ("DeltaT", "Delta_T"),
+                ] {
+                    let (zeros, ones) = (vec![0.0; nw], vec![1.0; nw]);
+                    let set = TargetSet::from_value(serde_json::json!({
+                        "spectral": [{
+                            "wavelengths": WLS, "values": zeros, "tolerances": ones,
+                            "angle_deg": angle_deg, "polarization": "u",
+                            "spectral": label, "phase": true,
+                        }],
+                    }))
+                    .unwrap();
+                    let mut ctx = ctx3(compile_merit_spec(&set).unwrap());
+                    ctx.sin_theta = vec![deg(angle_deg).get().sin()];
+                    let mut r = Vec::new();
+                    ctx.spec
+                        .residuals(&ctx.simulate(&stack).unwrap(), &mut r)
+                        .unwrap();
+                    let want = engine(key);
+                    assert_eq!(r.len(), want.len());
+                    if angle_deg == 70.0 {
+                        assert!(want.iter().any(|e| e.abs() > 0.05), "{key} flat: {want:?}");
+                    }
+                    for (i, (&got, &e)) in r.iter().zip(&want).enumerate() {
+                        assert!(
+                            wrap(got - e).abs() < 1e-10,
+                            "{label} at {angle_deg} deg, point {i}: {got} vs engine {key} {e}"
+                        );
+                        if angle_deg == 0.0 && label == "RetR" {
+                            assert!(got.abs() < 1e-12, "RetR at normal incidence: {got}");
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A retardance demand on p key `curve` at `angle` over `wls`.
+        fn retardance_demand(
+            spec: &mut MeritSpec,
+            angle: Radians,
+            curve: CurveId,
+            wls: Vec<f64>,
+            target: f64,
+            integral: bool,
+        ) {
+            let n = wls.len();
+            let k = spec.add_key(MeritKey { angle, curve });
+            spec.add_target(MeritTarget {
+                key_idx: k as u32,
+                env_idx: 0,
+                wavelengths: wls.into(),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: vec![target; n].into(),
+                tolerances: vec![0.05; n].into(),
+                band: vec![].into(),
+                phase: true,
+                differential_passes: None,
+                retardance: true,
+                integral,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+        }
+
+        /// W8a LM: retardance rows of the analytic Jacobian (front R and T,
+        /// back T; aligned and interpolated, pointwise and integral, one
+        /// target across the wrap) against a finite difference of the
+        /// residuals, and the optimizer's source answers.
+        #[test]
+        fn the_jacobian_covers_retardance_demands() {
+            let off = vec![500.0, 540.0, 580.0, 620.0];
+            let mut spec = MeritSpec::new();
+            retardance_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Rp,
+                WLS.to_vec(),
+                0.3,
+                false,
+            );
+            retardance_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::Tp,
+                off.clone(),
+                3.1,
+                false,
+            );
+            retardance_demand(&mut spec, angle_of(SINS[1]), CurveId::Rp, off, -0.2, true);
+            retardance_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::TBp,
+                WLS.to_vec(),
+                0.1,
+                false,
+            );
+            assert!(!spec.sensitivity_incomplete());
+            let ctx = ctx3(spec);
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
+            assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+            assert!(dep.covers(&sens));
+            let mut jac = Vec::new();
+            assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
+            let m = sens.rows.len();
+            assert_eq!(m, 2 * WLS.len() + 4 + 1);
+            let src = DepositJacobian::new(
+                ctx.clone(),
+                stack.clone(),
+                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                WLS.len(),
+            );
+            let mut mapped = Vec::new();
+            assert_eq!(src.fill(&d, &mut mapped).unwrap(), Some(m));
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                ctx.spec
+                    .residuals(&ctx.simulate(&sp).unwrap(), &mut rp)
+                    .unwrap();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sm).unwrap(), &mut rm)
+                    .unwrap();
+                let fd: Vec<f64> = rp
+                    .iter()
+                    .zip(&rm)
+                    .map(|(p, q)| (p - q) / (2.0 * h))
+                    .collect();
+                let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                for i in 0..m {
+                    let an = jac[i * par.len() + kp];
+                    let dev = (an - fd[i]).abs() / scale;
+                    worst = worst.max(dev);
+                    assert!(dev < 1e-6, "row {i}, film {fi}: {an} vs {}", fd[i]);
+                    if fd[i].abs() > 1e-6 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 25, "only {live} live entries");
+            println!("  retardance J: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
         #[test]
         fn a_color_demand_refuses_the_analytic_path_instead_of_zeroing_it() {
             // The fallback contract: an uncovered row must stop the assembly, not
@@ -2295,6 +2505,7 @@ mod tests {
                 band: vec![].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -2393,6 +2604,7 @@ mod tests {
                 band: vec![].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -3270,6 +3482,7 @@ mod tests {
                 band: vec![].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -3552,6 +3765,7 @@ mod needle_oracle {
         phase: bool,
         passes: Option<f64>,
         integral: bool,
+        retardance: bool,
     }
 
     fn d(curve: CurveId, target: f64) -> D {
@@ -3563,6 +3777,16 @@ mod needle_oracle {
             phase: false,
             passes: None,
             integral: false,
+            retardance: false,
+        }
+    }
+
+    /// A retardance demand `arg(z_p · conj(z_s))` on p key `curve`.
+    fn ret(curve: CurveId, target: f64) -> D {
+        D {
+            phase: true,
+            retardance: true,
+            ..d(curve, target)
         }
     }
 
@@ -3592,6 +3816,7 @@ mod needle_oracle {
             },
             phase: x.phase,
             differential_passes: x.passes,
+            retardance: x.retardance,
             integral: x.integral,
             weight: 1.0,
             count_norm: None,
@@ -3787,7 +4012,115 @@ mod needle_oracle {
         add(&mut pbs, angle, d(Rs, 1.0));
         add(&mut pbs, angle, d(Rp, 0.0));
         out.push(("PBS", pbs));
+        // Two phase demands on one element and branch, at least one of
+        // them past the wrap wherever arg(r_p) is outside [-0.64, 0.64]:
+        // they share one bucket, which must fold their wrapped residuals.
+        let mut wrap_pair = MeritSpec::new();
+        add(
+            &mut wrap_pair,
+            angle,
+            D {
+                phase: true,
+                ..d(Rp, 2.5)
+            },
+        );
+        add(
+            &mut wrap_pair,
+            angle,
+            D {
+                phase: true,
+                ..d(Rp, -2.5)
+            },
+        );
+        out.push(("Rp phase pair across the wrap", wrap_pair));
+        // Retardance (W8a) is identically zero at normal incidence, so the
+        // merit cannot move there; `retardance_is_flat_at_normal_incidence`
+        // checks that instead.
+        if angle.get() != 0.0 {
+            out.extend(retardance_cases(angle));
+        }
         out
+    }
+
+    /// W8a: retardance demands on r_f, t_f and t_b, pointwise and
+    /// integral, two kinds, and one target across the wrap (DeltaR is RetR
+    /// with the target shifted by pi, so 3.0 stands for DeltaR = -0.14).
+    fn retardance_cases(angle: Radians) -> Vec<(&'static str, MeritSpec)> {
+        use ConstraintKind::*;
+        use CurveId::*;
+        let one = |x: D| {
+            let mut s = MeritSpec::new();
+            add(&mut s, angle, x);
+            s
+        };
+        let mut both = MeritSpec::new();
+        add(&mut both, angle, ret(Rp, 0.4));
+        add(&mut both, angle, d(Rs, 0.3));
+        add(
+            &mut both,
+            angle,
+            D {
+                phase: true,
+                ..d(Rp, -0.5)
+            },
+        );
+        vec![
+            ("RetR", one(ret(Rp, 0.4))),
+            ("RetT", one(ret(Tp, -0.3))),
+            ("DeltaR (RetR across the wrap)", one(ret(Rp, 3.0))),
+            ("RetTB", one(ret(TBp, 0.2))),
+            (
+                "RetR integral",
+                one(D {
+                    integral: true,
+                    ..ret(Rp, 0.4)
+                }),
+            ),
+            (
+                "RetT above",
+                one(D {
+                    kind: Above,
+                    ..ret(Tp, 0.5)
+                }),
+            ),
+            (
+                "RetR range",
+                one(D {
+                    kind: Range,
+                    band: 0.01,
+                    ..ret(Rp, 0.6)
+                }),
+            ),
+            ("RetR + Rs + Rp phase", both),
+        ]
+    }
+
+    #[test]
+    fn retardance_p_is_the_merit_slope_at_45_and_70_deg() {
+        for angle in [deg(45.0), deg(70.0)] {
+            for (name, spec) in retardance_cases(angle) {
+                check(name, spec, angle);
+            }
+        }
+    }
+
+    /// At normal incidence s and p coincide, Ret_R is identically 0 and no
+    /// seed moves it: the fold's P is zero to round-off, like the slope.
+    #[test]
+    fn retardance_is_flat_at_normal_incidence() {
+        for (name, x) in [
+            ("RetR", ret(CurveId::Rp, 0.4)),
+            ("RetT", ret(CurveId::Tp, 0.4)),
+        ] {
+            let mut spec = MeritSpec::new();
+            add(&mut spec, Radians::ZERO, x);
+            for (i, (p, s)) in p_and_slope(spec, Radians::ZERO).into_iter().enumerate() {
+                assert!(
+                    p.abs() < 1e-9 && s.abs() < 1e-6,
+                    "{name}, site {i}: P {p}, slope {s}"
+                );
+            }
+        }
     }
 
     #[test]

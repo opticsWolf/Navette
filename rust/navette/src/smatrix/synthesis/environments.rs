@@ -2129,6 +2129,7 @@ mod tests {
                 band: Arc::from([].as_slice()),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral: false,
                 weight: 1.0,
                 count_norm: None,

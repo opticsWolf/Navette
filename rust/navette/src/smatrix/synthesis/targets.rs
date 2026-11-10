@@ -387,6 +387,15 @@ fn curve_id(spectral: &str, polarization: &str) -> Result<String, String> {
         }
         return Ok(curve.to_string());
     }
+    if let Some((curve, _)) = retardance(spectral) {
+        if polarization != "u" {
+            return Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} is a p-minus-s phase difference; pass polarization=\"u\"."
+            ));
+        }
+        return Ok(curve.to_string());
+    }
     let curve = match (spectral, polarization) {
         ("R", "s") => "Rs",
         ("R", "p") => "Rp",
@@ -422,6 +431,29 @@ fn differential(spectral: &str) -> Option<(&'static str, &'static str, f64)> {
         "PDtp" => Some(("Tp", "p", 1.0)),
         _ => None,
     }
+}
+
+/// Retardance labels: spectral → (host p CurveId, offset added to the
+/// targets). `RetR`/`RetT` are `arg(z_p · conj(z_s))` of r_f / t_f, the
+/// engine's `Retardance_R`/`Retardance_T`. `DeltaR = RetR − π` and
+/// `DeltaT = RetT` (the engine's `Delta_R`/`Delta_T`), so a Delta target
+/// `t` is the retardance target `t + offset`, wrapped: one forward and one
+/// fold serve all four labels.
+fn retardance(spectral: &str) -> Option<(&'static str, f64)> {
+    match spectral {
+        "RetR" => Some(("Rp", 0.0)),
+        "RetT" => Some(("Tp", 0.0)),
+        "DeltaR" => Some(("Rp", std::f64::consts::PI)),
+        "DeltaT" => Some(("Tp", 0.0)),
+        _ => None,
+    }
+}
+
+/// Labels that are phase quantities by definition: ingestion forces phase
+/// normalization (raw radians, nf = 1) and compilation requires
+/// `phase=True`.
+fn phase_only(spectral: &str) -> bool {
+    differential(spectral).is_some() || retardance(spectral).is_some()
 }
 
 fn allclose(a: &[f64], b: &[f64]) -> bool {
@@ -462,7 +494,7 @@ fn ingest_spectral(weaver: &TargetWeaver, t: &SpectralTarget) -> Result<(), Stri
     let band = resolve_band(&t.band, n, "SpectralTarget")?;
     let kind = TargetKind::from_str(&t.kind)
         .ok_or_else(|| "Invalid kind (use 'e', 'a', 'b', 'r', or 'c')".to_string())?;
-    let mode = if t.spectral == "PDts" || t.spectral == "PDtp" {
+    let mode = if phase_only(&t.spectral) {
         "phase"
     } else {
         t.normalization_mode.as_str()
@@ -501,7 +533,7 @@ fn ingest_angular(weaver: &TargetWeaver, t: &AngularTarget) -> Result<(), String
     let band = resolve_band(&t.band, n, "AngularTarget")?;
     let kind = TargetKind::from_str(&t.kind)
         .ok_or_else(|| "Invalid kind (use 'e', 'a', 'b', 'r', or 'c')".to_string())?;
-    let mode = if t.spectral == "PDts" || t.spectral == "PDtp" {
+    let mode = if phase_only(&t.spectral) {
         "phase"
     } else {
         t.normalization_mode.as_str()
@@ -705,6 +737,33 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
     )
 }
 
+/// One line per retardance demand whose every angle is normal incidence,
+/// where s and p coincide and the retardance is identically 0: the demand
+/// compiles (it is not wrong, only unreachable) and the caller warns.
+pub fn retardance_warnings(set: &TargetSet) -> Vec<String> {
+    let flat = |spectral: &str, angles: &[Radians]| {
+        retardance(spectral).is_some() && angles.iter().all(|a| a.get() == 0.0)
+    };
+    let mut out = Vec::new();
+    let line = |what: String, spectral: &str| {
+        format!(
+            "{what}: {spectral} at normal incidence only - s and p coincide there, \
+             so the retardance is identically 0 and the demand cannot move"
+        )
+    };
+    for (i, t) in set.spectral.iter().enumerate() {
+        if flat(&t.spectral, &[t.angle]) {
+            out.push(line(format!("spectral[{i}]"), &t.spectral));
+        }
+    }
+    for (i, t) in set.angular.iter().enumerate() {
+        if flat(&t.spectral, &t.angles) {
+            out.push(line(format!("angular[{i}]"), &t.spectral));
+        }
+    }
+    out
+}
+
 /// Compile a [`TargetSet`] into a native `MeritSpec`.
 pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     // F2.1: the roster first, so every demand's tag resolves against a
@@ -875,16 +934,29 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         let ki = get_key(&mut spec, e.angle, &curve);
         let mut nf = e.norm_factor;
         let diff = differential(t.0);
-        if diff.is_some() && !t.2 {
-            return Err(format!(
-                "spectral={:?} is differential-phase: pass phase=True.",
-                t.0
-            ));
+        let ret = retardance(t.0);
+        if !t.2 && phase_only(t.0) {
+            let what = if diff.is_some() {
+                "differential-phase"
+            } else {
+                "a retardance"
+            };
+            return Err(format!("spectral={:?} is {what}: pass phase=True.", t.0));
         }
+        // Delta labels are a constant offset of retardance, folded into the
+        // targets and wrapped back to [-pi, pi] (the residual's own wrap).
+        let offset = ret.map_or(0.0, |(_, o)| o);
+        let shift = |x: f64| {
+            if offset == 0.0 {
+                return x;
+            }
+            let y = x + offset;
+            y - std::f64::consts::TAU * (y / std::f64::consts::TAU).round()
+        };
         let (norm, band, mode, out_nf) = if t.2 {
             nf = nf.max(1e-300);
             (
-                e.targets.iter().map(|x| x / nf).collect(),
+                e.targets.iter().map(|x| shift(x / nf)).collect(),
                 e.band.iter().map(|x| x / nf).collect(),
                 "phase".to_string(),
                 1.0,
@@ -908,6 +980,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             band: Arc::from(band),
             phase: t.2,
             differential_passes: diff.map(|(_, _, p)| p),
+            retardance: ret.is_some(),
             weight: t.3,
             count_norm: e.count_norm,
             integral: e.integral,
@@ -1083,6 +1156,7 @@ mod tests {
             band: Arc::from([].as_slice()),
             phase: false,
             differential_passes: None,
+            retardance: false,
             weight: 1.0,
             count_norm: None,
             integral: false,
@@ -1207,6 +1281,73 @@ mod tests {
         assert_eq!(curve_id("PDts", "s").unwrap(), "Ts");
         assert!(curve_id("PDts", "p").is_err());
         assert!(curve_id("Nope", "s").is_err());
+        for (label, host) in [
+            ("RetR", "Rp"),
+            ("DeltaR", "Rp"),
+            ("RetT", "Tp"),
+            ("DeltaT", "Tp"),
+        ] {
+            assert_eq!(curve_id(label, "u").unwrap(), host);
+            assert!(
+                curve_id(label, "p")
+                    .unwrap_err()
+                    .contains("polarization=\"u\"")
+            );
+        }
+    }
+
+    /// W8a: the four retardance labels compile onto their p host with the
+    /// retardance flag, raw radians, and the Delta offset folded into the
+    /// targets (DeltaR = RetR - pi, wrapped; DeltaT = RetT). Without
+    /// `phase=True` they refuse.
+    #[test]
+    fn retardance_labels_compile() {
+        use std::f64::consts::PI;
+        let target = |label: &str, value: f64| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: "u".to_string(),
+            values: vec![value, value],
+            phase: true,
+            angle: deg(45.0),
+            ..spec_target()
+        };
+        let cases = [
+            ("RetR", 0.5, CurveId::Rp, 0.5),
+            ("RetT", -1.0, CurveId::Tp, -1.0),
+            ("DeltaT", 2.0, CurveId::Tp, 2.0),
+            ("DeltaR", 0.5, CurveId::Rp, 0.5 - PI),
+            ("DeltaR", -0.5, CurveId::Rp, PI - 0.5),
+        ];
+        for (label, value, host, want) in cases {
+            let spec = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, value)],
+                ..base_set()
+            })
+            .unwrap();
+            let t = &spec.targets()[0];
+            assert_eq!(spec.keys()[t.key_idx as usize].curve, host, "{label}");
+            assert!(t.retardance && t.phase && t.differential_passes.is_none());
+            assert_eq!(t.transform, SimTransform::Phase);
+            assert_eq!(t.norm_factor, 1.0);
+            for &got in t.normalized_targets.iter() {
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "{label} {value}: {got} vs {want}"
+                );
+            }
+        }
+        let err = compile_merit_spec(&TargetSet {
+            spectral: vec![SpectralTarget {
+                phase: false,
+                ..target("RetT", 0.1)
+            }],
+            ..base_set()
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("retardance") && err.contains("phase=True"),
+            "{err}"
+        );
     }
 
     fn color_target() -> ColorTargetJson {

@@ -193,8 +193,29 @@ All notable changes to Navette are recorded here. Work items reference
   which had no contrast entry; a winning site there fell back to
   n = 1.0. The pool removes the mechanism: every candidate is a pool
   material, and there is no lookup to miss.
+- **Two phase demands on one S-matrix element could pull the needle the
+  wrong way.** The fold sums them into one bucket, which acts on their
+  weighted-mean target; when one target sat more than π from the
+  operating phase (an Rp phase demand near +π against an operating phase
+  near −π, say), that mean was on the wrong side and P had the wrong
+  sign. Each wrapped-phase target now moves to its representative
+  nearest the operating phase before the fold. Single phase demands and
+  the integral fold are unchanged.
 
 ### Added
+
+- **Retardance targets: `RetR`, `RetT`, `DeltaR`, `DeltaT`**
+  (`docs/plans/synthesis_targets_plan.md` W8a). `Ret = arg(z_p·conj(z_s))`
+  of r_f or t_f, the engine's `Retardance_R`/`Retardance_T`;
+  `DeltaR = RetR − π` and `DeltaT = RetT` (wrapped), the engine's
+  `Delta_R`/`Delta_T`. They take `polarization="u"` and `phase=True`
+  (anything else raises) and score as phase demands: `wrap(Ret − t)/tol`
+  in raw radians. Synthesis does not floor `DeltaR` where Rs < 1e-12,
+  as the engine does. The LM Jacobian is analytic and the needle fold
+  matches the merit slope at 45° and 70°. At normal incidence retardance
+  is identically 0, so a demand at only 0° compiles with a warning.
+  `MeritSpec.add_target(retardance=True)` sets the same demand on a
+  p curve (`Rp`, `Tp`, `RBp`, `TBp`) directly.
 
 - **Needle rules: which materials go where, and the edge layers.** Two
   options narrow a needle run without changing an unconstrained one (no

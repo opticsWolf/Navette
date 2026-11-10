@@ -206,6 +206,19 @@ impl CurveId {
         }
     }
 
+    /// The s curve a retardance demand keyed on this p curve reads with
+    /// it: `Ret = arg(z_p · conj(z_s))` of one element. `None` for every
+    /// curve that is not a polarized p amplitude.
+    pub fn retardance_partner(self) -> Option<CurveId> {
+        match self {
+            CurveId::Rp => Some(CurveId::Rs),
+            CurveId::Tp => Some(CurveId::Ts),
+            CurveId::RBp => Some(CurveId::RBs),
+            CurveId::TBp => Some(CurveId::TBs),
+            _ => None,
+        }
+    }
+
     /// Parse curve codes: front `Rs/Rp/Ru/Ts/Tp/Tu`, absorption
     /// `As/Ap/Au`, back `RBs/RBp/RBu/TBs/TBp/TBu` and `ABs/ABp/ABu`.
     /// None for anything else.
@@ -668,6 +681,13 @@ pub struct MeritTarget {
     /// `phase` (rejected otherwise); `passes` is 1 for transmitted, 2 for a
     /// reflection round trip; must be finite and non-negative.
     pub differential_passes: Option<f64>,
+    /// Retardance (`RetR`/`RetT`/`DeltaR`/`DeltaT`): sample
+    /// `arg(z_p · conj(z_s))` of the key's element instead of `arg(z_p)`.
+    /// The key is the p curve; its s partner
+    /// ([`CurveId::retardance_partner`]) is read alongside. Requires `phase`
+    /// and excludes `differential_passes` (rejected otherwise): the two
+    /// polarizations share one propagation reference, which cancels.
+    pub retardance: bool,
     /// User weight (default 1): multiplies this frame's merit sum.
     /// Applied at the residual level (`r × √(weight/count)`) so values,
     /// LM Jacobians and the needle fold stay consistent by construction.
@@ -887,6 +907,23 @@ impl MeritSpec {
                 ));
             }
         }
+        if target.retardance {
+            let curve = self.keys[target.key_idx as usize].curve;
+            if !target.phase {
+                return Err("retardance without phase: retardance demands are phase-only".into());
+            }
+            if target.differential_passes.is_some() {
+                return Err(
+                    "retardance with differential_passes: the reference cancels in p - s".into(),
+                );
+            }
+            if curve.retardance_partner().is_none() {
+                return Err(format!(
+                    "retardance demand on {curve:?}: the key must be a p amplitude \
+                     (Rp, Tp, RBp, TBp)"
+                ));
+            }
+        }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
         if !target.weight.is_finite() || target.weight < 0.0 {
@@ -935,6 +972,9 @@ impl MeritSpec {
             let curve = self.keys[t.key_idx as usize].curve;
             if t.phase {
                 set = set.with_complex(&[curve]);
+                if let Some(s) = retardance_partner(t, curve) {
+                    set = set.with_complex(&[s]);
+                }
                 continue;
             }
             let mut rows = rows_of(curve);
@@ -1013,6 +1053,7 @@ impl MeritSpec {
             let key = &self.keys[t.key_idx as usize];
             let ok = if t.phase {
                 provides.has_complex(key.curve)
+                    && retardance_partner(t, key.curve).is_none_or(|s| provides.has_complex(s))
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 provides.has_intensity(rc) && provides.has_intensity(tc)
             } else {
@@ -1021,6 +1062,8 @@ impl MeritSpec {
             if !ok {
                 let what = if t.differential_passes.is_some() {
                     "differential phase"
+                } else if t.retardance {
+                    "retardance"
                 } else if t.phase {
                     "phase"
                 } else {
@@ -1312,17 +1355,21 @@ impl MeritSpec {
                 Intensity(&'a [f64]),
                 Absorption(&'a [f64], &'a [f64]),
                 Phase(&'a [Complex64]),
+                Retardance(&'a [Complex64], &'a [Complex64]),
             }
-            let input: TargetInput = if t.phase {
-                let crow = if key.curve.is_back() {
-                    sim.complex_back_curve(key.curve)
+            let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
+                let arc = if id.is_back() {
+                    sim.complex_back_curve(id)
                 } else {
-                    sim.complex_curve(key.curve)
+                    sim.complex_curve(id)
                 };
-                match crow {
-                    Some(c) => TargetInput::Phase(&c[ang_row * n_wav..(ang_row + 1) * n_wav]),
-                    None => return Err(key.curve),
-                }
+                arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
+                    .ok_or(key.curve)
+            };
+            let input: TargetInput = if let Some(s) = retardance_partner(t, key.curve) {
+                TargetInput::Retardance(crow(key.curve)?, crow(s)?)
+            } else if t.phase {
+                TargetInput::Phase(crow(key.curve)?)
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 TargetInput::Absorption(irow(rc)?, irow(tc)?)
             } else {
@@ -1478,6 +1525,13 @@ impl MeritSpec {
                             );
                         }
                         a
+                    }
+                    TargetInput::Retardance(prow, srow) => {
+                        // Both rows walk the same bracket: the second call
+                        // finds the shared two-pointer already in place.
+                        let p = sample_c(prow, i, &mut sim_idx);
+                        let s = sample_c(srow, i, &mut sim_idx);
+                        (p * s.conj()).arg()
                     }
                 };
 
@@ -1832,12 +1886,14 @@ impl MeritSpec {
                 // before it pushes anything, so a spec that cannot be
                 // evaluated at all must not come back as a tidy list of
                 // empty rows.
-                let have = if key.curve.is_back() {
-                    sim.complex_back_curve(key.curve).is_some()
-                } else {
-                    sim.complex_curve(key.curve).is_some()
+                let have = |id: CurveId| {
+                    if id.is_back() {
+                        sim.complex_back_curve(id).is_some()
+                    } else {
+                        sim.complex_curve(id).is_some()
+                    }
                 };
-                if !have {
+                if !have(key.curve) || !retardance_partner(t, key.curve).is_none_or(have) {
                     return Err(key.curve);
                 }
                 (0.0, Vec::new())
@@ -2004,6 +2060,17 @@ fn push_part_terms(
     }
 }
 
+/// The s curve a retardance target on `curve` reads besides its own p row;
+/// `None` for every other target (registration guarantees the partner
+/// exists when `t.retardance` is set).
+pub(crate) fn retardance_partner(t: &MeritTarget, curve: CurveId) -> Option<CurveId> {
+    if t.retardance {
+        curve.retardance_partner()
+    } else {
+        None
+    }
+}
+
 /// The rows of one phase target, in `residuals_into`'s order. A back
 /// target reads the back complex row and the exit medium's index.
 ///
@@ -2020,6 +2087,11 @@ fn push_part_terms(
 /// amplitudes it reads, plus one total-thickness term. The wrap of the
 /// residual to [−π, π] is piecewise the identity. `z = 0` has no phase and
 /// no derivative; its terms are zero.
+///
+/// A retardance target reads `arg(z_p · conj(z_s)) = arg z_p − arg z_s`
+/// (mod 2π), so the same coefficients land on the p row with `+` and on the
+/// s row with `−`, each from its own amplitude's `c`. Either amplitude at
+/// zero leaves the product without a phase; both rows' terms are zero then.
 fn phase_rows_into(
     sim: &SimCurves,
     key: &MeritKey,
@@ -2030,29 +2102,50 @@ fn phase_rows_into(
     let sim_wl: &[f64] = &sim.wavelengths;
     let n_wav = sim_wl.len();
     let t_wl: &[f64] = &t.wavelengths;
-    // The caller checked that the row exists before it pushed anything.
-    let (full, n_ref): (_, &[f64]) = if key.curve.is_back() {
-        (sim.complex_back_curve(key.curve), &sim.n_back_re)
+    // The caller checked that the rows exist before it pushed anything.
+    let n_ref: &[f64] = if key.curve.is_back() {
+        &sim.n_back_re
     } else {
-        (sim.complex_curve(key.curve), &sim.n_front_re)
+        &sim.n_front_re
     };
-    let full = full.expect("phase_rows_into: complex row checked by the caller");
-    let crow = &full[ang_row * n_wav..(ang_row + 1) * n_wav];
+    let crow = |id: CurveId| {
+        let full = if id.is_back() {
+            sim.complex_back_curve(id)
+        } else {
+            sim.complex_curve(id)
+        };
+        let full = full.expect("phase_rows_into: complex row checked by the caller");
+        &full[ang_row * n_wav..(ang_row + 1) * n_wav]
+    };
+    let prow = crow(key.curve);
+    let partner = retardance_partner(t, key.curve).map(|s| (s, crow(s)));
     let (aligned, offset) = alignment(t_wl, sim_wl);
     let rscale = (t.weight / t.count_norm.unwrap_or(1.0)).sqrt();
+    let sample = |row: &[Complex64], r: &SampleRef| match *r {
+        SampleRef::Direct(j) => row[j],
+        SampleRef::Interp(j, f) => row[j] + (row[j + 1] - row[j]) * f,
+    };
+    // ∂arg z / ∂(Re z, Im z) = (Im c, Re c), c = conj(z)/|z|².
+    let d_arg = |z: Complex64| {
+        let c = z.conj() / z.norm_sqr();
+        (c.im, c.re)
+    };
 
-    // Per point: where it reads, the Re/Im coefficients of ∂raw, the
-    // reference's ∂raw/∂D, and the values the kind derivative needs.
+    // Per point: where it reads, the Re/Im coefficients of ∂raw (the key
+    // row's, then the retardance partner's), the reference's ∂raw/∂D, and
+    // the values the kind derivative needs.
     let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
-    let mut coef: Vec<(f64, f64, f64)> = Vec::with_capacity(t_wl.len());
+    let mut coef: Vec<(f64, f64, f64, f64, f64)> = Vec::with_capacity(t_wl.len());
     let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
     let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
     let mut sim_idx = 0usize;
     for i in 0..t_wl.len() {
         let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
-        let z = match r {
-            SampleRef::Direct(j) => crow[j],
-            SampleRef::Interp(j, f) => crow[j] + (crow[j + 1] - crow[j]) * f,
+        let zp = sample(prow, &r);
+        let zs = partner.map(|(_, srow)| sample(srow, &r));
+        let z = match zs {
+            Some(zs) => zp * zs.conj(),
+            None => zp,
         };
         let mut raw = z.arg();
         let mut d_ref = 0.0;
@@ -2067,12 +2160,11 @@ fn phase_rows_into(
             raw -= k * sim.total_d;
             d_ref = -k;
         }
-        let m2 = z.norm_sqr();
-        let (d_re, d_im) = if m2 > 0.0 {
-            let c = z.conj() / m2;
-            (c.im, c.re)
+        let ((d_re, d_im), (s_re, s_im)) = if z.norm_sqr() > 0.0 {
+            let (s_re, s_im) = zs.map_or((0.0, 0.0), d_arg);
+            (d_arg(zp), (-s_re, -s_im))
         } else {
-            (0.0, 0.0)
+            ((0.0, 0.0), (0.0, 0.0))
         };
         let target_scaled = t.normalized_targets[i];
         let diff = match t.transform {
@@ -2084,7 +2176,7 @@ fn phase_rows_into(
             SimTransform::Linear | SimTransform::Complex => raw * t.norm_factor - target_scaled,
         };
         refs.push(r);
-        coef.push((d_re, d_im, d_ref));
+        coef.push((d_re, d_im, s_re, s_im, d_ref));
         raws.push(raw);
         diffs.push(diff);
     }
@@ -2093,7 +2185,7 @@ fn phase_rows_into(
         if scale == 0.0 {
             return;
         }
-        let (d_re, d_im, d_ref) = coef[i];
+        let (d_re, d_im, s_re, s_im, d_ref) = coef[i];
         push_part_terms(
             terms,
             key.curve,
@@ -2110,6 +2202,10 @@ fn phase_rows_into(
             &refs[i],
             scale * d_im,
         );
+        if let Some((s, _)) = partner {
+            push_part_terms(terms, s, TermPart::Re, ang_row, &refs[i], scale * s_re);
+            push_part_terms(terms, s, TermPart::Im, ang_row, &refs[i], scale * s_im);
+        }
         let w = scale * d_ref;
         if w != 0.0 {
             terms.push(CurveTerm {
@@ -2290,6 +2386,7 @@ mod tests {
             band: band.into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -2317,6 +2414,7 @@ mod tests {
             band: Vec::new().into(),
             phase: true,
             differential_passes: None,
+            retardance: false,
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -3034,6 +3132,84 @@ mod tests {
         ]));
         // (−0.01/0.05)² = 0.04
         assert!((spec.merit(&sim, 1e6) - 0.04).abs() < 1e-12);
+    }
+
+    /// W8a: a retardance demand reads `arg(r_p · conj(r_s))` and wraps its
+    /// residual the short way: Ret = 3.1 against −3.1 is 0.083 off, not
+    /// 6.2. Missing either row fails the demand on its p key; the flag is
+    /// refused off a p key, without phase and with a differential.
+    #[test]
+    fn retardance_demand_reads_p_minus_s_and_wraps_short() {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rp,
+        });
+        let mut t = entry_phase(
+            k as u32,
+            vec![400.0],
+            vec![-3.1],
+            vec![0.05],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        );
+        t.retardance = true;
+        spec.add_target(t.clone()).unwrap();
+        let mut sim = SimCurves {
+            angles: vec![Radians::ZERO].into(),
+            wavelengths: (0..NW)
+                .map(|i| 400.0 + 100.0 * i as f64)
+                .collect::<Vec<_>>()
+                .into(),
+            ..Default::default()
+        };
+        let zero = Complex64::new(0.0, 0.0);
+        let row = |z: Complex64| -> Arc<[Complex64]> { Arc::from(vec![z, zero, zero, zero, zero]) };
+        sim.set_complex(CurveId::Rp, row(Complex64::from_polar(0.5, 3.0)))
+            .unwrap();
+        sim.set_complex(CurveId::Rs, row(Complex64::from_polar(0.8, -0.1)))
+            .unwrap();
+        let d = 3.1 + 3.1 - std::f64::consts::TAU;
+        let want = (d / 0.05) * (d / 0.05);
+        assert!((spec.merit(&sim, 1e6) - want).abs() < 1e-9 * want);
+
+        sim.cplx[CurveId::Rs.index()] = None;
+        assert!(matches!(
+            spec.residuals(&sim, &mut Vec::new()),
+            Err(CurveId::Rp)
+        ));
+        let mut provides = CurveSet::default().with_complex(&[CurveId::Rp]);
+        let err = spec.check_supported(&provides).unwrap_err();
+        assert!(err.contains("Rp retardance"), "{err}");
+        provides = provides.with_complex(&[CurveId::Rs]);
+        spec.check_supported(&provides).unwrap();
+
+        let mut on_s = spec.clone();
+        let ks = on_s.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        let mut bad = t.clone();
+        bad.key_idx = ks as u32;
+        assert!(on_s.add_target(bad).unwrap_err().contains("p amplitude"));
+        let mut bad = t.clone();
+        bad.phase = false;
+        bad.transform = SimTransform::Linear;
+        assert!(
+            spec.clone()
+                .add_target(bad)
+                .unwrap_err()
+                .contains("phase-only")
+        );
+        let mut bad = t;
+        bad.differential_passes = Some(1.0);
+        assert!(
+            spec.clone()
+                .add_target(bad)
+                .unwrap_err()
+                .contains("cancels")
+        );
     }
 
     #[test]
@@ -4110,6 +4286,7 @@ mod tests {
                 band: vec![0.01; n].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
                 integral,
                 weight,
                 count_norm: None,
@@ -4434,6 +4611,112 @@ mod tests {
         #[test]
         fn phase_rows_are_a_finite_difference_of_the_complex_rows_and_d() {
             check_phase_rows(CurveId::Ts);
+        }
+
+        /// A p row and its s partner whose phases put `arg(p·conj(s))`
+        /// across ±π at some points, so the wrap of the product and of the
+        /// residual are both exercised. `bump` moves one part of one row.
+        fn ret_sim(p: CurveId, bump: Option<(CurveId, TermPart, usize, f64)>) -> SimCurves {
+            let s = p.retardance_partner().unwrap();
+            let mut sim = base_sim();
+            for (id, phase0, amp0) in [(p, 0.4, 0.7), (s, -2.5, 0.5)] {
+                let mut c: Vec<Complex64> = (0..NA * NW)
+                    .map(|k| {
+                        let a = phase0 + 0.35 * ((k as f64) * 0.3 + amp0).sin();
+                        Complex64::from_polar(amp0 + 0.1 * (k as f64 * 0.5).cos(), a)
+                    })
+                    .collect();
+                match bump {
+                    Some((b, TermPart::Re, flat, h)) if b == id => c[flat].re += h,
+                    Some((b, TermPart::Im, flat, h)) if b == id => c[flat].im += h,
+                    _ => {}
+                }
+                sim.set_complex(id, Arc::from(c)).unwrap();
+            }
+            sim
+        }
+
+        /// W8a: retardance rows land on both rows, `+` on p and `−` on s,
+        /// against `residuals()` differenced in Re/Im of every grid
+        /// amplitude of either row. Aligned and off-grid, pointwise and
+        /// integral, two kinds, both angles, a target near the wrap.
+        fn check_retardance_rows(p: CurveId) {
+            let s_id = p.retardance_partner().unwrap();
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            let mut spec = MeritSpec::new();
+            for angle in [Radians::ZERO, deg(30.0)] {
+                let k = spec.add_key(MeritKey { angle, curve: p });
+                for (grid, integral, kind, tgt) in [
+                    (wl(), false, ConstraintKind::Exact, 0.1),
+                    (off.clone(), false, ConstraintKind::Exact, -3.1),
+                    (wl(), true, ConstraintKind::Exact, 3.0),
+                    (off.clone(), false, ConstraintKind::CenterBand, 2.9),
+                ] {
+                    let n = grid.len();
+                    let mut t = target(k as u32, grid, kind, SimTransform::Phase, integral, 1.3);
+                    t.phase = true;
+                    t.retardance = true;
+                    t.normalized_targets = vec![tgt; n].into();
+                    spec.add_target(t).unwrap();
+                }
+            }
+            let need = spec.required_rows();
+            assert!(need.has_complex(p) && need.has_complex(s_id));
+
+            let sim = ret_sim(p, None);
+            let s = spec.curve_sensitivity(&sim).unwrap();
+            assert!(s.is_complete(), "uncovered {:?}", s.uncovered);
+            let column = |curve: CurveId, part: TermPart, flat: usize| -> Vec<f64> {
+                s.rows
+                    .iter()
+                    .map(|terms| {
+                        terms
+                            .iter()
+                            .filter(|t| {
+                                t.curve == curve
+                                    && t.part == part
+                                    && t.angle_row * NW + t.wavelength == flat
+                            })
+                            .map(|t| t.d_residual)
+                            .sum()
+                    })
+                    .collect()
+            };
+            let h = 1e-7;
+            let mut live = 0usize;
+            let mut worst = 0.0f64;
+            for curve in [p, s_id] {
+                for part in [TermPart::Re, TermPart::Im] {
+                    for flat in 0..NA * NW {
+                        let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                        spec.residuals(&ret_sim(p, Some((curve, part, flat, h))), &mut rp)
+                            .unwrap();
+                        spec.residuals(&ret_sim(p, Some((curve, part, flat, -h))), &mut rm)
+                            .unwrap();
+                        let a = column(curve, part, flat);
+                        for (i, ((x, u), v)) in a.iter().zip(&rp).zip(&rm).enumerate() {
+                            let y = (u - v) / (2.0 * h);
+                            let dev = (x - y).abs() / y.abs().max(1.0);
+                            worst = worst.max(dev);
+                            assert!(
+                                dev < 1e-6,
+                                "row {i}, {curve:?} {part:?}[{flat}]: {x} vs {y}"
+                            );
+                            if y.abs() > 1e-9 {
+                                live += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(live > 200, "only {live} live entries");
+            println!("  retardance rows: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn retardance_rows_are_a_finite_difference_of_both_complex_rows() {
+            check_retardance_rows(CurveId::Rp);
+            check_retardance_rows(CurveId::TBp);
         }
 
         #[test]

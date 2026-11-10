@@ -25,6 +25,8 @@ except ImportError as exc:  # pragma: no cover - native not built yet
   ) from exc
 
 TargetType = Literal["a", "b", "e", "r", "c"]
+#: Labels that are phase quantities by definition (raw radians, phase=True).
+_PHASE_ONLY = ("PDts", "PDtp", "RetR", "RetT", "DeltaR", "DeltaT")
 NormalizationMode = Literal["auto", "linear", "log", "phase", "complex"]
 
 # ---------------------------------------------------------------------------
@@ -39,9 +41,12 @@ class SpectralTarget:
         spectral:      R | T | A        reflectance / transmittance / absorptance
                        RB | TB | AB     the same, from the BACK side
                        PDts | PDtp      transmitted differential phase
+                       RetR | RetT      retardance arg(p·conj(s)), r_f / t_f
+                       DeltaR | DeltaT  ellipsometric Δ (RetR − π / RetT)
         polarization:  s | p | u        u = unpolarized (the s/p mean)
 
-    giving ``Rs``…``Au``, ``RBs``…``ABu``, and the two differential labels.
+    giving ``Rs``…``Au``, ``RBs``…``ABu``, the two differential labels and
+    the four retardance labels.
     Any other pair raises at construction. ``A`` is derived as 1 − R − T on
     the shared grid, so a missing companion curve fails the whole key group.
 
@@ -54,6 +59,15 @@ class SpectralTarget:
     reflection round trip, but no reflection differential label exists, so
     there is no ``PDrs``/``PDrp`` to reach for. Absolute-phase targets on
     ``R``/``T`` with ``phase=True`` are unaffected and stay available.
+
+    ``RetR``/``RetT``/``DeltaR``/``DeltaT`` are p-minus-s phase
+    differences of one element, so they take ``polarization="u"`` (anything
+    else raises) and, like ``PDts``, need ``phase=True`` and force
+    raw-radian normalization. Their values are the engine's
+    ``Retardance_R``/``Retardance_T`` and ``Delta_R``/``Delta_T``
+    (``Delta_R = Retardance_R − π`` wrapped, ``Delta_T = Retardance_T``).
+    At normal incidence s and p coincide and the retardance is identically
+    0; a retardance demand at 0° only compiles with a warning.
     See ``docs/spectralweave-target-kinds.md`` for the sign convention
     (the reference is ``+kD``, the conjugate of Macleod) and the needle
     ``gain_shift_phi`` bookkeeping.
@@ -422,14 +436,15 @@ class TargetCollection:
 
         # Iterating in Python and passing to Rust here is fine because it
         # only happens ONCE during initialization, not inside the hot loop.
-        # PDts/PDtp force phase normalization (raw radians, nf == 1): they
-        # are differential-phase quantities and any other resolution would
-        # not unscale back to radians in the synthesis converter.
+        # PDts/PDtp and the retardance labels force phase normalization
+        # (raw radians, nf == 1): they are phase quantities and any other
+        # resolution would not unscale back to radians in the synthesis
+        # converter.
         for t in self._spectral_targets:
             weaver.add_spectral_target(
                 t.wavelengths, t.values, t.tolerances,
                 t.polarization, t.spectral, t.kind,
-                "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
+                "phase" if t.spectral in _PHASE_ONLY else t.normalization_mode,
                 t.band,
                 weight=t.weight, normalize_count=t.normalize_count,
                 integral=t.integral,
@@ -440,7 +455,7 @@ class TargetCollection:
             weaver.add_angular_target(
                 t.wavelength, t.values, t.tolerances,
                 t.polarization, t.spectral, t.kind,
-                "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
+                "phase" if t.spectral in _PHASE_ONLY else t.normalization_mode,
                 t.band,
                 weight=t.weight, normalize_count=t.normalize_count,
                 integral=t.integral,
