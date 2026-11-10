@@ -1,7 +1,8 @@
 # Synthesis targets: polarization, curve coverage, weighting, coherence
 
-Status: **in progress.** W1, W2 and W3 are implemented (2026-11-10);
-W4-W8 are open. Drafted 2026-11-09.
+Status: **in progress.** W1, W2 (including the back-channel deposits,
+step 4) and W3 are implemented (2026-11-10); W4-W8 are open. Drafted
+2026-11-09.
 
 This plan follows a review of the needle / thin-film synthesis path
 (`smatrix/synthesis/*`) against five reported issues:
@@ -352,6 +353,17 @@ that the change is an improvement (or at worst neutral at 0°).
    - until a channel has a deposit, the LM falls back to FD Jacobian for
      specs that use it (existing `JacobianMode::Fd` path), stated in the
      report.
+
+   **Done (step 4, 2026-11-10).** `thickness_slopes4_ddz` adds ∂t_b and
+   ∂r_b (`star_dual`'s s_tb and term_b, written out; bitwise the needle
+   operator's channels 1 and 3, pinned in
+   `thickness_slopes_are_the_four_channel_slopes_to_the_bit`). A spec
+   that reads a back curve gets 24 deposit slots: the twelve front ones,
+   then ∂(RBs, RBp, TBs, TBp) and ∂(Re, Im) of r_b, t_b per polarization
+   (`jacobian::BACK_DEPOSIT_CHANNELS`). Other specs build the slots they
+   did before. `curve_sensitivity` covers back phase rows (back complex
+   row, exit-medium reference index), so only colour demands still
+   decline the analytic Jacobian.
 5. **Cost**: intensity-only specs stay bit-identical (new rows only when a
    demand needs them; gate per curve with `spec.uses_curve(id)`).
 

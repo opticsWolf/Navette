@@ -55,9 +55,12 @@ All notable changes to Navette are recorded here. Work items reference
   and failed the LM mid-run with "missing curve". It now fills every row
   the spec reads (unpolarized as the s/p average, as the engine; back
   rows from the same block solve) and nothing more, so intensity-only
-  specs run unchanged. The analytic LM Jacobian covers unpolarized rows
-  and front reflection phase; back-incidence demands fall back to the
-  finite-difference Jacobian. Back demands raise a `ValueError` when the
+  specs run unchanged. The analytic LM Jacobian covers all of these rows:
+  unpolarized, front reflection phase, and back intensities and phases,
+  whose thickness slopes of r_b and t_b come from the same sweep as the
+  front ones (only colour demands still run on finite differences).
+  Specs without a back demand build exactly the deposits they did
+  before. Back demands raise a `ValueError` when the
   exit medium absorbs (k > 1e-3) inside their span, where back
   incidence is undefined. Any demand an evaluator does not produce is
   refused at construction of `SmatrixContext`, `NeedlePipeline`,

@@ -21,13 +21,13 @@ use rayon::prelude::*;
 
 use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
-    block_flux_factors, build_stack_fields_range_dual, thickness_slopes_ddz,
+    block_flux_factors, build_stack_fields_range_dual, thickness_slopes_ddz, thickness_slopes4_ddz,
 };
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::environments::CompiledEnvironments;
-use crate::smatrix::synthesis::jacobian::CurveDeposits;
 use crate::smatrix::synthesis::jacobian::assemble_jacobian_mapped;
+use crate::smatrix::synthesis::jacobian::{ALL_SLOTS, BACK_SLOT, CurveDeposits};
 use crate::smatrix::synthesis::merit::{CurveId, CurveSet, MeritSpec, Radians, SimCurves};
 use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
@@ -221,6 +221,9 @@ impl SmatrixContext {
         // Amplitude deposits for phase demands, only when the spec has any:
         // an intensity-only sweep collects the same four channels as before.
         let with_phase = n_par > 0 && self.spec.uses_phase();
+        // Back channels (and with them every front amplitude slot) only
+        // when the spec reads a back curve.
+        let with_back = n_par > 0 && need.any_back();
         let swept: Vec<(Pt, Vec<f64>)> = (0..na * nw)
             .into_par_iter()
             .map(|k| {
@@ -258,6 +261,7 @@ impl SmatrixContext {
                 } else {
                     deposit_row(
                         &n_slice, &sa, start, end, lam, nsin_fi, par_films, n_par, with_phase,
+                        with_back,
                     )
                 };
                 (pt, dep)
@@ -415,7 +419,10 @@ impl SmatrixContext {
 /// ∂(Rs, Rp, Ts, Tp)/∂(thickness) at one grid point, laid out
 /// `[channel · n_par + par]` for [`CurveDeposits::from_point_rows`]; with
 /// `with_phase`, then ∂(Re, Im) of the complex forward `t_s`, `t_p`, then
-/// of the front reflection `r_s`, `r_p` (see `PHASE_DEPOSIT_CHANNELS`).
+/// of the front reflection `r_s`, `r_p` (see `PHASE_DEPOSIT_CHANNELS`);
+/// with `with_back`, all of those and then the back channels
+/// (`BACK_DEPOSIT_CHANNELS`): ∂(RBs, RBp, TBs, TBp), then ∂(Re, Im) of
+/// `r_b` and `t_b` per polarization.
 ///
 /// Increasing film `j`'s thickness is the needle operator with the needle
 /// material set to the host's own index: r₁₂ = 0, so ρ̂ vanishes and
@@ -425,9 +432,10 @@ impl SmatrixContext {
 /// product the forward solver uses, which is why this cannot drift from it.
 ///
 /// The intensities follow the solver's own `finalize`: R = |r_f|² and the
-/// stored T is |t_fwd|²·f_fwd, with `f_fwd` the boundary-admittance ratio.
-/// That factor depends only on the block's two half-spaces, so it is
-/// constant under a film thickness and rides outside the derivative.
+/// stored T is |t_fwd|²·f_fwd, with `f_fwd` the boundary-admittance ratio;
+/// RB = |r_b|² and TB = |t_b|²·f_back. Those factors depend only on the
+/// block's two half-spaces, so they are constant under a film thickness
+/// and ride outside the derivative.
 #[allow(clippy::too_many_arguments)]
 fn deposit_row(
     n_slice: &[Complex64],
@@ -439,8 +447,17 @@ fn deposit_row(
     par_films: &[usize],
     n_par: usize,
     with_phase: bool,
+    with_back: bool,
 ) -> Vec<f64> {
-    let mut row = vec![0.0f64; if with_phase { 12 } else { 4 } * n_par];
+    let with_phase = with_phase || with_back;
+    let n_ch = if with_back {
+        ALL_SLOTS
+    } else if with_phase {
+        BACK_SLOT
+    } else {
+        4
+    };
+    let mut row = vec![0.0f64; n_ch * n_par];
     let (fields_s, fields_p) = build_stack_fields_range_dual(
         start,
         end,
@@ -454,13 +471,26 @@ fn deposit_row(
     for (pol, fields) in [(0i32, &fields_s), (1i32, &fields_p)] {
         let pi = pol as usize;
         let m = fields.s_left[fields.end];
-        let f_fwd = block_flux_factors(fields, pol)[2];
+        let flux = block_flux_factors(fields, pol);
+        let f_fwd = flux[2];
         let r_conj = m.0.conj();
         let t_conj = m.2.conj();
         for (kp, &fi) in par_films.iter().enumerate() {
             // Film `fi` is solver slot `fi + 1` (ambient occupies slot 0).
             let j = fi + 1;
-            let [dr, dt] = thickness_slopes_ddz(fields, j, lam);
+            let [dr, dt] = if with_back {
+                let [dr, dtb, dt, drb] = thickness_slopes4_ddz(fields, j, lam);
+                let b = BACK_SLOT;
+                row[(b + pi) * n_par + kp] = 2.0 * (m.3.conj() * drb).re;
+                row[(b + 2 + pi) * n_par + kp] = 2.0 * flux[1] * (m.1.conj() * dtb).re;
+                row[(b + 4 + 2 * pi) * n_par + kp] = drb.re;
+                row[(b + 5 + 2 * pi) * n_par + kp] = drb.im;
+                row[(b + 8 + 2 * pi) * n_par + kp] = dtb.re;
+                row[(b + 9 + 2 * pi) * n_par + kp] = dtb.im;
+                [dr, dt]
+            } else {
+                thickness_slopes_ddz(fields, j, lam)
+            };
             // d|z|²/dd = 2·Re(conj(z)·dz/dd).
             row[pi * n_par + kp] = 2.0 * (r_conj * dr).re;
             row[(2 + pi) * n_par + kp] = 2.0 * f_fwd * (t_conj * dt).re;
@@ -621,9 +651,9 @@ impl SmatrixContext {
         let ub = vec![self.clamp_max_nm; x0.len()];
 
         // The analytic Jacobian, when the spec is fully covered by it. The
-        // source decides per call: a spec with a phase target or a color
-        // demand declines and the driver differences that iteration, so the
-        // mode is a preference, not a promise.
+        // source decides per call: a spec with a color demand declines and
+        // the driver differences that iteration, so the mode is a
+        // preference, not a promise.
         //
         // Which *solver* consumes them is `self.lm.backend`'s business, and
         // `run_optimizer`'s: the built-in LM is the default and the only one
@@ -859,7 +889,7 @@ pub(crate) fn apply_params(
 /// stack at `x`, take one sweep with deposits, and multiply the two halves.
 ///
 /// Declines (`Ok(None)`) when the merit spec has rows whose dependence the
-/// sensitivity pass does not carry — color demands and back phase targets. That is
+/// sensitivity pass does not carry — color demands. That is
 /// a property of the spec, not of `x`, so a declining source declines every
 /// iteration and the run is simply the finite-difference run. The first
 /// decline is remembered, so the later calls skip the deposits sweep whose
@@ -913,8 +943,8 @@ impl JacobianSource for DepositJacobian {
             .spec
             .curve_sensitivity(&sim)
             .map_err(|c| format!("missing curve {c:?}"))?;
-        // Uncovered rows (colour, back phase), or rows whose curves the
-        // sweep has no deposits for (back intensities): difference instead.
+        // Uncovered rows (colour), or rows whose curves the sweep has no
+        // deposits for: difference instead.
         if !sens.is_complete() || !dep.covers(&sens) {
             self.declined.store(true, Ordering::Relaxed);
             return Ok(None);
@@ -1321,7 +1351,8 @@ mod tests {
         #[allow(unused_imports)]
         use crate::smatrix::angle::{Radians, deg, degs};
         use crate::smatrix::synthesis::jacobian::{
-            CurveDeposits, DEPOSIT_CHANNELS, assemble_jacobian, deposit_channel,
+            ALL_SLOTS, BACK_DEPOSIT_CHANNELS, BACK_SLOT, CurveDeposits, DEPOSIT_CHANNELS,
+            assemble_jacobian, deposit_channel,
         };
 
         const WLS: [f64; 5] = [480.0, 520.0, 560.0, 600.0, 640.0];
@@ -1939,7 +1970,7 @@ mod tests {
         /// W2 analytic Jacobian: unpolarized rows split onto their s/p
         /// deposits, absorption on unpolarized companions, and front
         /// reflection phase on the new r_f slots — all against a finite
-        /// difference of the residuals. A back demand declines instead.
+        /// difference of the residuals.
         #[test]
         fn the_jacobian_covers_unpolarized_rows_and_reflection_phase() {
             let mut spec = MeritSpec::new();
@@ -2007,22 +2038,195 @@ mod tests {
                 }
             }
             assert!(live > 30, "only {live} live entries");
+        }
 
-            // A back intensity demand: covered rows, no deposits -> decline.
-            let mut back = MeritSpec::new();
-            demand(&mut back, angle_of(SINS[1]), CurveId::RBu, 0.1);
-            assert!(back.sensitivity_incomplete());
-            let ctx = ctx3(back);
+        /// W2 step 4: the back channels' deposits — ∂RB, ∂TB and ∂(Re, Im)
+        /// of r_b, t_b — against `simulate()`'s back rows differenced in
+        /// thickness. The front slots of the same sweep stay bitwise those
+        /// of a sweep without back channels.
+        #[test]
+        fn back_deposits_are_a_finite_difference_of_the_back_rows() {
+            let mut spec = MeritSpec::new();
+            for (i, curve) in BACK_DEPOSIT_CHANNELS.into_iter().enumerate() {
+                let angle = angle_of(SINS[i % 2]);
+                demand(&mut spec, angle, curve, 0.0);
+                phase_demand(&mut spec, angle, curve, WLS.to_vec(), None, false);
+            }
+            demand(&mut spec, angle_of(SINS[1]), CurveId::Rs, 0.0);
+            let ctx = ctx3(spec);
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
+            let (_, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
+            assert_eq!(dep.n_channels(), ALL_SLOTS);
+
+            let mut front = MeritSpec::new();
+            demand(&mut front, angle_of(SINS[1]), CurveId::Rs, 0.0);
+            let (_, plain) = ctx3(front).simulate_with_deposits(&stack, &par).unwrap();
+            for ch in 0..plain.n_channels() {
+                for pt in 0..dep.n_points() {
+                    for kp in 0..par.len() {
+                        assert_eq!(
+                            dep.get(ch, pt, kp).to_bits(),
+                            plain.get(ch, pt, kp).to_bits(),
+                            "front slot {ch} moved with the back channels on"
+                        );
+                    }
+                }
+            }
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            let mut check = |an: f64, f: f64, scale: f64, what: &str| {
+                let dev = (an - f).abs() / scale;
+                worst = worst.max(dev);
+                assert!(dev < 1e-6, "{what}: {an} vs {f}");
+                if f.abs() > 1e-6 {
+                    live += 1;
+                }
+            };
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let a = ctx.simulate(&sp).unwrap();
+                let b = ctx.simulate(&sm).unwrap();
+                for (k, id) in BACK_DEPOSIT_CHANNELS.into_iter().enumerate() {
+                    let (ia, ib) = (a.back_curve(id).unwrap(), b.back_curve(id).unwrap());
+                    let fd: Vec<f64> = ia
+                        .iter()
+                        .zip(ib.iter())
+                        .map(|(p, m)| (p - m) / (2.0 * h))
+                        .collect();
+                    let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                    let ch = deposit_channel(id).unwrap();
+                    assert_eq!(ch, BACK_SLOT + k);
+                    for (pt, &f) in fd.iter().enumerate() {
+                        check(
+                            dep.get(ch, pt, kp),
+                            f,
+                            scale,
+                            &format!("film {fi}, {id:?}, point {pt}"),
+                        );
+                    }
+                    let ca = a.complex_back_curve(id).unwrap();
+                    let cb = b.complex_back_curve(id).unwrap();
+                    for pt in 0..ca.len() {
+                        let fd = (ca[pt] - cb[pt]) / (2.0 * h);
+                        let ch = BACK_SLOT + 4 + 2 * k;
+                        for (c, f) in [(ch, fd.re), (ch + 1, fd.im)] {
+                            check(
+                                dep.get(c, pt, kp),
+                                f,
+                                fd.norm().max(1e-6),
+                                &format!("film {fi}, {id:?} slot {c}, point {pt}"),
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(live > 150, "only {live} live entries");
+            println!("  back deposits: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        /// W2 step 4 end to end: back intensity (polarized, unpolarized,
+        /// absorption) and back phase (absolute and differential, aligned
+        /// and interpolated, pointwise and integral) rows of the analytic
+        /// Jacobian against a finite difference of the residuals, and the
+        /// optimizer's source answers instead of declining.
+        #[test]
+        fn the_jacobian_covers_back_demands() {
+            let off = vec![500.0, 540.0, 580.0, 620.0];
+            let mut spec = MeritSpec::new();
+            demand(&mut spec, angle_of(SINS[1]), CurveId::RBu, 0.1);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::TBp, 0.9);
+            demand(&mut spec, angle_of(SINS[1]), CurveId::ABs, 0.05);
+            demand(&mut spec, angle_of(SINS[0]), CurveId::Rs, 0.01);
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::RBs,
+                WLS.to_vec(),
+                None,
+                false,
+            );
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[0]),
+                CurveId::TBp,
+                off.clone(),
+                Some(1.0),
+                false,
+            );
+            phase_demand(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::TBs,
+                off,
+                Some(2.0),
+                true,
+            );
+            assert!(!spec.sensitivity_incomplete());
+            let ctx = ctx3(spec);
+            let d = [118.0, 203.0, 64.0];
+            let stack = stack3(d[0], d[1], d[2]);
+            let par = [0usize, 1, 2];
             let (sim, dep) = ctx.simulate_with_deposits(&stack, &par).unwrap();
             let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
-            assert!(!dep.covers(&sens));
+            assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+            assert!(dep.covers(&sens));
+            let mut jac = Vec::new();
+            assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
+            let m = sens.rows.len();
+            assert_eq!(m, 4 * WLS.len() + WLS.len() + 4 + 1);
+
             let src = DepositJacobian::new(
                 ctx.clone(),
                 stack.clone(),
                 vec![Param::Row(0), Param::Row(1), Param::Row(2)],
                 WLS.len(),
             );
-            assert_eq!(src.fill(&d, &mut Vec::new()).unwrap(), None);
+            let mut mapped = Vec::new();
+            assert_eq!(src.fill(&d, &mut mapped).unwrap(), Some(m));
+            for (a, b) in jac.iter().zip(&mapped) {
+                assert_eq!(a.to_bits(), b.to_bits(), "{a} vs {b}");
+            }
+
+            let h = 1e-4;
+            let mut worst = 0.0f64;
+            let mut live = 0usize;
+            for (kp, &fi) in par.iter().enumerate() {
+                let mut sp = stack.clone();
+                sp.set_thickness(fi, d[fi] + h).unwrap();
+                let mut sm = stack.clone();
+                sm.set_thickness(fi, d[fi] - h).unwrap();
+                let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                ctx.spec
+                    .residuals(&ctx.simulate(&sp).unwrap(), &mut rp)
+                    .unwrap();
+                ctx.spec
+                    .residuals(&ctx.simulate(&sm).unwrap(), &mut rm)
+                    .unwrap();
+                let fd: Vec<f64> = rp
+                    .iter()
+                    .zip(&rm)
+                    .map(|(p, q)| (p - q) / (2.0 * h))
+                    .collect();
+                let scale = fd.iter().fold(1e-6f64, |acc, v| acc.max(v.abs()));
+                for i in 0..m {
+                    let an = jac[i * par.len() + kp];
+                    let dev = (an - fd[i]).abs() / scale;
+                    worst = worst.max(dev);
+                    assert!(dev < 1e-6, "row {i}, film {fi}: {an} vs {}", fd[i]);
+                    if fd[i].abs() > 1e-6 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 40, "only {live} live entries");
+            println!("  back J: {live} live entries, worst rel dev {worst:.3e}");
         }
 
         #[test]
@@ -2495,6 +2699,62 @@ mod tests {
                 );
             }
             println!("  modes agree: merit {ma:.6e} vs {mb:.6e}");
+        }
+
+        /// The same comparison on back demands (W2 step 4): RB and TB
+        /// intensities taken from the reference stack, the analytic run on
+        /// the back deposits, the other differenced.
+        #[test]
+        fn the_two_jacobian_modes_agree_on_back_demands() {
+            let reference = stack3(118.0, 203.0, 64.0);
+            let mut probe_spec = MeritSpec::new();
+            demand(&mut probe_spec, angle_of(SINS[0]), CurveId::RBs, 0.0);
+            demand(&mut probe_spec, angle_of(SINS[1]), CurveId::TBp, 0.0);
+            let sim0 = ctx3(probe_spec).simulate(&reference).unwrap();
+            let rb0 = sim0.back_curve(CurveId::RBs).unwrap().to_vec();
+            let tb0 = sim0.back_curve(CurveId::TBp).unwrap().to_vec();
+            let nw = WLS.len();
+            let mut spec = MeritSpec::new();
+            demand_at(
+                &mut spec,
+                angle_of(SINS[0]),
+                CurveId::RBs,
+                rb0[..nw].to_vec(),
+            );
+            demand_at(
+                &mut spec,
+                angle_of(SINS[1]),
+                CurveId::TBp,
+                tb0[nw..].to_vec(),
+            );
+            assert!(!spec.sensitivity_incomplete());
+
+            let mut analytic = ctx3(spec.clone());
+            analytic.lm.jacobian = JacobianMode::Analytic;
+            let mut differenced = ctx3(spec);
+            differenced.lm.jacobian = JacobianMode::Fd;
+            analytic.clamp_min_nm = 1e-9;
+            differenced.clamp_min_nm = 1e-9;
+
+            let mut sa = stack3(122.0, 198.0, 67.0);
+            let mut sb = sa.clone();
+            let ma = analytic.optimize_thicknesses(&mut sa).unwrap();
+            let mb = differenced.optimize_thicknesses(&mut sb).unwrap();
+
+            assert_eq!(sa.films().len(), sb.films().len(), "one run dropped a film");
+            assert!(
+                (ma - mb).abs() <= 1e-6 * mb.abs().max(1e-12),
+                "merit {ma} vs {mb}"
+            );
+            for (i, (fa, fb)) in sa.films().iter().zip(sb.films()).enumerate() {
+                assert!(
+                    (fa.d_nm - fb.d_nm).abs() < 1e-4,
+                    "film {i}: {} vs {} nm",
+                    fa.d_nm,
+                    fb.d_nm
+                );
+            }
+            println!("  back modes agree: merit {ma:.6e} vs {mb:.6e}");
         }
 
         #[test]
@@ -3185,7 +3445,18 @@ mod tests {
             (
                 "point: deposit_row (2 pols)",
                 time(reps * 10, || {
-                    deposit_row(&n_slice, &sa, 0, nl - 1, lam, nsin, &rows, n_films, false)
+                    deposit_row(
+                        &n_slice,
+                        &sa,
+                        0,
+                        nl - 1,
+                        lam,
+                        nsin,
+                        &rows,
+                        n_films,
+                        false,
+                        false,
+                    )
                 }),
             ),
         ];

@@ -634,11 +634,29 @@ pub fn needle_slopes4_ddz(
 /// a needle of the host material has ρ̂ = 0 and τ̂ = iβ′, so the first dual
 /// product is written out (each surviving operation is the one `star_dual`
 /// performs, operand for operand). The second computes only the two
-/// channels read. Channels 1 (∂t_back) and 3 (∂r_back) are what
-/// back-incidence demands (RB/TB/AB) would read; the thickness Jacobian
-/// does not cover those yet, so they are not built. The polarization is
-/// the one `fields` was built for.
+/// channels read; [`thickness_slopes4_ddz`] adds channels 1 (∂t_back) and
+/// 3 (∂r_back) for back-incidence demands. The polarization is the one
+/// `fields` was built for.
 pub(crate) fn thickness_slopes_ddz(fields: &StackFields, j: usize, lam: f64) -> [Complex64; 2] {
+    let [dr, _, dt, _] = thickness_slopes_inner::<false>(fields, j, lam);
+    [dr, dt]
+}
+
+/// All four thickness slopes (∂r_front, ∂t_back, ∂t_fwd, ∂r_back) of host
+/// layer `j`, in the S-matrix order of [`needle_slopes4_ddz`]. Channels 0
+/// and 2 are bitwise those of [`thickness_slopes_ddz`].
+pub(crate) fn thickness_slopes4_ddz(fields: &StackFields, j: usize, lam: f64) -> [Complex64; 4] {
+    thickness_slopes_inner::<true>(fields, j, lam)
+}
+
+/// The shared body; `BACK = false` leaves channels 1 and 3 zero and
+/// compiles their products out.
+#[inline(always)]
+fn thickness_slopes_inner<const BACK: bool>(
+    fields: &StackFields,
+    j: usize,
+    lam: f64,
+) -> [Complex64; 4] {
     let two_pi_lam = 2.0 * PI / lam;
     debug_assert!(
         fields.start < j && j < fields.end,
@@ -674,7 +692,7 @@ pub(crate) fn thickness_slopes_ddz(fields: &StackFields, j: usize, lam: f64) -> 
     };
     let a3 = CDual { v: u.3, d: x + x };
 
-    // (U ⊗ N) ⊗ L, channels r_front and t_fwd only.
+    // (U ⊗ N) ⊗ L: r_front and t_fwd, and with BACK t_back and r_back.
     let one = CDual::cst(cplx(1.0, 0.0));
     let l0 = CDual::cst(l.0);
     let l2 = CDual::cst(l.2);
@@ -691,7 +709,14 @@ pub(crate) fn thickness_slopes_ddz(fields: &StackFields, j: usize, lam: f64) -> 
     let inv_denom = denom.recip();
     let term = a1.mul(l0).mul(a2).mul(inv_denom);
     let s_tf = l2.mul(a2).mul(inv_denom);
-    [term.d, s_tf.d]
+    if !BACK {
+        return [term.d, cplx(0.0, 0.0), s_tf.d, cplx(0.0, 0.0)];
+    }
+    // `star_dual`'s s_tb and term_b; L is constant, so ∂s_rb = ∂term_b.
+    let l1 = CDual::cst(l.1);
+    let s_tb = a1.mul(l1).mul(inv_denom);
+    let term_b = l2.mul(a3).mul(l1).mul(inv_denom);
+    [term.d, s_tb.d, s_tf.d, term_b.d]
 }
 
 /// Front-reflection needle sensitivity — thin wrapper over
@@ -3200,6 +3225,12 @@ mod tests {
                                      ({dr}, {dt}) vs ({}, {})",
                                     s4[0],
                                     s4[2]
+                                );
+                                let t4 = thickness_slopes4_ddz(&f, j, lam);
+                                assert!(
+                                    (0..4).all(|c| same(t4[c], s4[c])),
+                                    "four-channel: rtype {rtype} n0 {n0} sin {sin_t} lam {lam} \
+                                     pol {pol} j {j}: {t4:?} vs {s4:?}"
                                 );
                                 checked += 1;
                             }

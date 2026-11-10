@@ -29,8 +29,7 @@ use crate::smatrix::synthesis::merit::{CurveId, CurveTerm, MeritSensitivity, Ter
 /// order [`CurveDeposits`] stores them. Absorption (A = 1 − R − T) reads
 /// them through its companions and the unpolarized curves through their
 /// s/p halves ([`CurveId::unpolarized_parts`], split at assembly). Back
-/// curves have no channel yet; the source declines them (see
-/// [`CurveDeposits::covers`]).
+/// curves have their own block, [`BACK_DEPOSIT_CHANNELS`].
 pub const DEPOSIT_CHANNELS: [CurveId; 4] = [CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp];
 
 /// The complex amplitudes a phase demand reads, whose real and imaginary
@@ -38,6 +37,20 @@ pub const DEPOSIT_CHANNELS: [CurveId; 4] = [CurveId::Rs, CurveId::Rp, CurveId::T
 /// slots 4, 5 (Re, Im of `Ts`), 6, 7 (`Tp`), 8, 9 (`Rs`) and 10, 11 (`Rp`).
 pub const PHASE_DEPOSIT_CHANNELS: [CurveId; 4] =
     [CurveId::Ts, CurveId::Tp, CurveId::Rs, CurveId::Rp];
+
+/// The back-incidence curves, present when the spec reads any: their
+/// intensities in slots 12-15, then the Re, Im of their complex amplitudes
+/// in slots 16-23 (16, 17 for `RBs`, …, 22, 23 for `TBp`). The front phase
+/// slots before them are always filled when these are.
+pub const BACK_DEPOSIT_CHANNELS: [CurveId; 4] =
+    [CurveId::RBs, CurveId::RBp, CurveId::TBs, CurveId::TBp];
+
+/// First slot of the back intensities; the back amplitudes follow at
+/// `BACK_SLOT + 4`.
+pub const BACK_SLOT: usize = 4 + 2 * PHASE_DEPOSIT_CHANNELS.len();
+
+/// Slot count of a sweep that carries the back channels.
+pub const ALL_SLOTS: usize = BACK_SLOT + 3 * BACK_DEPOSIT_CHANNELS.len();
 
 /// Storage slot for a curve, or `None` when this pass carries no deposits
 /// for it.
@@ -47,7 +60,21 @@ pub fn deposit_channel(id: CurveId) -> Option<usize> {
         CurveId::Rp => Some(1),
         CurveId::Ts => Some(2),
         CurveId::Tp => Some(3),
-        _ => None,
+        _ => BACK_DEPOSIT_CHANNELS
+            .iter()
+            .position(|&c| c == id)
+            .map(|k| BACK_SLOT + k),
+    }
+}
+
+/// First slot of a curve's complex amplitude (Re; Im follows), or `None`.
+fn amplitude_channel(id: CurveId) -> Option<usize> {
+    match PHASE_DEPOSIT_CHANNELS.iter().position(|&c| c == id) {
+        Some(k) => Some(4 + 2 * k),
+        None => BACK_DEPOSIT_CHANNELS
+            .iter()
+            .position(|&c| c == id)
+            .map(|k| BACK_SLOT + 4 + 2 * k),
     }
 }
 
@@ -55,11 +82,10 @@ pub fn deposit_channel(id: CurveId) -> Option<usize> {
 /// for it. A [`TermPart::TotalThickness`] term has no slot: ∂D/∂d is 1 for
 /// every film and the assembly adds it directly.
 pub(crate) fn term_channel(term: &CurveTerm) -> Option<usize> {
-    let amp = || PHASE_DEPOSIT_CHANNELS.iter().position(|&c| c == term.curve);
     match term.part {
         TermPart::Value => deposit_channel(term.curve),
-        TermPart::Re => amp().map(|k| 4 + 2 * k),
-        TermPart::Im => amp().map(|k| 5 + 2 * k),
+        TermPart::Re => amplitude_channel(term.curve),
+        TermPart::Im => amplitude_channel(term.curve).map(|c| c + 1),
         TermPart::TotalThickness => None,
     }
 }
@@ -72,7 +98,9 @@ pub(crate) fn term_channel(term: &CurveTerm) -> Option<usize> {
 /// the optimizer's parameter vector, i.e. the k-th optimize-flagged film.
 ///
 /// Four channels ([`DEPOSIT_CHANNELS`]) for an intensity-only spec, twelve
-/// when the amplitudes of [`PHASE_DEPOSIT_CHANNELS`] follow.
+/// when the amplitudes of [`PHASE_DEPOSIT_CHANNELS`] follow, and
+/// [`ALL_SLOTS`] when the spec reads a back curve
+/// ([`BACK_DEPOSIT_CHANNELS`]).
 #[derive(Clone, Debug)]
 pub struct CurveDeposits {
     n_points: usize,
@@ -83,9 +111,9 @@ pub struct CurveDeposits {
 
 impl CurveDeposits {
     /// Build from one row per grid point, each row laid out
-    /// `[channel · n_par + par]` (4·n_par entries, or 4 + 2k channels with
-    /// the first k of [`PHASE_DEPOSIT_CHANNELS`]) — the shape the parallel
-    /// sweep collects.
+    /// `[channel · n_par + par]` (4·n_par entries, 4 + 2k channels with
+    /// the first k of [`PHASE_DEPOSIT_CHANNELS`], or [`ALL_SLOTS`]) — the
+    /// shape the parallel sweep collects.
     pub fn from_point_rows(rows: Vec<Vec<f64>>, n_par: usize) -> Result<Self, String> {
         let n_points = rows.len();
         let max_ch = 4 + 2 * PHASE_DEPOSIT_CHANNELS.len();
@@ -93,7 +121,10 @@ impl CurveDeposits {
             Some(r)
                 if n_par > 0
                     && r.len() % n_par == 0
-                    && (4..=max_ch).step_by(2).any(|c| c * n_par == r.len()) =>
+                    && (4..=max_ch)
+                        .step_by(2)
+                        .chain([ALL_SLOTS])
+                        .any(|c| c * n_par == r.len()) =>
             {
                 r.len() / n_par
             }
@@ -126,15 +157,15 @@ impl CurveDeposits {
         self.n_par
     }
 
-    /// 4 (intensities), or more with the phase amplitudes after them.
+    /// 4 (intensities), or more with the phase amplitudes and the back
+    /// channels after them.
     pub fn n_channels(&self) -> usize {
         self.data.len()
     }
 
     /// True when every term of `sens` has a deposit channel here (after
     /// the unpolarized split). A false answer is a decline, not an error:
-    /// the caller differences that iteration (a back-incidence demand
-    /// today, until the sweep carries back-channel deposits).
+    /// the caller differences that iteration.
     pub fn covers(&self, sens: &MeritSensitivity) -> bool {
         let has = |t: &CurveTerm| term_channel(t).is_some_and(|c| c < self.data.len());
         sens.rows.iter().flatten().all(|t| {
@@ -225,7 +256,7 @@ impl CurveDeposits {
 /// `SimCurves` uses.
 ///
 /// Refuses rather than guesses: a spec with an uncovered row (a color
-/// demand or a back phase target) has no analytic Jacobian here and must go to the
+/// demand) has no analytic Jacobian here and must go to the
 /// finite-difference path. Ask with [`MeritSensitivity::is_complete`] first —
 /// the error is for a caller that did not.
 pub fn assemble_jacobian(
@@ -237,7 +268,7 @@ pub fn assemble_jacobian(
     if let Some(&row) = sens.uncovered.first() {
         return Err(format!(
             "analytic jacobian: residual row {row} has no curve sensitivity \
-             (color demand or back phase target) — use the finite-difference path"
+             (color demand) — use the finite-difference path"
         ));
     }
     let m = sens.rows.len();
@@ -286,7 +317,7 @@ pub(crate) fn assemble_jacobian_mapped(
     if let Some(&row) = sens.uncovered.first() {
         return Err(format!(
             "analytic jacobian: residual row {row} has no curve sensitivity \
-             (color demand or back phase target) — use the finite-difference path"
+             (color demand) — use the finite-difference path"
         ));
     }
     let m = sens.rows.len();
