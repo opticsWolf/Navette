@@ -841,6 +841,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
                 needle_n_per_wav: &mat.nk,
                 start_idx: 0,
                 end_idx: (sa.n_layers - 1) as usize,
+                incoherent_flags: &sa.incoherent_flags,
                 calc_s: true,
                 calc_p: true,
             };
@@ -1115,6 +1116,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                     needle_n_per_wav: &mat.nk,
                     start_idx: 0,
                     end_idx: (sa.n_layers - 1) as usize,
+                    incoherent_flags: &sa.incoherent_flags,
                     calc_s: true,
                     calc_p: true,
                 };

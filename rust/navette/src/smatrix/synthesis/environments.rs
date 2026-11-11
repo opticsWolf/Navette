@@ -3730,6 +3730,7 @@ mod tests {
                     needle_n_per_wav: &partner.nk,
                     start_idx: 0,
                     end_idx: (sa.n_layers - 1) as usize,
+                    incoherent_flags: &sa.incoherent_flags,
                     calc_s: true,
                     calc_p: true,
                 },

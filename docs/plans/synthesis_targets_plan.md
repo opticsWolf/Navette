@@ -2,7 +2,10 @@
 
 Status: **in progress.** W1, W2 (including the back-channel deposits,
 step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5, W7 and W8a
-are implemented (2026-11-10); W6 and W8b-c are open. Drafted 2026-11-09.
+are implemented (2026-11-10); W6 has a first cut, intensity-only
+(2026-11-11); W8b-c are open. Drafted 2026-11-09. Everything still open,
+the inconsistencies found on the way, and the decisions needed are
+collected in `synthesis_open_items.md`.
 
 This plan follows a review of the needle / thin-film synthesis path
 (`smatrix/synthesis/*`) against five reported issues:
@@ -221,6 +224,10 @@ synthesis. The engine already has:
 - the engine's general solver for multi-block forward simulation.
 
 Synthesis calls none of them.
+
+*(2026-11-11: no longer true. W6 lifted the refusal for fixed incoherent
+films and wires the cascade into the forward model and the needle scan;
+see the W6 status note.)*
 
 ---
 
@@ -547,6 +554,39 @@ Phased, larger:
 Tests: forward vs `solve_structure`/`ScatterMatrix` on stacks with an
 incoherent substrate and a coated back side; needle P vs merit FD
 (oracle of W1) through one spacer; LM recovery.
+
+**First cut done (2026-11-11), intensity only.** Where it differs from
+the phases above:
+
+1. **Model**: no `exit` field. The plate is an incoherent film
+   (`coherent = false`, which must also be `optimize = false` and
+   `needle = false`, else a named error), and the exit medium is the
+   substrate: `ambient | front films | plate | back films | substrate`.
+   `coating_thickness_nm` (coherent films only) drives the thickness
+   budget and the reports; clamp never caps the plate, inflate never
+   grows it, and `merge_adjacent` never fuses films of different
+   coherence.
+2. **Forward**: `solve_cascade_dual` walks the blocks as `solve_point`
+   does; front rows are bit-identical to the engine, back rows equal the
+   mirrored stack's front rows. Every phase demand is refused on a stack
+   with a spacer (not only those crossing it).
+3. **Needle**: one field build and cascade per (point, branch),
+   `multiblock_point_half_slopes`, serves every intensity and colour
+   bucket; sites map to their own film, a boundary site on top of the
+   plate to the bottom of the film above. Not through
+   `p_function_multiblock`, whose host mask misaligns its output (open
+   items 1.1).
+4. **LM**: finite differences (the deposit source declines).
+5. **Environments**: refused with a named error for now.
+
+Tests: `needle_oracle` (P vs merit FD through a plate, every non-phase
+demand at 0° and 30°; forward vs `solve_point` and the mirrored stack;
+refusals; the boundary site; LM around a fixed plate), `structure.rs`
+(spacer construction, clamp, merge), and
+`validation/smoke/test_incoherent_synthesis.py` (a needle run coating
+both faces through the Python door). Fully coherent stacks are
+untouched: the bench fingerprint and the needle pin are unchanged. What
+is left is in `synthesis_open_items.md` §2.
 
 ### W7 — Material identity: label, not index (redesign, d)
 
@@ -889,6 +929,19 @@ plus a per-point tolerance (W4) is the user-side mitigation.
    Tests: W1 oracle cases for an integral Rp phase demand with
    `|G| > π/N`, one whose band crosses ±π, and an integral RetR.
 
+   **Done (2026-11-11), as gradient form in a pair, not a new bucket.**
+   The centre gap of a wrapped phase is the mean wrapped residual
+   `d_bar/nf`. A pair whose residual `N·G` exceeds `PHASE_PAIR_MAX` (0.5 rad)
+   is emitted with its residual cut to that and its weight raised by the
+   same factor: the kernel's `w·wrap(s − rt)` is then `w·N·G` exactly, with
+   no wrap to get wrong, and every target sits within 0.5 rad of the
+   operating phase, so a shared bucket averages across no cut. The kernels
+   and `PolFold` are untouched; pairs within the cut emit as before, bit for
+   bit. Oracle cases (`evaluator.rs`): an integral Tp phase with its mean gap
+   past π/N; integral Rp phase, plain and centre band, across ±π; two
+   integral Rp phases on one bucket; an integral RetR past π/N. With either
+   half of the fix removed, the cases fail (P off in size and sign).
+
 ---
 
 ## 6. Follow-ups after this plan
@@ -913,8 +966,10 @@ plus a per-point tolerance (W4) is the user-side mitigation.
 3. ~~W4: ship named set-level profiles in the first version (proposed), or
    per-target `weights` / `weight_profile` only?~~ Shipped with named
    profiles (`weight_profiles`).
-4. W6: is a coated back side (two coated faces) needed, or is "uncoated
-   back surface" enough for the first version?
+4. ~~W6: is a coated back side (two coated faces) needed, or is "uncoated
+   back surface" enough for the first version?~~ Both faces can be
+   coated: the plate is a film, so films may follow it. A face needs at
+   least one starting film to grow a coating.
 5. ~~W7.3: do a group's thickness factor/summand apply to a needle's
    optimized thickness (proposed: no, only in error draws), or to every
    member including needles?~~ Adopted: no; a needle takes its group's

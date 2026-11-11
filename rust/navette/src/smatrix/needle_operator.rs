@@ -1195,6 +1195,79 @@ pub fn p_multiblock_point(
     out
 }
 
+/// The cascade totals of one spectral point and, per host in `locs`, half
+/// their needle slopes: `(v, dv)` with `v` the total `[R, T_b, T, R_b]` and
+/// `dv[zi][e] = ½·∂v[e]/∂δ`. The half-gradient convention is that of the
+/// coherent kernels, so a residual bucket contributes
+/// `2·w·(q − target)·dq` and a chain-rule bucket `grad·dq`, with
+/// `dq` the matching row (absorption the negated R + T sum). One field
+/// build and one cascade per (point, polarization) serves every bucket,
+/// which [`p_multiblock_point`] redoes per quantity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn multiblock_point_half_slopes(
+    lam: f64,
+    sin_theta: f64,
+    n_slice: &[Complex64],
+    thicknesses: &[f64],
+    incoherent_flags: &[i32],
+    rough_vals: &[f64],
+    rough_types: &[i32],
+    needle_n: Complex64,
+    locs: &[(usize, usize, f64)],
+    pol: i32,
+) -> ([f64; 4], Vec<[f64; 4]>) {
+    let nsin_fi = n_slice[0] * cplx(sin_theta, 0.0);
+    let (blocks, spacers) = partition_blocks(incoherent_flags);
+    let fields: Vec<StackFields> = blocks
+        .iter()
+        .map(|&(bs, be)| {
+            build_stack_fields_range(
+                bs,
+                be,
+                n_slice,
+                thicknesses,
+                rough_vals,
+                rough_types,
+                lam,
+                nsin_fi,
+                pol,
+            )
+        })
+        .collect();
+    let mut track = CascadeTrack::identity();
+    for (bi, f) in fields.iter().enumerate() {
+        track = cascade_step(&track, block_intensities(f, pol), Some(()));
+        if let Some(sp) = spacers[bi] {
+            let tau = spacer_tau(n_slice[sp], thicknesses[sp], lam, nsin_fi);
+            track = cascade_step(&track, [0.0, tau, tau, 0.0], None);
+        }
+    }
+    let dv = locs
+        .iter()
+        .map(|&(bi, j, xi)| {
+            let slopes = needle_slopes4_ddz(&fields[bi], nsin_fi, j, xi, needle_n, pol, lam);
+            let amp = fields[bi].s_left[fields[bi].end];
+            let fac = block_flux_factors(&fields[bi], pol);
+            let g_int = [
+                fac[0] * (amp.0.conj() * slopes[0]).re,
+                fac[1] * (amp.1.conj() * slopes[1]).re,
+                fac[2] * (amp.2.conj() * slopes[2]).re,
+                fac[3] * (amp.3.conj() * slopes[3]).re,
+            ];
+            let wv = &track.g[bi * 4..bi * 4 + 4];
+            let mut d = [0.0; 4];
+            for (e, de) in d.iter_mut().enumerate() {
+                *de = wv[0][e] * g_int[0]
+                    + wv[1][e] * g_int[1]
+                    + wv[2][e] * g_int[2]
+                    + wv[3][e] * g_int[3];
+            }
+            d
+        })
+        .collect();
+    (track.v, dv)
+}
+
 /// Tikhonravov merit-function P-function, confined to the sub-block
 /// `[start_idx, end_idx)`.
 ///

@@ -33,10 +33,10 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use crate::smatrix::needle_operator::{
-    build_stack_fields_range, p_coherent_a_from_fields, p_coherent_ab_from_fields,
-    p_coherent_from_fields, p_coherent_grad_r_from_fields, p_coherent_grad_t_from_fields,
-    p_coherent_phi_from_fields, p_coherent_rb_from_fields, p_coherent_t_from_fields,
-    p_coherent_tb_from_fields,
+    build_stack_fields_range, multiblock_point_half_slopes, p_coherent_a_from_fields,
+    p_coherent_ab_from_fields, p_coherent_from_fields, p_coherent_grad_r_from_fields,
+    p_coherent_grad_t_from_fields, p_coherent_phi_from_fields, p_coherent_rb_from_fields,
+    p_coherent_t_from_fields, p_coherent_tb_from_fields, partition_blocks,
 };
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
 use crate::smatrix::synthesis::merit::{
@@ -1016,6 +1016,10 @@ fn sample_parts(
     ])
 }
 
+/// The largest residual an integral phase pair is emitted with (rad), well
+/// inside the kernel's ±π wrap (see `fold_integral_demand`).
+const PHASE_PAIR_MAX: f64 = 0.5;
+
 /// How an integral demand emits after mean activation.
 enum IntGap {
     Skip,
@@ -1155,8 +1159,16 @@ fn fold_integral_demand(
     // d_bar for the edge gap (opm is Some whenever we emit edge forms).
     let d_bar = opm.map(|(_, d)| d).unwrap_or(0.0);
     // W5: a Log mean is over log10(s), so its centre gap is the mean
-    // residual itself, not a gap in s.
-    let centre_gap = |m: f64| if log { d_bar / nf } else { m - t_raw };
+    // residual itself, not a gap in s. A wrapped phase's gap is the mean of
+    // the WRAPPED residuals the merit takes: `m − t_raw` from raw phases is
+    // off by 2π per point past the cut when the band crosses ±π.
+    let centre_gap = |m: f64| {
+        if log || wrap_phase {
+            d_bar / nf
+        } else {
+            m - t_raw
+        }
+    };
     for (j, &twl_i) in twl.iter().enumerate() {
         // Weighted mean (W4): dM/dδ = 2·W·G·Σ(p_j/P)·∂s_j, so the pair at
         // j keeps its gap N·G and takes weight W·p_j/(P·N) — W/N² when
@@ -1182,6 +1194,24 @@ fn fold_integral_demand(
                 let g = d_bar.signum() * (d_bar.abs() - bw_eff) / nf;
                 (s_vals[j] - n * g / q, share(w_centre) * q * q)
             }
+        };
+        // A wrapped phase (or retardance) pair is read through a wrap: the
+        // kernel takes `wrap(s − rt)`, and `N·G` exceeds π once the mean gap
+        // passes π/N. The needle needs only the slope `w·(s − rt)`, so a
+        // pair whose residual is larger than PHASE_PAIR_MAX keeps that
+        // product with the residual cut to it and the weight raised to
+        // match: gradient form in a pair. Its target is then within the cut
+        // of the operating phase, so a shared bucket averages it without
+        // crossing the wrap either.
+        let (rt_j, w_j) = match s_vals.get(j) {
+            Some(&s) if wrap_phase && (s - rt_j).abs() > PHASE_PAIR_MAX => {
+                let r = s - rt_j;
+                (
+                    s - r.signum() * PHASE_PAIR_MAX,
+                    w_j * r.abs() / PHASE_PAIR_MAX,
+                )
+            }
+            _ => (rt_j, w_j),
         };
         let k = row * nw + solver_wav_index(wavelengths, twl_i);
         let ops =
@@ -1332,6 +1362,10 @@ pub struct NeedlePassInput<'a> {
     /// hosts are the interior layers. Fully-coherent stacks: (0, nl−1).
     pub start_idx: usize,
     pub end_idx: usize,
+    /// Per solver layer, 1 = incoherent spacer (`SolverArrays::
+    /// incoherent_flags`). Any flag set takes the block-cascade scan, which
+    /// covers the whole stack and ignores `start_idx`/`end_idx`.
+    pub incoherent_flags: &'a [i32],
     pub calc_s: bool,
     pub calc_p: bool,
 }
@@ -1399,6 +1433,12 @@ pub fn needle_pass_scan(
         input.calc_s && !input.fold.s.is_empty(),
         input.calc_p && !input.fold.p.is_empty(),
     ];
+    if input.incoherent_flags.len() != nl {
+        return Err("incoherent_flags must have one entry per solver layer".into());
+    }
+    if input.incoherent_flags.contains(&1) {
+        return multiblock_scan(input, sites, pol_on);
+    }
 
     let rows: Vec<Vec<f64>> = (0..total_points)
         .into_par_iter()
@@ -1595,6 +1635,123 @@ pub fn needle_pass_scan(
     })
 }
 
+/// W6: the needle scan of a stack with incoherent spacers. The coherent
+/// blocks between spacers are joined by the real intensity cascade, so a
+/// needle moves the totals through its own block's four intensities and
+/// the cascade's adjoint weights ([`multiblock_point_half_slopes`]). Every
+/// intensity bucket and both colour chain-rule buckets fold onto those
+/// four half-slopes; phase has no meaning across a spacer and is refused.
+///
+/// A site's host is its own film (`film_idx + 1` in solver rows). A
+/// boundary site at the top of a spacer or of the exit medium is a needle
+/// at the bottom of the coherent film above it; a site with no coherent
+/// host gets P = 0.
+fn multiblock_scan(
+    input: &NeedlePassInput<'_>,
+    sites: &[ScanSite],
+    pol_on: [bool; 2],
+) -> Result<NeedlePassResult, String> {
+    let nl = input.n_layers;
+    let nw = input.wavls.len();
+    let flags = input.incoherent_flags;
+    for f in [&input.fold.s, &input.fold.p] {
+        if f.phi.iter().any(|p| p.1.iter().any(|&w| w != 0.0)) {
+            return Err(
+                "needle scan: a phase demand on a stack with an incoherent layer; \
+                 phase is not defined across an incoherent spacer"
+                    .into(),
+            );
+        }
+    }
+    let (blocks, _) = partition_blocks(flags);
+    let block_of = |j: usize| blocks.iter().position(|&(bs, be)| bs < j && j < be);
+    let placed: Vec<(usize, (usize, usize, f64))> = sites
+        .iter()
+        .enumerate()
+        .filter_map(|(zi, s)| {
+            let j = s.film_idx + 1;
+            let host = match block_of(j) {
+                Some(bi) => Some((bi, j, s.depth_into_layer_nm)),
+                None if s.depth_into_layer_nm == 0.0 && j >= 2 => {
+                    block_of(j - 1).map(|bi| (bi, j - 1, input.thicknesses[j - 1]))
+                }
+                None => None,
+            };
+            host.map(|h| (zi, h))
+        })
+        .collect();
+    let locs: Vec<(usize, usize, f64)> = placed.iter().map(|&(_, h)| h).collect();
+
+    let rows: Vec<Vec<f64>> = (0..input.sin_theta.len() * nw)
+        .into_par_iter()
+        .map(|k| {
+            let a = k / nw;
+            let w = k % nw;
+            let base = w * nl * 2;
+            let ns: Vec<Complex64> = (0..nl)
+                .map(|l| {
+                    Complex64::new(
+                        input.n_stack_cache[base + l * 2],
+                        input.n_stack_cache[base + l * 2 + 1],
+                    )
+                })
+                .collect();
+            let mut acc = vec![0.0f64; locs.len()];
+            for (pi, &on) in pol_on.iter().enumerate() {
+                let fold = input.fold.branch(pi);
+                let live = [&fold.r, &fold.t, &fold.a, &fold.tb, &fold.rb, &fold.ab]
+                    .iter()
+                    .any(|b| b.1[k] != 0.0)
+                    || fold.grad_r[k] != 0.0
+                    || fold.grad_t[k] != 0.0;
+                if !on || !live {
+                    continue;
+                }
+                let (v, dv) = multiblock_point_half_slopes(
+                    input.wavls[w],
+                    input.sin_theta[a],
+                    &ns,
+                    input.thicknesses,
+                    flags,
+                    input.rough_vals,
+                    input.rough_types,
+                    input.needle_n_per_wav[w],
+                    &locs,
+                    pi as i32,
+                );
+                // Coefficients on the half-slopes of [R, T_b, T, R_b].
+                let res = |b: &(Vec<f64>, Vec<f64>), q: f64| 2.0 * b.1[k] * (q - b.0[k]);
+                let mut c = [fold.grad_r[k], 0.0, fold.grad_t[k], 0.0];
+                c[0] += res(&fold.r, v[0]);
+                c[2] += res(&fold.t, v[2]);
+                let ga = res(&fold.a, 1.0 - v[0] - v[2]);
+                c[0] -= ga;
+                c[2] -= ga;
+                c[1] += res(&fold.tb, v[1]);
+                c[3] += res(&fold.rb, v[3]);
+                let gab = res(&fold.ab, 1.0 - v[3] - v[1]);
+                c[3] -= gab;
+                c[1] -= gab;
+                for (o, d) in acc.iter_mut().zip(&dv) {
+                    *o += c[0] * d[0] + c[1] * d[1] + c[2] * d[2] + c[3] * d[3];
+                }
+            }
+            acc
+        })
+        .collect();
+
+    let mut p_profile = vec![0.0f64; sites.len()];
+    for row in &rows {
+        for (&(zi, _), v) in placed.iter().zip(row) {
+            p_profile[zi] += v;
+        }
+    }
+    Ok(NeedlePassResult {
+        sites: sites.to_vec(),
+        p_profile,
+    })
+}
+
 /// Convenience wrapper: scan sites + selection in one call.
 pub fn run_needle_pass(
     input: &NeedlePassInput<'_>,
@@ -1673,6 +1830,7 @@ mod tests {
             needle_n_per_wav: needle_n,
             start_idx: 0,
             end_idx: NL - 1,
+            incoherent_flags: &[0; NL],
             calc_s: true,
             calc_p: false,
         }
@@ -2304,6 +2462,7 @@ mod tests {
                 needle_n_per_wav: &needle_n,
                 start_idx: 0,
                 end_idx: 4,
+                incoherent_flags: &[0; 5],
                 calc_s: true,
                 calc_p: true,
             },
@@ -2324,6 +2483,7 @@ mod tests {
                 needle_n_per_wav: &needle_n,
                 start_idx: 0,
                 end_idx: 4,
+                incoherent_flags: &[0; 5],
                 calc_s: true,
                 calc_p: true,
             },

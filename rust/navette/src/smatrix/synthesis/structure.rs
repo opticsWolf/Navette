@@ -350,28 +350,20 @@ impl DesignStack {
                     num_wavs
                 ));
             }
-            // C1. The flag is faithfully materialized by `solver_arrays` and
-            // then never read: `simulate_inner` solves [0, nl-1) as ONE
-            // coherent block, and the needle pass builds its stack fields
-            // over the same single block. Every consumer of that funnel --
-            // the design door, the multi-environment door, the LM step, the
-            // FD jacobian, the needle scan -- therefore returns the
-            // fully-coherent answer for a stack the caller marked otherwise,
-            // with nothing said. Measured: merit bit-identical with the flag
-            // on and off, while the engine door moves on the same stack.
-            // Refuse at the one constructor every DesignStack passes through,
-            // and name the door that does honor it.
-            if !f.coherent {
+            // W6: an incoherent film is a fixed spacer. `simulate_inner`
+            // and the needle scan split the stack into coherent blocks at
+            // it and join them by the engine's intensity cascade, so it may
+            // sit anywhere (a substrate plate with coatings on both faces is
+            // front films | plate | back films, the exit medium as the
+            // substrate). It is never optimized and never hosts a needle:
+            // its thickness is a plate's, and a needle inside it would have
+            // no phase to interfere with.
+            if !f.coherent && (f.optimize || f.needle) {
                 return Err(format!(
-                    "film {} ('{}') is marked coherent = false, but synthesis solves the \
-                     whole stack as ONE coherent block. The flag is built into the solver \
-                     arrays and never read, so the merit, the LM step and the needle scan \
-                     would all return the fully-coherent answer for a stack you marked \
-                     otherwise, silently. Refusing rather than answering wrongly. The \
-                     engine doors do honor the flag: use solve_structure (navette.\
-                     structure) or ScatterMatrix (navette.smatrix) to ANALYSE a stack with \
-                     incoherent layers. To synthesize, set coherent = true.",
-                    i, f.material
+                    "film {} ('{}') is incoherent (coherent = false) and marked \
+                     optimize = {} / needle = {}: synthesis treats an incoherent film \
+                     as a fixed slab, so set optimize = false and needle = false",
+                    i, f.material, f.optimize, f.needle
                 ));
             }
         }
@@ -465,6 +457,11 @@ impl DesignStack {
         &self.films
     }
 
+    /// W6: does any film propagate incoherently (a fixed spacer)?
+    pub fn has_incoherent(&self) -> bool {
+        self.films.iter().any(|f| !f.coherent)
+    }
+
     pub fn film(&self, idx: usize) -> Option<&LayerSpec> {
         self.films.get(idx)
     }
@@ -477,6 +474,18 @@ impl DesignStack {
     /// Total physical thickness of the film stack (nm).
     pub fn total_thickness_nm(&self) -> f64 {
         self.films.iter().map(|f| f.d_nm).sum()
+    }
+
+    /// W6: the coating's thickness, every coherent film. An incoherent
+    /// film is a plate, not coating: the thickness budget and the reports
+    /// leave it out. Equal to [`Self::total_thickness_nm`], bit for bit,
+    /// on a fully coherent stack (same terms, same order).
+    pub fn coating_thickness_nm(&self) -> f64 {
+        self.films
+            .iter()
+            .filter(|f| f.coherent)
+            .map(|f| f.d_nm)
+            .sum()
     }
 
     /// The span partition (F0.1). One span per contiguous run of rows;
@@ -1272,7 +1281,11 @@ impl DesignStack {
         let mut i = 0usize;
         while i < films.len() {
             let mut j = i + 1;
+            // W6: a coherent film never merges into an incoherent slab of
+            // the same glass (or the reverse): the merged row would take
+            // the first one's propagation.
             while j < films.len()
+                && films[j].coherent == films[i].coherent
                 && ((films[j].material == films[i].material && films[j].same_material(&films[i]))
                     || (ends_layer[j - 1]
                         && starts_layer[j]
@@ -1657,7 +1670,9 @@ impl DesignStack {
                 continue;
             }
             let mut rows = old[sp.start..sp.end].to_vec();
-            if rows.len() == 1 && rows[0].d_nm > max_nm {
+            // W6: an incoherent film is a fixed thick slab (a substrate
+            // plate), not a thin film: the ceiling is not its bound.
+            if rows.len() == 1 && rows[0].d_nm > max_nm && rows[0].coherent {
                 // One-row span: D == d, so this is today's row cap.
                 rows[0].d_nm = max_nm;
                 report.spans_capped += 1;
@@ -2760,22 +2775,41 @@ mod tests {
         assert!(s.set_roughness_cap(f64::INFINITY).is_err());
     }
 
-    /// C1. The flag used to ride through `solver_arrays` into a solve that
-    /// never read it. It is refused at the one internal constructor now, so
-    /// no route into synthesis can carry it -- and the refusal has to name
-    /// the door that does honor the flag, or it is just a wall.
+    /// W6: an incoherent film builds as a fixed spacer, flagged in the
+    /// solver arrays; one left optimizable or open to needles is refused.
     #[test]
-    fn synthesis_refuses_an_incoherent_film() {
+    fn synthesis_takes_an_incoherent_film_as_a_fixed_spacer() {
         let mut sp = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
         sp.coherent = false;
-        let err = DesignStack::with_films(air(0.0), sub(0.0), vec![sp])
-            .expect_err("an incoherent film must not build a synthesis stack");
+        let err = DesignStack::with_films(air(0.0), sub(0.0), vec![sp.clone()])
+            .expect_err("an optimizable incoherent film must be refused");
         assert!(err.contains("coherent = false"), "{err}");
         assert!(err.contains("spacer"), "{err}");
-        assert!(err.contains("solve_structure"), "{err}");
-        // And a coherent film of the same shape still builds.
-        let ok = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
-        assert!(DesignStack::with_films(air(0.0), sub(0.0), vec![ok]).is_ok());
+        sp.optimize = false;
+        assert!(DesignStack::with_films(air(0.0), sub(0.0), vec![sp.clone()]).is_err());
+        sp.needle = false;
+        let mut s = DesignStack::with_films(air(0.0), sub(0.0), vec![h(80.0), sp, l(90.0)])
+            .expect("a fixed incoherent spacer builds");
+        assert!(s.has_incoherent());
+        assert_eq!(s.solver_arrays().incoherent_flags, vec![0, 0, 1, 0, 0]);
+        // The plate is not a thin film: the ceiling leaves it alone.
+        let rep = s.clamp_all(2.0, 2000.0, false).unwrap();
+        assert_eq!(rep.spans_capped, 0);
+        assert_eq!(s.films()[1].d_nm, 1_000_000.0);
+    }
+
+    /// W6: a coherent film of the plate's glass beside the plate stays a
+    /// row of its own.
+    #[test]
+    fn merge_adjacent_keeps_coherence_apart() {
+        let mut plate = LayerSpec::constant("G", 1.52, 0.0, 1_000_000.0, NW);
+        plate.coherent = false;
+        plate.optimize = false;
+        plate.needle = false;
+        let film = LayerSpec::constant("G", 1.52, 0.0, 50.0, NW);
+        let mut s = DesignStack::with_films(air(0.0), sub(0.0), vec![film, plate]).unwrap();
+        assert_eq!(s.merge_adjacent(), 0);
+        assert_eq!(s.films().len(), 2);
     }
 
     // ------------------------------------------------------------------

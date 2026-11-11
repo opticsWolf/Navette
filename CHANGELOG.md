@@ -169,6 +169,15 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Fixed
 
+- **Integral phase and retardance demands gave the needle a wrong
+  slope** (`docs/plans/synthesis_targets_plan.md` §5.9). The integral fold
+  emitted per-point pairs whose residual is the mean gap times the point
+  count, and the phase kernel wrapped that: once the mean phase error
+  passed π/N (3.6° at 50 points) P was wrong in size and could flip sign.
+  A band whose phase crosses ±π also took its gap from the raw-phase mean,
+  2π off per point past the cut. The fold now uses the mean of the wrapped
+  residuals, as the merit does, and emits large gaps with a small residual
+  and a matching weight, so the kernel never wraps them.
 - **A negative grading strength solved flat; it is now the reversed
   ramp.** The sub-layer refinement read the signed delta, so a
   `RateCapped` drift with a negative rate (allowed, by design) lost rows
@@ -223,6 +232,22 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Added
 
+- **Synthesis through an incoherent plate**
+  (`docs/plans/synthesis_targets_plan.md` W6, first cut). A film with
+  `coherent=False`, `optimize=False` and `needle=False` is a fixed plate:
+  `ambient | front films | plate | back films | substrate` designs a
+  plate coated on both faces, with the exit medium as the substrate.
+  The forward model splits the stack into coherent blocks and joins them
+  by intensity, as the engine does (front rows bit-identical to it). The
+  needle scan differentiates through the same cascade for every
+  intensity, absorption and colour demand, front and back. The LM
+  differences, the thickness budget and `final_total_thickness_nm` count
+  coating only, and clamp, inflate and merge leave the plate alone.
+  Refused with a named error: phase demands on such a stack, a plate
+  left optimizable or open to needles, and multi-environment runs. A
+  face with no film on it stays bare; give it a starting film. What is
+  still open is listed in `docs/plans/synthesis_open_items.md`.
+  Previously any `coherent=False` film was refused.
 - **Per-point weights: `weights` and `weight_profile`**
   (`docs/plans/synthesis_targets_plan.md` W4). `SpectralTarget` and
   `AngularTarget` take one weight per point (`weights=`) or a

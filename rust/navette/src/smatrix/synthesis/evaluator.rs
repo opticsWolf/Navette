@@ -21,7 +21,8 @@ use rayon::prelude::*;
 
 use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
-    block_flux_factors, build_stack_fields_range_dual, thickness_slopes_ddz, thickness_slopes4_ddz,
+    block_flux_factors, build_stack_fields_range_dual, partition_blocks, spacer_tau, star_real,
+    thickness_slopes_ddz, thickness_slopes4_ddz,
 };
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
@@ -213,6 +214,27 @@ impl SmatrixContext {
         if need.any_back() {
             self.check_back_exit(&sa, nl)?;
         }
+        // W6: incoherent spacers split the stack into coherent blocks
+        // joined by the engine's real intensity cascade. Only intensities
+        // cross a spacer, so phase demands and analytic deposits are
+        // refused here, by name, rather than read off the first block.
+        let incoherent = sa.incoherent_flags.contains(&1);
+        let partition = if incoherent {
+            if self.spec.uses_phase() {
+                return Err("a phase demand on a stack with an incoherent film: phase \
+                     is not defined across an incoherent layer, so only intensity, \
+                     absorption and colour demands can be synthesized"
+                    .into());
+            }
+            if !par_films.is_empty() {
+                return Err("simulate_with_deposits: thickness deposits need a fully \
+                     coherent stack (an incoherent film differences instead)"
+                    .into());
+            }
+            Some(partition_blocks(&sa.incoherent_flags))
+        } else {
+            None
+        };
         struct Pt {
             s: BlockResult,
             p: BlockResult,
@@ -241,17 +263,28 @@ impl SmatrixContext {
                     .collect();
                 let inv_n_slice: Vec<Complex64> = n_slice.iter().map(|&n| 1.0 / n).collect();
                 let nsin_fi = n_slice[0] * Complex64::new(self.sin_theta[a], 0.0);
-                let (s_res, p_res) = solve_coherent_block_fields_dual(
-                    start,
-                    end,
-                    &n_slice,
-                    &inv_n_slice,
-                    &sa.thicknesses,
-                    &sa.rough_vals,
-                    &sa.rough_types,
-                    lam,
-                    nsin_fi,
-                );
+                let (s_res, p_res) = match &partition {
+                    None => solve_coherent_block_fields_dual(
+                        start,
+                        end,
+                        &n_slice,
+                        &inv_n_slice,
+                        &sa.thicknesses,
+                        &sa.rough_vals,
+                        &sa.rough_types,
+                        lam,
+                        nsin_fi,
+                    ),
+                    Some((blocks, spacers)) => solve_cascade_dual(
+                        blocks,
+                        spacers,
+                        &n_slice,
+                        &inv_n_slice,
+                        &sa,
+                        lam,
+                        nsin_fi,
+                    ),
+                };
                 let pt = Pt { s: s_res, p: p_res };
                 // Thickness deposits, when asked for. Nothing above this line
                 // is touched by the request: the values are the same solver
@@ -416,6 +449,52 @@ impl SmatrixContext {
     }
 }
 
+/// W6: one point of a stack with incoherent spacers, both polarizations,
+/// in the dual solver's `BlockResult` layout. The intensities `.4..=.7`
+/// are the cascade totals (R, T_b, T, R_b), walked exactly as the engine's
+/// `solve_point` walks them: each coherent block's flux-normalized
+/// intensities, then the spacer's attenuation, joined by the real star
+/// product from the identity. The amplitudes `.0..=.3` are the first
+/// block's, as the engine reports them; `simulate_inner` refuses every
+/// demand that would read them.
+fn solve_cascade_dual(
+    blocks: &[(usize, usize)],
+    spacers: &[Option<usize>],
+    n_slice: &[Complex64],
+    inv_n_slice: &[Complex64],
+    sa: &SolverArrays,
+    lam: f64,
+    nsin_fi: Complex64,
+) -> (BlockResult, BlockResult) {
+    let mut ig = [[0.0, 1.0, 1.0, 0.0]; 2];
+    let mut first: Option<(BlockResult, BlockResult)> = None;
+    for (&(bs, be), sp) in blocks.iter().zip(spacers) {
+        let (s, p) = solve_coherent_block_fields_dual(
+            bs,
+            be,
+            n_slice,
+            inv_n_slice,
+            &sa.thicknesses,
+            &sa.rough_vals,
+            &sa.rough_types,
+            lam,
+            nsin_fi,
+        );
+        ig[0] = star_real(ig[0], [s.4, s.5, s.6, s.7]);
+        ig[1] = star_real(ig[1], [p.4, p.5, p.6, p.7]);
+        first.get_or_insert((s, p));
+        if let Some(sp) = *sp {
+            let tau = spacer_tau(n_slice[sp], sa.thicknesses[sp], lam, nsin_fi);
+            for g in &mut ig {
+                *g = star_real(*g, [0.0, tau, tau, 0.0]);
+            }
+        }
+    }
+    let (s, p) = first.expect("a stack has at least one coherent block");
+    let with = |b: BlockResult, v: [f64; 4]| (b.0, b.1, b.2, b.3, v[0], v[1], v[2], v[3]);
+    (with(s, ig[0]), with(p, ig[1]))
+}
+
 /// ∂(Rs, Rp, Ts, Tp)/∂(thickness) at one grid point, laid out
 /// `[channel · n_par + par]` for [`CurveDeposits::from_point_rows`]; with
 /// `with_phase`, then ∂(Re, Im) of the complex forward `t_s`, `t_p`, then
@@ -562,6 +641,13 @@ impl SmatrixContext {
     pub fn simulate_all(&self, stack: &DesignStack) -> Result<Vec<SimCurves>, String> {
         match &self.envs {
             None => Ok(vec![self.simulate(stack)?]),
+            // W6 first cut: the joint door's routing (gap places, backside
+            // segments) is not yet checked against incoherent films.
+            Some(_) if stack.has_incoherent() => Err(
+                "a multi-environment run with an incoherent film is not supported yet; \
+                 run each environment on its own"
+                    .into(),
+            ),
             Some(envs) => envs
                 .expand(stack)?
                 .iter()
@@ -662,8 +748,10 @@ impl SmatrixContext {
         // The pool is sized by the work one parallel call spreads: grid
         // points × solver layers, times the columns a differenced Jacobian
         // runs at once, times the environments a joint run simulates.
-        let differenced =
-            self.lm.jacobian == JacobianMode::Fd || multi || self.spec.sensitivity_incomplete();
+        let differenced = self.lm.jacobian == JacobianMode::Fd
+            || multi
+            || self.spec.sensitivity_incomplete()
+            || stack.has_incoherent();
         let work = self.sin_theta.len()
             * self.wavls.len()
             * stack.solver_arrays().n_layers as usize
@@ -922,7 +1010,13 @@ impl JacobianSource for DepositJacobian {
         // -film name and summing them across environments is F2.3. Until
         // then the joint run is a finite-difference run, which is the
         // documented decline, not a silent single-environment Jacobian.
-        if self.ctx.envs.is_some() || self.declined.load(Ordering::Relaxed) {
+        // W6: thickness deposits are read off one coherent block; through
+        // an incoherent cascade they would need the cascade's adjoint
+        // weights too. A stack with an incoherent film differences instead.
+        if self.ctx.envs.is_some()
+            || self.declined.load(Ordering::Relaxed)
+            || self.base_stack.has_incoherent()
+        {
             return Ok(None);
         }
         let mut st = self.base_stack.clone();
@@ -3881,8 +3975,11 @@ mod needle_oracle {
 
     /// Fold P and the merit slope at a few interior sites of every film.
     fn p_and_slope(spec: MeritSpec, angle: Radians) -> Vec<(f64, f64)> {
+        p_and_slope_on(stack(), spec, angle)
+    }
+
+    fn p_and_slope_on(st: DesignStack, spec: MeritSpec, angle: Radians) -> Vec<(f64, f64)> {
         let c = ctx(spec, angle);
-        let st = stack();
         let sim = c.simulate(&st).unwrap();
         let fold = build_needle_targets(&c.spec, &[angle], &WLS, Some(&sim)).unwrap();
         let sa = st.solver_arrays();
@@ -3904,6 +4001,7 @@ mod needle_oracle {
                 needle_n_per_wav: &nk,
                 start_idx: 0,
                 end_idx: (sa.n_layers - 1) as usize,
+                incoherent_flags: &sa.incoherent_flags,
                 calc_s: true,
                 calc_p: true,
             },
@@ -3933,7 +4031,11 @@ mod needle_oracle {
     }
 
     fn check(name: &str, spec: MeritSpec, angle: Radians) {
-        let pairs = p_and_slope(spec, angle);
+        check_on(name, stack(), spec, angle);
+    }
+
+    fn check_on(name: &str, st: DesignStack, spec: MeritSpec, angle: Radians) {
+        let pairs = p_and_slope_on(st, spec, angle);
         let scale = pairs.iter().map(|&(_, s)| s.abs()).fold(0.0, f64::max);
         assert!(scale > 1e-6, "{name}: the merit does not move");
         for (i, &(p, s)) in pairs.iter().enumerate() {
@@ -4065,6 +4167,49 @@ mod needle_oracle {
             },
         );
         out.push(("Rp phase pair across the wrap", wrap_pair));
+        // Integral phase (plan §5.9): arg(t_p) sits ~1.5 rad from 0 over the
+        // band, past pi/N with N = 5, where the pair's N*G wrapped; arg(r_p)
+        // crosses ±pi inside the band at 0, 30 and 60 deg, where the gap of
+        // the raw-phase mean is 2*pi off the wrapped residuals' mean.
+        out.push((
+            "Tp phase integral, mean gap past pi/N",
+            one(D {
+                phase: true,
+                integral: true,
+                ..d(Tp, 0.0)
+            }),
+        ));
+        out.push((
+            "Rp phase integral, band across ±pi",
+            one(D {
+                phase: true,
+                integral: true,
+                ..d(Rp, 3.1)
+            }),
+        ));
+        out.push((
+            "Rp phase integral centre band, across ±pi",
+            one(D {
+                phase: true,
+                integral: true,
+                kind: CenterBand,
+                band: 0.01,
+                ..d(Rp, 3.1)
+            }),
+        ));
+        let mut int_pair = MeritSpec::new();
+        for target in [3.1, -1.0] {
+            add(
+                &mut int_pair,
+                angle,
+                D {
+                    phase: true,
+                    integral: true,
+                    ..d(Rp, target)
+                },
+            );
+        }
+        out.push(("two integral Rp phases on one bucket", int_pair));
         // W4: non-uniform point weights, pointwise and integral, on an
         // intensity pair, an unpolarized demand, a kind and a phase.
         for (name, x) in [
@@ -4249,6 +4394,14 @@ mod needle_oracle {
                     ..ret(Tp, -0.3)
                 }),
             ),
+            // Plan §5.9: a mean retardance gap past pi/N (N = 5).
+            (
+                "RetR integral, mean gap past pi/N",
+                one(D {
+                    integral: true,
+                    ..ret(Rp, -1.5)
+                }),
+            ),
         ]
     }
 
@@ -4299,5 +4452,209 @@ mod needle_oracle {
         for (name, spec) in cases(deg(60.0)) {
             check(name, spec, deg(60.0));
         }
+    }
+
+    // --- W6: a coated plate, both faces, in air ---------------------------
+
+    /// Front films, the incoherent plate, back films, in air.
+    fn plate_films(nw: usize) -> Vec<LayerSpec> {
+        let mut plate = LayerSpec::constant("G", 1.52, 2e-6, 200_000.0, nw);
+        plate.coherent = false;
+        plate.optimize = false;
+        plate.needle = false;
+        vec![
+            LayerSpec::constant("H", 2.30, 0.0, 118.0, nw),
+            LayerSpec::constant("L", 1.46, 0.0, 203.0, nw),
+            plate,
+            LayerSpec::constant("Habs", 2.30, 0.004, 64.0, nw),
+            LayerSpec::constant("L", 1.46, 0.0, 100.0, nw),
+        ]
+    }
+
+    fn in_air(films: Vec<LayerSpec>) -> DesignStack {
+        let nw = WLS.len();
+        let half = || {
+            let mut a = LayerSpec::constant("air", 1.0, 0.0, 0.0, nw);
+            a.optimize = false;
+            a.needle = false;
+            a
+        };
+        DesignStack::with_films(half(), half(), films).unwrap()
+    }
+
+    fn plate() -> DesignStack {
+        in_air(plate_films(WLS.len()))
+    }
+
+    #[test]
+    fn p_is_the_merit_slope_through_an_incoherent_plate() {
+        for angle in [Radians::ZERO, deg(30.0)] {
+            for (name, spec) in cases(angle) {
+                if spec.uses_phase() {
+                    continue;
+                }
+                check_on(name, plate(), spec, angle);
+            }
+        }
+    }
+
+    /// Front rows against the engine's own block walk; back rows against
+    /// the front rows of the mirrored stack (air on both sides, so the
+    /// flux factors and the angle carry over).
+    #[test]
+    fn incoherent_forward_matches_the_engine() {
+        use crate::smatrix::core_engine::{MODE_B, solve_point};
+        use CurveId::*;
+        let angle = deg(30.0);
+        let mut spec = MeritSpec::new();
+        for id in [RBs, RBp, TBs, TBp] {
+            add(&mut spec, angle, d(id, 0.3));
+        }
+        let c = ctx(spec, angle);
+        let st = plate();
+        let sim = c.simulate(&st).unwrap();
+        let sa = st.solver_arrays();
+        let nl = sa.n_layers as usize;
+        for (w, &lam) in WLS.iter().enumerate() {
+            let ns: Vec<Complex64> = (0..nl)
+                .map(|l| {
+                    let b = w * nl * 2 + l * 2;
+                    Complex64::new(sa.n_stack_cache[b], sa.n_stack_cache[b + 1])
+                })
+                .collect();
+            let inv: Vec<Complex64> = ns.iter().map(|&n| 1.0 / n).collect();
+            let e = solve_point(
+                nl - 1,
+                lam,
+                c.sin_theta[0],
+                &ns,
+                &inv,
+                &sa.thicknesses,
+                &sa.incoherent_flags,
+                &sa.rough_types,
+                &sa.rough_vals,
+                MODE_B,
+                true,
+                true,
+                false,
+            );
+            for (id, v) in [(Rs, e.rs), (Rp, e.rp), (Ts, e.ts), (Tp, e.tp)] {
+                assert_eq!(sim.curve(id).unwrap()[w], v, "{id:?} at {lam}");
+            }
+        }
+        let mut films = plate_films(WLS.len());
+        films.reverse();
+        let mirror = c.simulate(&in_air(films)).unwrap();
+        for (back, front) in [(RBs, Rs), (RBp, Rp), (TBs, Ts), (TBp, Tp)] {
+            for w in 0..WLS.len() {
+                let (b, f) = (
+                    sim.back_curve(back).unwrap()[w],
+                    mirror.curve(front).unwrap()[w],
+                );
+                assert!(
+                    (b - f).abs() < 1e-12,
+                    "{back:?} {b} vs mirrored {front:?} {f}"
+                );
+            }
+        }
+        // The plate really is incoherent: a coherent one fringes.
+        let mut films = plate_films(WLS.len());
+        films[2].coherent = true;
+        let coh = c.simulate(&in_air(films)).unwrap();
+        let gap = (0..WLS.len())
+            .map(|w| (coh.curve(Rs).unwrap()[w] - sim.curve(Rs).unwrap()[w]).abs())
+            .fold(0.0, f64::max);
+        assert!(gap > 1e-3, "coherent and incoherent plates agree ({gap})");
+    }
+
+    #[test]
+    fn incoherent_stack_refuses_phase_and_deposits() {
+        let angle = deg(30.0);
+        let mut spec = MeritSpec::new();
+        add(
+            &mut spec,
+            angle,
+            D {
+                phase: true,
+                ..d(CurveId::Rs, 0.5)
+            },
+        );
+        let err = ctx(spec, angle).simulate(&plate()).unwrap_err();
+        assert!(err.contains("phase"), "{err}");
+        let mut spec = MeritSpec::new();
+        add(&mut spec, angle, d(CurveId::Rs, 0.3));
+        let err = ctx(spec, angle)
+            .simulate_with_deposits(&plate(), &[0])
+            .unwrap_err();
+        assert!(err.contains("coherent"), "{err}");
+    }
+
+    /// A boundary site on top of the plate is a needle at the bottom of
+    /// the film above it.
+    #[test]
+    fn a_site_on_the_plate_is_the_bottom_of_the_film_above() {
+        use crate::smatrix::synthesis::needle_pass::ScanSite;
+        let angle = deg(30.0);
+        let mut spec = MeritSpec::new();
+        add(&mut spec, angle, d(CurveId::Ru, 0.3));
+        add(&mut spec, angle, d(CurveId::TBs, 0.6));
+        let c = ctx(spec, angle);
+        let st = plate();
+        let sim = c.simulate(&st).unwrap();
+        let fold = build_needle_targets(&c.spec, &[angle], &WLS, Some(&sim)).unwrap();
+        let sa = st.solver_arrays();
+        let nk = vec![Complex64::new(NEEDLE_N, 0.0); WLS.len()];
+        let z = 118.0 + 203.0;
+        let sites = [
+            ScanSite {
+                film_idx: 2,
+                depth_into_layer_nm: 0.0,
+                z_nm: z,
+                boundary: true,
+            },
+            ScanSite {
+                film_idx: 1,
+                depth_into_layer_nm: 203.0,
+                z_nm: z,
+                boundary: false,
+            },
+        ];
+        let res = needle_pass_scan(
+            &NeedlePassInput {
+                n_stack_cache: &sa.n_stack_cache,
+                thicknesses: &sa.thicknesses,
+                rough_types: &sa.rough_types,
+                rough_vals: &sa.rough_vals,
+                n_layers: sa.n_layers as usize,
+                wavls: &WLS,
+                sin_theta: &c.sin_theta,
+                fold: &fold,
+                needle_n_per_wav: &nk,
+                start_idx: 0,
+                end_idx: (sa.n_layers - 1) as usize,
+                incoherent_flags: &sa.incoherent_flags,
+                calc_s: true,
+                calc_p: true,
+            },
+            &sites,
+        )
+        .unwrap();
+        assert!(res.p_profile[0] != 0.0);
+        assert_eq!(res.p_profile[0], res.p_profile[1]);
+    }
+
+    /// LM through the plate: it differences, lowers the merit, and leaves
+    /// the plate alone.
+    #[test]
+    fn lm_optimizes_the_coatings_around_a_fixed_plate() {
+        let mut spec = MeritSpec::new();
+        add(&mut spec, Radians::ZERO, d(CurveId::Ru, 0.02));
+        let mut c = ctx(spec, Radians::ZERO);
+        let mut st = plate();
+        let m0 = c.evaluate_merit(&st).unwrap();
+        let m1 = c.optimize_thicknesses(&mut st).unwrap();
+        assert!(m1 < 0.5 * m0, "merit {m0} -> {m1}");
+        let f = &st.films()[2];
+        assert!(!f.coherent && f.d_nm == 200_000.0);
     }
 }

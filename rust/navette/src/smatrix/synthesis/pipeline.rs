@@ -152,7 +152,7 @@ impl NeedlePipeline {
         if self.stack.spans().len() >= self.cfg.max_film_layers {
             return Ok(Some(TerminationReason::LayerBudgetReached));
         }
-        let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
+        let total: f64 = self.stack.coating_thickness_nm();
         if total >= self.cfg.max_total_thickness_nm {
             return Ok(Some(TerminationReason::ThicknessBudgetReached));
         }
@@ -220,7 +220,7 @@ impl NeedlePipeline {
 
             // Budget check after needle.
             if let Some(reason) = self.check_budgets(ctx)? {
-                let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
+                let total: f64 = self.stack.coating_thickness_nm();
                 let phase = PipelinePhaseResult {
                     macro_cycle: cycle_i,
                     mf_after_needle: mf_needle,
@@ -307,7 +307,7 @@ impl NeedlePipeline {
             let mf_inflate_s = mf_inflate;
 
             // ── Record phase ──
-            let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
+            let total: f64 = self.stack.coating_thickness_nm();
             let mf_end = mf_inflate.or(mf_cleanup).unwrap_or(mf_needle);
             clamp_report.merge(ctx.take_clamp_report().unwrap_or_default());
             phases.push(PipelinePhaseResult {
@@ -396,7 +396,7 @@ impl NeedlePipeline {
             termination,
             final_mf,
             final_layer_count: self.stack.spans().len(),
-            final_total_thickness_nm: self.stack.films().iter().map(|l| l.d_nm).sum(),
+            final_total_thickness_nm: self.stack.coating_thickness_nm(),
             stagnation_detail: stag_detail,
             final_clamp_report,
         })

@@ -104,7 +104,7 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
 ) -> Result<InflateResult, String> {
     let mf_before = ctx.evaluate_merit(stack)?;
     let n_films = stack.films().len();
-    let total_before: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+    let total_before: f64 = stack.coating_thickness_nm();
 
     // Precompute per-film qwot scale and delta.
     let deltas: Vec<f64> = stack
@@ -123,8 +123,9 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
     // grows by its own addon qwot, a different amount per sublayer, and a
     // pinned profile comes out with a distorted thickness distribution.
     // The same filter guards round_to_qwot below (no live caller today).
+    // W6: an incoherent film is a fixed plate, never a candidate.
     let eligible: Vec<usize> = (0..n_films)
-        .filter(|&i| stack.span_of_row(i).is_singleton_bulk())
+        .filter(|&i| stack.span_of_row(i).is_singleton_bulk() && stack.films()[i].coherent)
         .collect();
     let inflate_indices: Vec<usize> = match max_layers {
         Some(max_l) if max_l < eligible.len() => {
@@ -149,7 +150,7 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
         let d = stack.films()[i].d_nm;
         stack.set_thickness(i, (d + deltas[i]).max(0.0))?;
     }
-    let total_after_raw: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+    let total_after_raw: f64 = stack.coating_thickness_nm();
     let _ = total_after_raw;
 
     // Re-optimize.
@@ -158,7 +159,7 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
     } else {
         ctx.evaluate_merit(stack)?
     };
-    let total_after_opt: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+    let total_after_opt: f64 = stack.coating_thickness_nm();
 
     Ok(InflateResult {
         merit_before: mf_before,
