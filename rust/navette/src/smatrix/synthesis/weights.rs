@@ -244,7 +244,7 @@ pub enum ProfileRef {
 
 /// Check resolved point weights: one per point, finite, >= 0, not all
 /// zero (a target is muted with `weight = 0`, not with zero weights).
-pub fn check_point_weights(w: &[f64], n: usize, label: &str) -> Result<(), String> {
+pub(crate) fn check_point_weights(w: &[f64], n: usize, label: &str) -> Result<(), String> {
     if w.len() != n {
         return Err(format!(
             "{label}: weights shape mismatch: {} != {n}.",

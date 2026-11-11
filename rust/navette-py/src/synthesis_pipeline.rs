@@ -26,7 +26,7 @@ use pyo3::types::{IntoPyDict, PyAny, PyDict};
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
 use navette::smatrix::synthesis::cycle::{
-    dedup_pool, pool_entry, pool_from_layers, InsertRules, Insertion, NeedleCycleConfig,
+    label_pool, pool_entry, pool_from_layers, InsertRules, Insertion, NeedleCycleConfig,
     NeedleRules,
 };
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
@@ -62,11 +62,13 @@ impl PyLayerSpec {
 #[pymethods]
 impl PyLayerSpec {
     #[new]
-    #[pyo3(signature = (material, nk, thickness, coherent=true, rough_type=0, rough_val=0.0, optimize=true, needle=true))]
+    #[pyo3(signature = (material, nk, thickness, coherent=true, rough_type=0, rough_val=0.0, optimize=true, needle=true, label=None))]
     /// `nk`: complex array, one entry per simulation wavelength.
     /// Ambient/substrate entries are fixed by construction (never
     /// optimized, removed, or hosting — pass `optimize=False,
-    /// needle=False` for them).
+    /// needle=False` for them). `label`: the pool material this film is
+    /// made of (a pool label); without one the film is matched to the
+    /// pool by its index.
     #[allow(clippy::too_many_arguments)]
     fn new(
         material: String,
@@ -77,6 +79,7 @@ impl PyLayerSpec {
         rough_val: f64,
         optimize: bool,
         needle: bool,
+        label: Option<String>,
     ) -> PyResult<Self> {
         let n = nk.as_slice()?;
         if n.is_empty() {
@@ -97,6 +100,7 @@ impl PyLayerSpec {
                 rough_val,
                 optimize,
                 needle,
+                label: label.map(Arc::from),
             },
         })
     }
@@ -141,6 +145,12 @@ impl PyLayerSpec {
         self.inner.needle
     }
 
+    /// The pool material this film is made of, or `None`.
+    #[getter]
+    fn label(&self) -> Option<String> {
+        self.inner.label.as_deref().map(str::to_string)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "LayerSpec(material={:?}, d={:.3}nm, optimize={}, needle={})",
@@ -162,6 +172,7 @@ fn layer_dict<'a>(py: Python<'a>, l: &'a LayerSpec) -> PyResult<Bound<'a, PyDict
     d.set_item("rough_val", l.rough_val)?;
     d.set_item("optimize", l.optimize)?;
     d.set_item("needle", l.needle)?;
+    d.set_item("label", l.label.as_deref())?;
     Ok(d)
 }
 
@@ -440,11 +451,12 @@ pub(crate) fn assemble_design(
     crate::structure::emit_warnings(py, "assemble_design", &warnings)?;
     let pool = match materials {
         None => pool_from_layers(&stack, |_| true),
-        Some(ms) => dedup_pool(
+        Some(ms) => label_pool(
             ms.into_iter()
                 .map(|(name, nk)| pool_entry(&name, std::sync::Arc::from(nk))),
         ),
-    };
+    }
+    .map_err(PyValueError::new_err)?;
     let pool = pool.iter().cloned().map(PyLayerSpec::from_inner).collect();
     Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
 }
@@ -753,9 +765,11 @@ impl PyDesignStack {
             .collect();
         let bg: std::collections::HashSet<String> =
             background.unwrap_or_default().into_iter().collect();
-        let (stack, warnings) =
+        let (mut stack, warnings) =
             DesignStack::from_design(a, s, &design, &nk_map, &gm, wavelengths.as_slice()?, &bg)
                 .map_err(PyValueError::new_err)?;
+        // W7: film names here are free, not material labels.
+        stack.clear_labels();
         if !warnings.is_empty() {
             let mod_warn = py.import("warnings")?;
             for w in &warnings {
@@ -1547,7 +1561,7 @@ impl PyNeedlePipeline {
             .map(|l| l.bind(py).borrow().inner.clone())
             .unwrap_or_default();
         let pool = match materials {
-            None => pool_from_layers(&stack.inner, |_| true),
+            None => pool_from_layers(&stack.inner, |_| true).map_err(PyValueError::new_err)?,
             Some(ms) => {
                 let mut entries = Vec::with_capacity(ms.len());
                 for m in &ms {
@@ -1562,7 +1576,7 @@ impl PyNeedlePipeline {
                     }
                     entries.push(pool_entry(&t.material, t.nk));
                 }
-                dedup_pool(entries)
+                label_pool(entries).map_err(PyValueError::new_err)?
             }
         };
         let mut design = stack.inner.clone();

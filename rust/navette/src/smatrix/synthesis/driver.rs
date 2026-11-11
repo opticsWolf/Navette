@@ -14,7 +14,7 @@ use num_complex::Complex64;
 
 use super::config::PipelineConfig;
 use super::cycle::{
-    MaterialPool, NeedleCycleConfig, NeedleRules, dedup_pool, pool_entry, pool_from_layers,
+    MaterialPool, NeedleCycleConfig, NeedleRules, label_pool, pool_entry, pool_from_layers,
 };
 use super::evaluator::SmatrixContext;
 use super::merit::{MeritSpec, Radians};
@@ -70,6 +70,7 @@ fn fixed_half(name: &str, nk: Vec<Complex64>) -> LayerSpec {
         rough_val: 0.0,
         optimize: false,
         needle: false,
+        label: None,
     }
 }
 
@@ -182,7 +183,9 @@ pub fn assemble_stack(
         wavelengths,
         &background,
     )
-    .map(|(stack, warnings)| {
+    .map(|(mut stack, warnings)| {
+        // W7: film names here are free, not material labels.
+        stack.clear_labels();
         film_warnings.extend(warnings);
         (stack, film_warnings)
     })
@@ -230,7 +233,7 @@ pub fn run_design(
         wavelengths,
     )?;
     let pool = match materials {
-        None => pool_from_layers(&stack, |_| true),
+        None => pool_from_layers(&stack, |_| true)?,
         Some(ms) => {
             for m in ms {
                 if m.nk.len() != wavelengths.len() {
@@ -242,10 +245,10 @@ pub fn run_design(
                     ));
                 }
             }
-            dedup_pool(
+            label_pool(
                 ms.iter()
                     .map(|m| pool_entry(&m.name, Arc::from(m.nk.clone()))),
-            )
+            )?
         }
     };
     let pool = rules.apply(&mut stack, pool)?;

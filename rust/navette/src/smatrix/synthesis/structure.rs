@@ -59,6 +59,12 @@ pub struct LayerSpec {
     pub optimize: bool,
     /// Admissible host for needle insertion.
     pub needle: bool,
+    /// W7: the material this film is made of, as the pool and the groups
+    /// name it (a library code). Design films carry their film name, a
+    /// needle its pool entry's label. `None` (a film built by hand, the
+    /// half-spaces) is recognised by its index alone, as before W7. See
+    /// [`LayerSpec::same_material`].
+    pub label: Option<Arc<str>>,
 }
 
 impl LayerSpec {
@@ -73,7 +79,17 @@ impl LayerSpec {
             rough_val: 0.0,
             optimize: true,
             needle: true,
+            label: None,
         }
+    }
+
+    /// W7: are `self` and `other` one material? The same index, and labels
+    /// that do not disagree: two labelled films of different labels are
+    /// different deposited materials even at one index (another group,
+    /// other insertion rules), while an unlabelled film is matched by its
+    /// index alone.
+    pub fn same_material(&self, other: &LayerSpec) -> bool {
+        self.nk == other.nk && labels_agree(&self.label, &other.label)
     }
 
     /// Verbatim port of Python `Layer.clone()` semantics: an independent
@@ -81,6 +97,14 @@ impl LayerSpec {
     /// mutated after construction).
     pub fn cloned(&self) -> Self {
         self.clone()
+    }
+}
+
+/// Two optional labels name one material unless both are set and differ.
+pub(crate) fn labels_agree(a: &Option<Arc<str>>, b: &Option<Arc<str>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
     }
 }
 
@@ -213,11 +237,17 @@ pub(crate) fn edge_allows(
     }
 }
 
-/// Is `film` of the edge material `e`? By label, a needle's `#n` suffix
-/// stripped (`"H#3"` is `"H"`), so a re-evaluated or scaled spectrum still
-/// matches; bit-exact nk is the fallback for a film named otherwise.
+/// Is `film` of the edge material `e`? By its label when it has one (a
+/// group-scaled spectrum still matches). Without one, by name, a needle's
+/// `#n` suffix stripped (`"H#3"` is `"H"`), with bit-exact nk as the
+/// fallback for a film named otherwise.
 pub(crate) fn is_edge_material(e: &EdgeMaterial, film: &LayerSpec) -> bool {
-    *e.0 == *base_label(&film.material) || e.1 == film.nk
+    match &film.label {
+        // W7: a labelled film is its label; another label at the same
+        // index is another material.
+        Some(label) => *e.0 == **label,
+        None => *e.0 == *base_label(&film.material) || e.1 == film.nk,
+    }
 }
 
 /// A material label without a needle's `#n` suffix.
@@ -863,6 +893,7 @@ impl DesignStack {
                     rough_val: sa.rough_vals[r],
                     optimize: carrier.optimize && !is_slice,
                     needle: carrier.needle && !is_slice,
+                    label: Some(std::sync::Arc::from(carrier.material.as_str())),
                 });
             }
         }
@@ -1180,13 +1211,37 @@ impl DesignStack {
         Ok(())
     }
 
+    /// W7: drop the label of every row labelled by a film in `names` (the
+    /// segmented door's surroundings, whose auto-names are no material;
+    /// their derived rows carry the same label). Those rows are then
+    /// matched by index alone, as every film was before labels.
+    pub(crate) fn unlabel_films(&mut self, names: &std::collections::HashSet<String>) {
+        for f in &mut self.films {
+            if f.label.as_deref().is_some_and(|l| names.contains(l)) {
+                f.label = None;
+            }
+        }
+    }
+
+    /// W7: drop every row's label. For doors whose film names are free
+    /// (`assemble_stack`, the Python `from_design`): a name there is no
+    /// material label, so films are matched by index, as before labels.
+    pub fn clear_labels(&mut self) {
+        for f in &mut self.films {
+            f.label = None;
+        }
+    }
+
     /// Merge consecutive rows that are one slab of one index. Two rules:
     ///
-    /// * **Layers merge by index.** A layer (the bulk row of a
-    ///   singleton-bulk span) merges into the next layer when their nk is
-    ///   bit-identical, whatever their names: two touching needles of one
-    ///   material are one film. The next layer must start with its bulk -
-    ///   an interface slice between them is a derived row, not a layer.
+    /// * **Layers merge by material.** A layer (the bulk row of a
+    ///   singleton-bulk span) merges into the next layer when they are one
+    ///   material ([`LayerSpec::same_material`]: bit-identical nk, labels
+    ///   that do not disagree), whatever their names: two touching needles
+    ///   of one material are one film, while `H` and `H2` at one index stay
+    ///   apart (W7: another group or other rules). The next layer must
+    ///   start with its bulk - an interface slice between them is a derived
+    ///   row, not a layer.
     /// * **Other rows merge by name AND nk**, as before: interface slices,
     ///   group-scaled rows and graded-profile sublayers share material
     ///   names with their bulk but must never collapse into one slab
@@ -1218,8 +1273,10 @@ impl DesignStack {
         while i < films.len() {
             let mut j = i + 1;
             while j < films.len()
-                && ((films[j].material == films[i].material && films[j].nk == films[i].nk)
-                    || (ends_layer[j - 1] && starts_layer[j] && films[j].nk == films[j - 1].nk))
+                && ((films[j].material == films[i].material && films[j].same_material(&films[i]))
+                    || (ends_layer[j - 1]
+                        && starts_layer[j]
+                        && films[j].same_material(&films[j - 1])))
             {
                 j += 1;
             }
@@ -1764,6 +1821,9 @@ impl DesignStack {
             )?;
             let carrier = &recipe.layer;
             let material: Arc<str> = Arc::from(carrier.material.as_str());
+            // The span's rows keep the label they were built with (a
+            // surrounding's is cleared by the segmented door).
+            let label = self.films[sp.start].label.clone();
             let n_old = sp.end - sp.start;
             let n_new = block.thicknesses.len();
             let mut new_rows = Vec::with_capacity(n_new);
@@ -1778,6 +1838,7 @@ impl DesignStack {
                     rough_val: block.rough_vals[r],
                     optimize: carrier.optimize && !is_slice,
                     needle: carrier.needle && !is_slice,
+                    label: label.clone(),
                 });
             }
             let delta = n_new as isize - n_old as isize;
@@ -2424,6 +2485,25 @@ mod tests {
         let mut s = stack(vec![slice, h(46.0)]);
         assert_eq!(s.merge_adjacent(), 0);
         assert!(!s.films()[0].optimize);
+    }
+
+    /// W7: two labelled layers of one index merge only under one label;
+    /// two labels are two deposited materials, kept apart.
+    #[test]
+    fn merge_adjacent_keeps_labels_apart() {
+        let labelled = |d: f64, label: &str| {
+            let mut f = h(d);
+            f.material = Arc::from(label);
+            f.label = Some(Arc::from(label));
+            f
+        };
+        let mut s = stack(vec![labelled(5.0, "H"), labelled(7.0, "H2")]);
+        assert_eq!(s.merge_adjacent(), 0);
+        let mut s = stack(vec![labelled(5.0, "H"), labelled(7.0, "H")]);
+        assert_eq!(s.merge_adjacent(), 1);
+        // An unlabelled layer matches by index alone, as before.
+        let mut s = stack(vec![labelled(5.0, "H"), h(7.0)]);
+        assert_eq!(s.merge_adjacent(), 1);
     }
 
     /// Layers merge by index: two touching films of one nk are one film,

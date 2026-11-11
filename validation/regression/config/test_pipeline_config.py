@@ -95,7 +95,18 @@ def test_native_matches_direct_driver_bitwise():
             return a.hex() == b.hex()
         return a == b
 
-    assert _same(stack_cfg.to_dict(), stack_direct.to_dict())
+    # W7: the one intended difference is the label. Config films are named
+    # by their code, which is their material; direct films' names are free.
+    cfg_films = stack_cfg.films()
+    assert [f["label"] for f in cfg_films] == ["L", "H"]
+    assert all(f["label"] is None for f in stack_direct.films())
+
+    def _unlabelled(d):
+        d = dict(d)
+        d["films"] = [{k: v for k, v in f.items() if k != "label"} for f in d["films"]]
+        return d
+
+    assert _same(_unlabelled(stack_cfg.to_dict()), _unlabelled(stack_direct.to_dict()))
 
 
 def test_group_rides_along():

@@ -1622,7 +1622,7 @@ pub fn build_environments(
         }
     }
 
-    let pool = build_pool(req.materials.as_deref(), &nk)?;
+    let pool = build_pool(req.materials.as_deref(), &nk, &groups)?;
 
     let mut stacks: Vec<DesignStack> = Vec::with_capacity(req.environments.len());
     let mut inverted: Vec<Vec<bool>> = Vec::with_capacity(req.environments.len());
@@ -1666,7 +1666,7 @@ pub fn build_environments(
                 orient.len()
             ));
         }
-        let (stack, warns) = DesignStack::from_design_oriented(
+        let (mut stack, warns) = DesignStack::from_design_oriented(
             amb,
             sub,
             &films,
@@ -1677,6 +1677,8 @@ pub fn build_environments(
             &background,
         )
         .map_err(|e| format!("environment {:?}: {e}", env.name))?;
+        // W7: a surrounding's auto-name is no material label.
+        stack.unlabel_films(&per_env_fixed[e]);
         warnings.extend(warns.into_iter().map(|w| format!("{}: {w}", env.name)));
         inverted.push(stack.spans().iter().map(|sp| orient[sp.logical]).collect());
         stacks.push(stack);
@@ -1748,13 +1750,16 @@ pub fn build_environments(
 
     // The default pool is the shared design's own layers: a surrounding's
     // material is never a needle unless the request names it.
-    let pool = pool.unwrap_or_else(|| {
-        let design_rows: HashSet<usize> = routing
-            .iter()
-            .map(|per| stacks[0].spans()[per[0][0]].bulk_start)
-            .collect();
-        pool_from_layers(&stacks[0], |row| design_rows.contains(&row))
-    });
+    let pool = match pool {
+        Some(p) => p,
+        None => {
+            let design_rows: HashSet<usize> = routing
+                .iter()
+                .map(|per| stacks[0].spans()[per[0][0]].bulk_start)
+                .collect();
+            pool_from_layers(&stacks[0], |row| design_rows.contains(&row))?
+        }
+    };
     let pool = match &req.insert_rules {
         Some(r) => pool.with_insert_rules(r)?,
         None => pool,
@@ -3756,6 +3761,7 @@ mod tests {
             rough_val: 0.0,
             optimize: true,
             needle: true,
+            label: partner.label.clone(),
         };
         let mut grown = envs.as_ref().clone();
         let mut stack = base.clone();

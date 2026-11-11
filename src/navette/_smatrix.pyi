@@ -455,6 +455,7 @@ class LayerSpec:
         rough_val: float = ...,
         optimize: bool = ...,
         needle: bool = ...,
+        label: str | None = ...,
     ) -> None: ...
     @property
     def material(self) -> str: ...
@@ -472,6 +473,9 @@ class LayerSpec:
     def optimize(self) -> bool: ...
     @property
     def needle(self) -> bool: ...
+    @property
+    def label(self) -> str | None:
+        """The pool material this film is made of, or ``None``."""
 
 class DesignStack:
     """Ambient / films / substrate, with the film edits synthesis performs."""

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::cycle::{
-    InsertRules, MaterialPool, NeedleRules, dedup_pool, pool_entry, pool_from_layers,
+    InsertRules, MaterialPool, NeedleRules, label_pool, pool_entry, pool_from_layers,
 };
 use super::structure::{DesignStack, LayerSpec};
 use crate::structure::{
@@ -602,31 +602,45 @@ fn fixed_spec(name: &str, nk: Vec<Complex64>) -> LayerSpec {
         rough_val: 0.0,
         optimize: false,
         needle: false,
+        label: None,
     }
 }
 
 /// Build the needle material pool from `materials` (library codes), each
-/// entry labelled by its code; a repeated index is swept once. `None`
-/// (no list given) answers `None`: the caller takes the default pool of
-/// its own layers.
+/// entry labelled by its code; a repeated code is one entry. `None` (no
+/// list given) answers `None`: the caller takes the default pool of its
+/// own layers.
+///
+/// W7: an entry's index is its code's library index under the code's
+/// group n/k factors, the index a film of that code is expanded with, so
+/// this pool and the default one agree. (A needle's thickness takes no
+/// group factor: it is grown, not specified.)
 ///
 /// Shared by both doors so the pool cannot drift between them.
 pub(crate) fn build_pool(
     materials: Option<&[String]>,
     nk: &HashMap<Arc<str>, Vec<Complex64>>,
+    groups: &HashMap<String, Group>,
 ) -> Result<Option<MaterialPool>, String> {
     let Some(codes) = materials else {
         return Ok(None);
     };
     let mut entries = Vec::with_capacity(codes.len());
     for code in codes {
-        let spectrum = nk
+        let mut spectrum = nk
             .get(code.as_str())
             .cloned()
             .ok_or_else(|| format!("needle material code {code:?} not found in library"))?;
+        if let Some(g) = groups.get(code.as_str())
+            && (g.n_factor != 1.0 || g.k_factor != 1.0)
+        {
+            for z in &mut spectrum {
+                *z = Complex64::new(z.re * g.n_factor, z.im * g.k_factor);
+            }
+        }
         entries.push(pool_entry(code, Arc::from(spectrum)));
     }
-    Ok(Some(dedup_pool(entries)))
+    label_pool(entries).map(Some)
 }
 
 /// Everything [`split_and_build_films`] needs besides the rows themselves.
@@ -831,12 +845,12 @@ pub fn build_design(
         },
     )?;
 
-    let pool = build_pool(req.materials.as_deref(), &nk_table)?;
-
     let mut groups = HashMap::new();
     for row in &req.structure.groups {
         groups.insert(row.name.clone(), build_group(row)?);
     }
+
+    let pool = build_pool(req.materials.as_deref(), &nk_table, &groups)?;
 
     // Background is implied, not declared (mirrors the Python driver).
     // A4: a gradient carrier is a profiled film for this rule too.
@@ -855,7 +869,10 @@ pub fn build_design(
         wavelengths,
         &background,
     )?;
-    let pool = pool.unwrap_or_else(|| pool_from_layers(&stack, |_| true));
+    let pool = match pool {
+        Some(p) => p,
+        None => pool_from_layers(&stack, |_| true)?,
+    };
     let pool = req.needle_rules().apply(&mut stack, pool)?;
     Ok((stack, pool, warnings))
 }
@@ -1090,6 +1107,40 @@ mod tests {
         r.materials = Some(vec!["Q".into()]);
         let err = build_design(&r, &wl).unwrap_err();
         assert!(err.contains("\"Q\""), "{err}");
+    }
+
+    /// W7: a given pool takes the group n/k factors a film of its code is
+    /// expanded with, so it agrees with the default pool; two codes of one
+    /// library index are two entries, apart once a group scales one.
+    #[test]
+    fn given_and_default_pools_agree_under_groups() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 100.0), film("H", 60.0)]);
+        r.structure.groups =
+            vec![serde_json::from_str(r#"{"name": "H", "n_factor": 1.1}"#).unwrap()];
+        let (stack, default, _) = build_design(&r, &wl).unwrap();
+        r.materials = Some(vec!["L".into(), "H".into()]);
+        let (_, given, _) = build_design(&r, &wl).unwrap();
+        assert_eq!(default.len(), 2);
+        for (d, g) in default.iter().zip(given.iter()) {
+            assert_eq!(d.material, g.material);
+            assert_eq!(d.nk, g.nk);
+        }
+        assert!((given[1].nk[0].re - 2.1 * 1.1).abs() < 1e-12);
+        assert_eq!(stack.films()[1].nk, given[1].nk);
+
+        let mut hb = r.library[1].clone();
+        hb.name = "Hb".to_string();
+        r.library.push(hb);
+        r.structure.groups = vec![];
+        r.materials = Some(vec!["H".into(), "Hb".into()]);
+        let (_, same, _) = build_design(&r, &wl).unwrap();
+        assert_eq!(same.len(), 2);
+        assert_eq!(same[0].nk, same[1].nk);
+        r.structure.groups =
+            vec![serde_json::from_str(r#"{"name": "Hb", "n_factor": 1.1}"#).unwrap()];
+        let (_, apart, _) = build_design(&r, &wl).unwrap();
+        assert_ne!(apart[0].nk, apart[1].nk);
     }
 
     /// The request's rules reach the pool (an empty list closes L) and the

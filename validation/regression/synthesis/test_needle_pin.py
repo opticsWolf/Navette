@@ -132,8 +132,9 @@ def _digest(res):
     # trajectory fingerprint, and the recorded digests stand. The key's
     # own behaviour is pinned by test_boundary_needles.py. `seed_nm` (the
     # thickness the needle went in at) is the seed thickness here, and
-    # stripped for the same reason.
-    payload = _strip_keys(payload, {"clamp_report", "boundary", "seed_nm"})
+    # stripped for the same reason. Films gained `label` (W7: a needle's
+    # pool label, `None` for these freely named films), stripped too.
+    payload = _strip_keys(payload, {"clamp_report", "boundary", "seed_nm", "label"})
     blob = repr(_canon(payload)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 

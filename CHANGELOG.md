@@ -107,8 +107,9 @@ All notable changes to Navette are recorded here. Work items reference
   - A film can receive a needle when its own `needle` flag is set;
     `optimize` decides whether its thickness may change. Film names play
     no part.
-  - A film accepts every pool material whose index differs from its own.
-  - The pool defaults to one entry per distinct index among the design's
+  - A film accepts every pool material other than its own (see the
+    label entry below).
+  - The pool defaults to one entry per material among the design's
     layers. `materials=` (a `{label: nk}` mapping in Python,
     `DesignRequest.materials` as library codes in config,
     `NeedlePipeline(materials=[LayerSpec, ...])`) supplies another, for
@@ -123,6 +124,24 @@ All notable changes to Navette are recorded here. Work items reference
   derived from a layer (graded sublayers, interface slices) still merge
   only on name and index, so they stay apart. The first row's properties
   win.
+- **A material is its label, not its index** (`docs/plans/
+  synthesis_targets_plan.md` W7). Two deposited materials can share one
+  fitted index and still differ in group or insertion rules. Films now
+  carry the label of their material (`LayerSpec(label=)`, a `label`
+  property and a `"label"` key in `DesignStack.films()`): design films
+  their code (config doors), needles their pool entry's. Films without a
+  label are matched by index as before: films built by hand, or through
+  `run_needle` / `stack_from_layers` / `DesignStack.from_design`, whose
+  names are free; the half-spaces; surroundings.
+  - Two films of different labels are different materials at any index:
+    they no longer merge, and either may take the other's needle.
+  - The pool holds one entry per label. A code repeated in `materials=` is
+    one entry; one label with two indices is an error. Two codes of one
+    index are two entries and share one scan sweep.
+  - A given pool (`DesignRequest.materials`) takes the codes' group n/k
+    factors, as the default pool always did, so both pools agree.
+  - Insertion rules find a film's row by its label. An unlabelled film
+    whose index two entries with different rules share is an error.
 - **The grading sign is the literature's: `+inh_delta` raises the index
   toward the outer surface.** The inhomogeneity is defined as
   `δ = (n_outer − n_substrate) / n̄` (Borgogno et al., Appl. Opt. 23, 3567

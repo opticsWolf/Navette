@@ -1,8 +1,8 @@
 # Synthesis targets: polarization, curve coverage, weighting, coherence
 
 Status: **in progress.** W1, W2 (including the back-channel deposits,
-step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5 and W8a are
-implemented (2026-11-10); W6, W7 and W8b-c are open. Drafted 2026-11-09.
+step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5, W7 and W8a
+are implemented (2026-11-10); W6 and W8b-c are open. Drafted 2026-11-09.
 
 This plan follows a review of the needle / thin-film synthesis path
 (`smatrix/synthesis/*`) against five reported issues:
@@ -625,6 +625,55 @@ different insertion rules → each host gets its own rule; explicit vs
 default pool give identical runs; shared-scan cost equals one sweep
 (timing counter); merge of `H`|`H2` refused, `H`|`H` merged.
 
+**Done (2026-11-10).** `LayerSpec.label` (Rust and Python, `label=` and a
+property; `None` by default) and `LayerSpec::same_material`: equal index
+and labels that do not disagree. Design films are labelled by their code on
+both config doors, needles by their entry. Half-spaces, surroundings (their
+`{env}.fixed[..]` auto-names are cleared), films built by hand, and films
+from the free-name doors (`assemble_stack`, so `run_needle` and
+`stack_from_layers`, and the Python `DesignStack.from_design`, which call
+`clear_labels`) stay unlabelled and keep the index identity: a free name is
+no material. Departures from the proposal:
+
+- **Field name** `label`, not `pool_label`.
+- **(label, group) is the label.** Groups are keyed by film name, and a
+  design film is named by its code, so a label has exactly one group; no
+  second key is carried and the "label in two groups" error cannot arise.
+- **Needle groups (item 3)** are the group's n/k factors only, and they
+  arrive through the index: `build_pool` now applies the code's group
+  n/k factors (the order in `build_design` changed so groups exist first),
+  and `pool_from_layers` takes the expanded films' index, so both doors
+  agree (item 4) and a needle of `H2` has `H2`'s deposited index. A needle
+  joins no group table: its thickness takes no factor (question 5).
+- **Pool.** `dedup_pool` is replaced by `label_pool`: one entry per label;
+  a label repeated with its index is dropped, repeated with another index
+  is an error. `pool_from_layers` keys labelled layers by label and adds an
+  unlabelled one only for an index no entry has (the old behaviour);
+  both return `Result`.
+- **Rules (item 2).** The host is its label's entry when the pool holds the
+  label, else the entry of its index; several entries of that index with
+  differing rule rows are a named error ("Label the film"), else the `"*"`
+  row as before.
+- **Adjacency (item 5)** and the **merge (item 6)** use `same_material`,
+  for the same-name rule as well as the layer rule; the outside neighbours
+  of a segment (surroundings) are unlabelled, so they compare by index.
+- **Shared sweeps (item 1)** in the flat scan: entries of a bit-identical
+  index run one `needle_pass_scan` over the union of their sites (whole
+  rows, original order), and each entry takes its first-best over its own
+  sites, in pool order, so ties resolve as before. The joint (F2) scan
+  stays one sweep per entry: its boundary loci differ per entry.
+- **Not done:** `pool_share_tol` (item 7), the shared-sweep and merge
+  reports (items 6 and 8). The sweep count is tested with a test-only
+  thread-local counter, not a timing counter.
+
+Tests: `cycle.rs` (two labels of one index; rules by label and the
+ambiguous unlabelled host; a shared index swept once with the same
+insertion as the pool without the twin; the default pool by label;
+`label_pool` errors), `structure.rs` (`H`|`H2` not merged, `H`|`H` and
+labelled|unlabelled merged), `design_config.rs` (given and default pools
+agree under a group; two codes of one index are two entries, apart under a
+group), `validation/smoke/test_material_labels.py`. Bench pins unchanged.
+
 ---
 
 ## 3. Order and dependencies
@@ -866,9 +915,10 @@ plus a per-point tolerance (W4) is the user-side mitigation.
    profiles (`weight_profiles`).
 4. W6: is a coated back side (two coated faces) needed, or is "uncoated
    back surface" enough for the first version?
-5. W7.3: do a group's thickness factor/summand apply to a needle's
+5. ~~W7.3: do a group's thickness factor/summand apply to a needle's
    optimized thickness (proposed: no, only in error draws), or to every
-   member including needles?
-6. W7.6: is fusing adjacent films of different labels but identical nk
+   member including needles?~~ Adopted: no; a needle takes its group's
+   n/k factors through the pool index only.
+6. ~~W7.6: is fusing adjacent films of different labels but identical nk
    ever wanted (e.g. a user splitting one layer into two named halves)?
-   Proposed: never fuse across labels.
+   Proposed: never fuse across labels.~~ Adopted: never across labels.

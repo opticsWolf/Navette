@@ -258,8 +258,8 @@ def _group_map(groups):
 def _pool(materials, wl):
     """``materials`` -> ``[(label, nk)]`` for the core, or ``None``.
 
-    ``None`` leaves the pool to the core: one entry per distinct index
-    among the layers. A mapping is ``{label: material}``; the label names
+    ``None`` leaves the pool to the core: one entry per material (film
+    name) among the layers. A mapping is ``{label: material}``; the label names
     the needles (``"<label>#<n>"``). An empty mapping inserts nothing.
     """
     if materials is None:
@@ -740,20 +740,22 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     angles_deg / angles_rad : solver angle grid, in degrees or in radians.
         Give exactly one; the targets name their own unit.
     materials : {label: material} — the needle material pool. Every film
-        whose ``needle`` flag is set accepts a needle of every pool
-        material of another index; each insertion is the single best
+        whose ``needle`` flag is set accepts a needle of every other pool
+        material; each insertion is the single best
         (position, material) pair over all of them. A needle is a film of
         its own, named ``"<label>#<n>"``, and accepts needles in later
         cycles. ``None`` (the default) pools the films' own materials, one
-        entry per distinct index; give a mapping to add materials no film
+        entry per film name; give a mapping to add materials no film
         is made of (an SiO2 start with SiO2, Al2O3 and HfO2 to insert).
-        ``{}`` inserts nothing. Touching films of one index merge.
+        ``{}`` inserts nothing. Touching films of one material merge. A
+        material is its label (a film's name, a needle's pool label): two
+        labels of one index are two materials.
     insert_rules : {host label: [needle labels]} — which pool materials
         may go into which. A film is matched to the pool entry of its own
-        index, so needles follow the rules too. A host with no key accepts
-        every pool material of another index; ``[]`` accepts nothing. The
-        key ``"*"`` is the rule for a needle-flagged film whose index is
-        in no pool entry; without it such a film is an error once any rule
+        label (else of its index), so needles follow the rules too. A host
+        with no key accepts every other pool material; ``[]`` accepts
+        nothing. The key ``"*"`` is the rule for a needle-flagged film that
+        matches no pool entry; without it such a film is an error once any rule
         is given.
     outer / inner : pool label, or a list of them — the materials allowed
         for the film facing the ambient (``outer``) and the film on the
