@@ -1277,6 +1277,31 @@ impl MeritSpec {
         total
     }
 
+    /// `merit_multi` with no penalty (D2): a missing curve is `Err`, naming
+    /// it. Same loop and accumulation order, so a run that misses nothing
+    /// scores bit for bit what `merit_multi` would.
+    ///
+    /// The synthesis evaluator scores through this. Since W3 a missing row
+    /// can only come from a spec/evaluator mismatch - a bug - and the old
+    /// silent 1e6 made such a run "converge" on a constant.
+    ///
+    /// # Panics
+    ///
+    /// As `merit_multi`.
+    pub fn try_merit_multi(&self, sims: &[SimCurves]) -> Result<f64, CurveId> {
+        self.check_sims(sims, "try_merit_multi");
+        let mut total = 0.0;
+        let mut buf: Vec<f64> = Vec::new();
+        for (e, sim) in sims.iter().enumerate() {
+            for k in 0..self.keys.len() {
+                buf.clear();
+                self.residuals_into(sim, k, e as u32, &mut buf)?;
+                total += buf.iter().map(|r| r * r).sum::<f64>();
+            }
+        }
+        Ok(total)
+    }
+
     /// Fixed-length residual vector (zeros where constraints are inactive).
     ///
     /// Returns `Err(missing CurveId)` if a demanded curve was not supplied.
@@ -2803,6 +2828,40 @@ mod tests {
             spec.residuals(&sim, &mut Vec::new()),
             Err(CurveId::Tp)
         ));
+        // D2: the strict door names the curve instead of charging for it.
+        assert_eq!(
+            spec.try_merit_multi(std::slice::from_ref(&sim)),
+            Err(CurveId::Tp)
+        );
+    }
+
+    /// D2: with nothing missing, the strict door is `merit` bit for bit.
+    #[test]
+    fn try_merit_multi_is_merit_when_nothing_is_missing() {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        spec.add_target(entry(
+            k as u32,
+            vec![400.0, 450.0, 500.0],
+            vec![0.1, 0.2, 0.3],
+            vec![0.03, 0.05, 0.07],
+            ConstraintKind::Exact,
+            SimTransform::Linear,
+            1.0,
+        ))
+        .unwrap();
+        let sim = sim_one_angle(&[0.11, 0.37, 0.02, 0.5, 0.9]);
+        let m = spec.merit(&sim, 1e6);
+        assert!(m > 0.0);
+        assert_eq!(
+            spec.try_merit_multi(std::slice::from_ref(&sim))
+                .unwrap()
+                .to_bits(),
+            m.to_bits()
+        );
     }
 
     #[test]

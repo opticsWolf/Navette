@@ -115,7 +115,7 @@ def _digest(res):
         "termination": res["termination"],
         "final_mf": res["final_mf"],
         "final_layer_count": res["final_layer_count"],
-        "final_total_thickness_nm": res["final_total_thickness_nm"],
+        "final_total_thickness_nm": res["final_coating_thickness_nm"],
         "stagnation_detail": res["stagnation_detail"],
         "phases": res["phases"],
         "stack": res["stack"].to_dict(),
@@ -135,8 +135,24 @@ def _digest(res):
     # stripped for the same reason. Films gained `label` (W7: a needle's
     # pool label, `None` for these freely named films), stripped too.
     payload = _strip_keys(payload, {"clamp_report", "boundary", "seed_nm", "label"})
+    # D7 renamed the thickness keys to say coating (same values: these
+    # stacks have no incoherent film). Hashing them under the names the
+    # digests were recorded with keeps the pin a trajectory fingerprint.
+    payload = _rename_keys(payload, {
+        "coating_thickness_nm": "total_thickness_nm",
+        "coating_thickness_before": "total_thickness_before",
+        "coating_thickness_after": "total_thickness_after",
+    })
     blob = repr(_canon(payload)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def _rename_keys(obj, names):
+    if isinstance(obj, dict):
+        return {names.get(k, k): _rename_keys(v, names) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_rename_keys(v, names) for v in obj]
+    return obj
 
 
 def _strip_keys(obj, drop):

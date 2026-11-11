@@ -41,7 +41,9 @@ def test_needle_run_around_a_fixed_plate():
     assert len(plate) == 1 and plate[0]["thickness"] == 1.0e6
     # The budget and the report count coating only.
     coating = sum(f["thickness"] for f in films if f["coherent"])
-    assert res["final_total_thickness_nm"] == pytest.approx(coating)
+    assert res["final_coating_thickness_nm"] == pytest.approx(coating)
+    assert res["stack"].coating_thickness() == pytest.approx(coating)
+    assert res["stack"].total_thickness() == pytest.approx(coating + 1.0e6)
     # The front face stays coated, a needle went in, and the merit only
     # falls. Whether the back film survives is the optimizer's call: with
     # the exact Jacobian the bounded LM drives it to zero here and the run

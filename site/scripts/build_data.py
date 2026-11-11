@@ -179,7 +179,7 @@ def needle():
     history += [dict(cycle=int(p["macro_cycle"]), merit=float(p["mf_end"]),
                      needle=float(p["mf_after_needle"]),
                      layers=int(p["layer_count"]),
-                     thickness=round(float(p["total_thickness_nm"]), 2))
+                     thickness=round(float(p["coating_thickness_nm"]), 2))
                 for p in phases]
     figs = ex.figures(f2)
     return dict(wl=r(wl_dense, 2), R=r(R, 7), R_bare=r(R_bare, 6),

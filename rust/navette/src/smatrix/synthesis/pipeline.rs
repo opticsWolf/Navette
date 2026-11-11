@@ -42,7 +42,7 @@ pub struct PipelinePhaseResult {
     pub mf_after_inflate: Option<f64>,
     pub mf_end: f64,
     pub layer_count: usize,
-    pub total_thickness_nm: f64,
+    pub coating_thickness_nm: f64,
     pub needle_results: Vec<NeedleCycleResult>,
     pub cleanup_result: Option<CleanupResult>,
     pub inflate_result: Option<InflateResult>,
@@ -61,7 +61,7 @@ pub struct PipelineResult {
     pub termination: TerminationReason,
     pub final_mf: f64,
     pub final_layer_count: usize,
-    pub final_total_thickness_nm: f64,
+    pub final_coating_thickness_nm: f64,
     pub stagnation_detail: Option<String>,
     /// F0.2: the final clamp sweep (after the last optimization). `None`
     /// when it removed and capped nothing (B4).
@@ -228,7 +228,7 @@ impl NeedlePipeline {
                     mf_after_inflate: None,
                     mf_end: mf_needle,
                     layer_count: self.stack.spans().len(),
-                    total_thickness_nm: total,
+                    coating_thickness_nm: total,
                     needle_results,
                     cleanup_result: None,
                     inflate_result: None,
@@ -317,7 +317,7 @@ impl NeedlePipeline {
                 mf_after_inflate: mf_inflate_s,
                 mf_end,
                 layer_count: self.stack.spans().len(),
-                total_thickness_nm: total,
+                coating_thickness_nm: total,
                 needle_results,
                 cleanup_result,
                 inflate_result,
@@ -396,7 +396,7 @@ impl NeedlePipeline {
             termination,
             final_mf,
             final_layer_count: self.stack.spans().len(),
-            final_total_thickness_nm: self.stack.coating_thickness_nm(),
+            final_coating_thickness_nm: self.stack.coating_thickness_nm(),
             stagnation_detail: stag_detail,
             final_clamp_report,
         })
@@ -613,7 +613,7 @@ mod tests {
         let res = p.run(&mut ctx, |_, _, _| Ok(())).unwrap();
         // needle pass optimize (initial) + per-cycle + FINAL = counted
         assert!(ctx.opt_calls >= 2);
-        assert!(res.final_total_thickness_nm <= 800.0);
+        assert!(res.final_coating_thickness_nm <= 800.0);
     }
 
     // ------------------------------------------------------------------

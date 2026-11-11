@@ -80,8 +80,8 @@ fn round_half_even(x: f64) -> f64 {
 pub struct InflateResult {
     pub merit_before: f64,
     pub merit_after: f64,
-    pub total_thickness_before: f64,
-    pub total_thickness_after: f64,
+    pub coating_thickness_before: f64,
+    pub coating_thickness_after: f64,
     pub layer_count: usize,
     pub addon_qwot: f64,
     pub reference_wavelength: f64,
@@ -165,8 +165,8 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
     Ok(InflateResult {
         merit_before: mf_before,
         merit_after: mf_after,
-        total_thickness_before: total_before,
-        total_thickness_after: total_after_opt,
+        coating_thickness_before: total_before,
+        coating_thickness_after: total_after_opt,
         layer_count: stack.films().len(),
         addon_qwot,
         reference_wavelength: reference_wl,
@@ -341,8 +341,8 @@ mod tests {
         // After perfect re-opt all films sit at their slot targets, so check
         // via total thickness accounting instead: before=90, after = sum of
         // targets = 110 (optimizer pulls everything to targets).
-        assert!((res.total_thickness_before - 90.0).abs() < 1e-12);
-        assert!((res.total_thickness_after - 110.0).abs() < 1e-12);
+        assert!((res.coating_thickness_before - 90.0).abs() < 1e-12);
+        assert!((res.coating_thickness_after - 110.0).abs() < 1e-12);
         assert_eq!(ctx.n_opt_calls, 1); // reoptimize=true default path ran
         assert_eq!(res.layer_count, 3);
 

@@ -9,6 +9,26 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
+- **Run results name the coating thickness as such**
+  (`docs/plans/synthesis_open_items.md` D7). The value always counted
+  coherent films only, so a plate made "total" wrong. Renamed keys:
+  `final_total_thickness_nm` → `final_coating_thickness_nm`, the
+  per-phase `total_thickness_nm` → `coating_thickness_nm`, and the
+  inflate report's `total_thickness_before`/`_after` →
+  `coating_thickness_before`/`_after`. `DesignStack.total_thickness()`
+  keeps its meaning (plates included); the budget knob
+  `PipelineConfig.max_total_thickness_nm` keeps its name.
+
+- **A failed needle refold is an error** (D1). When the solver failed
+  while refolding the targets for a new cycle, the cycle silently kept
+  the previous fold. It now stops the run with an error naming the
+  cycle (or, in a joint run, the environment).
+
+- **A demand on a curve the evaluator did not produce is an error**
+  (D2). The merit used to add a fixed penalty and carry on; the
+  evaluator now refuses, naming the curve. `check_spec` refuses such a
+  spec up front, so this only fires on a spec/evaluator mismatch.
+
 - **A pinned film (`optimize = False`) is never touched by synthesis**
   (`docs/plans/synthesis_open_items.md` D10). Inflate skipped no film by
   its flag, and the clamp sweep removed, clamped up, capped or refused
@@ -185,6 +205,13 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Fixed
 
+- **A masked host shifted the needle P of every later host** (1.1 /
+  D8). In a stack with spacer blocks, the multiblock P locator skipped
+  masked hosts instead of keeping their slot, so the values after one
+  were assigned to the wrong positions. Masked hosts now keep their
+  slot and get 0. The Python needle P solver went through the same
+  path and is fixed with it.
+
 - **An environment's own exit medium was refused.** `run_needle(
   environments=…)` appended the run's `ambient` and `substrate` rows to
   every environment, so one that ends in its own `layer_type=2` row (or
@@ -254,6 +281,10 @@ All notable changes to Navette are recorded here. Work items reference
   the integral fold are unchanged.
 
 ### Added
+
+- **`DesignStack.coating_thickness()`**: the summed thickness of the
+  coherent films, the figure the synthesis budget and run results use
+  (`total_thickness()` also counts incoherent plates).
 
 - **Synthesis through an incoherent plate**
   (`docs/plans/synthesis_targets_plan.md` W6, first cut). A film with

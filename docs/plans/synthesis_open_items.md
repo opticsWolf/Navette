@@ -12,7 +12,14 @@ feature, said out loud; **debt** = code, docs or pins out of step.
 
 ## 1. Bugs and inconsistencies found
 
-### 1.1 `p_function_multiblock` misaligns its output under a host mask (bug)
+### 1.1 `p_function_multiblock` misaligns its output under a host mask (fixed)
+
+Fixed 2026-11-11 (D8): `locate_hosts_multiblock` now returns one entry
+per z, `None` for a masked host, and every consumer writes 0 there; a
+masked case joined the multiblock FD test. The reach below was wrong in
+one respect: the Python needle P solver (`navette-py` `smatrix.rs`,
+`incoherent_flags` + `host_mask`) went through the same locator, so it
+returned shifted values too.
 
 `needle_operator.rs`, `locate_hosts_multiblock` + `p_function_multiblock`.
 The locator `continue`s past a masked z without pushing an entry, so
@@ -44,8 +51,13 @@ budget, the pipeline's `total_thickness_nm` and `final_total_thickness_nm`
 and the inflate report use the coating sum (equal bit for bit on coherent
 stacks). The Python `DesignStack.total_thickness()` (and the stack's
 `repr`) still call `total_thickness_nm`, so they count a plate. Decide whether it should be renamed, or the
-report keys say "coating". Decided (D7): keep both, name both; not yet
-done.
+report keys say "coating". Decided (D7): keep both, name both. Done
+2026-11-11: `final_coating_thickness_nm`, per-phase
+`coating_thickness_nm`, inflate `coating_thickness_before`/`_after`, and
+`DesignStack.coating_thickness()` beside `total_thickness()`. The needle
+pin hashes the renamed keys under their recorded names, so neither
+digest moved. Still named "total": the budget knob
+`PipelineConfig.max_total_thickness_nm`, which also counts coating only.
 
 ### 1.4 The PD reference thickness counts an incoherent plate (latent)
 
@@ -65,14 +77,14 @@ It matters if phase demands inside the first block are ever allowed
 - §6 follow-ups (target-kinds doc, needle docs with a generated
   supported-target matrix) have not been done for any workstream.
 
-### 1.6 A doc comment sits on the wrong item (debt)
+### 1.6 A doc comment sits on the wrong item (fixed)
 
 `needle_operator.rs`, around `PmbQuantity`: the doc comment and the
 `#[allow(clippy::too_many_arguments)]` meant for `p_multiblock_point`
 sit above `enum PmbQuantity`. So `PmbQuantity`'s docs open with
 `p_multiblock_point`'s description, and `p_multiblock_point` has no
-docs. It is harmless at runtime. Fix: move both lines down to the
-function.
+docs. It is harmless at runtime. Fixed 2026-11-11: both lines moved
+down to the function.
 
 ### 1.7 Inflate and clamp touched pinned films (fixed, D10)
 
@@ -95,8 +107,11 @@ halves stay pinned, so a sliver left by an insertion is kept.
 ## 2. Deferred and not-done items, by workstream
 
 ### W3, capability check
-- **Item 2 not done.** `merit()` still adds the 1e6 missing-curve
-  penalty silently; D2 decided to make it a hard error.
+- **Item 2 done (D2).** The synthesis evaluator scores through
+  `MeritSpec::try_merit_multi`, which names a missing curve instead of
+  charging 1e6 for it (same accumulation order, bit for bit otherwise).
+  The public `merit(sim, missing_penalty)` keeps its caller-chosen
+  penalty.
 
 ### W5, transforms in the needle
 - `complex` transform: refused at the first fold (no fold form exists).
@@ -201,14 +216,14 @@ Decided 2026-11-11 unless marked open.
 
 | # | Question | Decision |
 |---|---|---|
-| D1 | First fold of a run: static (`from_spec` folds with no simulation) or an initial simulation? | **Keep static, but no silent fallback.** Refold is on by default and refolds every cycle, the first included, so the static fold only serves `refold_per_cycle = false`. The weak spot is `cycle.rs`'s `if let Ok(sim) … && let Ok(f) …`: a failed refold falls back to the previous or static fold without a word. Make that failure an error (or at least a run-report warning). |
-| D2 | `merit()`'s 1e6 missing-curve penalty after W3. | **Hard error** (or penalty plus a warning naming the demand). Since W3 a missing curve can only come from a spec/evaluator mismatch, i.e. a bug; it is added silently today (`merit.rs` `merit_multi`). |
+| D1 | First fold of a run: static (`from_spec` folds with no simulation) or an initial simulation? | **Keep static, but no silent fallback.** Refold is on by default and refolds every cycle, the first included, so the static fold only serves `refold_per_cycle = false`. The weak spot is `cycle.rs`'s `if let Ok(sim) … && let Ok(f) …`: a failed refold falls back to the previous or static fold without a word. Make that failure an error (or at least a run-report warning). Done: a context with a simulator (`DesignContext::has_simulator`) turns a failed refold into an error naming the cycle or environment; test contexts without one keep the static fold. |
+| D2 | `merit()`'s 1e6 missing-curve penalty after W3. | **Hard error** (or penalty plus a warning naming the demand). Since W3 a missing curve can only come from a spec/evaluator mismatch, i.e. a bug; it is added silently today (`merit.rs` `merit_multi`). Done: hard error, via `MeritSpec::try_merit_multi` (W3 item 2). |
 | D3 | PDrs/PDrp round-trip reference plane. | **Deferred** until a user case. |
 | D4 | W6: phase demands on a stack that loses phase (an incoherent plate). | **Warn, never silently scramble**; let a phase demand live on a phase-keeping environment in parallel with a phase-losing one. Step 1 done (§3.1); single-block phase on a plate stack still open. |
 | D5 | W6 model: plate as an incoherent film vs `DesignStack.exit`. | **Keep the current model.** The exit medium is whichever half-space row ends an environment (`layer_type` 2); in multi-environment runs fixed segments may carry further media behind a substrate, so nothing inside a stack has to be marked "exit". Possible later hard rename: `DesignStack.substrate` → `exit`. |
 | D6 | W6 follow-ups: Jacobian vs multi-environment. | **Multi-environment support first, then the analytic Jacobian through the cascade.** |
-| D7 | `total_thickness_nm` vs `coating_thickness_nm` (1.3). | **Keep both, name both.** Python gets `DesignStack.coating_thickness()` beside `total_thickness()`; the run-result keys are renamed to say coating (`final_coating_thickness_nm`, per-phase `coating_thickness_nm`), hard rename. |
-| D8 | Fix 1.1 now, or refuse `host_mask`? | Fix (small); not yet done. |
+| D7 | `total_thickness_nm` vs `coating_thickness_nm` (1.3). | **Keep both, name both.** Python gets `DesignStack.coating_thickness()` beside `total_thickness()`; the run-result keys are renamed to say coating (`final_coating_thickness_nm`, per-phase `coating_thickness_nm`), hard rename. Done (1.3). |
+| D8 | Fix 1.1 now, or refuse `host_mask`? | Fix. Done (1.1). |
 | D9 | W7 `pool_share_tol` and the sweep/merge reports. | **Off the to-do list until asked** (no code is removed; neither affects results). |
 | D10 | Pinned films (`optimize = false`) under inflate and the clamp sweep. | **Untouched.** Inflate and `round_to_qwot` skip them; the clamp sweep neither removes, clamps up, caps nor refuses them. Done (see 1.7). |
 
@@ -276,7 +291,7 @@ can be coated, provided each starts with at least one film.
 2. W6 item 2: multi-environment runs with an incoherent film (D6) (done).
 3. D4: per-environment phase routing with warnings (§3.1) (step 1 done).
 4. W6 item 1: analytic Jacobian through the cascade (D6) (done).
-5. Small items whenever convenient: D1 (refold failure is an error),
+5. Small items (done): D1 (refold failure is an error),
    D2 (missing curve is an error), D7 (coating-thickness names), 1.1 /
    D8, 1.6.
 

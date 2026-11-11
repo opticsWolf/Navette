@@ -1054,14 +1054,16 @@ pub fn p_coherent_phi_from_fields(
 }
 
 /// Map every z in `z_grid` to its owning coherent block of an incoherent
-/// stack: `(block_index, host_layer, xi)`. Rejects flagged spacer hosts;
-/// masked-out hosts are skipped. Reference plane: top of film layer 1.
+/// stack: `(block_index, host_layer, xi)`, one entry per z. Rejects flagged
+/// spacer hosts; a masked-out host is `None` (it gets no contribution), so
+/// entry `zi` always belongs to `z_grid[zi]`. Reference plane: top of film
+/// layer 1.
 pub fn locate_hosts_multiblock(
     thicknesses: &[f64],
     incoherent_flags: &[i32],
     z_grid: &[f64],
     host_mask: Option<&[bool]>,
-) -> Result<Vec<(usize, usize, f64)>, String> {
+) -> Result<Vec<Option<(usize, usize, f64)>>, String> {
     let nl = thicknesses.len();
     let (blocks, _) = partition_blocks(incoherent_flags);
     let mut locs = Vec::with_capacity(z_grid.len());
@@ -1076,21 +1078,18 @@ pub fn locate_hosts_multiblock(
         if let Some(mask) = host_mask
             && !mask.get(j).copied().unwrap_or(false)
         {
+            locs.push(None);
             continue;
         }
         let bi = blocks
             .iter()
             .position(|&(bs, be)| bs < j && j < be)
             .ok_or_else(|| format!("z_grid[{zi}]: host layer {j} lies in no coherent block"))?;
-        locs.push((bi, j, xi));
+        locs.push(Some((bi, j, xi)));
     }
     Ok(locs)
 }
 
-/// Multiblock (Mode A/B) P contribution of ONE spectral point given the
-/// precomputed host map from [`locate_hosts_multiblock`]. Same half-gradient
-/// convention as [`p_coherent_from_fields`].
-#[allow(clippy::too_many_arguments)]
 /// Which cascade total a multiblock P-function differentiates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PmbQuantity {
@@ -1108,6 +1107,11 @@ pub enum PmbQuantity {
     AB,
 }
 
+/// Multiblock (Mode A/B) P contribution of ONE spectral point given the
+/// precomputed host map from [`locate_hosts_multiblock`]: one value per
+/// entry, 0 for a masked host. Same half-gradient convention as
+/// [`p_coherent_from_fields`].
+#[allow(clippy::too_many_arguments)]
 pub fn p_multiblock_point(
     lam: f64,
     sin_theta: f64,
@@ -1120,7 +1124,7 @@ pub fn p_multiblock_point(
     quantity: PmbQuantity,
     target: f64,
     weight: f64,
-    locs: &[(usize, usize, f64)],
+    locs: &[Option<(usize, usize, f64)>],
     pol: i32,
 ) -> Vec<f64> {
     let nsin_fi = n_slice[0] * cplx(sin_theta, 0.0);
@@ -1168,7 +1172,10 @@ pub fn p_multiblock_point(
         return out;
     }
 
-    for (zi, &(bi, j, xi)) in locs.iter().enumerate() {
+    for (zi, loc) in locs.iter().enumerate() {
+        let Some((bi, j, xi)) = *loc else {
+            continue;
+        };
         let slopes = needle_slopes4_ddz(&fields[bi], nsin_fi, j, xi, needle_n, pol, lam);
         let amp = fields[bi].s_left[fields[bi].end];
         let fac = block_flux_factors(&fields[bi], pol);
@@ -2486,6 +2493,33 @@ mod tests {
                 "z={z} j={j} xi={xi} st={sin_t}: p={p:.6e} expect={expect:.6e} err={err:.2e}"
             );
         }
+
+        // 1.1: a host mask zeroes the masked z and leaves every other z
+        // where it was (it used to shift the later ones into its slot).
+        let z = [15.0, 120.0, 160.0];
+        let p_of = |mask: Option<&[bool]>| {
+            p_function_multiblock(
+                &[lam],
+                &[0.2],
+                &cache,
+                &d,
+                &flags,
+                &rt,
+                &rv,
+                &np,
+                PmbQuantity::R,
+                &target,
+                &weights,
+                &z,
+                mask,
+                0,
+            )
+            .unwrap()
+        };
+        let all = p_of(None);
+        assert!(all.iter().all(|p| p.abs() > 1e-12), "{all:?}");
+        let masked = p_of(Some(&[false, false, true, true, true, false]));
+        assert_eq!(masked, vec![0.0, all[1], all[2]]);
     }
 
     /// Full cascade intensities [R, Tb, Tf, Rb] under Mode A (T/A oracles).

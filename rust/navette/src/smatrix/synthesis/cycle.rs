@@ -105,6 +105,12 @@ fn tock(t0: Option<Instant>) -> f64 {
     t0.map_or(0.0, |t| t.elapsed().as_secs_f64())
 }
 
+/// D1: a refold that fails is an error, not a quiet fall back to the
+/// previous fold (which belongs to another operating point).
+fn refold_error(at: &str, e: String) -> String {
+    format!("needle refold failed ({at}): {e}")
+}
+
 /// Record of one insertion cycle — mirrors Python `NeedleCycleResult`
 /// with the scan-MF replaced by its analytic analog.
 #[derive(Clone, Debug)]
@@ -812,17 +818,18 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
     for (e, st) in stacks.iter().enumerate() {
         let mut fold = spectral.folds[e].clone();
         let t0 = tick(cfg.record_timing);
-        if cfg.refold_per_cycle
-            && let Ok(sim) = ctx.simulate_env(st, e)
-            && let Ok(f) = build_needle_targets_env(
+        if cfg.refold_per_cycle && ctx.has_simulator() {
+            let sim = ctx
+                .simulate_env(st, e)
+                .map_err(|err| refold_error(&format!("environment {e}"), err))?;
+            fold = build_needle_targets_env(
                 &spectral.spec,
                 &spectral.angles,
                 &spectral.wavls,
                 Some(&sim),
                 e as u32,
             )
-        {
-            fold = f;
+            .map_err(|err| refold_error(&format!("environment {e}"), err))?;
         }
         *refold_s += tock(t0);
         gtot += fold.phi_gain_shift();
@@ -1029,16 +1036,17 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         let mut t = CycleTiming::default();
         // Refresh the fold against the live operating point.
         let t0 = tick(cfg.record_timing);
-        if cfg.refold_per_cycle
-            && let Ok(sim) = ctx.simulate(stack)
-            && let Ok(f) = build_needle_targets(
+        if cfg.refold_per_cycle && ctx.has_simulator() {
+            let sim = ctx
+                .simulate(stack)
+                .map_err(|e| refold_error(&format!("cycle {cycle}"), e))?;
+            fold = build_needle_targets(
                 &spectral.spec,
                 &spectral.angles,
                 &spectral.wavls,
                 Some(&sim),
             )
-        {
-            fold = f;
+            .map_err(|e| refold_error(&format!("cycle {cycle}"), e))?;
         }
         t.refold_s = tock(t0);
         let t0 = tick(cfg.record_timing);
@@ -1505,6 +1513,47 @@ mod tests {
 
     fn pool_h() -> MaterialPool {
         vec![entry("H", 2.35)].into()
+    }
+
+    /// D1: a context with a simulator whose solve fails stops the cycle
+    /// with an error naming the refold; without a simulator the static
+    /// fold stands (every other test here).
+    #[test]
+    fn a_failed_refold_is_an_error() {
+        struct BrokenCtx;
+        impl DesignContext for BrokenCtx {
+            fn evaluate_merit(&self, _s: &DesignStack) -> Result<f64, String> {
+                Ok(0.0)
+            }
+            fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
+                Err("solver exploded".into())
+            }
+            fn has_simulator(&self) -> bool {
+                true
+            }
+            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+                self.evaluate_merit(s)
+            }
+        }
+        let (mut stack, _) = glass_stack();
+        let spectral = spectral_of(fold_with("r", 0.0));
+        let err = run_needle_cycles(
+            &mut BrokenCtx,
+            &mut stack,
+            &spectral,
+            &pool_h(),
+            &cycle_cfg(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("refold failed (cycle 0)") && err.contains("solver exploded"),
+            "{err}"
+        );
+        let cfg = NeedleCycleConfig {
+            refold_per_cycle: false,
+            ..cycle_cfg()
+        };
+        run_needle_cycles(&mut BrokenCtx, &mut stack, &spectral, &pool_h(), &cfg).unwrap();
     }
 
     fn cycle_cfg() -> NeedleCycleConfig {

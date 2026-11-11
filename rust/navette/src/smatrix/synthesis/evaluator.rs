@@ -687,15 +687,24 @@ fn deposit_row_cascade(
 impl DesignContext for SmatrixContext {
     fn evaluate_merit(&self, stack: &DesignStack) -> Result<f64, String> {
         // §4.6's one branch. K = 1 is the pre-F2.2 pair of calls, reached
-        // without allocating a slice to hold one simulation.
+        // without allocating a slice to hold one simulation. D2: a missing
+        // curve is an error, not a 1e6 penalty the run quietly minimizes.
+        let missing = |c: CurveId| {
+            format!(
+                "merit: the evaluator produced no {c:?} row for a demand on it \
+                 (a spec/evaluator mismatch; check_spec should have refused it)"
+            )
+        };
         match &self.envs {
             None => {
                 let sim = self.simulate(stack)?;
-                Ok(self.spec.merit(&sim, 1e6))
+                self.spec
+                    .try_merit_multi(std::slice::from_ref(&sim))
+                    .map_err(missing)
             }
             Some(_) => {
                 let sims = self.simulate_all(stack)?;
-                Ok(self.spec.merit_multi(&sims, 1e6))
+                self.spec.try_merit_multi(&sims).map_err(missing)
             }
         }
     }
@@ -706,6 +715,10 @@ impl DesignContext for SmatrixContext {
 
     fn simulate_env(&self, stack: &DesignStack, env: usize) -> Result<SimCurves, String> {
         SmatrixContext::simulate_env(self, stack, env)
+    }
+
+    fn has_simulator(&self) -> bool {
+        true
     }
 
     fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {

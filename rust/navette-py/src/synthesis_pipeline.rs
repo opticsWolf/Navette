@@ -677,7 +677,7 @@ fn result_to_dict(
     d.set_item("termination", res.termination.name())?;
     d.set_item("final_mf", res.final_mf)?;
     d.set_item("final_layer_count", res.final_layer_count)?;
-    d.set_item("final_total_thickness_nm", res.final_total_thickness_nm)?;
+    d.set_item("final_coating_thickness_nm", res.final_coating_thickness_nm)?;
     d.set_item("stagnation_detail", res.stagnation_detail.clone())?;
     let mut phases = Vec::with_capacity(res.phases.len());
     for p in &res.phases {
@@ -808,9 +808,17 @@ impl PyDesignStack {
         self.inner.films().len()
     }
 
-    /// Total film thickness (nm, excludes ambient + substrate).
+    /// Total film thickness (nm, excludes ambient + substrate), incoherent
+    /// plates included.
     fn total_thickness(&self) -> f64 {
         self.inner.total_thickness_nm()
+    }
+
+    /// Coating thickness (nm): the coherent films only, which is what the
+    /// thickness budget and the run report count. Equal to
+    /// `total_thickness()` on a stack with no incoherent film.
+    fn coating_thickness(&self) -> f64 {
+        self.inner.coating_thickness_nm()
     }
 
     /// Films as a list of dicts (ambient/substrate excluded); round-trips
@@ -1428,7 +1436,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
     d.set_item("mf_after_inflate", phase.mf_after_inflate)?;
     d.set_item("mf_end", phase.mf_end)?;
     d.set_item("layer_count", phase.layer_count)?;
-    d.set_item("total_thickness_nm", phase.total_thickness_nm)?;
+    d.set_item("coating_thickness_nm", phase.coating_thickness_nm)?;
     let mut cycles = Vec::with_capacity(phase.needle_results.len());
     for r in &phase.needle_results {
         let rd = PyDict::new(py);
@@ -1474,8 +1482,8 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
             let id = PyDict::new(py);
             id.set_item("merit_before", r.merit_before)?;
             id.set_item("merit_after", r.merit_after)?;
-            id.set_item("total_thickness_before", r.total_thickness_before)?;
-            id.set_item("total_thickness_after", r.total_thickness_after)?;
+            id.set_item("coating_thickness_before", r.coating_thickness_before)?;
+            id.set_item("coating_thickness_after", r.coating_thickness_after)?;
             id.set_item("layer_count", r.layer_count)?;
             id.set_item("addon_qwot", r.addon_qwot)?;
             id.set_item("reference_wavelength", r.reference_wavelength)?;
@@ -1614,7 +1622,7 @@ impl PyNeedlePipeline {
     /// Execute the macro-loop. `callback(macro_cycle, phase_dict)` runs
     /// after each cycle; raising inside it aborts as `USER_ABORT`.
     /// Returns a dict: `termination`, `final_mf`, `final_layer_count`,
-    /// `final_total_thickness_nm`, `stagnation_detail`, `phases`, and the
+    /// `final_coating_thickness_nm`, `stagnation_detail`, `phases`, and the
     /// final `stack` (`DesignStack`).
     #[pyo3(signature = (callback=None))]
     fn run(&mut self, py: Python<'_>, callback: Option<Py<PyAny>>) -> PyResult<Py<PyDict>> {
