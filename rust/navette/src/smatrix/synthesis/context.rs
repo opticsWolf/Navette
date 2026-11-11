@@ -27,6 +27,15 @@ pub trait DesignContext {
     /// solver return `Err` and callers fall back to the static fold.
     fn simulate(&self, stack: &DesignStack) -> Result<SimCurves, String>;
 
+    /// `simulate`, for environment `env`'s assembly in a joint run (D4):
+    /// the rows built are the ones that environment's demands read, so
+    /// a plate environment with no phase demand solves where a flat
+    /// `simulate` of the same stack would refuse.
+    fn simulate_env(&self, stack: &DesignStack, env: usize) -> Result<SimCurves, String> {
+        let _ = env;
+        self.simulate(stack)
+    }
+
     /// Bounded thickness re-optimization IN PLACE.
     ///
     /// Mirrors `ClampedNeedleSynthesizer.optimize_thicknesses`: optimizes

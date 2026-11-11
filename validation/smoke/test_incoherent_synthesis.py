@@ -49,7 +49,7 @@ def test_needle_run_coats_both_faces_of_a_fixed_plate():
     assert res["final_mf"] <= res["phases"][0]["mf_after_needle"]
 
 
-def test_joint_run_with_a_plate_in_one_environment():
+def _joint(phase_in=()):
     # One coat, two surroundings in air: alone, and on both faces of a
     # 1 mm plate (the second face a copy of the first).
     from navette._smatrix import PipelineConfig
@@ -64,13 +64,34 @@ def test_joint_run_with_a_plate_in_one_environment():
     for env in ("alone", "plate"):
         tc.add(SpectralTarget(WL, np.zeros(31), np.full(31, 0.01), "s", "R",
                               kind="e", angle_deg=0.0, environment=env))
-    res = run_needle(
+    for env in phase_in:
+        tc.add(SpectralTarget(WL, np.zeros(31), np.full(31, 0.1), "s", "T",
+                              kind="e", angle_deg=0.0, phase=True,
+                              environment=env))
+    return run_needle(
         targets=tc, angles_deg=[0.0], wavelengths=WL, materials={"H": H, "L": L},
         design={"coat": [(H, 100.0, "H"), (L, 80.0, "L")]}, environments=envs,
         pipeline_config=PipelineConfig(max_macro_cycles=2, needles_per_cycle=1,
                                        enable_cleanup=False, enable_inflate=False,
                                        thin_layer_policy="clamp_up_final"),
         substrate=(1.0, "air"))
+
+
+def test_phase_demand_is_dropped_only_in_the_plate_environment():
+    # D4: the plate environment's phase demand goes, with a warning; the
+    # coherent environment's stays and the run completes.
+    with pytest.warns(UserWarning, match="phase demand.*'plate'"):
+        res = _joint(phase_in=("alone", "plate"))
+    assert res["phases"], res["termination"]
+
+
+def test_phase_demand_only_behind_a_plate_is_refused():
+    with pytest.raises(Exception, match="every phase demand"):
+        _joint(phase_in=("plate",))
+
+
+def test_joint_run_with_a_plate_in_one_environment():
+    res = _joint()
     assert any(p["needle_results"] for p in res["phases"])
     assert res["final_mf"] < res["phases"][0]["mf_after_needle"] * 1.0001
 

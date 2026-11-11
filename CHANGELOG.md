@@ -266,9 +266,12 @@ All notable changes to Navette are recorded here. Work items reference
   intensity, absorption and colour demand, front and back. The LM
   differences, the thickness budget and `final_total_thickness_nm` count
   coating only, and clamp, inflate and merge leave the plate alone.
-  Refused with a named error: phase demands on such a stack (in a
-  multi-environment run, any phase demand once any environment holds a
-  plate) and a plate left optimizable or open to needles.
+  Refused with a named error: phase demands on such a stack and a plate
+  left optimizable or open to needles. In a multi-environment run a
+  phase demand in an environment with a plate is dropped from that
+  environment with a `UserWarning` naming it, and keeps binding the
+  coherent environments; the run refuses only when every phase demand
+  was dropped.
   Multi-environment runs take a plate in any environment, in a fixed
   segment or as a pinned film of a design segment; each environment
   solves through its own cascade and the joint needle sums their slopes.

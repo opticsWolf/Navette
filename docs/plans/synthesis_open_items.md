@@ -125,14 +125,11 @@ clamp, merge and inflate leave the plate alone. Not done:
    layouts plus an inverted copy on the back face; a plate as a pinned
    film of the design segment itself, routed into every environment and
    left at its thickness; a Python joint run with the coat on both faces
-   of a plate. Still open: a phase demand anywhere in the run is refused
-   as soon as any environment holds a plate, because the refusal reads
-   the spec, not the environment the demand belongs to - that is D4's
-   step 1.
-3. **Phase demands** are refused on any stack with a spacer, including
-   phases that live entirely in the first block (front `r`) or the last
-   one. The engine reports first-block amplitudes; whether synthesis
-   should accept "phase of the front coating alone" is decision D4.
+   of a plate. Phase demands in such runs: D4 step 1, done (§3.1).
+3. **Phase demands** on a stack with a spacer are dropped from that
+   environment with a warning (D4 step 1), including phases that live
+   entirely in the first block (front `r`) or the last one. Keeping
+   those single-block phases is D4's open remainder (needs 1.4).
 4. **An uncoated face cannot grow a coating.** The plate is never a host,
    and a boundary site with no coherent film above it gets P = 0, so a
    face with no film on it stays bare. A face that should be coated
@@ -153,9 +150,7 @@ clamp, merge and inflate leave the plate alone. Not done:
 9. **Test coverage**: the needle oracle runs through a plate at 0° and
    30°, not 60°. No test covers two plates, a plate as the first or last
    film, a plate with only back films, Log or weighted demands through a
-   plate, or the joint needle path. That path already passes the
-   incoherent flags, but `simulate_all` refuses the run before it gets
-   there.
+   plate. The joint needle path is covered since W6 item 2.
 
 ### W7, material identity
 - `pool_share_tol` (near-equal indices sharing a sweep): not done.
@@ -200,7 +195,7 @@ Decided 2026-11-11 unless marked open.
 | D1 | First fold of a run: static (`from_spec` folds with no simulation) or an initial simulation? | **Keep static, but no silent fallback.** Refold is on by default and refolds every cycle, the first included, so the static fold only serves `refold_per_cycle = false`. The weak spot is `cycle.rs`'s `if let Ok(sim) … && let Ok(f) …`: a failed refold falls back to the previous or static fold without a word. Make that failure an error (or at least a run-report warning). |
 | D2 | `merit()`'s 1e6 missing-curve penalty after W3. | **Hard error** (or penalty plus a warning naming the demand). Since W3 a missing curve can only come from a spec/evaluator mismatch, i.e. a bug; it is added silently today (`merit.rs` `merit_multi`). |
 | D3 | PDrs/PDrp round-trip reference plane. | **Deferred** until a user case. |
-| D4 | W6: phase demands on a stack that loses phase (an incoherent plate). | **Open, proposal below (§3.1).** Warn, never silently scramble; let a phase demand live on a phase-keeping environment in parallel with a phase-losing one. |
+| D4 | W6: phase demands on a stack that loses phase (an incoherent plate). | **Warn, never silently scramble**; let a phase demand live on a phase-keeping environment in parallel with a phase-losing one. Step 1 done (§3.1); single-block phase on a plate stack still open. |
 | D5 | W6 model: plate as an incoherent film vs `DesignStack.exit`. | **Keep the current model.** The exit medium is whichever half-space row ends an environment (`layer_type` 2); in multi-environment runs fixed segments may carry further media behind a substrate, so nothing inside a stack has to be marked "exit". Possible later hard rename: `DesignStack.substrate` → `exit`. |
 | D6 | W6 follow-ups: Jacobian vs multi-environment. | **Multi-environment support first, then the analytic Jacobian through the cascade.** |
 | D7 | `total_thickness_nm` vs `coating_thickness_nm` (1.3). | **Keep both, name both.** Python gets `DesignStack.coating_thickness()` beside `total_thickness()`; the run-result keys are renamed to say coating (`final_coating_thickness_nm`, per-phase `coating_thickness_nm`), hard rename. |
@@ -239,6 +234,24 @@ Proposal, in two steps:
    layout runs today for intensity demands; step 1 is what lets the
    phase demands join it.
 
+**Step 1 as built (2026-11-11).** `run_environments` drops every phase
+demand of an environment whose assembly holds an incoherent film
+(`MeritSpec::drop_phase_demands`) and returns one warning naming those
+environments; the Python door raises it as a `UserWarning`. Each
+environment then builds complex rows only for its own demands
+(`SmatrixContext::simulate_env`, also used by the per-cycle refold), so
+the plate environment solves through its cascade while the coherent one
+keeps its phase rows. Two simplifications against the proposal above:
+- Every phase demand in a plate environment is dropped, single-block
+  ones (front `r`) included; keeping those is the open remainder.
+- The hard error is run-level: the run refuses when every phase demand
+  was dropped. A compiled spec holds one demand per environment and no
+  longer knows which ones came from the same user target, so "this
+  target was dropped everywhere" cannot be told apart from "this target
+  only ever named the plate environment" while another phase target
+  still binds elsewhere; that case warns.
+The flat path (`run_design`, one environment) keeps its own refusal.
+
 Single-block phase on a plate stack (front `r` of the first block)
 needs 1.4 fixed first (the differential-phase reference thickness must
 count only that block).
@@ -252,7 +265,7 @@ can be coated, provided each starts with at least one film.
 
 1. D10, pinned films untouched (done).
 2. W6 item 2: multi-environment runs with an incoherent film (D6) (done).
-3. D4: per-environment phase routing with warnings (§3.1).
+3. D4: per-environment phase routing with warnings (§3.1) (step 1 done).
 4. W6 item 1: analytic Jacobian through the cascade (D6).
 5. Small items whenever convenient: D1 (refold failure is an error),
    D2 (missing curve is an error), D7 (coating-thickness names), 1.1 /

@@ -304,6 +304,12 @@ pub fn run_design(
 /// and the context pins the floor as an LM bound for the duration
 /// ([`SmatrixContext::optimize_thicknesses`]), so the span layout moves
 /// only through `insert_seed`.
+///
+/// **Phase stops at an incoherent plate (D4).** A phase demand in an
+/// environment whose assembly holds an incoherent film is dropped, with a
+/// warning in the returned list; the same run keeps phase demands in its
+/// coherent environments. A run whose every phase demand is dropped
+/// refuses instead.
 #[allow(clippy::too_many_arguments)]
 pub fn run_environments(
     envs: super::environments::CompiledEnvironments,
@@ -382,6 +388,36 @@ pub fn run_environments(
         }
     }
 
+    // D4: phase is not defined through an incoherent plate. A phase
+    // demand in an environment whose assembly has one is dropped with a
+    // warning, so the same demand can still bind a coherent environment
+    // run alongside; a run left with no phase demand at all refuses,
+    // since then nothing the caller asked of phase would be synthesized.
+    let lose_phase: Vec<bool> = envs.stacks().iter().map(|st| st.has_incoherent()).collect();
+    let mut spec = spec.clone();
+    let had_phase = spec.uses_phase();
+    let dropped = spec.drop_phase_demands(&lose_phase);
+    let mut warnings = Vec::new();
+    if !dropped.is_empty() {
+        if had_phase && !spec.uses_phase() {
+            return Err(format!(
+                "run_environments: every phase demand sits in an environment with \
+                 an incoherent film ({}) - phase is not defined across an incoherent \
+                 layer, so only intensity, absorption and colour demands can be \
+                 synthesized there",
+                env_list(&envs, &lose_phase)
+            ));
+        }
+        warnings.push(format!(
+            "{} phase demand(s) dropped in environment(s) with an incoherent film \
+             ({}): phase is not defined across an incoherent layer; they still \
+             bind the coherent environments",
+            dropped.len(),
+            env_list(&envs, &lose_phase)
+        ));
+    }
+    let spec = &spec;
+
     let stack = envs.stacks()[0].clone();
     let spectral = SpectralInputs::from_spec(spec, angles, wavelengths)?;
     let sin_theta = spectral.sin_theta.clone();
@@ -406,7 +442,18 @@ pub fn run_environments(
     if let Some(envs) = &ctx.envs {
         envs.sync(&mut pipe.stack)?;
     }
-    Ok((report, pipe.stack, Vec::new()))
+    Ok((report, pipe.stack, warnings))
+}
+
+/// The names of the environments `mask` marks, for a message.
+fn env_list(envs: &super::environments::CompiledEnvironments, mask: &[bool]) -> String {
+    envs.names()
+        .iter()
+        .zip(mask)
+        .filter(|(_, m)| **m)
+        .map(|(n, _)| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // ---------------------------------------------------------------------------

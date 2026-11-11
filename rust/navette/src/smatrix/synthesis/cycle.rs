@@ -813,7 +813,7 @@ fn joint_needle_sweep<C: DesignContext + ?Sized>(
         let mut fold = spectral.folds[e].clone();
         let t0 = tick(cfg.record_timing);
         if cfg.refold_per_cycle
-            && let Ok(sim) = ctx.simulate(st)
+            && let Ok(sim) = ctx.simulate_env(st, e)
             && let Ok(f) = build_needle_targets_env(
                 &spectral.spec,
                 &spectral.angles,

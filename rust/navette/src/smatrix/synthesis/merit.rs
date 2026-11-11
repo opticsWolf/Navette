@@ -1035,6 +1035,26 @@ impl MeritSpec {
         self.targets.iter().any(|t| t.phase)
     }
 
+    /// `uses_phase`, for the demands of environment `env` alone (D4): a
+    /// joint run builds complex rows only where they are read.
+    pub fn uses_phase_in(&self, env: usize) -> bool {
+        self.targets
+            .iter()
+            .any(|t| t.phase && t.env_idx as usize == env)
+    }
+
+    /// D4: remove the phase demands of every environment `lose_phase`
+    /// marks, and return them. The key groups stay registered; a group
+    /// left with no demand scores nothing (`residuals_into` filters by
+    /// demand), so dropping cannot shift another demand's residuals.
+    pub fn drop_phase_demands(&mut self, lose_phase: &[bool]) -> Vec<MeritTarget> {
+        let (dropped, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.targets)
+            .into_iter()
+            .partition(|t| t.phase && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false));
+        self.targets = kept;
+        dropped
+    }
+
     /// True if any demand subtracts the equivalent-medium reference.
     /// Gates the (trivial but non-zero) stack-metadata computation.
     pub fn uses_differential(&self) -> bool {

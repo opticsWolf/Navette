@@ -149,7 +149,16 @@ impl SmatrixContext {
     /// Fully-coherent path: block = [0, nl−1) with the substrate as
     /// half-space. Rs/Rp/Ts/Tp assembled row-major (k = a·nw + w).
     pub fn simulate(&self, stack: &DesignStack) -> Result<SimCurves, String> {
-        self.simulate_inner(stack, &[]).map(|(sim, _)| sim)
+        self.simulate_inner(stack, &[], None).map(|(sim, _)| sim)
+    }
+
+    /// `simulate`, reading only environment `env`'s demands for which
+    /// rows to build (D4). The run door has dropped the phase demands of
+    /// every environment with an incoherent plate, so that environment
+    /// solves through the cascade while the others keep their phase rows.
+    pub fn simulate_env(&self, stack: &DesignStack, env: usize) -> Result<SimCurves, String> {
+        self.simulate_inner(stack, &[], Some(env))
+            .map(|(sim, _)| sim)
     }
 
     /// Simulate, and on the same sweep read off ∂(curve)/∂(thickness) for the
@@ -174,7 +183,7 @@ impl SmatrixContext {
         if let Some(&bad) = par_films.iter().find(|&&i| i >= n_films) {
             return Err(format!("simulate_with_deposits: film {bad} out of range"));
         }
-        let (sim, dep) = self.simulate_inner(stack, par_films)?;
+        let (sim, dep) = self.simulate_inner(stack, par_films, None)?;
         dep.ok_or_else(|| "simulate_with_deposits: deposits not produced".to_string())
             .map(|d| (sim, d))
     }
@@ -183,7 +192,14 @@ impl SmatrixContext {
         &self,
         stack: &DesignStack,
         par_films: &[usize],
+        env: Option<usize>,
     ) -> Result<(SimCurves, Option<CurveDeposits>), String> {
+        // Complex rows are built for the demands this solve serves: the
+        // whole spec on the flat path, one environment's in a joint run.
+        let uses_phase = match env {
+            None => self.spec.uses_phase(),
+            Some(e) => self.spec.uses_phase_in(e),
+        };
         let sa: SolverArrays = stack.solver_arrays();
         let nl = sa.n_layers as usize;
         if nl < 2 {
@@ -220,7 +236,7 @@ impl SmatrixContext {
         // refused here, by name, rather than read off the first block.
         let incoherent = sa.incoherent_flags.contains(&1);
         let partition = if incoherent {
-            if self.spec.uses_phase() {
+            if uses_phase {
                 return Err("a phase demand on a stack with an incoherent film: phase \
                      is not defined across an incoherent layer, so only intensity, \
                      absorption and colour demands can be synthesized"
@@ -242,7 +258,7 @@ impl SmatrixContext {
         let n_par = par_films.len();
         // Amplitude deposits for phase demands, only when the spec has any:
         // an intensity-only sweep collects the same four channels as before.
-        let with_phase = n_par > 0 && self.spec.uses_phase();
+        let with_phase = n_par > 0 && uses_phase;
         // Back channels (and with them every front amplitude slot) only
         // when the spec reads a back curve.
         let with_back = n_par > 0 && need.any_back();
@@ -380,7 +396,7 @@ impl SmatrixContext {
         // r_f and the back amplitudes are built only when read.
         let mut cplx: [Option<Arc<[Complex64]>>; 6] = Default::default();
         let mut cplx_back: [Option<Arc<[Complex64]>>; 4] = Default::default();
-        if self.spec.uses_phase() {
+        if uses_phase {
             cplx[CurveId::Ts.index()] = Some(crow(CurveId::Ts));
             cplx[CurveId::Tp.index()] = Some(crow(CurveId::Tp));
             for id in [CurveId::Rs, CurveId::Rp] {
@@ -604,6 +620,10 @@ impl DesignContext for SmatrixContext {
         SmatrixContext::simulate(self, stack)
     }
 
+    fn simulate_env(&self, stack: &DesignStack, env: usize) -> Result<SimCurves, String> {
+        SmatrixContext::simulate_env(self, stack, env)
+    }
+
     fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
         self.optimize_thicknesses_report(stack).map(|(mf, _)| mf)
     }
@@ -646,7 +666,8 @@ impl SmatrixContext {
             Some(envs) => envs
                 .expand(stack)?
                 .iter()
-                .map(|st| self.simulate(st))
+                .enumerate()
+                .map(|(e, st)| self.simulate_env(st, e))
                 .collect(),
         }
     }

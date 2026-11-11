@@ -3842,6 +3842,106 @@ mod tests {
         assert_eq!(plates[0].d_nm, 1_000_000.0);
     }
 
+    /// `env_spec(2)` plus a `Ts` phase demand in each environment `envs`
+    /// lists.
+    fn phase_spec(envs: &[u32]) -> MeritSpec {
+        use crate::smatrix::synthesis::merit::{
+            ConstraintKind, CurveId, MeritKey, MeritTarget, SimTransform,
+        };
+        let mut spec = env_spec(2);
+        let key = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Ts,
+        }) as u32;
+        for &e in envs {
+            spec.add_target(MeritTarget {
+                key_idx: key,
+                env_idx: e,
+                wavelengths: Arc::from(WL.as_slice()),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: Arc::from([0.0, 0.0, 0.0].as_slice()),
+                tolerances: Arc::from([0.1, 0.1, 0.1].as_slice()),
+                band: Arc::from([].as_slice()),
+                phase: true,
+                differential_passes: None,
+                retardance: false,
+                point_weights: Vec::new().into(),
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+        }
+        spec
+    }
+
+    /// D4: a phase demand in both environments runs; the plate
+    /// environment's copy is dropped with a warning that names it, and
+    /// the coherent environment's copy still binds.
+    #[test]
+    fn d4_phase_is_dropped_where_a_plate_is_and_kept_elsewhere() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        use crate::smatrix::synthesis::merit::CurveId;
+        let r = plate_req(vec![design_seg("coat"), plate()]);
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        // The flat solver refuses the plate assembly under this spec; the
+        // per-environment one, after the drop, does not.
+        let mut kept = phase_spec(&[0, 1]);
+        let solver = ctx(kept.clone(), None);
+        let err = solver.simulate(&envs.stacks()[1]).unwrap_err();
+        assert!(err.contains("phase"), "{err}");
+        assert_eq!(kept.drop_phase_demands(&[false, true]).len(), 1);
+        assert!(kept.uses_phase_in(0) && !kept.uses_phase_in(1));
+        let sim = ctx(kept, None).simulate_env(&envs.stacks()[1], 1).unwrap();
+        assert!(sim.complex_curve(CurveId::Ts).is_none());
+
+        let (res, _, warnings) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &phase_spec(&[0, 1]),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(res.final_mf.is_finite());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("1 phase demand") && warnings[0].contains("'on_plate'"),
+            "{warnings:?}"
+        );
+    }
+
+    /// D4: when every phase demand sits behind a plate, nothing the caller
+    /// asked of phase would be synthesized, so the run refuses.
+    #[test]
+    fn d4_a_run_whose_every_phase_demand_is_dropped_refuses() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let r = plate_req(vec![design_seg("coat"), plate()]);
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        let err = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &phase_spec(&[1]),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("every phase demand") && err.contains("'on_plate'"),
+            "{err}"
+        );
+    }
+
     fn check_joint_slope(request: DesignRequest) {
         use crate::smatrix::synthesis::needle_pass::{
             NeedlePassInput, build_needle_targets_env, run_needle_pass,
