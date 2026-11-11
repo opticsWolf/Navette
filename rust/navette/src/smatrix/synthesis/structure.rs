@@ -1277,15 +1277,24 @@ impl DesignStack {
             ends_layer[sp.bulk_start] = true;
             starts_layer[sp.bulk_start] = !sp.slice;
         }
+        // An interface slice's optimize flag is derived (always false),
+        // not a pin, so it does not keep a slice apart (D10 below).
+        let mut slice_row = vec![false; films.len()];
+        for sp in old_spans.iter().filter(|sp| sp.slice) {
+            slice_row[sp.start] = true;
+        }
         let mut runs: Vec<(usize, usize)> = Vec::with_capacity(films.len());
         let mut i = 0usize;
         while i < films.len() {
             let mut j = i + 1;
             // W6: a coherent film never merges into an incoherent slab of
             // the same glass (or the reverse): the merged row would take
-            // the first one's propagation.
+            // the first one's propagation. D10: nor does a pinned film
+            // merge with a free one - the merged row would take the first
+            // one's flag, pinning a free film or freeing a pinned one.
             while j < films.len()
                 && films[j].coherent == films[i].coherent
+                && (films[j].optimize == films[i].optimize || slice_row[i] || slice_row[j])
                 && ((films[j].material == films[i].material && films[j].same_material(&films[i]))
                     || (ends_layer[j - 1]
                         && starts_layer[j]
@@ -1529,8 +1538,14 @@ impl DesignStack {
         // changing F0.2's refusal semantics is a separate decision -
         // amendment 3 section 3 records the asymmetry. Revisit only with
         // a real user case (review C, E3).
+        //
+        // D10: a pinned span is exempt from the whole sweep - floor,
+        // ceiling and this refusal alike. The sweep passes it through.
         for sp in &self.spans {
-            if sp.end - sp.start <= 1 || self.span_is_scalable(sp) {
+            if sp.end - sp.start <= 1
+                || self.span_is_scalable(sp)
+                || span_is_pinned_rows(sp, &self.films)
+            {
                 continue;
             }
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
@@ -1550,6 +1565,7 @@ impl DesignStack {
         let removed = |sp: &Span| {
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
             d < min_nm
+                && !span_is_pinned_rows(sp, &self.films)
                 && !(clamp_up_rows
                     && (sp.is_singleton_bulk()
                         || (sp.end - sp.start > 1 && self.span_is_scalable(sp))))
@@ -1599,7 +1615,8 @@ impl DesignStack {
             // predicate only consults optimize flags, which the rebuild
             // preserves per output row).
             let scalable = span_is_scalable_rows(sp, &old);
-            if d < min_nm {
+            let pinned = span_is_pinned_rows(sp, &old);
+            if d < min_nm && !pinned {
                 // F0.3 + F1.6: a scalable multi-row span under an active
                 // clamp-up posture is SCALED to the floor, fractions
                 // preserved (the profile survives; this is the deferral
@@ -1670,9 +1687,11 @@ impl DesignStack {
                 continue;
             }
             let mut rows = old[sp.start..sp.end].to_vec();
-            // W6: an incoherent film is a fixed thick slab (a substrate
-            // plate), not a thin film: the ceiling is not its bound.
-            if rows.len() == 1 && rows[0].d_nm > max_nm && rows[0].coherent {
+            // D10: a pinned span (an incoherent plate among them) keeps
+            // its authored thickness; the ceiling is not its bound. (A
+            // scalable span is never pinned, so the second arm needs no
+            // guard.)
+            if !pinned && rows.len() == 1 && rows[0].d_nm > max_nm {
                 // One-row span: D == d, so this is today's row cap.
                 rows[0].d_nm = max_nm;
                 report.spans_capped += 1;
@@ -1953,6 +1972,15 @@ pub(crate) fn span_index_of_row(spans: &[Span], row: usize) -> usize {
 pub(crate) fn span_is_scalable_rows(sp: &Span, films: &[LayerSpec]) -> bool {
     let bulk = sp.end - sp.bulk_start;
     bulk >= 2 && (sp.bulk_start..sp.end).all(|r| films[r].optimize)
+}
+
+/// D10: a span is pinned when no bulk row is optimize-flagged (the
+/// interface slice is derived and always pinned, so it does not count).
+/// A pinned span is the user's fixed layer - an incoherent plate, a
+/// background profile, a surround film, a design copy that follows its
+/// primary - and no structural pass (inflate, the clamp sweep) touches it.
+pub(crate) fn span_is_pinned_rows(sp: &Span, films: &[LayerSpec]) -> bool {
+    (sp.bulk_start..sp.end).all(|r| !films[r].optimize)
 }
 
 // ---------------------------------------------------------------------------
@@ -2462,9 +2490,10 @@ mod tests {
     fn merge_adjacent_sums_and_keeps_first_props() {
         // H(50) L(30) H(20) H(40) L(60) → merges: one pair of H's.
         // First H keeps its own props; give the first fragment different
-        // flags to verify "keeps FIRST layer's properties".
+        // flags to verify "keeps FIRST layer's properties". (D10: not the
+        // optimize flag - a pinned and a free film never merge.)
         let mut first_h = h(20.0);
-        first_h.optimize = false;
+        first_h.needle = false;
         let second_h = h(40.0);
 
         let mut s = stack(vec![h(50.0), l(30.0), first_h, second_h, l(60.0)]);
@@ -2476,9 +2505,23 @@ mod tests {
         assert_eq!(f[2].material.as_ref(), "H");
         assert!((f[2].d_nm - 60.0).abs() < 1e-12);
         // first-of-pair properties win
-        assert!(!f[2].optimize);
-        assert!(f[2].needle);
+        assert!(!f[2].needle);
         assert!((s.total_thickness_nm() - 200.0).abs() < 1e-12);
+    }
+
+    /// D10: a pinned film keeps its thickness and flag beside a free film
+    /// of the same index; two pinned films still merge.
+    #[test]
+    fn merge_adjacent_keeps_pinned_and_free_apart() {
+        let mut pinned = h(20.0);
+        pinned.optimize = false;
+        let mut s = stack(vec![pinned.clone(), h(40.0)]);
+        assert_eq!(s.merge_adjacent(), 0);
+        assert_eq!(s.films().len(), 2);
+        assert!(!s.films()[0].optimize && s.films()[1].optimize);
+        let mut s = stack(vec![pinned.clone(), pinned]);
+        assert_eq!(s.merge_adjacent(), 1);
+        assert!((s.films()[0].d_nm - 40.0).abs() < 1e-12);
     }
 
     /// nk-keyed merge: same material with different nk (interface slice,
@@ -3219,16 +3262,18 @@ mod tests {
         assert!(rep3.is_empty());
         assert!((c3.total_thickness_nm() - 150.0).abs() < 1e-12);
 
-        // A fully-deleted span disappears from the partition.
+        // A fully-deleted span disappears from the partition. (D10: a
+        // pinned span is never deleted, so the span is made mixed.)
         let graded = vec![crate::structure::Layer {
             inhomogen: true,
             inh_delta: 0.2,
             ..crate::structure::Layer::film(50.0, "TiO2")
         }];
         let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
-        let (mut g, _) =
+        let (g, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
+        let mut g = mixed(g);
         let n_rows = g.films().len();
         assert!(n_rows > 1);
         let rep = g.clamp_all(100.0, 1000.0, false).unwrap();
@@ -3246,6 +3291,83 @@ mod tests {
     // ------------------------------------------------------------------
     // F0.2 — the span-quantity floor and cap (licence twins)
     // ------------------------------------------------------------------
+
+    /// D10 leaves a pinned span alone, so the F0.2 multi-row rules
+    /// (removed whole, ceiling refusal) now apply only to a span that is
+    /// neither pinned nor scalable. `from_design` does not build one;
+    /// this optimize-flags the first bulk row of span 0 to get one.
+    fn mixed(mut stack: DesignStack) -> DesignStack {
+        let r = stack.spans()[0].bulk_start;
+        stack.set_row_optimize(r, true);
+        let sp = stack.spans()[0];
+        assert!(!span_is_pinned_rows(&sp, stack.films()) && !stack.span_is_scalable(&sp));
+        stack
+    }
+
+    /// D10: a pinned span - a background-pinned graded film, a pinned
+    /// plain film, with or without an interface slice - goes through the
+    /// sweep untouched below the floor and above the ceiling, under every
+    /// policy, and the report stays empty.
+    #[test]
+    fn d10_clamp_leaves_pinned_spans_untouched() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("SiO2"), vec![Complex64::new(1.46, 0.0); NW]);
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let films = vec![
+            // Background graded TiO2, 5 nm: below the floor.
+            crate::structure::Layer {
+                inhomogen: true,
+                inh_delta: 0.1,
+                ..crate::structure::Layer::film(5.0, "TiO2")
+            },
+            // A free film, kept above the floor so it is not the subject.
+            crate::structure::Layer::film(80.0, "SiO2"),
+            // Background graded TiO2, 1000 nm: above the ceiling.
+            crate::structure::Layer {
+                inhomogen: true,
+                inh_delta: 0.5,
+                ..crate::structure::Layer::film(1000.0, "TiO2")
+            },
+        ];
+        let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (mut base, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &films, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        // Two pinned plain films: one thin, one thick.
+        let mut thin = LayerSpec::constant("H", 2.35, 0.0, 0.5, NW);
+        thin.optimize = false;
+        thin.needle = false;
+        let mut thick = LayerSpec::constant("L", 1.46, 0.0, 5000.0, NW);
+        thick.optimize = false;
+        thick.needle = false;
+        let n = base.spans().len();
+        base.insert_span(n, thin, false).unwrap();
+        base.insert_span(n + 1, thick, false).unwrap();
+        let before: Vec<f64> = base.films().iter().map(|f| f.d_nm).collect();
+
+        for policy in [
+            ThinLayerPolicy::Remove,
+            ThinLayerPolicy::ClampUpFinal,
+            ThinLayerPolicy::ClampUpAlways,
+        ] {
+            for final_pass in [false, true] {
+                let mut s = base.clone();
+                let rep = s.clamp_all_policy(2.0, 300.0, policy, final_pass).unwrap();
+                assert!(rep.is_empty(), "{policy:?}/{final_pass}: {rep:?}");
+                let after: Vec<f64> = s.films().iter().map(|f| f.d_nm).collect();
+                assert_eq!(after, before, "{policy:?}/{final_pass}");
+                assert_eq!(s.spans().len(), base.spans().len());
+            }
+        }
+
+        // Control: the same thin film, free, is removed (or clamped up).
+        let mut free = LayerSpec::constant("H", 2.35, 0.0, 0.5, NW);
+        free.needle = false;
+        let mut s = DesignStack::with_films(air(0.0), sub(0.0), vec![free]).unwrap();
+        let rep = s.clamp_all(2.0, 300.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 1);
+    }
 
     /// Licence item 1, measured (A2): a background-pinned 5 nm graded
     /// film (delta = 0.1 -> four 1.25 nm sublayers) under the default
@@ -3275,7 +3397,8 @@ mod tests {
     /// Licence item 1, reported: the floor above the span total removes
     /// the span AS A UNIT and the report names it. The assertion is on
     /// the report - a silent correct deletion and a silent wrong one
-    /// look identical from the outside.
+    /// look identical from the outside. D10: on a mixed span (a pinned
+    /// one is never removed).
     #[test]
     fn f02_floor_above_a_span_removes_it_whole_and_names_it() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
@@ -3287,9 +3410,10 @@ mod tests {
             ..crate::structure::Layer::film(5.0, "TiO2")
         }];
         let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
-        let (mut stack, _) =
+        let (stack, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
+        let mut stack = mixed(stack);
         let rep = stack.clamp_all(6.0, 1000.0, false).unwrap();
         assert_eq!(rep.rows_removed, 4);
         assert_eq!(rep.spans_removed.len(), 1);
@@ -3301,11 +3425,13 @@ mod tests {
         assert!(stack.films().is_empty());
     }
 
-    /// Licence item 2, measured: a PINNED 1000 nm graded span
-    /// (delta = 0.5 -> 57 rows) under a 300 nm ceiling refuses -
-    /// message names the span material and both numbers. F1.6 narrows
-    /// this to pinned spans; a scalable span is capped instead
-    /// (f16_scalable_span_above_ceiling_is_capped_not_refused).
+    /// Licence item 2, measured: a 1000 nm graded span (delta = 0.5 ->
+    /// 57 rows) under a 300 nm ceiling refuses - message names the span
+    /// material and both numbers. F1.6 narrowed this to non-scalable
+    /// spans (a scalable span is capped instead,
+    /// f16_scalable_span_above_ceiling_is_capped_not_refused), and D10 to
+    /// non-pinned ones (a pinned span passes through), so the span here
+    /// is mixed.
     #[test]
     fn f02_cap_refuses_a_multirow_span_above_the_ceiling() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
@@ -3317,9 +3443,10 @@ mod tests {
             ..crate::structure::Layer::film(1000.0, "TiO2")
         }];
         let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
-        let (mut stack, _) =
+        let (stack, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
+        let mut stack = mixed(stack);
         assert_eq!(stack.films().len(), 57, "the plan's measured row count");
         let err = stack.clamp_all(2.0, 300.0, false).unwrap_err();
         // The exact message (C3): deterministic format! output over

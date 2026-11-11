@@ -44,7 +44,8 @@ budget, the pipeline's `total_thickness_nm` and `final_total_thickness_nm`
 and the inflate report use the coating sum (equal bit for bit on coherent
 stacks). The Python `DesignStack.total_thickness()` (and the stack's
 `repr`) still call `total_thickness_nm`, so they count a plate. Decide whether it should be renamed, or the
-report keys say "coating".
+report keys say "coating". Decided (D7): keep both, name both; not yet
+done.
 
 ### 1.4 The PD reference thickness counts an incoherent plate (latent)
 
@@ -73,21 +74,29 @@ sit above `enum PmbQuantity`. So `PmbQuantity`'s docs open with
 docs. It is harmless at runtime. Fix: move both lines down to the
 function.
 
-### 1.7 Inflate grows fixed coherent films (question)
+### 1.7 Inflate and clamp touched pinned films (fixed, D10)
 
-`inflate.rs` picks every single-layer span as a candidate, whatever its
-`optimize` flag, so a pinned coherent film (`optimize = false`) also
-grows by the add-on quarter wave. That is the current behaviour; W6
-excludes only incoherent plates. Whether a pinned film
-should be inflated is decision D10.
+`inflate.rs` picked every single-layer span as a candidate whatever its
+`optimize` flag, and the clamp sweep removed, clamped up or capped a
+pinned film like any other (only cleanup's removal checked the flag).
+D10: a pinned film is untouched. Inflate and `round_to_qwot` skip it,
+and `clamp_all_policy` passes a pinned span (every bulk row
+`optimize = false`) through unchanged, below the floor or above the
+ceiling, and `merge_adjacent` no longer fuses a pinned film with a free
+one of the same index (interface slices, whose flag is derived, still
+merge). That also covers incoherent plates (always pinned) and fixed
+surround films in a joint run; the design's pinned copies follow their
+primary through `sync`/`expand` as before. A pinned film that hosts
+needles (`needle = true`) can still be split by an insertion; its
+halves stay pinned, so a sliver left by an insertion is kept.
 
 ---
 
 ## 2. Deferred and not-done items, by workstream
 
 ### W3, capability check
-- **Item 2 not done, deliberately.** `merit()` keeps the 1e6
-  missing-curve penalty for runtime failures (open decision D2).
+- **Item 2 not done.** `merit()` still adds the 1e6 missing-curve
+  penalty silently; D2 decided to make it a hard error.
 
 ### W5, transforms in the needle
 - `complex` transform: refused at the first fold (no fold form exists).
@@ -140,6 +149,7 @@ clamp, merge and inflate leave the plate alone. Not done:
 - `pool_share_tol` (near-equal indices sharing a sweep): not done.
 - Shared-sweep and merge **reports** (which entries shared a sweep,
   which films fused): not done.
+- Both are off the to-do list until a user asks (D9).
 - The joint (F2) scan sweeps each entry separately (its boundary loci
   differ per entry); only the flat scan shares sweeps.
 
@@ -171,25 +181,71 @@ Done: W8a retardance (RetR/RetT, DeltaR/DeltaT). Open, in plan order:
 
 ## 3. Decisions required
 
-| # | Question | Options | Default if nobody decides |
-|---|---|---|---|
-| D1 | First fold of a run: static (today, `from_spec` folds with no simulation) or an initial simulation in `from_spec`? Only matters with `refold_per_cycle = false`; nonlinear forms (unpolarized pairs, Log, phase) fold nothing or a normal-incidence approximation on the static fold. | static / initial sim | static (refold is the default) |
-| D2 | `merit()`'s 1e6 missing-curve penalty after W3: keep for runtime failures, or a hard error everywhere? | keep / error | keep |
-| D3 | PDrs/PDrp round-trip reference plane. | wait for a user case / pick the coating front | wait |
-| D4 | W6: allow phase demands that live in one coherent block (front reflection of the first block, back reflection of the last), or keep refusing every phase on a stack with a spacer? | allow per block / refuse | refuse |
-| D5 | W6 model: keep "plate as an incoherent film, exit medium = substrate", or add `DesignStack.exit` as the plan proposed? | keep / add field | keep |
-| D6 | W6 follow-ups: analytic Jacobian through the cascade, and multi-environment support. Which first, and is either needed before a release? | Jacobian / environments / neither | neither |
-| D7 | `total_thickness_nm` vs `coating_thickness_nm` (1.3): rename or keep both? | rename the Python method / keep both | keep both |
-| D8 | Fix 1.1 (`p_function_multiblock` with a host mask) now, or refuse `host_mask` until it is fixed? | fix / refuse | fix (small) |
-| D9 | W7 `pool_share_tol` and the sweep/merge reports: still wanted? | do / drop | drop until asked |
-| D10 | Inflate on pinned coherent films (1.7): keep the Python-parity behaviour, or skip `optimize = false` films? | keep / skip | keep |
+Decided 2026-11-11 unless marked open.
+
+| # | Question | Decision |
+|---|---|---|
+| D1 | First fold of a run: static (`from_spec` folds with no simulation) or an initial simulation? | **Keep static, but no silent fallback.** Refold is on by default and refolds every cycle, the first included, so the static fold only serves `refold_per_cycle = false`. The weak spot is `cycle.rs`'s `if let Ok(sim) … && let Ok(f) …`: a failed refold falls back to the previous or static fold without a word. Make that failure an error (or at least a run-report warning). |
+| D2 | `merit()`'s 1e6 missing-curve penalty after W3. | **Hard error** (or penalty plus a warning naming the demand). Since W3 a missing curve can only come from a spec/evaluator mismatch, i.e. a bug; it is added silently today (`merit.rs` `merit_multi`). |
+| D3 | PDrs/PDrp round-trip reference plane. | **Deferred** until a user case. |
+| D4 | W6: phase demands on a stack that loses phase (an incoherent plate). | **Open, proposal below (§3.1).** Warn, never silently scramble; let a phase demand live on a phase-keeping environment in parallel with a phase-losing one. |
+| D5 | W6 model: plate as an incoherent film vs `DesignStack.exit`. | **Keep the current model.** The exit medium is whichever half-space row ends an environment (`layer_type` 2); in multi-environment runs fixed segments may carry further media behind a substrate, so nothing inside a stack has to be marked "exit". Possible later hard rename: `DesignStack.substrate` → `exit`. |
+| D6 | W6 follow-ups: Jacobian vs multi-environment. | **Multi-environment support first, then the analytic Jacobian through the cascade.** |
+| D7 | `total_thickness_nm` vs `coating_thickness_nm` (1.3). | **Keep both, name both.** Python gets `DesignStack.coating_thickness()` beside `total_thickness()`; the run-result keys are renamed to say coating (`final_coating_thickness_nm`, per-phase `coating_thickness_nm`), hard rename. |
+| D8 | Fix 1.1 now, or refuse `host_mask`? | Fix (small); not yet done. |
+| D9 | W7 `pool_share_tol` and the sweep/merge reports. | **Off the to-do list until asked** (no code is removed; neither affects results). |
+| D10 | Pinned films (`optimize = false`) under inflate and the clamp sweep. | **Untouched.** Inflate and `round_to_qwot` skip them; the clamp sweep neither removes, clamps up, caps nor refuses them. Done (see 1.7). |
+
+### 3.1 D4 proposal: phase demands and phase-losing environments
+
+The problem: an incoherent plate (or any spacer) scrambles the phase of
+everything that crosses it. A phase demand on such a stack is either
+undefined (transmission through the plate) or defined only for one
+coherent block (front reflection off the first block, back reflection
+off the last). Today every phase demand on such a stack is refused.
+
+Proposal, in two steps:
+
+1. **Per-environment routing, with a warning.** A phase demand names the
+   environments it applies to (default: all). At compile time each
+   (demand, environment) pair is classified:
+   - *phase kept*: the environment is fully coherent, or the demand
+     lives entirely in one coherent block (front `r` of the first block,
+     back `r` of the last) - the demand is evaluated there;
+   - *phase lost*: the light path crosses a spacer - the pair is
+     **dropped from the merit**, and the run reports a warning naming
+     the demand and the environment ("phase of RetT is not defined
+     through the incoherent plate in 'with_plate'; dropped from this
+     environment").
+   A demand that ends up dropped from **every** environment is a hard
+   error, not a warning: nothing would optimize it.
+2. **The intended use** is then a two-environment run: the same design
+   segment once on a coherent surround (e.g. the coating on a
+   semi-infinite substrate, where phase is defined) carrying the phase
+   demands, and once on the real plate carrying the intensity demands.
+   This needs W6 item 2 (multi-environment with a plate), which is D6's
+   first step, so D4 lands after it.
+
+Single-block phase on a plate stack (front `r` of the first block)
+needs 1.4 fixed first (the differential-phase reference thickness must
+count only that block).
 
 Plan open question 4 (coated back side) is answered by W6: both faces
 can be coated, provided each starts with at least one film.
 
 ---
 
-## 4. Housekeeping before merge
+## 4. Order of work
+
+1. D10, pinned films untouched (done).
+2. W6 item 2: multi-environment runs with an incoherent film (D6).
+3. D4: per-environment phase routing with warnings (§3.1).
+4. W6 item 1: analytic Jacobian through the cascade (D6).
+5. Small items whenever convenient: D1 (refold failure is an error),
+   D2 (missing curve is an error), D7 (coating-thickness names), 1.1 /
+   D8, 1.6.
+
+## 5. Housekeeping before merge
 
 - Re-read the Linux needle-pin digest from CI (1.2).
 - CHANGELOG entries for W7, the integral fold and W6 are in place;

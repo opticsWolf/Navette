@@ -1008,24 +1008,27 @@ mod tests {
 
     /// Licence item 6 (B4): the phase's clamp report is present when the
     /// floor removed something, absent otherwise - a no-span run's phase
-    /// dict is byte-identical. The film is PINNED (optimize = false):
-    /// cleanup's flag-guarded removal skips it, so the clamp is what
-    /// takes it, and the report is what says so.
+    /// dict is byte-identical. Cleanup is off and inflate adds nothing,
+    /// so the clamp after inflate is what takes the film, and the report
+    /// is what says so. (Before D10 the film was pinned to keep cleanup
+    /// off it; a pinned film is now exempt from the clamp too -
+    /// `d10_a_pinned_film_survives_the_run`.)
     #[test]
     fn f02_clamp_report_present_only_when_something_happened() {
         // Floor above the film: one-row span removed and NAMED.
-        let mut pinned = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
-        pinned.optimize = false;
-        pinned.needle = false;
+        let mut free = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
+        free.needle = false;
         let cfg = PipelineConfig {
             max_macro_cycles: 1,
-            enable_inflate: false,
+            enable_inflate: true,
+            inflate_addon_qwot: 0.0,
+            enable_cleanup: false,
             clamp_min_nm: 200.0,
             stagnation_window: usize::MAX,
             ..Default::default()
         };
         let mut p = NeedlePipeline::new(
-            DesignStack::with_films(air(), sub(), vec![pinned]).unwrap(),
+            DesignStack::with_films(air(), sub(), vec![free]).unwrap(),
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
@@ -1174,14 +1177,60 @@ mod tests {
         );
     }
 
-    /// Span deferral twin: an under-thickness PINNED graded span (the
-    /// carrier is background: optimize forced false) is removed whole
-    /// with the F0.2 report under EVERY policy. F1.6 landed the scale-up
-    /// for SCALABLE spans (f16_under_thickness_scalable_span_is_scaled_to
-    /// _the_floor); a pinned span's profile cannot be re-parameterized by
-    /// the optimizer, so removal is still the honest repair here.
+    /// D10: a pinned film keeps its authored thickness through a whole
+    /// run - every in-run clamp, inflate and the final sweep - even below
+    /// the floor and above the ceiling, while a free neighbour inflates.
     #[test]
-    fn f03_thin_graded_span_is_removed_whole_under_clamp_up_too() {
+    fn d10_a_pinned_film_survives_the_run() {
+        let mut thin = LayerSpec::constant("H", 2.35, 0.0, 1.0, NW);
+        thin.optimize = false;
+        thin.needle = false;
+        let mut thick = LayerSpec::constant("L", 1.46, 0.0, 3000.0, NW);
+        thick.optimize = false;
+        thick.needle = false;
+        let mut free = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
+        free.needle = false;
+        for policy in ["remove", "clamp_up_final"] {
+            let cfg = PipelineConfig {
+                max_macro_cycles: 1,
+                enable_inflate: true,
+                needles_per_cycle: 0,
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                stagnation_window: usize::MAX,
+                thin_layer_policy: ThinLayerPolicy::parse(policy).unwrap(),
+                ..Default::default()
+            };
+            let mut p = NeedlePipeline::new(
+                DesignStack::with_films(
+                    air(),
+                    sub(),
+                    vec![thin.clone(), free.clone(), thick.clone()],
+                )
+                .unwrap(),
+                dummy_spectral(),
+                cfg,
+                NeedleCycleConfig::default(),
+                MaterialPool::new(),
+            )
+            .unwrap();
+            let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
+            let d: Vec<f64> = p.stack.films().iter().map(|f| f.d_nm).collect();
+            assert_eq!(d.len(), 3, "{policy}: {d:?}");
+            assert_eq!((d[0], d[2]), (1.0, 3000.0), "{policy}: pinned films moved");
+            assert!(d[1] > 100.0, "{policy}: the free film must still inflate");
+            assert!(res.final_clamp_report.is_none(), "{policy}");
+        }
+    }
+
+    /// Span deferral twin, D10: an under-thickness PINNED graded span
+    /// (the carrier is background: optimize forced false) is left alone
+    /// under every policy. F0.2 removed it whole; D10 makes a pinned
+    /// span the user's fixed layer, untouched by the sweep. F1.6's
+    /// scale-up still covers SCALABLE spans
+    /// (f16_under_thickness_scalable_span_is_scaled_to_the_floor).
+    #[test]
+    fn f03_thin_pinned_graded_span_is_left_alone() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
         let mut nk = std::collections::HashMap::new();
         nk.insert(
@@ -1205,12 +1254,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stack.spans().len(), 1);
-        // The final-pass clamp_up branch is the strongest form of the
-        // deferral: even told to clamp up, a multi-row span goes whole.
-        let mut stack = stack;
-        let rep = stack.clamp_all(6.0, 1000.0, true).unwrap();
-        assert_eq!(rep.spans_removed.len(), 1);
-        assert_eq!(rep.rows_removed, 4);
-        assert!(stack.films().is_empty());
+        // Neither the removing sweep nor the clamp-up one touches it.
+        for clamp_up in [false, true] {
+            let mut s = stack.clone();
+            let rep = s.clamp_all(6.0, 1000.0, clamp_up).unwrap();
+            assert!(rep.is_empty(), "{rep:?}");
+            assert_eq!(s.films().len(), 4);
+            assert!((s.total_thickness_nm() - 5.0).abs() < 1e-12);
+        }
     }
 }

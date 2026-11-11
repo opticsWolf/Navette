@@ -9,6 +9,22 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
+- **A pinned film (`optimize = False`) is never touched by synthesis**
+  (`docs/plans/synthesis_open_items.md` D10). Inflate skipped no film by
+  its flag, and the clamp sweep removed, clamped up, capped or refused
+  a pinned film like a free one; only cleanup checked the flag. Now:
+  - inflate and `round_to_qwot` skip pinned films;
+  - the clamp sweep passes a pinned span (every bulk row pinned)
+    through unchanged, below the floor or above the ceiling, and does
+    not report it - this includes a background-pinned graded span
+    (removed whole before) and a pinned edge film (held and reported
+    as `edges_held` before);
+  - `merge_adjacent` no longer fuses a pinned film with a free film of
+    the same index (the merged row took the first one's flag). An
+    interface slice, whose flag is derived, still merges as before.
+  A pinned film with `needle = True` can still be split by an insertion;
+  its halves stay pinned.
+
 - **The needle P is the slope of the merit the LM minimises, at any
   angle** (`docs/plans/synthesis_targets_plan.md` W1). The fold used to
   hand one set of (target, weight) pairs to both polarization branches.

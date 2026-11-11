@@ -123,9 +123,10 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
     // grows by its own addon qwot, a different amount per sublayer, and a
     // pinned profile comes out with a distorted thickness distribution.
     // The same filter guards round_to_qwot below (no live caller today).
-    // W6: an incoherent film is a fixed plate, never a candidate.
+    // D10: a pinned film (`optimize = false`, an incoherent plate among
+    // them) is never a candidate.
     let eligible: Vec<usize> = (0..n_films)
-        .filter(|&i| stack.span_of_row(i).is_singleton_bulk() && stack.films()[i].coherent)
+        .filter(|&i| stack.span_of_row(i).is_singleton_bulk() && stack.films()[i].optimize)
         .collect();
     let inflate_indices: Vec<usize> = match max_layers {
         Some(max_l) if max_l < eligible.len() => {
@@ -191,8 +192,9 @@ pub fn round_to_qwot<C: DesignContext + ?Sized>(
 
     // F0.2 (N3): the same singleton-bulk exemption as inflate_design,
     // for symmetry; round_to_qwot has no live pipeline caller today.
+    // D10: pinned films keep their authored thickness here too.
     for i in 0..stack.films().len() {
-        if !stack.span_of_row(i).is_singleton_bulk() {
+        if !stack.span_of_row(i).is_singleton_bulk() || !stack.films()[i].optimize {
             continue;
         }
         let layer: &LayerSpec = &stack.films()[i];
@@ -370,6 +372,29 @@ mod tests {
         assert!((stack.films()[1].d_nm - (20.0 + d_b)).abs() < 1e-12);
         assert_eq!(ctx.n_opt_calls, 0);
         assert!((res.merit_after - res.merit_before.abs()).abs() >= 0.0); // evaluated
+    }
+
+    /// D10: a pinned film is neither inflated, nor scored as a candidate,
+    /// nor rounded to a QWOT step.
+    #[test]
+    fn d10_inflate_and_round_skip_pinned_films() {
+        let mut pinned = film("P", 1.46, 33.0);
+        pinned.optimize = false;
+        let base =
+            DesignStack::with_films(air(), sub(), vec![film("A", 2.35, 30.0), pinned]).unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![0.0; 2],
+            n_opt_calls: 0,
+        };
+        for max_layers in [None, Some(1)] {
+            let mut st = base.clone();
+            inflate_design(&mut ctx, &mut st, &wavls(), 0.5, 550.0, max_layers, false).unwrap();
+            assert!(st.films()[0].d_nm > 30.0, "{max_layers:?}");
+            assert_eq!(st.films()[1].d_nm, 33.0, "{max_layers:?}");
+        }
+        let mut st = base.clone();
+        round_to_qwot(&mut ctx, &mut st, &wavls(), 550.0, 1.0, false).unwrap();
+        assert_eq!(st.films()[1].d_nm, 33.0);
     }
 
     #[test]

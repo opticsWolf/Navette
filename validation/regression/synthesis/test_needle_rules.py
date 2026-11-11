@@ -107,9 +107,12 @@ def test_bad_rules_refuse_at_the_door(kw, match):
         _run(**kw)
 
 
-def test_the_clamp_reports_an_edge_it_holds():
-    # A pinned 1 nm L on top, under the 2 nm floor: removing it would put H
-    # outside, so the floor holds it and says so.
+def test_a_pinned_edge_film_under_the_floor_is_left_alone():
+    # A pinned 1 nm L on top, under the 2 nm floor. Before D10 the floor
+    # held it as an edge and reported that; now a pinned film is outside
+    # the clamp sweep altogether: it keeps its 1.0 nm and nothing is
+    # reported. (The edge hold itself is pinned on free films in Rust,
+    # clamp_holds_an_edge_rather_than_expose_a_disallowed_one.)
     seed = [(MATERIALS["L"], 1.0), (MATERIALS["H"], 100.0), (MATERIALS["M"], 200.0)]
     res = run_needle(layers=seed, names=["L", "H", "M"], targets=_targets(),
                      angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
@@ -117,8 +120,9 @@ def test_the_clamp_reports_an_edge_it_holds():
                      per_film_flags={"L": {"optimize": False}})
     held = [h for p in res["phases"] if p.get("clamp_report")
             for h in p["clamp_report"]["edges_held"]]
-    assert held and held[0] == "outer: L (1.0 nm)", held
+    assert not held, held
     assert _labels(res)[0] == "L"
+    assert res["stack"].films()[0]["thickness"] == 1.0
 
 
 def test_an_edge_film_matches_by_label():
