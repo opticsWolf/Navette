@@ -153,7 +153,7 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
 | GD, GDD, TOD, FOD (R/T, s/p) | **not computed** in the synthesis evaluator (engine `dispmaps`) | **exists** in the engine (`phase_dispersion_sensitivity`, NREQ_DGD…DFOD) | **harder**: port the dispersion forward into `simulate_inner`, add curve ids, map the fold to Q rows; LM via FD first |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
-| any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **blocked by W6**; phase through a spacer is physically undefined and stays refused |
+| any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **done for intensities (W6 first cut, 2026-11-11)**: R/T/A, RB/TB/AB and colour through a fixed plate; phase on a stack with a spacer stays refused |
 | angle-cone or bandwidth-averaged R/T | — | linear in the pointwise terms | **moderate**: needs point weights (W4) and a quadrature on the solver grid |
 
 ### 1.4 Weighting (a)
@@ -729,7 +729,7 @@ group), `validation/smoke/test_material_labels.py`. Bench pins unchanged.
 | 7 | W7 label identity, shared scans, needle groups, label-aware merges | 3 (both touch the scan loop in `cycle.rs`) | unchanged without groups/duplicate indices |
 | 4a | W8a retardance Ret_R/Ret_T (+ Delta_R/Delta_T labels) | 2, 3 (not W5: own gradient-form phase operator) | unchanged |
 | 8 | W8 further target types, in this order: Rs/Rp ratio, extinction, diattenuation → Psi (+ complex gradient operator) → DOP/Stokes → GD…FOD. PDrs/PDrp deferred (§5) | 2, 3, 6 | unchanged |
-| 9 | W6 incoherent synthesis | 2, 3 | unchanged for coherent stacks |
+| 9 | W6 incoherent synthesis (first cut done 2026-11-11, intensity only; rest in `synthesis_open_items.md` §2) | 2, 3 | unchanged for coherent stacks (verified: fingerprint and needle pin) |
 
 Steps 1-3 are the bug fixes and should land before any new feature on the
 needle path. W7 follows W1 because both change the per-entry scan loop.

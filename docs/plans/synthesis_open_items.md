@@ -60,9 +60,26 @@ It matters if phase demands inside the first block are ever allowed
   `coherent = false`; W6 lifted that for fixed films. Updated in this
   change, together with the W6 status note.
 - §1.3b's row "any channel through an incoherent layer: blocked by W6"
-  is now intensity-only done, phase refused.
+  and §3's step 9: updated to "first cut, intensity only".
 - §6 follow-ups (target-kinds doc, needle docs with a generated
   supported-target matrix) have not been done for any workstream.
+
+### 1.6 A doc comment sits on the wrong item (debt)
+
+`needle_operator.rs`, around `PmbQuantity`: the doc comment and the
+`#[allow(clippy::too_many_arguments)]` meant for `p_multiblock_point`
+sit above `enum PmbQuantity`. So `PmbQuantity`'s docs open with
+`p_multiblock_point`'s description, and `p_multiblock_point` has no
+docs. It is harmless at runtime. Fix: move both lines down to the
+function.
+
+### 1.7 Inflate grows fixed coherent films (question)
+
+`inflate.rs` picks every single-layer span as a candidate, whatever its
+`optimize` flag, so a pinned coherent film (`optimize = false`) also
+grows by the add-on quarter wave. That is the current behaviour; W6
+excludes only incoherent plates. Whether a pinned film
+should be inflated is decision D10.
 
 ---
 
@@ -112,6 +129,12 @@ clamp, merge and inflate leave the plate alone. Not done:
 8. **Back-incidence from an absorbing plate**: `check_back_exit` looks at
    the exit medium only. A strongly absorbing plate makes back demands
    ill-conditioned (tiny T_b) but not undefined; no guard.
+9. **Test coverage**: the needle oracle runs through a plate at 0° and
+   30°, not 60°. No test covers two plates, a plate as the first or last
+   film, a plate with only back films, Log or weighted demands through a
+   plate, or the joint needle path. That path already passes the
+   incoherent flags, but `simulate_all` refuses the run before it gets
+   there.
 
 ### W7, material identity
 - `pool_share_tol` (near-equal indices sharing a sweep): not done.
@@ -159,6 +182,7 @@ Done: W8a retardance (RetR/RetT, DeltaR/DeltaT). Open, in plan order:
 | D7 | `total_thickness_nm` vs `coating_thickness_nm` (1.3): rename or keep both? | rename the Python method / keep both | keep both |
 | D8 | Fix 1.1 (`p_function_multiblock` with a host mask) now, or refuse `host_mask` until it is fixed? | fix / refuse | fix (small) |
 | D9 | W7 `pool_share_tol` and the sweep/merge reports: still wanted? | do / drop | drop until asked |
+| D10 | Inflate on pinned coherent films (1.7): keep the Python-parity behaviour, or skip `optimize = false` films? | keep / skip | keep |
 
 Plan open question 4 (coated back side) is answered by W6: both faces
 can be coated, provided each starts with at least one film.
