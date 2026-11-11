@@ -263,9 +263,11 @@ All notable changes to Navette are recorded here. Work items reference
   The forward model splits the stack into coherent blocks and joins them
   by intensity, as the engine does (front rows bit-identical to it). The
   needle scan differentiates through the same cascade for every
-  intensity, absorption and colour demand, front and back. The LM
-  differences, the thickness budget and `final_total_thickness_nm` count
-  coating only, and clamp, inflate and merge leave the plate alone.
+  intensity, absorption and colour demand, front and back, and the LM
+  takes the analytic Jacobian through it (one sweep per iteration, not
+  one per film; a joint run still differences). The thickness budget and
+  `final_total_thickness_nm` count coating only, and clamp, inflate and
+  merge leave the plate alone.
   Refused with a named error: phase demands on such a stack and a plate
   left optimizable or open to needles. In a multi-environment run a
   phase demand in an environment with a plate is dropped from that

@@ -107,13 +107,22 @@ halves stay pinned, so a sliver left by an insertion is kept.
 Done: fixed incoherent films anywhere in the film list; forward through
 the engine's block cascade (front rows bit-identical to `solve_point`);
 needle P through the cascade adjoint for every intensity and colour
-bucket (FD oracle, 0° and 30°); LM by finite differences; budget,
-clamp, merge and inflate leave the plate alone. Not done:
+bucket (FD oracle, 0° and 30°); LM with the analytic Jacobian (item
+1); budget, clamp, merge and inflate leave the plate alone. Items:
 
-1. **Analytic Jacobian through the cascade.** LM differences on any
-   stack with a plate (n_par extra solves per iteration). The adjoint
-   weights exist (`CascadeTrack.g`); deposits per block times them would
-   close it.
+1. **Analytic Jacobian through the cascade: done.**
+   `deposit_row_cascade` takes each film's coherent slope of its own
+   block's four intensities and carries it to the totals through the
+   cascade's adjoint weights (`CascadeTrack.g`), front and back rows.
+   Checked against central differences of `simulate` for films on both
+   faces (an absorbing one included), 0° and 30°, on a lossy 200 µm plate
+   and a lossless 1 mm plate with films nearly gone; and an analytic LM
+   run lands where the differenced one does. The amplitude slots stay
+   zero (phase is refused there). Joint runs still difference (F2.3, as
+   for coherent stacks). One visible effect: the Python smoke run in
+   `test_incoherent_synthesis.py` now drives its back film to zero and
+   ends lower than the differenced run, which kept it; the test no longer
+   asserts both faces stay coated.
 2. **Multi-environment runs: done.** `simulate_all` no longer refuses
    (its check only ever looked at environment 0's assembly, so a plate
    in another environment's fixed segment already got through). Each
@@ -266,7 +275,7 @@ can be coated, provided each starts with at least one film.
 1. D10, pinned films untouched (done).
 2. W6 item 2: multi-environment runs with an incoherent film (D6) (done).
 3. D4: per-environment phase routing with warnings (§3.1) (step 1 done).
-4. W6 item 1: analytic Jacobian through the cascade (D6).
+4. W6 item 1: analytic Jacobian through the cascade (D6) (done).
 5. Small items whenever convenient: D1 (refold failure is an error),
    D2 (missing curve is an error), D7 (coating-thickness names), 1.1 /
    D8, 1.6.

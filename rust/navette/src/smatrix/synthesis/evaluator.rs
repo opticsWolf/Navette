@@ -21,8 +21,9 @@ use rayon::prelude::*;
 
 use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
-    block_flux_factors, build_stack_fields_range_dual, partition_blocks, spacer_tau, star_real,
-    thickness_slopes_ddz, thickness_slopes4_ddz,
+    CascadeTrack, block_flux_factors, block_intensities, build_stack_fields_range_dual,
+    cascade_step, partition_blocks, spacer_tau, star_real, thickness_slopes_ddz,
+    thickness_slopes4_ddz,
 };
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
@@ -232,19 +233,15 @@ impl SmatrixContext {
         }
         // W6: incoherent spacers split the stack into coherent blocks
         // joined by the engine's real intensity cascade. Only intensities
-        // cross a spacer, so phase demands and analytic deposits are
-        // refused here, by name, rather than read off the first block.
+        // cross a spacer, so phase demands are refused here, by name,
+        // rather than read off the first block; thickness deposits go
+        // through the cascade (`deposit_row_cascade`).
         let incoherent = sa.incoherent_flags.contains(&1);
         let partition = if incoherent {
             if uses_phase {
                 return Err("a phase demand on a stack with an incoherent film: phase \
                      is not defined across an incoherent layer, so only intensity, \
                      absorption and colour demands can be synthesized"
-                    .into());
-            }
-            if !par_films.is_empty() {
-                return Err("simulate_with_deposits: thickness deposits need a fully \
-                     coherent stack (an incoherent film differences instead)"
                     .into());
             }
             Some(partition_blocks(&sa.incoherent_flags))
@@ -305,13 +302,15 @@ impl SmatrixContext {
                 // Thickness deposits, when asked for. Nothing above this line
                 // is touched by the request: the values are the same solver
                 // call either way, and the fingerprint says so.
-                let dep = if n_par == 0 {
-                    Vec::new()
-                } else {
-                    deposit_row(
+                let dep = match &partition {
+                    _ if n_par == 0 => Vec::new(),
+                    None => deposit_row(
                         &n_slice, &sa, start, end, lam, nsin_fi, par_films, n_par, with_phase,
                         with_back,
-                    )
+                    ),
+                    Some((blocks, spacers)) => deposit_row_cascade(
+                        &n_slice, &sa, blocks, spacers, lam, nsin_fi, par_films, n_par, with_back,
+                    ),
                 };
                 (pt, dep)
             })
@@ -600,6 +599,91 @@ fn deposit_row(
     row
 }
 
+/// [`deposit_row`] through an incoherent cascade (W6): ∂ of the cascade
+/// totals (Rs, Rp, Ts, Tp, and with `with_back` RBs, RBp, TBs, TBp) per
+/// film thickness, in the same layout. The amplitude slots stay zero:
+/// phase is not defined across a spacer, and `simulate_inner` refuses
+/// every demand that would read them.
+///
+/// A film sits inside one coherent block `b`. Its slope reaches the
+/// totals in two steps: the block's own intensities move by
+/// `dI_c = 2·f_c·Re(conj(a_c)·∂a_c)` (the coherent derivative above, per
+/// channel), and the cascade carries that to the totals through the
+/// adjoint weights `∂v/∂I_b` that [`cascade_step`] tracks, the same
+/// weights the needle scan reads. Spacer attenuations do not depend on
+/// a film thickness (the plate is never a parameter).
+#[allow(clippy::too_many_arguments)]
+fn deposit_row_cascade(
+    n_slice: &[Complex64],
+    sa: &SolverArrays,
+    blocks: &[(usize, usize)],
+    spacers: &[Option<usize>],
+    lam: f64,
+    nsin_fi: Complex64,
+    par_films: &[usize],
+    n_par: usize,
+    with_back: bool,
+) -> Vec<f64> {
+    let n_ch = if with_back { ALL_SLOTS } else { 4 };
+    let mut row = vec![0.0f64; n_ch * n_par];
+    let fields: Vec<_> = blocks
+        .iter()
+        .map(|&(bs, be)| {
+            build_stack_fields_range_dual(
+                bs,
+                be,
+                n_slice,
+                &sa.thicknesses,
+                &sa.rough_vals,
+                &sa.rough_types,
+                lam,
+                nsin_fi,
+            )
+        })
+        .collect();
+    for pi in 0..2usize {
+        let pol = pi as i32;
+        let of = |bi: usize| {
+            if pi == 0 {
+                &fields[bi].0
+            } else {
+                &fields[bi].1
+            }
+        };
+        let mut track = CascadeTrack::identity();
+        for bi in 0..blocks.len() {
+            track = cascade_step(&track, block_intensities(of(bi), pol), Some(()));
+            if let Some(sp) = spacers[bi] {
+                let tau = spacer_tau(n_slice[sp], sa.thicknesses[sp], lam, nsin_fi);
+                track = cascade_step(&track, [0.0, tau, tau, 0.0], None);
+            }
+        }
+        for (kp, &fi) in par_films.iter().enumerate() {
+            // Film `fi` is solver slot `fi + 1` (ambient occupies slot 0).
+            let j = fi + 1;
+            let Some(bi) = blocks.iter().position(|&(bs, be)| bs < j && j < be) else {
+                continue;
+            };
+            let fb = of(bi);
+            let m = fb.s_left[fb.end];
+            let fac = block_flux_factors(fb, pol);
+            let d = thickness_slopes4_ddz(fb, j, lam);
+            let amp = [m.0, m.1, m.2, m.3];
+            let di: [f64; 4] = std::array::from_fn(|c| 2.0 * fac[c] * (amp[c].conj() * d[c]).re);
+            let w = &track.g[bi * 4..bi * 4 + 4];
+            let dv: [f64; 4] = std::array::from_fn(|e| (0..4).map(|c| w[c][e] * di[c]).sum());
+            // Totals: [R, T_b, T, R_b].
+            row[pi * n_par + kp] = dv[0];
+            row[(2 + pi) * n_par + kp] = dv[2];
+            if with_back {
+                row[(BACK_SLOT + pi) * n_par + kp] = dv[3];
+                row[(BACK_SLOT + 2 + pi) * n_par + kp] = dv[1];
+            }
+        }
+    }
+    row
+}
+
 impl DesignContext for SmatrixContext {
     fn evaluate_merit(&self, stack: &DesignStack) -> Result<f64, String> {
         // §4.6's one branch. K = 1 is the pre-F2.2 pair of calls, reached
@@ -764,10 +848,8 @@ impl SmatrixContext {
         // The pool is sized by the work one parallel call spreads: grid
         // points × solver layers, times the columns a differenced Jacobian
         // runs at once, times the environments a joint run simulates.
-        let differenced = self.lm.jacobian == JacobianMode::Fd
-            || multi
-            || self.spec.sensitivity_incomplete()
-            || stack.has_incoherent();
+        let differenced =
+            self.lm.jacobian == JacobianMode::Fd || multi || self.spec.sensitivity_incomplete();
         let work = self.sin_theta.len()
             * self.wavls.len()
             * stack.solver_arrays().n_layers as usize
@@ -1026,13 +1108,9 @@ impl JacobianSource for DepositJacobian {
         // -film name and summing them across environments is F2.3. Until
         // then the joint run is a finite-difference run, which is the
         // documented decline, not a silent single-environment Jacobian.
-        // W6: thickness deposits are read off one coherent block; through
-        // an incoherent cascade they would need the cascade's adjoint
-        // weights too. A stack with an incoherent film differences instead.
-        if self.ctx.envs.is_some()
-            || self.declined.load(Ordering::Relaxed)
-            || self.base_stack.has_incoherent()
-        {
+        // A stack with an incoherent film is covered: its deposits go
+        // through the cascade's adjoint weights (W6).
+        if self.ctx.envs.is_some() || self.declined.load(Ordering::Relaxed) {
             return Ok(None);
         }
         let mut st = self.base_stack.clone();
@@ -4584,7 +4662,7 @@ mod needle_oracle {
     }
 
     #[test]
-    fn incoherent_stack_refuses_phase_and_deposits() {
+    fn incoherent_stack_refuses_phase() {
         let angle = deg(30.0);
         let mut spec = MeritSpec::new();
         add(
@@ -4597,12 +4675,101 @@ mod needle_oracle {
         );
         let err = ctx(spec, angle).simulate(&plate()).unwrap_err();
         assert!(err.contains("phase"), "{err}");
+    }
+
+    /// W6 item 1: thickness deposits through the cascade are the slopes
+    /// of the simulated totals, front and back, for a film on each face
+    /// (the absorbing one included), at 0 and 30 degrees.
+    #[test]
+    fn deposits_through_an_incoherent_plate_match_differences() {
+        use crate::smatrix::synthesis::jacobian::deposit_channel;
+        use CurveId::*;
+        let h = 1e-4;
+        for angle in [Radians::ZERO, deg(30.0)] {
+            for with_back in [false, true] {
+                let ids: &[CurveId] = if with_back {
+                    &[Rs, Rp, Ts, Tp, RBs, RBp, TBs, TBp]
+                } else {
+                    &[Rs, Rp, Ts, Tp]
+                };
+                let mut spec = MeritSpec::new();
+                for &id in ids {
+                    add(&mut spec, angle, d(id, 0.3));
+                }
+                let c = ctx(spec, angle);
+                // The plate stack above, and the Python smoke run's: a
+                // lossless 1 mm plate with one film behind it, that film
+                // and a front film nearly gone.
+                let lossless = {
+                    let nw = WLS.len();
+                    let mut g = LayerSpec::constant("G", 1.52, 0.0, 1.0e6, nw);
+                    g.coherent = false;
+                    g.optimize = false;
+                    g.needle = false;
+                    in_air(vec![
+                        LayerSpec::constant("H", 2.35, 0.0, 116.8, nw),
+                        LayerSpec::constant("L", 1.46, 0.0, 0.5, nw),
+                        g,
+                        LayerSpec::constant("L", 1.46, 0.0, 0.3, nw),
+                    ])
+                };
+                for (st, par) in [(plate(), vec![0usize, 1, 3, 4]), (lossless, vec![0, 1, 3])] {
+                    let (_, dep) = c.simulate_with_deposits(&st, &par).unwrap();
+                    let mut live = 0;
+                    for (kp, &fi) in par.iter().enumerate() {
+                        let d0 = st.films()[fi].d_nm;
+                        let (mut sp, mut sm) = (st.clone(), st.clone());
+                        sp.set_thickness(fi, d0 + h).unwrap();
+                        sm.set_thickness(fi, d0 - h).unwrap();
+                        let (a, b) = (c.simulate(&sp).unwrap(), c.simulate(&sm).unwrap());
+                        for &id in ids {
+                            let row = |s: &SimCurves| {
+                                if id.is_back() {
+                                    s.back_curve(id).unwrap().clone()
+                                } else {
+                                    s.curve(id).unwrap().clone()
+                                }
+                            };
+                            let (ra, rb) = (row(&a), row(&b));
+                            let ch = deposit_channel(id).unwrap();
+                            for pt in 0..ra.len() {
+                                let fd = (ra[pt] - rb[pt]) / (2.0 * h);
+                                let an = dep.get(ch, pt, kp);
+                                assert!(
+                                    (an - fd).abs() < 1e-7 * fd.abs().max(1e-3),
+                                    "{angle:?} film {fi} {id:?} point {pt}: {an} vs {fd}"
+                                );
+                                if fd.abs() > 1e-5 {
+                                    live += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert!(live > 0, "every slope vanished");
+                }
+            }
+        }
+    }
+
+    /// The analytic LM on a plate stack: it takes the deposit path (no
+    /// decline) and lands where the differenced one does.
+    #[test]
+    fn lm_through_a_plate_is_analytic_and_agrees_with_differences() {
+        use crate::smatrix::synthesis::thick_opt::JacobianMode;
+        let angle = deg(30.0);
         let mut spec = MeritSpec::new();
-        add(&mut spec, angle, d(CurveId::Rs, 0.3));
-        let err = ctx(spec, angle)
-            .simulate_with_deposits(&plate(), &[0])
-            .unwrap_err();
-        assert!(err.contains("coherent"), "{err}");
+        add(&mut spec, angle, d(CurveId::Ru, 0.1));
+        add(&mut spec, angle, d(CurveId::TBs, 0.7));
+        let mut an = ctx(spec.clone(), angle);
+        an.lm.jacobian = JacobianMode::Analytic;
+        let mut fd = ctx(spec, angle);
+        fd.lm.jacobian = JacobianMode::Fd;
+        let (mut sa, mut sb) = (plate(), plate());
+        let (ma, ra) = an.optimize_thicknesses_report(&mut sa).unwrap();
+        let (mb, _) = fd.optimize_thicknesses_report(&mut sb).unwrap();
+        let ra = ra.unwrap();
+        assert!(ra.analytic_jacobians > 0, "{ra:?}");
+        assert!((ma - mb).abs() <= 1e-6 * mb.max(1e-9), "{ma} vs {mb}");
     }
 
     /// A boundary site on top of the plate is a needle at the bottom of
