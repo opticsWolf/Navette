@@ -3688,11 +3688,166 @@ mod tests {
     /// F2.3 agree — the sweep's arithmetic and `insert_seed`'s bookkeeping.
     #[test]
     fn the_joint_slope_is_the_sum_of_the_environments_slopes() {
+        check_joint_slope(two_cover_req());
+    }
+
+    /// `two_cover_req`'s bare environment beside one that puts the coat on
+    /// a 1 mm incoherent plate: `segments` is that environment's stack.
+    fn plate_req(segments: Vec<EnvSegmentCfg>) -> DesignRequest {
+        with_pool(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![
+                EnvironmentCfg {
+                    name: "bare".to_string(),
+                    stack: vec![fixed_seg(vec![]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "on_plate".to_string(),
+                    stack: segments,
+                },
+            ],
+        ))
+    }
+
+    fn plate() -> EnvSegmentCfg {
+        fixed_seg(vec![FixedLayerRow {
+            coherent: false,
+            ..fixed("G", 1_000_000.0, 1)
+        }])
+    }
+
+    /// W6 item 2: the same gate with a plate in one environment - the coat
+    /// in front of it (first coherent block), behind it (last block), and
+    /// once on each face (one design, a copy in each block). Each
+    /// environment's slope comes through its own cascade; the sum is
+    /// still the joint merit's derivative.
+    #[test]
+    fn the_joint_slope_sums_through_an_incoherent_plate() {
+        for (segments, copies) in [
+            (vec![design_seg("coat"), plate()], 1),
+            (vec![plate(), design_seg("coat")], 1),
+            (vec![design_seg("coat"), plate(), design_seg("coat")], 2),
+        ] {
+            let r = plate_req(segments);
+            let (envs, _, _) = build_environments(&r, &WL).unwrap();
+            let st = &envs.stacks()[1];
+            assert!(st.has_incoherent() && !envs.stacks()[0].has_incoherent());
+            let n = (0..st.films().len())
+                .filter(|&row| envs.copy_of_row(1, row).map(|c| c.0) == Some(0))
+                .count();
+            assert_eq!(n, copies, "copies of the first design film");
+            check_joint_slope(r);
+        }
+    }
+
+    /// W6 item 2 end to end: a joint run (needles, boundary needles on and
+    /// off, LM, clamp) where one environment puts the coat on a plate - in
+    /// front, behind, on both faces, and as an inverted copy on the back
+    /// face. The run completes and lowers the joint merit.
+    #[test]
+    fn a_joint_run_goes_through_an_incoherent_plate() {
+        use crate::smatrix::synthesis::context::DesignContext;
+        use crate::smatrix::synthesis::cycle::NeedleCycleConfig;
+        use crate::smatrix::synthesis::driver::run_environments;
+        let inverted = EnvSegmentCfg {
+            inverted: true,
+            ..design_seg("coat")
+        };
+        for segments in [
+            vec![design_seg("coat"), plate()],
+            vec![plate(), design_seg("coat")],
+            vec![design_seg("coat"), plate(), design_seg("coat")],
+            vec![design_seg("coat"), plate(), inverted],
+        ] {
+            for boundary_needles in [false, true] {
+                let what = format!("{segments:?} boundary={boundary_needles}");
+                let (envs, cmap, _) = build_environments(&plate_req(segments.clone()), &WL)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                let start = envs.stacks()[0].clone();
+                let mf0 = ctx(env_spec(2), Some(Arc::new(envs.clone())))
+                    .evaluate_merit(&start)
+                    .unwrap();
+                let needle_cfg = NeedleCycleConfig {
+                    boundary_needles,
+                    ..Default::default()
+                };
+                let (res, stack, _) = run_environments(
+                    envs,
+                    cmap,
+                    &WL,
+                    &[Radians::ZERO],
+                    &env_spec(2),
+                    one_needle_cfg(),
+                    needle_cfg,
+                    Default::default(),
+                    |_, _| Ok(()),
+                )
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(res.final_mf < mf0, "{what}: {} !< {mf0}", res.final_mf);
+                assert!(!stack.has_incoherent(), "{what}");
+                assert!(
+                    stack.spans().len() > start.spans().len(),
+                    "{what}: no needle went in ({} spans)",
+                    stack.spans().len()
+                );
+            }
+        }
+    }
+
+    /// The plate as a film of the design itself (pinned, incoherent): it is
+    /// routed like any design film into both environments, the joint run
+    /// goes through it, and it comes out at its authored thickness.
+    #[test]
+    fn a_design_plate_is_routed_and_left_alone_in_a_joint_run() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let plate_film = LayerRow {
+            coherent: false,
+            optimize: false,
+            needle: false,
+            ..film("G", 1_000_000.0)
+        };
+        let r = with_pool(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0), plate_film])],
+            vec![
+                EnvironmentCfg {
+                    name: "bare".to_string(),
+                    stack: vec![fixed_seg(vec![]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "laminated".to_string(),
+                    stack: vec![
+                        fixed_seg(vec![fixed("G", 300.0, 1), fixed("M", 40.0, 1)]),
+                        design_seg("coat"),
+                    ],
+                },
+            ],
+        ));
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        assert!(envs.stacks().iter().all(DesignStack::has_incoherent));
+        check_joint_slope(r.clone());
+        let (_, stack, _) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &env_spec(2),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        let plates: Vec<_> = stack.films().iter().filter(|f| !f.coherent).collect();
+        assert_eq!(plates.len(), 1);
+        assert_eq!(plates[0].d_nm, 1_000_000.0);
+    }
+
+    fn check_joint_slope(request: DesignRequest) {
         use crate::smatrix::synthesis::needle_pass::{
             NeedlePassInput, build_needle_targets_env, run_needle_pass,
         };
 
-        let (envs, cmap, _) = build_environments(&two_cover_req(), &WL).unwrap();
+        let (envs, cmap, _) = build_environments(&request, &WL).unwrap();
         let base = envs.stacks()[0].clone();
         let spec = env_spec(2);
         let solver = ctx(spec.clone(), Some(Arc::new(envs)));
@@ -3739,14 +3894,27 @@ mod tests {
                 2.0,
             )
             .unwrap();
-            let host = envs.host_row(e, SLOT).unwrap();
-            let (i, _) = res
+            // Every copy of the slot in this environment is one place of
+            // the locus; the insertion grows all of them.
+            let hits: Vec<usize> = res
                 .sites
                 .iter()
                 .enumerate()
-                .find(|(_, s)| s.film_idx == host && (s.depth_into_layer_nm - DEPTH).abs() < 1e-9)
-                .expect("the locus is on this environment's scan grid");
-            analytic += res.p_profile[i];
+                .filter(|(_, s)| {
+                    envs.copy_of_row(e, s.film_idx).map(|c| c.0) == Some(SLOT)
+                        && (s.depth_into_layer_nm - DEPTH).abs() < 1e-9
+                })
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                !hits.is_empty(),
+                "the locus is on this environment's scan grid"
+            );
+            let p_env: f64 = hits.iter().map(|&i| res.p_profile[i]).sum();
+            // Every environment pulls: a zero here would let an
+            // environment drop out of the sum unnoticed.
+            assert!(p_env.abs() > 1e-9, "environment {e} contributes no slope");
+            analytic += p_env;
             analytic += fold.phi_gain_shift();
         }
 

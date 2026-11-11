@@ -644,6 +644,10 @@ def _environments_request(design, environments, materials, wl,
         library.setdefault(code, _tab(code, material, wl))
         row = {"material_code": code, "thickness_nm": 0.0, "layer_type": ltype}
         for env in env_doc:
+            own = any(r.get("layer_type") == ltype
+                      for part in env["stack"] for r in part.get("layers") or ())
+            if own:
+                continue
             if slot == "ambient":
                 env["stack"].insert(0, {"layers": [row]})
             else:

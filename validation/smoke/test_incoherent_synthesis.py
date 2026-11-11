@@ -49,6 +49,63 @@ def test_needle_run_coats_both_faces_of_a_fixed_plate():
     assert res["final_mf"] <= res["phases"][0]["mf_after_needle"]
 
 
+def test_joint_run_with_a_plate_in_one_environment():
+    # One coat, two surroundings in air: alone, and on both faces of a
+    # 1 mm plate (the second face a copy of the first).
+    from navette._smatrix import PipelineConfig
+    plate = {"material": G, "thickness_nm": 1.0e6, "name": "plate",
+             "coherent": False}
+    envs = [
+        {"name": "alone", "stack": [{"design": "coat"}]},
+        {"name": "plate", "stack": [{"design": "coat"}, {"layers": [plate]},
+                                    {"design": "coat"}]},
+    ]
+    tc = TargetCollection()
+    for env in ("alone", "plate"):
+        tc.add(SpectralTarget(WL, np.zeros(31), np.full(31, 0.01), "s", "R",
+                              kind="e", angle_deg=0.0, environment=env))
+    res = run_needle(
+        targets=tc, angles_deg=[0.0], wavelengths=WL, materials={"H": H, "L": L},
+        design={"coat": [(H, 100.0, "H"), (L, 80.0, "L")]}, environments=envs,
+        pipeline_config=PipelineConfig(max_macro_cycles=2, needles_per_cycle=1,
+                                       enable_cleanup=False, enable_inflate=False,
+                                       thin_layer_policy="clamp_up_final"),
+        substrate=(1.0, "air"))
+    assert any(p["needle_results"] for p in res["phases"])
+    assert res["final_mf"] < res["phases"][0]["mf_after_needle"] * 1.0001
+
+
+def test_an_environment_keeps_its_own_exit_medium():
+    # The run's substrate is the default exit; an environment that ends in
+    # its own layer_type 2 row keeps that one instead of getting two.
+    from navette._smatrix import PipelineConfig
+
+    def run(exit_n):
+        envs = [
+            {"name": "in_air", "stack": [{"design": "coat"}]},
+            {"name": "on_glass", "stack": [
+                {"design": "coat"},
+                {"layers": [{"material": exit_n, "thickness_nm": 0.0,
+                             "name": "exit", "layer_type": 2}]}]},
+        ]
+        tc = TargetCollection()
+        for env in ("in_air", "on_glass"):
+            tc.add(SpectralTarget(WL, np.zeros(31), np.full(31, 0.01), "s", "R",
+                                  kind="e", angle_deg=0.0, environment=env))
+        return run_needle(
+            targets=tc, angles_deg=[0.0], wavelengths=WL,
+            materials={"H": H, "L": L},
+            design={"coat": [(H, 100.0, "H"), (L, 80.0, "L")]}, environments=envs,
+            pipeline_config=PipelineConfig(max_macro_cycles=1, needles_per_cycle=0,
+                                           enable_cleanup=False, enable_inflate=False,
+                                           thin_layer_policy="clamp_up_final"),
+            substrate=(1.0, "air"))
+
+    # The environment's own exit is the one solved against: glass behind
+    # the coat scores differently from air behind it.
+    assert run(1.52)["final_mf"] != run(1.0)["final_mf"]
+
+
 def test_phase_demand_through_a_plate_is_refused():
     with pytest.raises(Exception, match="phase"):
         _run(_targets(phase=True))

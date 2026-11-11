@@ -114,9 +114,21 @@ clamp, merge and inflate leave the plate alone. Not done:
    stack with a plate (n_par extra solves per iteration). The adjoint
    weights exist (`CascadeTrack.g`); deposits per block times them would
    close it.
-2. **Multi-environment runs** with an incoherent film are refused
-   (`simulate_all`). The joint door's gap places, backside segments and
-   per-environment expansion have not been checked against a spacer.
+2. **Multi-environment runs: done.** `simulate_all` no longer refuses
+   (its check only ever looked at environment 0's assembly, so a plate
+   in another environment's fixed segment already got through). Each
+   assembly solves on its own; the joint needle sums each environment's
+   slope through its own cascade. Checked: the joint-slope oracle
+   (analytic sum vs a finite difference of the joint merit) with the
+   coat in front of a plate, behind it, and once on each face (a copy in
+   each block); joint runs with interior and boundary needles in those
+   layouts plus an inverted copy on the back face; a plate as a pinned
+   film of the design segment itself, routed into every environment and
+   left at its thickness; a Python joint run with the coat on both faces
+   of a plate. Still open: a phase demand anywhere in the run is refused
+   as soon as any environment holds a plate, because the refusal reads
+   the spec, not the environment the demand belongs to - that is D4's
+   step 1.
 3. **Phase demands** are refused on any stack with a spacer, including
    phases that live entirely in the first block (front `r`) or the last
    one. The engine reports first-block amplitudes; whether synthesis
@@ -223,8 +235,9 @@ Proposal, in two steps:
    segment once on a coherent surround (e.g. the coating on a
    semi-infinite substrate, where phase is defined) carrying the phase
    demands, and once on the real plate carrying the intensity demands.
-   This needs W6 item 2 (multi-environment with a plate), which is D6's
-   first step, so D4 lands after it.
+   W6 item 2 (multi-environment with a plate) is in place, so this
+   layout runs today for intensity demands; step 1 is what lets the
+   phase demands join it.
 
 Single-block phase on a plate stack (front `r` of the first block)
 needs 1.4 fixed first (the differential-phase reference thickness must
@@ -238,7 +251,7 @@ can be coated, provided each starts with at least one film.
 ## 4. Order of work
 
 1. D10, pinned films untouched (done).
-2. W6 item 2: multi-environment runs with an incoherent film (D6).
+2. W6 item 2: multi-environment runs with an incoherent film (D6) (done).
 3. D4: per-environment phase routing with warnings (§3.1).
 4. W6 item 1: analytic Jacobian through the cascade (D6).
 5. Small items whenever convenient: D1 (refold failure is an error),
@@ -251,5 +264,10 @@ can be coated, provided each starts with at least one film.
 - CHANGELOG entries for W7, the integral fold and W6 are in place;
   release ritual (7 version sites, fingerprints) not yet run.
 - User docs: the supported-target matrix, the "seed a film on each face"
-  rule for plates (W6 item 4), and the refused combinations (phase
-  through a plate, multi-environment with a plate).
+  rule for plates (W6 item 4), and the refused combination (phase
+  through a plate, and any phase demand in a joint run with a plate).
+- Python door fix with W6 item 2: `run_needle(environments=…)` added
+  the run's `ambient`/`substrate` row to every environment, so an
+  environment with its own `layer_type` 0/2 row was refused ("at most
+  one substrate"). It now adds the default only where the environment
+  has none, as its comment always said.

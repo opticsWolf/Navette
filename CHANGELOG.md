@@ -185,6 +185,13 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Fixed
 
+- **An environment's own exit medium was refused.** `run_needle(
+  environments=…)` appended the run's `ambient` and `substrate` rows to
+  every environment, so one that ends in its own `layer_type=2` row (or
+  starts with its own `layer_type=0` row) failed with "at most one
+  substrate". The default is now added only where the environment has
+  none.
+
 - **Integral phase and retardance demands gave the needle a wrong
   slope** (`docs/plans/synthesis_targets_plan.md` §5.9). The integral fold
   emitted per-point pairs whose residual is the mean gap times the point
@@ -259,9 +266,13 @@ All notable changes to Navette are recorded here. Work items reference
   intensity, absorption and colour demand, front and back. The LM
   differences, the thickness budget and `final_total_thickness_nm` count
   coating only, and clamp, inflate and merge leave the plate alone.
-  Refused with a named error: phase demands on such a stack, a plate
-  left optimizable or open to needles, and multi-environment runs. A
-  face with no film on it stays bare; give it a starting film. What is
+  Refused with a named error: phase demands on such a stack (in a
+  multi-environment run, any phase demand once any environment holds a
+  plate) and a plate left optimizable or open to needles.
+  Multi-environment runs take a plate in any environment, in a fixed
+  segment or as a pinned film of a design segment; each environment
+  solves through its own cascade and the joint needle sums their slopes.
+  A face with no film on it stays bare; give it a starting film. What is
   still open is listed in `docs/plans/synthesis_open_items.md`.
   Previously any `coherent=False` film was refused.
 - **Per-point weights: `weights` and `weight_profile`**

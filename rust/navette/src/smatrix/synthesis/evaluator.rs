@@ -641,13 +641,8 @@ impl SmatrixContext {
     pub fn simulate_all(&self, stack: &DesignStack) -> Result<Vec<SimCurves>, String> {
         match &self.envs {
             None => Ok(vec![self.simulate(stack)?]),
-            // W6 first cut: the joint door's routing (gap places, backside
-            // segments) is not yet checked against incoherent films.
-            Some(_) if stack.has_incoherent() => Err(
-                "a multi-environment run with an incoherent film is not supported yet; \
-                 run each environment on its own"
-                    .into(),
-            ),
+            // W6: each assembly solves on its own, so an environment with
+            // an incoherent plate takes the cascade and the others do not.
             Some(envs) => envs
                 .expand(stack)?
                 .iter()
