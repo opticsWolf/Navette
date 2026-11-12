@@ -86,12 +86,13 @@ layer contributes only its attenuation τ = exp(−2·Im β).
   `FULLY_COHERENT` treats the whole stack as one block. With nothing flagged
   all modes agree bit for bit and nothing is refused.
 
-- **Synthesis refuses what it cannot honour.** The needle pipeline solves a
-  design as one coherent block, so handing it a `coherent: false` film used to
-  silently produce a coherent answer. It now refuses at `DesignStack`
-  construction, names the film and points at `solve_structure` / `ScatterMatrix`
-  — the doors that do honour the flag. Multiblock synthesis is a phase of its
-  own; refusing is not it, and the message says which is which.
+- **Synthesis honours the flag, for fixed plates.** The needle pipeline
+  splits a design at every `coherent: false` film and joins the coherent
+  blocks with the same intensity cascade the engine uses, so a coating on
+  both faces of a substrate plate is designed against the light that really
+  comes out. An incoherent film must be fixed (`optimize: false`,
+  `needle: false`), and construction refuses one that is not, naming it. See
+  *Through a Thick Plate* below for what such a run can and cannot target.
 
 - **Checked against something that is not itself.** The parity suite compares
   the engine to a port of the same algorithm, which pins the port rather than
@@ -152,6 +153,8 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 - **Multi-domain Targets**: One joint merit over spectral, angular, and CIE color demands — multiple angles, illuminants with own-white metamerism control, and per-target wavelength windows — all folded into the needle gradient with analytic chain-rule terms, so a single run designs for daylight and showroom light at once.
 
 - **One Design, Several Surroundings**: A coating measured bare and then laminated is two optical problems with one set of films. `run_needle(design={...}, environments=[...])` defines the films **once**, as a named design segment, and lists what sits around them in each environment; one optimization moves one set of thicknesses against every environment's demands at the same time, so the films cannot drift apart. Demands carry an `environment=` tag; an unknown name refuses, naming the roster, because scoring against the wrong surroundings looks like a physics result rather than a mistake. The needle sees all of them at once — each environment scans its own assembly and a site in the shared design is routed by parameter into a shared bucket, so the candidate that lands is the one that helps the joint merit, not the first environment. Cost is honest and linear: K environments means K assemblies and K solves per evaluation. The same design writes as a program document (`design:` / `environments:` sections) and compiles through the same compiler — the two spellings land on identical merit bits.
+
+- **Through a Thick Plate**: A substrate plate is a film of the design with `coherent: false`, `optimize: false` and `needle: false`; the films before it coat the front face, the films after it the back face, and the run's `substrate` is the medium behind the plate (air for a free-standing window). Forward solve, needle gradient and the optimizer's analytic Jacobian all go through the engine's block cascade, so both faces are designed against the incoherent sum of their echoes. Three rules follow from the physics. **Seed every face you want coated**: the plate never hosts a needle, so a face with no film on it has nowhere to put one and stays bare. **Intensity, absorption and colour only**: phase is not defined across an incoherent layer, so a phase, retardance or differential-phase demand on a stack with a plate is refused; in a multi-environment run it is dropped from the plate environments with a warning and kept where the coating sits in coherent surroundings, which is how a phase demand and a plate share one design. **Thickness counts the coating**: the `max_total_thickness_nm` budget and the run's `final_coating_thickness_nm` sum the coherent films, not the plate (`DesignStack.coating_thickness()`; `total_thickness()` includes it).
 
 - **Graded Media**: Mixture gradients are a first-class layer property, not a hand-built stack of sublayers. A `gradient` spec names the two endpoint materials, the EMA kernel (any of the six in-tree mixing rules) and the profile mode — `FixedSpan`, where composition runs `f_start` → `f_end` across the film, or `RateCapped`, a thickness-relative slope clamped to `[f_min, f_max]` so a thick film saturates into a pure-material tail. Single-material drift (`InhMode`) has the same two modes. Graded layers still serve as pinned background (substrate diffusion gradients, rugate foundations) while the needle designs around them — what is new is that a graded span's thickness can itself be an optimizer parameter. Two things about graded spans are easy to get wrong and are written down in [docs/graded-media.md](docs/graded-media.md): a span expands into sublayer **rows** (16 authored spans can reach the solver as 80 rows, and the row count is what a solve costs), and Névot-Croce interface roughness on a graded span applies at every sublayer boundary — where the model's σ ≪ thickness condition is the first thing to fail.
 

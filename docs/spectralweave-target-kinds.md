@@ -15,6 +15,63 @@ Target semantics live in two Rust mirrors that must stay in lockstep:
 Python surface: `src/navette/spectralweave/target.py`
 (`SpectralTarget`, `AngularTarget`, `TargetCollection`).
 
+## What synthesis can target
+
+The needle run (`run_needle`, `run_design`) compiles a `TargetCollection`
+through `build_merit_spec`; a label outside this table raises
+`ValueError` there, and a demand the evaluator cannot produce is refused
+before any solve (`SmatrixContext::check_spec`), naming it.
+
+| demand | labels (`spectral`, pol.) | coherent stack | stack with a plate |
+|---|---|---|---|
+| intensity, front | `R`, `T` × s/p/u | yes | yes |
+| intensity, back (light from the exit side) | `RB`, `TB` × s/p/u | yes¹ | yes¹ |
+| absorptance | `A`, `AB` × s/p/u | yes | yes |
+| phase of one element | `R`, `T`, `RB`, `TB` × s/p, `phase=True` | yes | no² |
+| retardance | `RetR`, `RetT`, `DeltaR`, `DeltaT`, u, `phase=True` | yes | no² |
+| differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
+| colour (`ColorTarget`) | front `R` / `T` | yes | yes |
+
+Every row but colour accepts every kind (`e`/`a`/`b`/`r`/`c`), `band`,
+point weights and `integral`; intensity rows take linear or log
+normalization, phase rows linear or phase. Colour is `Exact` and linear
+only (*Color demands*). Not available in synthesis (the engine computes
+them, the merit does not): differential phase in reflection (`PDrs`,
+`PDrp`), Ψ, group delay and higher dispersion orders, degree of
+polarization and Stokes parameters, ratio and extinction targets, and
+the `complex` transform.
+
+1. Refused when the exit medium absorbs over the demand's wavelengths:
+   light coming from inside an absorbing half-space has no defined
+   incident flux.
+2. Phase is not defined across an incoherent layer. A single-environment
+   run refuses the demand. In a multi-environment run it is dropped
+   from each environment that holds a plate, with a `UserWarning` naming
+   them, and kept in the coherent ones; if that leaves no phase demand
+   anywhere, the run refuses. Phases that live inside one coherent block
+   (front `r` of the front coating) are dropped too, for now.
+
+### A coating on a plate
+
+A plate is a film with `coherent=False`, `optimize=False` and
+`needle=False` (construction refuses an incoherent film that is free or
+a needle host). Films before it coat the front face, films after it the
+back face, and the run's substrate is the medium behind the plate.
+
+- **Seed each face you want coated.** The plate never hosts a needle and
+  a site with no coherent film above it gets no gradient, so a face that
+  starts bare stays bare. Whether a seeded face keeps its films is the
+  optimizer's call: it may drive them to zero if that lowers the merit.
+- **Thickness is the coating's.** `max_total_thickness_nm` and the run
+  results' `final_coating_thickness_nm` / per-phase
+  `coating_thickness_nm` count coherent films only;
+  `DesignStack.coating_thickness()` reads the same sum and
+  `total_thickness()` adds the plate.
+- **Phase alongside a plate** takes two environments: the same design
+  segment once in coherent surroundings (on a semi-infinite substrate),
+  carrying the phase demands, and once on the plate, carrying the
+  intensity demands (see *Environments*).
+
 ## Normalization strategy (verified)
 
 Each target curve is self-normalized at ingestion so heterogeneous

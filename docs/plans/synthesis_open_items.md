@@ -76,6 +76,10 @@ phase. On a stack with a plate this would include it. It cannot be
 reached today: every phase demand is refused on an incoherent stack.
 It matters if phase demands inside the first block are ever allowed
 (§3, W6 follow-up 3).
+Checked 2026-11-12: it does not block that. The only differential
+demands are `PDts`/`PDtp`, which cross the plate and are always
+dropped; a single-block phase in reflection would be `PDrs`/`PDrp`,
+deferred with D3. 1.4 matters only if D3 lands.
 
 ### 1.5 Plan text out of step (debt)
 
@@ -86,6 +90,9 @@ It matters if phase demands inside the first block are ever allowed
   and §3's step 9: updated to "first cut, intensity only".
 - §6 follow-ups (target-kinds doc, needle docs with a generated
   supported-target matrix) have not been done for any workstream.
+  2026-11-12: the matrix is in the target-kinds doc, written by hand
+  from `SmatrixContext::provides` and the converter's label tables;
+  generating it is still open.
 
 ### 1.6 A doc comment sits on the wrong item (fixed)
 
@@ -163,11 +170,13 @@ bucket (FD oracle, 0° and 30°); LM with the analytic Jacobian (item
 3. **Phase demands** on a stack with a spacer are dropped from that
    environment with a warning (D4 step 1), including phases that live
    entirely in the first block (front `r`) or the last one. Keeping
-   those single-block phases is D4's open remainder (needs 1.4).
+   those single-block phases is D4's open remainder (1.4 does not
+   block it; see there).
 4. **An uncoated face cannot grow a coating.** The plate is never a host,
    and a boundary site with no coherent film above it gets P = 0, so a
    face with no film on it stays bare. A face that should be coated
-   needs at least one seed film. Documented here; not yet in user docs.
+   needs at least one seed film. In the user docs (README *Through a
+   Thick Plate*, target-kinds *A coating on a plate*).
 5. **No explicit exit medium.** The plan proposed
    `DesignStack.exit: Option<LayerSpec>` with the substrate as a finite
    incoherent layer. Implemented instead as "the plate is a film, the
@@ -287,8 +296,11 @@ keeps its phase rows. Two simplifications against the proposal above:
 The flat path (`run_design`, one environment) keeps its own refusal.
 
 Single-block phase on a plate stack (front `r` of the first block)
-needs 1.4 fixed first (the differential-phase reference thickness must
-count only that block).
+was thought to need 1.4 first; it does not, since no reflection
+differential demand exists (1.4). What it does need: the back `r`
+from the last block (the cascade reports the first block's amplitudes),
+amplitude deposits for the films of that block, and a multiblock needle
+P for phase.
 
 Plan open question 4 (coated back side) is answered by W6: both faces
 can be coated, provided each starts with at least one film.
@@ -310,7 +322,8 @@ can be coated, provided each starts with at least one film.
 - Re-read the Linux needle-pin digest from CI (1.2) (done).
 - CHANGELOG entries for W7, the integral fold and W6 are in place;
   release ritual (7 version sites, fingerprints) not yet run.
-- User docs: the supported-target matrix, the "seed a film on each face"
+- User docs (done 2026-11-12: README, target-kinds *What synthesis
+  can target*): the supported-target matrix, the "seed a film on each face"
   rule for plates (W6 item 4), and the refused combination (phase
   through a plate, and any phase demand in a joint run with a plate).
 - Python door fix with W6 item 2: `run_needle(environments=…)` added
