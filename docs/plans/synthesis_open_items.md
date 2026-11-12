@@ -35,13 +35,23 @@ tail stays 0.
 - Fix: carry the z index in `locs` (or push a sentinel) and scatter by it,
   and add a masked case to the multiblock FD test.
 
-### 1.2 Linux needle-pin digest predates W1 (debt)
+### 1.2 Linux needle-pin digest predates W1 (fixed)
 
 `validation/regression/synthesis/test_needle_pin.py` holds a Linux digest
 from before the W1 fold; Windows was re-recorded at W1. W4, W5, W7, the
 integral fold and W6 did not move the Windows digest. The Linux value
 must be re-read from CI (`ubuntu-24.04`, release) and recorded with
 provenance, or the Linux job fails on the first CI run of this branch.
+Done 2026-11-12: re-read from CI run 43078666530 (`d93c93c`); every
+run of the branch had printed the same value.
+
+The same Linux jobs also failed
+`test_a_broadband_quarter_wave_retarder_needs_the_needle` (merit 130,
+since the W4 commit). Not a Linux bug: the run is chaotic in its start
+(a 1e-12 nm move of the seed takes merit 0.019 to 5378 on Windows), so
+platform libm differences pick another path. The test now tries a
+fixed 5 x 5 grid of two-film starts (11 of 25 converge on Windows) and
+keeps the first that converges.
 
 ### 1.3 Two notions of "total thickness" (debt, W6)
 
@@ -297,7 +307,7 @@ can be coated, provided each starts with at least one film.
 
 ## 5. Housekeeping before merge
 
-- Re-read the Linux needle-pin digest from CI (1.2).
+- Re-read the Linux needle-pin digest from CI (1.2) (done).
 - CHANGELOG entries for W7, the integral fold and W6 are in place;
   release ritual (7 version sites, fingerprints) not yet run.
 - User docs: the supported-target matrix, the "seed a film on each face"

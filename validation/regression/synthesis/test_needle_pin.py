@@ -187,11 +187,15 @@ def _strip_keys(obj, drop):
 # fold now has one branch per polarization, an s or p demand folding at
 # twice its weight on its own branch where it used to fold at its weight
 # on both. At normal incidence that is the same sum in exact arithmetic,
-# not in the last bits of the predicted gains the phases record. Linux
-# still holds the pre-W1 digest until it is re-read from CI.
+# not in the last bits of the predicted gains the phases record.
+#
+# Linux re-read for W1 from CI run 43078666530 (``d93c93c``, ubuntu-24.04,
+# release build; the python and the dependency-floors jobs printed the
+# same digest, as has every run of this branch since the retardance
+# targets, so the later work moved it no more than it moved Windows).
 RECORDED_DIGESTS = {
     "Windows": "1c90eef35848e074ff094175c98a1181f5677b36979107b1300ae77f293ba021",
-    "Linux": "a52946d7974d57d9edfb8d685f9af624b8dd09dec97a584d5a021f2e1203cdf7",
+    "Linux": "b391180a707bf96bcd1c571b07a253bcfac07851ee1b380a36e964086a303095",
 }
 DIGEST = RECORDED_DIGESTS.get(platform.system())
 
