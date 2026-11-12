@@ -89,9 +89,16 @@ def test_phase_demand_is_dropped_only_in_the_plate_environment():
     assert res["phases"], res["termination"]
 
 
-def test_phase_demand_only_behind_a_plate_is_refused():
-    with pytest.raises(Exception, match="every phase demand"):
-        _joint(phase_in=("plate",))
+def test_phase_demand_only_behind_a_plate_warns_once_and_runs():
+    # Targets belong to the whole design: a demand the plate stack cannot
+    # answer is dropped at run setup with ONE warning, never per iteration.
+    import warnings
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        res = _joint(phase_in=("plate",))
+    dropped = [w for w in seen if "phase demand" in str(w.message)]
+    assert len(dropped) == 1, [str(w.message) for w in seen]
+    assert res["phases"], res["termination"]
 
 
 def test_joint_run_with_a_plate_in_one_environment():
@@ -131,6 +138,20 @@ def test_an_environment_keeps_its_own_exit_medium():
     assert run(1.52)["final_mf"] != run(1.0)["final_mf"]
 
 
-def test_phase_demand_through_a_plate_is_refused():
-    with pytest.raises(Exception, match="phase"):
-        _run(_targets(phase=True))
+def test_phase_demand_through_a_plate_warns_once_and_runs():
+    # The flat door drops it at setup, once; the R demand still runs.
+    import warnings
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        res = _run(_targets(phase=True))
+    dropped = [w for w in seen if "phase demand" in str(w.message)]
+    assert len(dropped) == 1, [str(w.message) for w in seen]
+    assert res["phases"], res["termination"]
+
+
+def test_a_phase_only_spec_through_a_plate_is_refused():
+    tc = TargetCollection()
+    tc.add(SpectralTarget(WL, np.zeros(31), np.full(31, 0.1), "s", "R",
+                          kind="e", angle_deg=0.0, phase=True))
+    with pytest.raises(Exception, match="no demand is left"):
+        _run(tc)

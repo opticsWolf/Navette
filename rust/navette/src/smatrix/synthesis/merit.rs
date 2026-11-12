@@ -1048,11 +1048,30 @@ impl MeritSpec {
     /// left with no demand scores nothing (`residuals_into` filters by
     /// demand), so dropping cannot shift another demand's residuals.
     pub fn drop_phase_demands(&mut self, lose_phase: &[bool]) -> Vec<MeritTarget> {
+        self.drop_targets(|t, _| {
+            t.phase && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false)
+        })
+    }
+
+    /// Remove every demand `drop(target, its curve)` selects, and return
+    /// them. Same contract as [`Self::drop_phase_demands`]: keys stay
+    /// registered, the other demands' residuals do not move. The run doors'
+    /// one-time feasibility pass uses it; nothing inside a loop does.
+    pub fn drop_targets(
+        &mut self,
+        mut drop: impl FnMut(&MeritTarget, CurveId) -> bool,
+    ) -> Vec<MeritTarget> {
+        let keys = &self.keys;
         let (dropped, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.targets)
             .into_iter()
-            .partition(|t| t.phase && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false));
+            .partition(|t| drop(t, keys[t.key_idx as usize].curve));
         self.targets = kept;
         dropped
+    }
+
+    /// True while the spec asks for anything: a spectral or a color demand.
+    pub fn has_demands(&self) -> bool {
+        !self.targets.is_empty() || !self.color.is_empty()
     }
 
     /// True if any demand subtracts the equivalent-medium reference.

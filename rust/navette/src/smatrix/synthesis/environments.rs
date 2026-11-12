@@ -3917,14 +3917,14 @@ mod tests {
         );
     }
 
-    /// D4: when every phase demand sits behind a plate, nothing the caller
-    /// asked of phase would be synthesized, so the run refuses.
+    /// D4: a phase demand only behind a plate is dropped with the same one
+    /// warning; the intensity demands left still run.
     #[test]
-    fn d4_a_run_whose_every_phase_demand_is_dropped_refuses() {
+    fn d4_a_run_whose_every_phase_demand_is_dropped_warns_and_runs() {
         use crate::smatrix::synthesis::driver::run_environments;
         let r = plate_req(vec![design_seg("coat"), plate()]);
         let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
-        let err = run_environments(
+        let (res, _, warnings) = run_environments(
             envs,
             cmap,
             &WL,
@@ -3935,9 +3935,35 @@ mod tests {
             Default::default(),
             |_, _| Ok(()),
         )
+        .unwrap();
+        assert!(res.final_mf.is_finite());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("'on_plate'"), "{warnings:?}");
+    }
+
+    /// A run whose every demand is dropped has nothing left to synthesize,
+    /// so it refuses, naming why.
+    #[test]
+    fn a_run_left_with_no_demand_refuses() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let r = plate_req(vec![design_seg("coat"), plate()]);
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        let mut spec = phase_spec(&[1]);
+        spec.drop_targets(|t, _| !t.phase);
+        let err = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &spec,
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
         .unwrap_err();
         assert!(
-            err.contains("every phase demand") && err.contains("'on_plate'"),
+            err.contains("no demand is left") && err.contains("'on_plate'"),
             "{err}"
         );
     }

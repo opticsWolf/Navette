@@ -287,8 +287,12 @@ the plate environment solves through its cascade while the coherent one
 keeps its phase rows. Two simplifications against the proposal above:
 - Every phase demand in a plate environment is dropped, single-block
   ones (front `r`) included; keeping those is the open remainder.
-- The hard error is run-level: the run refuses when every phase demand
-  was dropped. A compiled spec holds one demand per environment and no
+- (Superseded 2026-11-12: the drop now warns even when it removes every
+  phase demand, and both run doors share it with the back-incidence
+  check in `driver::drop_infeasible`; a run refuses only when no demand
+  of any kind is left. The note below records why the old rule was
+  run-level.) The hard error was run-level: the run refused when every
+  phase demand was dropped. A compiled spec holds one demand per environment and no
   longer knows which ones came from the same user target, so "this
   target was dropped everywhere" cannot be told apart from "this target
   only ever named the plate environment" while another phase target

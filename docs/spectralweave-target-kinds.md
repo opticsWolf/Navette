@@ -41,15 +41,21 @@ them, the merit does not): differential phase in reflection (`PDrs`,
 polarization and Stokes parameters, ratio and extinction targets, and
 the `complex` transform.
 
-1. Refused when the exit medium absorbs over the demand's wavelengths:
-   light coming from inside an absorbing half-space has no defined
-   incident flux.
-2. Phase is not defined across an incoherent layer. A single-environment
-   run refuses the demand. In a multi-environment run it is dropped
-   from each environment that holds a plate, with a `UserWarning` naming
-   them, and kept in the coherent ones; if that leaves no phase demand
-   anywhere, the run refuses. Phases that live inside one coherent block
-   (front `r` of the front coating) are dropped too, for now.
+1. Not computable when the exit medium absorbs over the demand's
+   wavelengths: light coming from inside an absorbing half-space has no
+   defined incident flux. A run drops the demand (from each environment
+   whose exit absorbs) with one `UserWarning` at setup; a bare
+   `SmatrixContext` raises a `ValueError` instead.
+2. Phase is not defined across an incoherent layer. A run drops the
+   demand from each environment whose stack holds a plate, with one
+   `UserWarning` at setup naming them, and keeps it in the coherent
+   ones. Phases that live inside one coherent block (front `r` of the
+   front coating) are dropped too, for now.
+
+Targets belong to the whole design. Both checks run once per run, before
+the pipeline starts, against each environment's complete stack; nothing
+inside the optimization loops checks or warns. A run refuses only when
+the drops leave no demand at all.
 
 ### A coating on a plate
 

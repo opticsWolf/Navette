@@ -9,6 +9,19 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Changed (breaking)
 
+- **A demand the complete stack cannot answer is dropped once, with a
+  warning.** Targets belong to the whole design; at run setup
+  (`run_design`, `run_design_environments`, `run_needle`) each
+  environment's assembled stack is checked once (`driver::drop_infeasible`):
+  phase demands through an incoherent film, and back-incidence demands
+  where the exit medium absorbs (k > 1e-3), are dropped with ONE
+  `UserWarning` per kind, naming the environments and exit media. The
+  flat door used to fail mid-run on both; a joint run used to refuse
+  when every phase demand was dropped. A run now refuses only when no
+  demand is left. Nothing inside the optimization loops checks or
+  warns; the needle pins are unchanged. A bare `SmatrixContext` keeps
+  its per-solve `ValueError`s.
+
 - **Run results name the coating thickness as such**
   (`docs/plans/synthesis_open_items.md` D7). The value always counted
   coherent films only, so a plate made "total" wrong. Renamed keys:

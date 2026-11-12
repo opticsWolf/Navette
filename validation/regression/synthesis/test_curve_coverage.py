@@ -135,6 +135,26 @@ def test_back_demands_refuse_an_absorbing_exit_medium():
   _ctx(SpectralTarget(WL, V, T, "s", "R", angle_deg=DEG)).evaluate_merit(_stack(sub=0.05 + 3.0j))
 
 
+def test_a_run_drops_back_demands_on_an_absorbing_exit_once():
+  # The run door checks the complete stack once, at setup: the back demand
+  # goes with ONE warning, the front demand still runs, and no solve inside
+  # the pipeline reaches the evaluator's per-call refusal.
+  import warnings
+  tc = TargetCollection()
+  tc.add(SpectralTarget(WL, np.zeros(WL.size), np.full(WL.size, 0.01), "s", "R", angle_deg=DEG))
+  tc.add(SpectralTarget(WL, V, T, "s", "TB", angle_deg=DEG))
+  mats = {k: np.full(WL.shape, N[k]) for k in ("H", "L")}
+  with warnings.catch_warnings(record=True) as seen:
+    warnings.simplefilter("always")
+    out = run_needle(layers=[(mats["L"], 100.0), (mats["H"], 80.0)], names=["L", "H"], targets=tc,
+                     wavelengths=WL, materials=mats, substrate=(np.full(WL.shape, 0.05 + 3.0j), "metal"),
+                     angles_deg=ANG,
+                     pipeline_config=PipelineConfig(max_macro_cycles=2, needles_per_cycle=1))
+  dropped = [str(w.message) for w in seen if "back-incidence" in str(w.message)]
+  assert len(dropped) == 1 and "'metal'" in dropped[0], [str(w.message) for w in seen]
+  assert np.isfinite(out["final_mf"])
+
+
 def test_a_needle_run_on_an_unpolarized_target_completes():
   tc = TargetCollection()
   tc.add(SpectralTarget(WL, np.zeros(WL.size), np.full(WL.size, 0.01), "u", "R", angle_deg=DEG))
