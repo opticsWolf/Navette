@@ -178,7 +178,6 @@ pub fn energy_conservation(
 }
 
 impl Solver {
-    #[allow(clippy::too_many_arguments)]
     /// Shape and range checks shared by both constructors. `n_indices` is the
     /// index cache's element count, whichever layout it arrived in.
     #[allow(clippy::too_many_arguments)]
