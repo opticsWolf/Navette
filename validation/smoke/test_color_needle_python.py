@@ -46,7 +46,7 @@ def _spec(curve="Rs"):
     return compile_merit_spec(json.dumps({
         "spectral": [], "angular": [],
         "color": [{
-            "curve": curve, "angle": 30.0,
+            "curve": curve, "angle_deg": 30.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "Lab", "reference": [55.0, 12.0, -18.0],
             "distance": "DeltaE2000", "weight": 1.7,
@@ -56,27 +56,28 @@ def _spec(curve="Rs"):
 
 @pytest.fixture(scope="module")
 def bench():
-    st = ScatterMatrix(_N, _D, wavelengths=_WLS, angles=_ANGLES)
+    st = ScatterMatrix(_N, _D, wavelengths=_WLS, angles_deg=_ANGLES)
     out = st.compute(Request.RS | Request.TS)
     rs = np.atleast_2d(np.asarray(out["Rs"], float))
     ts = np.atleast_2d(np.asarray(out["Ts"], float))
 
     def sim_of(rs_row=None):
-        s = SimCurves(_ANGLES, _WLS, float(_D[1:-1].sum()), 1.0, 1.52)
+        s = SimCurves(_WLS, float(_D[1:-1].sum()), 1.0, 1.52, angles_deg=_ANGLES)
         s.set_curve("Rs", np.ascontiguousarray(
             (rs if rs_row is None else rs_row).ravel()))
         s.set_curve("Ts", np.ascontiguousarray(ts.ravel()))
         return s
 
     spec = _spec()
+    folded = build_needle_targets(spec, _WLS, sim_of(), angles_deg=_ANGLES)
     return {
         "stack": st, "rs": rs, "ts": ts, "sim_of": sim_of, "spec": spec,
-        "fold": build_needle_targets(spec, _ANGLES, _WLS, sim_of()),
+        "folded": folded, "fold": folded["s"],
     }
 
 
 def _grad(request=NeedleRequest.P, **kw):
-    st = ScatterMatrix(_N, _D, wavelengths=_WLS, angles=_ANGLES)
+    st = ScatterMatrix(_N, _D, wavelengths=_WLS, angles_deg=_ANGLES)
     return needle_gradient(st, np.full(_NW, _HOST_N), [_Z], request, **kw)
 
 
@@ -89,8 +90,11 @@ def test_the_fold_emits_the_color_buckets(bench):
     assert "grads_r" in fold and "grads_t" in fold, sorted(fold)
     assert np.asarray(fold["grads_r"]).shape == (_NW,)
     assert np.any(np.asarray(fold["grads_r"]) != 0.0)
-    # An Rs demand deposits nowhere else.
+    # An Rs demand deposits nowhere else, the p branch included.
     assert np.all(np.asarray(fold["grads_t"]) == 0.0)
+    p = bench["folded"]["p"]
+    assert np.all(np.asarray(p["grads_r"]) == 0.0)
+    assert np.all(np.asarray(p["grads_t"]) == 0.0)
 
 
 def test_the_pointwise_pair_stays_empty_for_a_color_demand(bench):
@@ -105,9 +109,12 @@ def test_the_pointwise_pair_stays_empty_for_a_color_demand(bench):
 
 
 def test_grads_r_equals_dF_dR(bench):
-    """The fold's analytic dF/dcurve against a finite difference of the merit."""
+    """The fold's analytic dF/dcurve against a finite difference of the merit.
+
+    An s-curve bucket carries ``2·dF/dRs``: the kernel halves it.
+    """
     spec, rs, sim_of = bench["spec"], bench["rs"], bench["sim_of"]
-    g = np.asarray(bench["fold"]["grads_r"], float)
+    g = 0.5 * np.asarray(bench["fold"]["grads_r"], float)
 
     h = 1e-6
     fd = np.empty(_NW)
@@ -134,19 +141,20 @@ def test_without_the_buckets_the_color_gradient_is_zero(bench):
 def test_with_the_buckets_the_gradient_is_the_merit_derivative(bench):
     """End to end: dF/d(thickness) through the Python path vs merit FD.
 
-    ``P`` is the half-gradient (see ``needle_gradient``'s docstring), so
-    ``dF/dd = 2*sum_k P_k``; a needle of the host's own index placed inside
+    The kernel returns the half-gradient (see ``needle_gradient``'s
+    docstring) and the s-branch bucket carries twice the color slope, so
+    ``dF/dd = sum_k P_k``; a needle of the host's own index placed inside
     the host is exactly growing that layer.
     """
     r, spec, sim_of = bench["fold"]["r"], bench["spec"], bench["sim_of"]
     out = _grad(targets_r=np.asarray(r["targets"], float),
                 weights_r=np.asarray(r["weights"], float),
                 grads_r=np.asarray(bench["fold"]["grads_r"], float))
-    analytic = 2.0 * float(np.sum(out["P_s"]))
+    analytic = float(np.sum(out["P_s"]))
 
     def merit_at(th):
         st = ScatterMatrix(_N, np.asarray(th, float), wavelengths=_WLS,
-                           angles=_ANGLES)
+                           angles_deg=_ANGLES)
         rs = np.atleast_2d(np.asarray(st.compute(Request.RS)["Rs"], float))
         return spec.merit(sim_of(rs), 1e6)
 
@@ -190,7 +198,7 @@ def test_pointwise_and_color_superpose(bench):
 # --------------------------------------------------------------------------
 
 def test_a_transmission_color_demand_rides_the_T_channel(bench):
-    fold_t = build_needle_targets(_spec("Ts"), _ANGLES, _WLS, bench["sim_of"]())
+    fold_t = build_needle_targets(_spec("Ts"), _WLS, bench["sim_of"](), angles_deg=_ANGLES)["s"]
     gr = np.asarray(fold_t["grads_r"], float)
     gt = np.asarray(fold_t["grads_t"], float)
     assert np.all(gr == 0.0) and np.any(gt != 0.0)
@@ -215,7 +223,7 @@ def test_grads_r_without_P_requested_is_refused(bench):
 
 
 def test_grads_t_without_P_T_requested_is_refused(bench):
-    fold_t = build_needle_targets(_spec("Ts"), _ANGLES, _WLS, bench["sim_of"]())
+    fold_t = build_needle_targets(_spec("Ts"), _WLS, bench["sim_of"](), angles_deg=_ANGLES)["s"]
     with pytest.raises(ValueError, match="NREQ_P_T was not requested"):
         _grad(NeedleRequest.P, grads_t=np.asarray(fold_t["grads_t"], float))
 

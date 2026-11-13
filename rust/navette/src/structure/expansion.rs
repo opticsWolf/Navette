@@ -544,8 +544,13 @@ fn emit_entry(
         {
             current_delta = group.inh_delta_error(current_delta, rng.rng());
         }
+        // Rows run from the incidence face, so `1 + c` sits on the outer
+        // face and `1 - c` on the substrate face: `+d` raises the index
+        // toward the surface, the literature's sign for the inhomogeneity
+        // (delta = (n_outer - n_substrate) / n_mean; Borgogno et al., Appl.
+        // Opt. 23, 3567 (1984)). Up to 0.8.1 the ramp ran the other way.
         let mut factors: Vec<f64> = (0..sub)
-            .map(|i| 1.0 - current_delta + 2.0 * current_delta * f64::from(i) / f64::from(sub - 1))
+            .map(|i| 1.0 + current_delta - 2.0 * current_delta * f64::from(i) / f64::from(sub - 1))
             .collect();
         if *inv {
             factors.reverse();
@@ -618,7 +623,7 @@ fn push_row(
 }
 
 /// Owner+carrier Looyenga mix at f=0.5 (native kernel; eps→n at insertion).
-fn looyenga_mix(owner_nk: &[Complex64], other_nk: &[Complex64]) -> Vec<Complex64> {
+pub(crate) fn looyenga_mix(owner_nk: &[Complex64], other_nk: &[Complex64]) -> Vec<Complex64> {
     use ndarray::Array1;
     let ni = Array1::from_vec(owner_nk.to_vec());
     let nh = Array1::from_vec(other_nk.to_vec());
@@ -910,6 +915,70 @@ mod tests {
         }
     }
 
+    /// The ramp's orientation, and its sign: rows run from the incidence
+    /// side, so `+d` puts `1 + d/2` on the ambient face and `1 - d/2` on
+    /// the substrate face (the index rises toward the surface, the
+    /// literature's sign), and `-d` emits the same rows mirrored. Both
+    /// modes; a negative `RateCapped` rate grades as far as its twin.
+    #[test]
+    fn a_negative_delta_mirrors_the_positive_ramp() {
+        let graded = |inh_delta: f64, inh_mode: InhMode| {
+            let mut l = Layer::film(200.0, "TiO2");
+            l.inhomogen = true;
+            l.inh_delta = inh_delta;
+            l.inh_mode = inh_mode;
+            let layers = vec![
+                (Layer::film(0.0, "glass"), false),
+                (l, false),
+                (Layer::film(0.0, "glass"), false),
+            ];
+            let (sa, spans) = expand(
+                &layers,
+                &mats(),
+                &WL,
+                &HashMap::new(),
+                ExpandOptions::deterministic(),
+            )
+            .unwrap();
+            let rows: Vec<Vec<Complex64>> = (spans[1].start..spans[1].end)
+                .map(|i| sa.row(i).to_vec())
+                .collect();
+            rows
+        };
+        use crate::structure::gradient::InhMode;
+        let bulk = [Complex64::new(2.35, 0.01), Complex64::new(2.33, 0.008)];
+        let rc = |rate: f64| InhMode::RateCapped {
+            rate,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        for (pos, neg) in [
+            (graded(0.2, InhMode::Fixed), graded(-0.2, InhMode::Fixed)),
+            (graded(0.0, rc(0.05)), graded(0.0, rc(-0.05))),
+        ] {
+            let n = pos.len();
+            assert!(n > 1);
+            assert_eq!(neg.len(), n, "a reversed ramp lost rows");
+            // +d: higher index at the incidence face, lower at the substrate.
+            for w in 0..WL.len() {
+                assert!((pos[0][w] / bulk[w]).re > 1.0 && (pos[n - 1][w] / bulk[w]).re < 1.0);
+            }
+            for i in 0..n {
+                for w in 0..WL.len() {
+                    let (a, b) = (neg[i][w], pos[n - 1 - i][w]);
+                    assert!((a - b).norm() < 1e-12, "row {i}: {a} vs {b}");
+                }
+            }
+        }
+        // Fixed d = 0.2 is the half-amplitude 0.1 at either face.
+        let fixed = graded(0.2, InhMode::Fixed);
+        close_c(
+            &fixed[0],
+            &[1.1 * bulk[0].re, 1.1 * bulk[1].re],
+            &[1.1 * bulk[0].im, 1.1 * bulk[1].im],
+        );
+    }
+
     /// Oracle twin: scaling + slice + grading + roughness (Python FULL).
     #[test]
     fn full_stack_matches_python() {
@@ -920,7 +989,9 @@ mod tests {
         l.interface = true;
         l.interface_thickness = 6.0;
         l.inhomogen = true;
-        l.inh_delta = 0.2;
+        // The oracle was taken at +0.2 under the pre-v3 sign; -0.2 is the
+        // same film under the literature sign, so its numbers stand.
+        l.inh_delta = -0.2;
         layers.push((l, false));
         let mut groups = HashMap::new();
         let mut g = Group::new("TiO2");
@@ -1415,7 +1486,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     /// The frozen legacy arithmetic parameterized by the mode's delta:
-    /// the emitted ramp is `1 - delta_nom ..= 1 + delta_nom` with
+    /// the emitted ramp is `1 + delta_nom ..= 1 - delta_nom` with
     /// `delta_nom = (delta_layer + summand) * 0.5` (the RateCapped
     /// nominal clamped to [-cap, cap]), and the emitted row count is
     /// exactly `sub_layer_count()` (B6 reader 1: emission is the truth).
@@ -1446,7 +1517,7 @@ mod tests {
         let base = mats().nk("TiO2", &WL).unwrap();
         let sub = sp.end - sp.start;
         for i in 0..sub {
-            let f = 1.0 - 0.1 + 2.0 * 0.1 * i as f64 / (sub - 1) as f64;
+            let f = 1.0 + 0.1 - 2.0 * 0.1 * i as f64 / (sub - 1) as f64;
             let want: Vec<Complex64> = base.iter().map(|z| z * f).collect();
             assert_eq!(sa.row(sp.start + i), &want[..], "row {i} (f={f})");
         }

@@ -158,7 +158,7 @@ _ANGLES = [0.0, 45.0]
 
 
 def _stack():
-    return ScatterMatrix(_N, _D, wavelengths=_WLS, angles=_ANGLES)
+    return ScatterMatrix(_N, _D, wavelengths=_WLS, angles_deg=_ANGLES)
 
 
 _SINGLE = sorted(
@@ -351,8 +351,9 @@ def test_program_schema_version_matches_the_native_gate(tmp_path):
                         program.PROGRAM_SCHEMA_VERSION), (
         f"python range=({program.MIN_READABLE_PROGRAM_SCHEMA_VERSION}, "
         f"{program.PROGRAM_SCHEMA_VERSION}), rust accepts ({lo}, {hi})")
-    assert (lo, hi) == (1, 2), (
-        f"the program envelope reads 1..=2 as of F2.4; got ({lo}, {hi})")
+    assert (lo, hi) == (1, 3), (
+        f"the program envelope reads 1..=3 as of the grading-sign flip; "
+        f"got ({lo}, {hi})")
 
 
 def test_program_schema_gate_names_which_direction_it_refused(tmp_path):
@@ -377,7 +378,7 @@ def test_program_schema_gate_names_which_direction_it_refused(tmp_path):
 
     with pytest.raises(ValueError, match="newer build"):
         load(program.PROGRAM_SCHEMA_VERSION + 1)
-    with pytest.raises(ValueError, match=r"reads 1..=2"):
+    with pytest.raises(ValueError, match=r"reads 1..=3"):
         load(program.MIN_READABLE_PROGRAM_SCHEMA_VERSION - 1)
 
 

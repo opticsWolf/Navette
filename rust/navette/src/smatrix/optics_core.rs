@@ -14,10 +14,17 @@
 use num_complex::Complex64;
 use num_complex::ComplexFloat;
 
+use crate::smatrix::angle::Radians;
+
 /// √3 (roughness/field-profile closed forms).
 pub const SQRT3: f64 = 1.73205080757;
 /// Denominator regularization floor shared by the field-amplitude star product.
 pub const LOG_MIN: f64 = 1e-100;
+/// `LOG_MIN²`: the guards below compare `|z|² < LOG_MIN²` rather than
+/// `|z| < LOG_MIN`, which is the same test without a `hypot` (exact but
+/// slow) on the solver's hottest line. The two can disagree only for a
+/// `|z|` within a rounding step of 1e-100.
+pub const LOG_MIN_SQ: f64 = LOG_MIN * LOG_MIN;
 /// p-pol cosθ magnitude guard (matches coherent_block).
 pub const EPS_COS: f64 = 1e-12;
 /// Machine epsilon used by the intensity/cross star regularization (inv := 0).
@@ -28,7 +35,7 @@ pub const C_NM_PER_FS: f64 = 299.792458;
 /// Propagation phase of the differential-phase reference: the phase a plane
 /// wave accumulates crossing an equivalent layer of incidence medium —
 /// thickness `total_d`, real index `n_inc_re` — at incidence angle
-/// `theta_inc_deg` (degrees, in the incidence medium, so no Snell step):
+/// `theta_inc` (in the incidence medium, so no Snell step):
 /// `passes · 2π · n · d · cosθ / λ`.
 ///
 /// `wavelength` and `total_d` must share length units (nm in this crate).
@@ -49,11 +56,11 @@ pub const C_NM_PER_FS: f64 = 299.792458;
 pub fn reference_phase(
     wavelength: f64,
     n_inc_re: f64,
-    theta_inc_deg: f64,
+    theta_inc: Radians,
     total_d: f64,
     passes: f64,
 ) -> f64 {
-    passes * reference_wavenumber(wavelength, n_inc_re, theta_inc_deg) * total_d
+    passes * reference_wavenumber(wavelength, n_inc_re, theta_inc) * total_d
 }
 
 /// Axial wavenumber part of [`reference_phase`]: `2π · n · cosθ / λ`
@@ -63,8 +70,8 @@ pub fn reference_phase(
 /// (exact pre-fold data), a position-independent shift of `P(z)` that never
 /// moves the needle site `argmax` — only the predicted-gain bookkeeping.
 #[inline]
-pub fn reference_wavenumber(wavelength: f64, n_inc_re: f64, theta_inc_deg: f64) -> f64 {
-    2.0 * std::f64::consts::PI * n_inc_re * theta_inc_deg.to_radians().cos() / wavelength
+pub fn reference_wavenumber(wavelength: f64, n_inc_re: f64, theta_inc: Radians) -> f64 {
+    2.0 * std::f64::consts::PI * n_inc_re * theta_inc.cos() / wavelength
 }
 
 #[inline(always)]
@@ -432,6 +439,58 @@ pub fn nevot_croce_factors(kz1: Complex64, kz2: Complex64, sigma: f64) -> (Compl
     (f, ga)
 }
 
+/// Default for [`effective_roughness`]: an interface's sigma is used up to
+/// half the thickness of each film that touches it.
+pub const ROUGHNESS_CAP_RATIO: f64 = 2.0;
+
+/// The roughness each interface is solved with: the stored sigma, capped
+/// by the films on both sides, `sigma_eff = min(sigma, d / ratio)`.
+///
+/// `rough_vals[k]` is the interface between rows `k - 1` and `k` (the
+/// solver reads `rv[i + 1]`), and rows `0` and `n - 1` are the half-spaces,
+/// which never cap. A film thinner than its own roughness is no layer with
+/// two separate rough faces: the faces' transition zones overlap, and
+/// Névot-Croce applied to both is outside its model. The cap is what makes
+/// a film that thins to zero vanish from the result, instead of leaving a
+/// sharp-plus-rough interface pair behind.
+///
+/// The stored values are never changed; every constructor that turns them
+/// into solver input calls this, so all solve paths read the same array.
+/// `ratio <= 0` turns the cap off. When no cap binds, the result is
+/// bit-identical to `rough_vals`.
+pub fn effective_roughness(thicknesses: &[f64], rough_vals: &[f64], ratio: f64) -> Vec<f64> {
+    let mut out = rough_vals.to_vec();
+    let n = out.len().min(thicknesses.len());
+    if ratio <= 0.0 || n < 3 {
+        return out;
+    }
+    for k in 1..n {
+        let mut limit = f64::INFINITY;
+        if k >= 2 {
+            limit = limit.min(thicknesses[k - 1]);
+        }
+        if k + 1 < n {
+            limit = limit.min(thicknesses[k]);
+        }
+        let cap = limit / ratio;
+        if out[k] > cap {
+            out[k] = cap;
+        }
+    }
+    out
+}
+
+/// Refuse a cap ratio that is not a finite number.
+pub fn check_roughness_cap(ratio: f64) -> Result<(), String> {
+    if ratio.is_finite() {
+        Ok(())
+    } else {
+        Err(format!(
+            "roughness_cap must be finite (got {ratio}); use 0 to turn the cap off"
+        ))
+    }
+}
+
 /// Roughness form factor W(q). No Python/PyO3 overhead so it can be called
 /// millions of times from hot loops and inlined by the compiler.
 #[inline(always)]
@@ -469,7 +528,7 @@ pub fn redheffer_product_complex_field_inner(
     r_b_back: Complex64,
 ) -> (Complex64, Complex64, Complex64, Complex64) {
     let mut denom = Complex64::new(1.0, 0.0) - r_a_back * r_b_front;
-    if denom.abs() < LOG_MIN {
+    if denom.norm_sqr() < LOG_MIN_SQ {
         // Phase-preserving regularization (matches the reference implementation).
         let phase = denom / (denom.abs() + 1e-300);
         denom = Complex64::new(LOG_MIN, 0.0) * phase + 1e-300;
@@ -573,23 +632,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_roughness_cap_follows_the_thinner_film() {
+        // ambient | 100 | 4 | 50 | substrate; rv[k] sits between k-1 and k.
+        let d = [0.0, 100.0, 4.0, 50.0, 0.0];
+        let rv = [9.0, 9.0, 9.0, 9.0, 9.0];
+        let eff = effective_roughness(&d, &rv, 2.0);
+        // rv[0] is no interface; ambient|100 caps at 50 -> 9 stays;
+        // 100|4 and 4|50 cap at 2; 50|substrate caps at 25 -> 9 stays.
+        assert_eq!(eff, vec![9.0, 9.0, 2.0, 2.0, 9.0]);
+        // Off, and nothing binding: the input comes back bit for bit.
+        assert_eq!(effective_roughness(&d, &rv, 0.0), rv.to_vec());
+        let small = [0.0, 0.5, 0.25, 0.0, 0.0];
+        assert_eq!(effective_roughness(&d, &small, 2.0), small.to_vec());
+        // Half-spaces alone never cap.
+        assert_eq!(
+            effective_roughness(&[0.0, 0.0], &[3.0, 3.0], 2.0),
+            vec![3.0, 3.0]
+        );
+        assert!(check_roughness_cap(f64::NAN).is_err());
+        assert!(check_roughness_cap(0.0).is_ok());
+    }
+
+    #[test]
     fn reference_phase_hand_calc() {
         // λ = 500 nm, n = 1, θ = 0°, D = 100 nm, 1 pass:
         // 2π·1·100·1/500 = 2π/5 = 1.2566370614...
-        let p = reference_phase(500.0, 1.0, 0.0, 100.0, 1.0);
+        let deg = |d: f64| Radians::from_degrees(d).unwrap();
+        let p = reference_phase(500.0, 1.0, Radians::ZERO, 100.0, 1.0);
         assert!(
             (p - 2.0 * std::f64::consts::PI / 5.0).abs() < 1e-12,
             "p={p}"
         );
         // Oblique: θ = 60° halves the axial projection.
-        let po = reference_phase(500.0, 1.0, 60.0, 100.0, 1.0);
+        let po = reference_phase(500.0, 1.0, deg(60.0), 100.0, 1.0);
         assert!((po - p / 2.0).abs() < 1e-12, "po={po}");
         // Two passes double; zero thickness kills the reference.
-        assert!((reference_phase(500.0, 1.0, 0.0, 100.0, 2.0) - 2.0 * p).abs() < 1e-12);
-        assert_eq!(reference_phase(500.0, 1.5, 10.0, 0.0, 1.0), 0.0);
+        assert!((reference_phase(500.0, 1.0, Radians::ZERO, 100.0, 2.0) - 2.0 * p).abs() < 1e-12);
+        assert_eq!(reference_phase(500.0, 1.5, deg(10.0), 0.0, 1.0), 0.0);
         // Wavenumber × D × passes reconstructs the phase.
-        let kz = reference_wavenumber(500.0, 1.5, 10.0);
-        assert!((1.0 * kz * 100.0 - reference_phase(500.0, 1.5, 10.0, 100.0, 1.0)).abs() < 1e-15);
+        let kz = reference_wavenumber(500.0, 1.5, deg(10.0));
+        assert!(
+            (1.0 * kz * 100.0 - reference_phase(500.0, 1.5, deg(10.0), 100.0, 1.0)).abs() < 1e-15
+        );
     }
 
     /// The exact expression the five call sites carried before R3.4

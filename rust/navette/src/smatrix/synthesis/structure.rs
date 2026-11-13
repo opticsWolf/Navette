@@ -59,6 +59,12 @@ pub struct LayerSpec {
     pub optimize: bool,
     /// Admissible host for needle insertion.
     pub needle: bool,
+    /// W7: the material this film is made of, as the pool and the groups
+    /// name it (a library code). Design films carry their film name, a
+    /// needle its pool entry's label. `None` (a film built by hand, the
+    /// half-spaces) is recognised by its index alone, as before W7. See
+    /// [`LayerSpec::same_material`].
+    pub label: Option<Arc<str>>,
 }
 
 impl LayerSpec {
@@ -73,7 +79,17 @@ impl LayerSpec {
             rough_val: 0.0,
             optimize: true,
             needle: true,
+            label: None,
         }
+    }
+
+    /// W7: are `self` and `other` one material? The same index, and labels
+    /// that do not disagree: two labelled films of different labels are
+    /// different deposited materials even at one index (another group,
+    /// other insertion rules), while an unlabelled film is matched by its
+    /// index alone.
+    pub fn same_material(&self, other: &LayerSpec) -> bool {
+        self.nk == other.nk && labels_agree(&self.label, &other.label)
     }
 
     /// Verbatim port of Python `Layer.clone()` semantics: an independent
@@ -81,6 +97,14 @@ impl LayerSpec {
     /// mutated after construction).
     pub fn cloned(&self) -> Self {
         self.clone()
+    }
+}
+
+/// Two optional labels name one material unless both are set and differ.
+pub(crate) fn labels_agree(a: &Option<Arc<str>>, b: &Option<Arc<str>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
     }
 }
 
@@ -104,11 +128,18 @@ pub struct ClampReport {
     pub spans_removed: Vec<String>,
     pub spans_capped: usize,
     pub rows_removed: usize,
+    /// Edge layers the sweep would have removed and held at the floor
+    /// instead, because the film behind them is not on the edge's list:
+    /// "outer: material (D nm)" / "inner: ...", D the thickness before.
+    pub edges_held: Vec<String>,
 }
 
 impl ClampReport {
     pub fn is_empty(&self) -> bool {
-        self.spans_removed.is_empty() && self.spans_capped == 0 && self.rows_removed == 0
+        self.spans_removed.is_empty()
+            && self.spans_capped == 0
+            && self.rows_removed == 0
+            && self.edges_held.is_empty()
     }
 
     /// One phase can run several clamp passes (post-cleanup, post-inflate,
@@ -119,7 +150,119 @@ impl ClampReport {
         self.spans_removed.extend(other.spans_removed);
         self.spans_capped += other.spans_capped;
         self.rows_removed += other.rows_removed;
+        self.edges_held.extend(other.edges_held);
     }
+}
+
+// ---------------------------------------------------------------------------
+// EdgeMaterials
+// ---------------------------------------------------------------------------
+
+/// One allowed edge material: its label (for messages) and its nk.
+pub type EdgeMaterial = (Arc<str>, Arc<[Complex64]>);
+
+/// Which materials may form the stack's edge layers: `outer` faces the
+/// ambient (film 0), `inner` sits on the substrate (the last film).
+/// `None` leaves that edge free.
+///
+/// A film is matched to a listed material by label (a needle's `#n`
+/// suffix stripped), or failing that by index, bit for bit. An edge must
+/// be a layer (a singleton-bulk span, an interface slice allowed); its
+/// material is the bulk row's. A graded or gradient span is never an
+/// allowed edge; `NeedleRules::seed_edges` puts a listed layer in front of
+/// one. An interior needle never changes an edge, and a boundary film on
+/// an edge is checked against its list at the door
+/// (`insert_film_at_boundary`). Every removal path consults this too:
+/// cleanup skips a removal that would expose a disallowed layer, and the
+/// clamp sweep holds such a layer at the floor instead of removing it
+/// (`ClampReport::edges_held`).
+#[derive(Clone, Debug, Default)]
+pub struct EdgeMaterials {
+    pub outer: Option<Vec<EdgeMaterial>>,
+    pub inner: Option<Vec<EdgeMaterial>>,
+}
+
+impl EdgeMaterials {
+    pub fn is_free(&self) -> bool {
+        self.outer.is_none() && self.inner.is_none()
+    }
+
+    /// Do the edge spans `first` (outer) and `last` (inner) over `films`
+    /// comply? `None` is a stack with no films.
+    pub(crate) fn check(
+        &self,
+        films: &[LayerSpec],
+        first: Option<&Span>,
+        last: Option<&Span>,
+    ) -> Result<(), String> {
+        for (list, which, sp) in [
+            (&self.outer, "outer (ambient side)", first),
+            (&self.inner, "inner (substrate side)", last),
+        ] {
+            let Some(l) = list else { continue };
+            let Some(sp) = sp else {
+                return Err(format!(
+                    "edge materials: the {which} edge is constrained but the design has no films"
+                ));
+            };
+            if !edge_allows(list, films, sp) {
+                let what = if sp.is_singleton_bulk() {
+                    "a material outside the list"
+                } else {
+                    "a graded profile, not a layer"
+                };
+                return Err(format!(
+                    "edge materials: the {which} edge film {:?} is {what}; allowed: [{}]. \
+                     Start from a design whose edge layer is one of them.",
+                    films[sp.bulk_start].material,
+                    edge_labels(l)
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Is `sp` (a span over `films`) an allowed edge under `list`?
+pub(crate) fn edge_allows(
+    list: &Option<Vec<EdgeMaterial>>,
+    films: &[LayerSpec],
+    sp: &Span,
+) -> bool {
+    match list {
+        None => true,
+        Some(l) => {
+            sp.is_singleton_bulk() && l.iter().any(|e| is_edge_material(e, &films[sp.bulk_start]))
+        }
+    }
+}
+
+/// Is `film` of the edge material `e`? By its label when it has one (a
+/// group-scaled spectrum still matches). Without one, by name, a needle's
+/// `#n` suffix stripped (`"H#3"` is `"H"`), with bit-exact nk as the
+/// fallback for a film named otherwise.
+pub(crate) fn is_edge_material(e: &EdgeMaterial, film: &LayerSpec) -> bool {
+    match &film.label {
+        // W7: a labelled film is its label; another label at the same
+        // index is another material.
+        Some(label) => *e.0 == **label,
+        None => *e.0 == *base_label(&film.material) || e.1 == film.nk,
+    }
+}
+
+/// A material label without a needle's `#n` suffix.
+fn base_label(label: &str) -> &str {
+    match label.rsplit_once('#') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => label,
+    }
+}
+
+fn edge_labels(l: &[EdgeMaterial]) -> String {
+    l.iter()
+        .map(|(m, _)| format!("{m:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // DesignStack
@@ -145,6 +288,11 @@ pub struct DesignStack {
     spans: Vec<Span>,
     recipes: Vec<Option<SpanRecipe>>,
     num_wavs: usize,
+    /// Allowed edge materials; free unless `set_edge_materials` is called.
+    edges: EdgeMaterials,
+    /// Ratio of the roughness cap `solver_arrays` applies
+    /// (`effective_roughness`); 0 is off.
+    roughness_cap: f64,
 }
 
 impl DesignStack {
@@ -202,28 +350,20 @@ impl DesignStack {
                     num_wavs
                 ));
             }
-            // C1. The flag is faithfully materialized by `solver_arrays` and
-            // then never read: `simulate_inner` solves [0, nl-1) as ONE
-            // coherent block, and the needle pass builds its stack fields
-            // over the same single block. Every consumer of that funnel --
-            // the design door, the multi-environment door, the LM step, the
-            // FD jacobian, the needle scan -- therefore returns the
-            // fully-coherent answer for a stack the caller marked otherwise,
-            // with nothing said. Measured: merit bit-identical with the flag
-            // on and off, while the engine door moves on the same stack.
-            // Refuse at the one constructor every DesignStack passes through,
-            // and name the door that does honor it.
-            if !f.coherent {
+            // W6: an incoherent film is a fixed spacer. `simulate_inner`
+            // and the needle scan split the stack into coherent blocks at
+            // it and join them by the engine's intensity cascade, so it may
+            // sit anywhere (a substrate plate with coatings on both faces is
+            // front films | plate | back films, the exit medium as the
+            // substrate). It is never optimized and never hosts a needle:
+            // its thickness is a plate's, and a needle inside it would have
+            // no phase to interfere with.
+            if !f.coherent && (f.optimize || f.needle) {
                 return Err(format!(
-                    "film {} ('{}') is marked coherent = false, but synthesis solves the \
-                     whole stack as ONE coherent block. The flag is built into the solver \
-                     arrays and never read, so the merit, the LM step and the needle scan \
-                     would all return the fully-coherent answer for a stack you marked \
-                     otherwise, silently. Refusing rather than answering wrongly. The \
-                     engine doors do honor the flag: use solve_structure (navette.\
-                     structure) or ScatterMatrix (navette.smatrix) to ANALYSE a stack with \
-                     incoherent layers. To synthesize, set coherent = true.",
-                    i, f.material
+                    "film {} ('{}') is incoherent (coherent = false) and marked \
+                     optimize = {} / needle = {}: synthesis treats an incoherent film \
+                     as a fixed slab, so set optimize = false and needle = false",
+                    i, f.material, f.optimize, f.needle
                 ));
             }
         }
@@ -242,9 +382,60 @@ impl DesignStack {
             spans,
             recipes,
             num_wavs,
+            edges: EdgeMaterials::default(),
+            roughness_cap: crate::smatrix::optics_core::ROUGHNESS_CAP_RATIO,
         };
         s.assert_spans_partition();
         Ok(s)
+    }
+
+    // -- roughness cap ------------------------------------------------------
+
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off. The
+    /// films keep their stored roughness either way.
+    pub fn roughness_cap(&self) -> f64 {
+        self.roughness_cap
+    }
+
+    pub fn set_roughness_cap(&mut self, ratio: f64) -> Result<(), String> {
+        crate::smatrix::optics_core::check_roughness_cap(ratio)?;
+        self.roughness_cap = ratio;
+        Ok(())
+    }
+
+    // -- edge materials -----------------------------------------------------
+
+    pub fn edge_materials(&self) -> &EdgeMaterials {
+        &self.edges
+    }
+
+    /// Constrain the edge layers' materials (see [`EdgeMaterials`]). The
+    /// stack's current edges must already comply: the constraint is held
+    /// from here on, never repaired.
+    pub fn set_edge_materials(&mut self, edges: EdgeMaterials) -> Result<(), String> {
+        edges.check(&self.films, self.spans.first(), self.spans.last())?;
+        self.edges = edges;
+        Ok(())
+    }
+
+    /// Would removing span `sid` leave both edges allowed? Only the edge
+    /// spans can expose a new edge; the layer behind them becomes it.
+    pub(crate) fn removal_keeps_edges(&self, sid: usize) -> bool {
+        let n = self.spans.len();
+        let ok = |list: &Option<Vec<EdgeMaterial>>, next: Option<usize>| {
+            list.is_none() || next.is_some_and(|j| edge_allows(list, &self.films, &self.spans[j]))
+        };
+        (sid != 0 || ok(&self.edges.outer, (n > 1).then_some(1)))
+            && (sid + 1 != n || ok(&self.edges.inner, sid.checked_sub(1)))
+    }
+
+    /// Index of the span holding `row`.
+    pub(crate) fn span_index_of_row(&self, row: usize) -> usize {
+        self.spans
+            .iter()
+            .position(|sp| sp.start <= row && row < sp.end)
+            .expect("every row belongs to a span")
     }
 
     // -- properties ---------------------------------------------------------
@@ -266,6 +457,11 @@ impl DesignStack {
         &self.films
     }
 
+    /// W6: does any film propagate incoherently (a fixed spacer)?
+    pub fn has_incoherent(&self) -> bool {
+        self.films.iter().any(|f| !f.coherent)
+    }
+
     pub fn film(&self, idx: usize) -> Option<&LayerSpec> {
         self.films.get(idx)
     }
@@ -278,6 +474,18 @@ impl DesignStack {
     /// Total physical thickness of the film stack (nm).
     pub fn total_thickness_nm(&self) -> f64 {
         self.films.iter().map(|f| f.d_nm).sum()
+    }
+
+    /// W6: the coating's thickness, every coherent film. An incoherent
+    /// film is a plate, not coating: the thickness budget and the reports
+    /// leave it out. Equal to [`Self::total_thickness_nm`], bit for bit,
+    /// on a fully coherent stack (same terms, same order).
+    pub fn coating_thickness_nm(&self) -> f64 {
+        self.films
+            .iter()
+            .filter(|f| f.coherent)
+            .map(|f| f.d_nm)
+            .sum()
     }
 
     /// The span partition (F0.1). One span per contiguous run of rows;
@@ -386,7 +594,7 @@ impl DesignStack {
     /// and beats flattening silently. Span-aware graded optimization is
     /// future work (D2).
     pub fn from_design(
-        mut ambient: LayerSpec,
+        ambient: LayerSpec,
         substrate: LayerSpec,
         films: &[crate::structure::Layer],
         nk: &std::collections::HashMap<std::sync::Arc<str>, Vec<num_complex::Complex64>>,
@@ -394,7 +602,55 @@ impl DesignStack {
         wavelengths: &[f64],
         background: &std::collections::HashSet<String>,
     ) -> Result<(Self, Vec<String>), String> {
+        Self::from_design_oriented(
+            ambient,
+            substrate,
+            films,
+            &[],
+            nk,
+            groups,
+            wavelengths,
+            background,
+        )
+    }
+
+    /// [`Self::from_design`] with an orientation per film: `inverted[i]`
+    /// emits film `i` as an entry of an inverted run, the way the
+    /// Architect expands an inverted block (its planes take the traversal
+    /// predecessor's interface and roughness). Empty means all forward.
+    ///
+    /// A profiled film cannot be inverted here: its span recipe re-emits
+    /// it alone, and an inverted entry's emission reaches into the span
+    /// before it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_design_oriented(
+        mut ambient: LayerSpec,
+        substrate: LayerSpec,
+        films: &[crate::structure::Layer],
+        inverted: &[bool],
+        nk: &std::collections::HashMap<std::sync::Arc<str>, Vec<num_complex::Complex64>>,
+        groups: &std::collections::HashMap<String, crate::structure::Group>,
+        wavelengths: &[f64],
+        background: &std::collections::HashSet<String>,
+    ) -> Result<(Self, Vec<String>), String> {
         use std::collections::HashMap;
+        if !inverted.is_empty() && inverted.len() != films.len() {
+            return Err(format!(
+                "DesignStack::from_design: {} orientations for {} films",
+                inverted.len(),
+                films.len()
+            ));
+        }
+        let inv_at = |i: usize| inverted.get(i).copied().unwrap_or(false);
+        for (i, l) in films.iter().enumerate() {
+            if inv_at(i) && (l.inhomogen || l.gradient.is_some()) {
+                return Err(format!(
+                    "DesignStack::from_design: film '{}' is graded - an inverted \
+                     copy cannot carry a profile",
+                    l.material
+                ));
+            }
+        }
         // Two things are corrected-and-announced here rather than
         // refused, and this is the only place either can be: an absorbing
         // incident medium (R3.4), and a graded/gradient film the pipeline
@@ -566,18 +822,23 @@ impl DesignStack {
                 .collect(),
             wavelengths.to_vec(),
         )?;
-        let seq: Vec<(crate::structure::Layer, bool)> =
-            flat.iter().cloned().map(|l| (l, false)).collect();
+        let seq: Vec<(crate::structure::Layer, bool)> = flat
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, l)| (l, inv_at(i)))
+            .collect();
         // F0.1 / §8.15: `expand`'s backwards-rescale branch (entry `k`
         // rescaling the previous span's already-emitted rows) is reachable
-        // only through `inv = true` entries. The design path builds `inv =
-        // false` throughout, so emission is purely local — the property
-        // F1.7's per-span refresh rests on. Assert it beside the expansion
-        // (debug-only; cannot move a fingerprint).
+        // only through `inv = true` entries. Only plain films are inverted
+        // (refused above), so every profiled span's emission is purely
+        // local — the property F1.7's per-span refresh rests on. Assert it
+        // beside the expansion (debug-only; cannot move a fingerprint).
         debug_assert!(
-            seq.iter().all(|(_, inv)| !*inv),
-            "from_design builds inv = false throughout; a true entry would \
-             make emission reach backwards into previous spans"
+            seq.iter()
+                .all(|(l, inv)| !*inv || !(l.inhomogen || l.gradient.is_some())),
+            "from_design inverts plain films only; an inverted profiled entry \
+             would make its refresh reach backwards into previous spans"
         );
         let (sa, spans, sa_bulk_nk, owner_of) = crate::structure::expand_with_recipe_inputs(
             &seq,
@@ -641,6 +902,7 @@ impl DesignStack {
                     rough_val: sa.rough_vals[r],
                     optimize: carrier.optimize && !is_slice,
                     needle: carrier.needle && !is_slice,
+                    label: Some(std::sync::Arc::from(carrier.material.as_str())),
                 });
             }
         }
@@ -659,6 +921,140 @@ impl DesignStack {
     }
 
     // -- mutation primitives -------------------------------------------------
+
+    /// Insert `film` as a new layer on the span boundary above row `row`
+    /// (`row == films.len()`: on the substrate). Nothing is split: the film
+    /// becomes a singleton span of its own and every later row and span
+    /// moves down by one, keeping its recipe.
+    ///
+    /// `row` must be a span boundary, never a row inside a span. On an
+    /// outer edge the film becomes the edge layer, so it must be on that
+    /// edge's list when one is set. The film takes no roughness from its
+    /// neighbours: the boundary's interface stays on the row below. When
+    /// the layer below opens with its interface slice, the slice stays with
+    /// it and is re-mixed as the expander mixes it, from the layer and the
+    /// film now above it.
+    pub fn insert_film_at_boundary(&mut self, row: usize, film: LayerSpec) -> Result<(), String> {
+        let n = self.films.len();
+        let at = if row == n {
+            self.spans.len()
+        } else {
+            self.spans
+                .iter()
+                .position(|sp| sp.start == row)
+                .ok_or_else(|| {
+                    format!(
+                        "row {row} is not a span boundary ({n} films); a film goes between spans"
+                    )
+                })?
+        };
+        if film.nk.len() != self.num_wavs {
+            return Err(format!(
+                "film '{}' nk length {} != the stack's {}",
+                film.material,
+                film.nk.len(),
+                self.num_wavs
+            ));
+        }
+        for (list, which, edge) in [
+            (&self.edges.outer, "outer (ambient side)", row == 0),
+            (&self.edges.inner, "inner (substrate side)", row == n),
+        ] {
+            if let Some(l) = list.as_ref().filter(|_| edge)
+                && !l.iter().any(|(_, nk)| *nk == film.nk)
+            {
+                return Err(format!(
+                    "edge materials: film {:?} would become the {which} edge; allowed: [{}]",
+                    film.material,
+                    edge_labels(l)
+                ));
+            }
+        }
+        if let Some(below) = self
+            .spans
+            .get(at)
+            .filter(|sp| sp.slice && sp.is_singleton_bulk())
+        {
+            let mix = crate::structure::expansion::looyenga_mix(
+                &self.films[below.bulk_start].nk,
+                &film.nk,
+            );
+            self.films[below.start].nk = mix.into();
+        }
+        self.films.insert(row, film);
+        for sp in &mut self.spans[at..] {
+            sp.start += 1;
+            sp.end += 1;
+            sp.bulk_start += 1;
+        }
+        self.spans.insert(
+            at,
+            Span {
+                start: row,
+                end: row + 1,
+                logical: row,
+                slice: false,
+                bulk_start: row,
+            },
+        );
+        self.recipes.insert(at, None);
+        self.assert_spans_partition();
+        Ok(())
+    }
+
+    /// Insert `film` as a new span at span index `at` (`spans.len()`: on
+    /// the substrate). With `take_slice`, span `at` must open with an
+    /// interface slice: the slice moves into the new span, ahead of the
+    /// film, and span `at` keeps only its bulk. That is an inverted copy's
+    /// shape, where the slice at the start of a span is carved by the entry
+    /// before it and so stays against that entry. Without, this is
+    /// [`Self::insert_film_at_boundary`] at the span's first row.
+    pub(crate) fn insert_span(
+        &mut self,
+        at: usize,
+        film: LayerSpec,
+        take_slice: bool,
+    ) -> Result<(), String> {
+        if !take_slice {
+            let row = self.spans.get(at).map_or(self.films.len(), |sp| sp.start);
+            return self.insert_film_at_boundary(row, film);
+        }
+        let sp = *self
+            .spans
+            .get(at)
+            .filter(|sp| sp.slice && sp.bulk_start == sp.start + 1)
+            .ok_or_else(|| format!("span {at} opens with no interface slice to take"))?;
+        if film.nk.len() != self.num_wavs {
+            return Err(format!(
+                "film '{}' nk length {} != the stack's {}",
+                film.material,
+                film.nk.len(),
+                self.num_wavs
+            ));
+        }
+        let row = sp.bulk_start;
+        self.films.insert(row, film);
+        for later in &mut self.spans[at..] {
+            later.start += 1;
+            later.end += 1;
+            later.bulk_start += 1;
+        }
+        self.spans[at].slice = false;
+        self.spans.insert(
+            at,
+            Span {
+                start: sp.start,
+                end: row + 1,
+                logical: row,
+                slice: true,
+                bulk_start: row,
+            },
+        );
+        self.spans[at + 1].start = row + 1;
+        self.recipes.insert(at, None);
+        self.assert_spans_partition();
+        Ok(())
+    }
 
     /// Split the film at `film_idx` and insert a seed layer.
     ///
@@ -824,31 +1220,85 @@ impl DesignStack {
         Ok(())
     }
 
-    /// Merge consecutive film layers of identical material AND bit-identical
-    /// nk. The nk key is load-bearing: interface slices, group-scaled rows
-    /// and graded-profile sublayers share material names with their bulk
-    /// but must never collapse into one slab (first-row nk would win).
-    /// Uniform same-material rows carry identical vectors, so they still
-    /// merge. Combined thickness is the sum; the *first* layer's other
-    /// properties (optimize/needle/roughness/…) are preserved. Returns the
+    /// W7: drop the label of every row labelled by a film in `names` (the
+    /// segmented door's surroundings, whose auto-names are no material;
+    /// their derived rows carry the same label). Those rows are then
+    /// matched by index alone, as every film was before labels.
+    pub(crate) fn unlabel_films(&mut self, names: &std::collections::HashSet<String>) {
+        for f in &mut self.films {
+            if f.label.as_deref().is_some_and(|l| names.contains(l)) {
+                f.label = None;
+            }
+        }
+    }
+
+    /// W7: drop every row's label. For doors whose film names are free
+    /// (`assemble_stack`, the Python `from_design`): a name there is no
+    /// material label, so films are matched by index, as before labels.
+    pub fn clear_labels(&mut self) {
+        for f in &mut self.films {
+            f.label = None;
+        }
+    }
+
+    /// Merge consecutive rows that are one slab of one index. Two rules:
+    ///
+    /// * **Layers merge by material.** A layer (the bulk row of a
+    ///   singleton-bulk span) merges into the next layer when they are one
+    ///   material ([`LayerSpec::same_material`]: bit-identical nk, labels
+    ///   that do not disagree), whatever their names: two touching needles
+    ///   of one material are one film, while `H` and `H2` at one index stay
+    ///   apart (W7: another group or other rules). The next layer must
+    ///   start with its bulk - an interface slice between them is a derived
+    ///   row, not a layer.
+    /// * **Other rows merge by name AND nk**, as before: interface slices,
+    ///   group-scaled rows and graded-profile sublayers share material
+    ///   names with their bulk but must never collapse into one slab
+    ///   (first-row nk would win); a saturated graded tail of identical
+    ///   rows still merges into itself.
+    ///
+    /// Combined thickness is the sum; the *first* row's other properties
+    /// (name/optimize/needle/roughness/…) are preserved. Returns the
     /// number of merges performed.
     pub fn merge_adjacent(&mut self) -> usize {
         if self.films.is_empty() {
             return 0;
         }
-        // Maximal merge runs over the CURRENT rows (same material AND
-        // bit-identical nk), then rebuild films and spans in one pass so
-        // the two cannot disagree (F0.1; N2 — the span vector is what
-        // makes the nk-keyed merge safe to keep running over graded rows).
+        // Maximal merge runs over the CURRENT rows, then rebuild films and
+        // spans in one pass so the two cannot disagree (F0.1; N2 — the
+        // span vector is what makes the nk-keyed merge safe to keep
+        // running over graded rows).
         let old_spans = std::mem::take(&mut self.spans);
         let films = std::mem::take(&mut self.films);
+        // Per row: does it end a layer / begin one?
+        let mut ends_layer = vec![false; films.len()];
+        let mut starts_layer = vec![false; films.len()];
+        for sp in old_spans.iter().filter(|sp| sp.is_singleton_bulk()) {
+            ends_layer[sp.bulk_start] = true;
+            starts_layer[sp.bulk_start] = !sp.slice;
+        }
+        // An interface slice's optimize flag is derived (always false),
+        // not a pin, so it does not keep a slice apart (D10 below).
+        let mut slice_row = vec![false; films.len()];
+        for sp in old_spans.iter().filter(|sp| sp.slice) {
+            slice_row[sp.start] = true;
+        }
         let mut runs: Vec<(usize, usize)> = Vec::with_capacity(films.len());
         let mut i = 0usize;
         while i < films.len() {
             let mut j = i + 1;
+            // W6: a coherent film never merges into an incoherent slab of
+            // the same glass (or the reverse): the merged row would take
+            // the first one's propagation. D10: nor does a pinned film
+            // merge with a free one - the merged row would take the first
+            // one's flag, pinning a free film or freeing a pinned one.
             while j < films.len()
-                && films[j].material == films[i].material
-                && films[j].nk == films[i].nk
+                && films[j].coherent == films[i].coherent
+                && (films[j].optimize == films[i].optimize || slice_row[i] || slice_row[j])
+                && ((films[j].material == films[i].material && films[j].same_material(&films[i]))
+                    || (ends_layer[j - 1]
+                        && starts_layer[j]
+                        && films[j].same_material(&films[j - 1])))
             {
                 j += 1;
             }
@@ -1088,8 +1538,14 @@ impl DesignStack {
         // changing F0.2's refusal semantics is a separate decision -
         // amendment 3 section 3 records the asymmetry. Revisit only with
         // a real user case (review C, E3).
+        //
+        // D10: a pinned span is exempt from the whole sweep - floor,
+        // ceiling and this refusal alike. The sweep passes it through.
         for sp in &self.spans {
-            if sp.end - sp.start <= 1 || self.span_is_scalable(sp) {
+            if sp.end - sp.start <= 1
+                || self.span_is_scalable(sp)
+                || span_is_pinned_rows(sp, &self.films)
+            {
                 continue;
             }
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
@@ -1100,6 +1556,48 @@ impl DesignStack {
                     self.films[sp.start].material, d, max_nm
                 ));
             }
+        }
+
+        // Edge materials: an edge span the sweep would remove is held at
+        // the floor instead when the first survivor behind it is not an
+        // allowed edge. The edge itself complies (the constraint is held
+        // from `set_edge_materials` on), so holding it keeps it complying.
+        let removed = |sp: &Span| {
+            let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
+            d < min_nm
+                && !span_is_pinned_rows(sp, &self.films)
+                && !(clamp_up_rows
+                    && (sp.is_singleton_bulk()
+                        || (sp.end - sp.start > 1 && self.span_is_scalable(sp))))
+        };
+        let n_spans = self.spans.len();
+        let mut held = [None, None];
+        for (k, list) in [&self.edges.outer, &self.edges.inner]
+            .into_iter()
+            .enumerate()
+        {
+            let edge = if k == 0 { 0 } else { n_spans.wrapping_sub(1) };
+            if list.is_none() || n_spans == 0 || !removed(&self.spans[edge]) {
+                continue;
+            }
+            let survives = |&j: &usize| !removed(&self.spans[j]);
+            let survivor = if k == 0 {
+                (0..n_spans).find(survives)
+            } else {
+                (0..n_spans).rev().find(survives)
+            };
+            if survivor.is_some_and(|j| edge_allows(list, &self.films, &self.spans[j])) {
+                continue;
+            }
+            if !self.spans[edge].is_singleton_bulk() {
+                return Err(format!(
+                    "clamp_all: the edge span '{}' is below the floor and cannot be held \
+                     there (it is not a layer), but removing it would leave a disallowed \
+                     edge",
+                    self.films[self.spans[edge].start].material
+                ));
+            }
+            held[k] = Some(edge);
         }
 
         let old = std::mem::take(&mut self.films);
@@ -1117,7 +1615,8 @@ impl DesignStack {
             // predicate only consults optimize flags, which the rebuild
             // preserves per output row).
             let scalable = span_is_scalable_rows(sp, &old);
-            if d < min_nm {
+            let pinned = span_is_pinned_rows(sp, &old);
+            if d < min_nm && !pinned {
                 // F0.3 + F1.6: a scalable multi-row span under an active
                 // clamp-up posture is SCALED to the floor, fractions
                 // preserved (the profile survives; this is the deferral
@@ -1151,7 +1650,14 @@ impl DesignStack {
                     p = e;
                     continue;
                 }
-                if clamp_up_rows && sp.is_singleton_bulk() {
+                if (clamp_up_rows || held.contains(&Some(sid))) && sp.is_singleton_bulk() {
+                    if let Some(k) = held.iter().position(|h| *h == Some(sid)) {
+                        let side = if k == 0 { "outer" } else { "inner" };
+                        report.edges_held.push(format!(
+                            "{side}: {} ({d:.1} nm)",
+                            old[sp.bulk_start].material
+                        ));
+                    }
                     let mut thin = old[sp.start..sp.end].to_vec();
                     let slice_rows = usize::from(sp.slice);
                     let slice_total: f64 = thin[..slice_rows].iter().map(|l| l.d_nm).sum();
@@ -1181,7 +1687,11 @@ impl DesignStack {
                 continue;
             }
             let mut rows = old[sp.start..sp.end].to_vec();
-            if rows.len() == 1 && rows[0].d_nm > max_nm {
+            // D10: a pinned span (an incoherent plate among them) keeps
+            // its authored thickness; the ceiling is not its bound. (A
+            // scalable span is never pinned, so the second arm needs no
+            // guard.)
+            if !pinned && rows.len() == 1 && rows[0].d_nm > max_nm {
                 // One-row span: D == d, so this is today's row cap.
                 rows[0].d_nm = max_nm;
                 report.spans_capped += 1;
@@ -1215,12 +1725,36 @@ impl DesignStack {
         Ok(report)
     }
 
-    /// Test-only: force a row's optimize flag. The F0.2 span-exemption
-    /// twin needs an optimize=true graded span, which `from_design` never
-    /// produces before F1.6 (non-background graded films homogenize).
-    #[cfg(test)]
-    pub(crate) fn set_row_optimize_for_test(&mut self, row: usize, optimize: bool) {
+    /// Force a row's optimize flag. The joint compile pins the copies of a
+    /// design film that follow its primary; tests use it to build shapes
+    /// `from_design` does not produce.
+    pub(crate) fn set_row_optimize(&mut self, row: usize, optimize: bool) {
         self.films[row].optimize = optimize;
+    }
+
+    /// Overwrite a row's emitted physics in place: index, coherence and
+    /// roughness, and the thickness when `d_nm` is given. Name, flags and
+    /// spans are left alone. The joint compile re-emits inverted copies of
+    /// the design through this; nothing else may change a row's index.
+    pub(crate) fn rewrite_row(
+        &mut self,
+        row: usize,
+        d_nm: Option<f64>,
+        nk: &[Complex64],
+        coherent: bool,
+        rough_type: i32,
+        rough_val: f64,
+    ) {
+        let f = &mut self.films[row];
+        if let Some(d) = d_nm {
+            f.d_nm = d;
+        }
+        if *f.nk != *nk {
+            f.nk = nk.into();
+        }
+        f.coherent = coherent;
+        f.rough_type = rough_type;
+        f.rough_val = rough_val;
     }
 
     /// Set the thickness of film `film_idx` (used by the thickness optimizer).
@@ -1321,6 +1855,9 @@ impl DesignStack {
             )?;
             let carrier = &recipe.layer;
             let material: Arc<str> = Arc::from(carrier.material.as_str());
+            // The span's rows keep the label they were built with (a
+            // surrounding's is cleared by the segmented door).
+            let label = self.films[sp.start].label.clone();
             let n_old = sp.end - sp.start;
             let n_new = block.thicknesses.len();
             let mut new_rows = Vec::with_capacity(n_new);
@@ -1335,6 +1872,7 @@ impl DesignStack {
                     rough_val: block.rough_vals[r],
                     optimize: carrier.optimize && !is_slice,
                     needle: carrier.needle && !is_slice,
+                    label: label.clone(),
                 });
             }
             let delta = n_new as isize - n_old as isize;
@@ -1402,6 +1940,11 @@ impl DesignStack {
             }
         }
 
+        let rough_vals = crate::smatrix::optics_core::effective_roughness(
+            &thicknesses,
+            &rough_vals,
+            self.roughness_cap,
+        );
         SolverArrays {
             n_stack_cache,
             thicknesses,
@@ -1429,6 +1972,15 @@ pub(crate) fn span_index_of_row(spans: &[Span], row: usize) -> usize {
 pub(crate) fn span_is_scalable_rows(sp: &Span, films: &[LayerSpec]) -> bool {
     let bulk = sp.end - sp.bulk_start;
     bulk >= 2 && (sp.bulk_start..sp.end).all(|r| films[r].optimize)
+}
+
+/// D10: a span is pinned when no bulk row is optimize-flagged (the
+/// interface slice is derived and always pinned, so it does not count).
+/// A pinned span is the user's fixed layer - an incoherent plate, a
+/// background profile, a surround film, a design copy that follows its
+/// primary - and no structural pass (inflate, the clamp sweep) touches it.
+pub(crate) fn span_is_pinned_rows(sp: &Span, films: &[LayerSpec]) -> bool {
+    (sp.bulk_start..sp.end).all(|r| !films[r].optimize)
 }
 
 // ---------------------------------------------------------------------------
@@ -1938,9 +2490,10 @@ mod tests {
     fn merge_adjacent_sums_and_keeps_first_props() {
         // H(50) L(30) H(20) H(40) L(60) → merges: one pair of H's.
         // First H keeps its own props; give the first fragment different
-        // flags to verify "keeps FIRST layer's properties".
+        // flags to verify "keeps FIRST layer's properties". (D10: not the
+        // optimize flag - a pinned and a free film never merge.)
         let mut first_h = h(20.0);
-        first_h.optimize = false;
+        first_h.needle = false;
         let second_h = h(40.0);
 
         let mut s = stack(vec![h(50.0), l(30.0), first_h, second_h, l(60.0)]);
@@ -1952,9 +2505,23 @@ mod tests {
         assert_eq!(f[2].material.as_ref(), "H");
         assert!((f[2].d_nm - 60.0).abs() < 1e-12);
         // first-of-pair properties win
-        assert!(!f[2].optimize);
-        assert!(f[2].needle);
+        assert!(!f[2].needle);
         assert!((s.total_thickness_nm() - 200.0).abs() < 1e-12);
+    }
+
+    /// D10: a pinned film keeps its thickness and flag beside a free film
+    /// of the same index; two pinned films still merge.
+    #[test]
+    fn merge_adjacent_keeps_pinned_and_free_apart() {
+        let mut pinned = h(20.0);
+        pinned.optimize = false;
+        let mut s = stack(vec![pinned.clone(), h(40.0)]);
+        assert_eq!(s.merge_adjacent(), 0);
+        assert_eq!(s.films().len(), 2);
+        assert!(!s.films()[0].optimize && s.films()[1].optimize);
+        let mut s = stack(vec![pinned.clone(), pinned]);
+        assert_eq!(s.merge_adjacent(), 1);
+        assert!((s.films()[0].d_nm - 40.0).abs() < 1e-12);
     }
 
     /// nk-keyed merge: same material with different nk (interface slice,
@@ -1978,6 +2545,77 @@ mod tests {
         assert!(!s.films()[0].optimize);
     }
 
+    /// W7: two labelled layers of one index merge only under one label;
+    /// two labels are two deposited materials, kept apart.
+    #[test]
+    fn merge_adjacent_keeps_labels_apart() {
+        let labelled = |d: f64, label: &str| {
+            let mut f = h(d);
+            f.material = Arc::from(label);
+            f.label = Some(Arc::from(label));
+            f
+        };
+        let mut s = stack(vec![labelled(5.0, "H"), labelled(7.0, "H2")]);
+        assert_eq!(s.merge_adjacent(), 0);
+        let mut s = stack(vec![labelled(5.0, "H"), labelled(7.0, "H")]);
+        assert_eq!(s.merge_adjacent(), 1);
+        // An unlabelled layer matches by index alone, as before.
+        let mut s = stack(vec![labelled(5.0, "H"), h(7.0)]);
+        assert_eq!(s.merge_adjacent(), 1);
+    }
+
+    /// Layers merge by index: two touching films of one nk are one film,
+    /// whatever their names (two needles of one material, a needle and an
+    /// original layer). The first name wins.
+    #[test]
+    fn merge_adjacent_layers_by_index() {
+        let mut n1 = h(5.0);
+        n1.material = Arc::from("H#1");
+        let mut n2 = h(7.0);
+        n2.material = Arc::from("H#2");
+        let mut s = stack(vec![l(30.0), n1, n2, h(10.0), l(20.0)]);
+        assert_eq!(s.merge_adjacent(), 2);
+        let f = s.films();
+        assert_eq!(f.len(), 3);
+        assert_eq!(f[1].material.as_ref(), "H#1");
+        assert!((f[1].d_nm - 22.0).abs() < 1e-12);
+        assert_eq!(s.spans().len(), 3);
+        assert!(s.spans().iter().all(|sp| sp.is_singleton_bulk()));
+    }
+
+    /// Derived rows stay apart from a layer of the same index under
+    /// another name: a graded span's sublayer, and an interface slice.
+    #[test]
+    fn merge_adjacent_keeps_derived_rows_apart() {
+        let span = |start: usize, end: usize, logical: usize, slice: bool| Span {
+            start,
+            end,
+            logical,
+            slice,
+            bulk_start: start + usize::from(slice),
+        };
+        let mut sub_a = h(4.0); // a graded sublayer that is pure H
+        sub_a.material = Arc::from("grad");
+        let mut sub_b = l(4.0);
+        sub_b.material = Arc::from("grad");
+        let films = vec![h(50.0), sub_a, sub_b];
+        let spans = vec![span(0, 1, 0, false), span(1, 3, 1, false)];
+        let mut s =
+            DesignStack::from_parts(air(0.0), sub(0.0), films, spans, vec![None, None]).unwrap();
+        assert_eq!(s.merge_adjacent(), 0, "graded sublayer merged into a layer");
+
+        let mut slice = h(1.0); // an interface slice that happens to be pure H
+        slice.material = Arc::from("coat");
+        let mut bulk = l(40.0);
+        bulk.material = Arc::from("coat");
+        let films = vec![h(50.0), slice, bulk];
+        let spans = vec![span(0, 1, 0, false), span(1, 3, 1, true)];
+        let mut s =
+            DesignStack::from_parts(air(0.0), sub(0.0), films, spans, vec![None, None]).unwrap();
+        assert_eq!(s.merge_adjacent(), 0, "interface slice merged into a layer");
+        assert_eq!(s.films().len(), 3);
+    }
+
     #[test]
     fn merge_full_run_collapses() {
         let mut s = stack(vec![h(1.0), h(2.0), h(3.0)]);
@@ -1995,6 +2633,119 @@ mod tests {
         assert_eq!(f.len(), 2);
         assert!((f[0].d_nm - 1000.0).abs() < 1e-12);
         assert!((f[1].d_nm - 50.0).abs() < 1e-12);
+    }
+
+    fn edges(outer: &[&LayerSpec], inner: &[&LayerSpec]) -> EdgeMaterials {
+        let list = |l: &[&LayerSpec]| {
+            (!l.is_empty()).then(|| {
+                l.iter()
+                    .map(|f| (f.material.clone(), f.nk.clone()))
+                    .collect()
+            })
+        };
+        EdgeMaterials {
+            outer: list(outer),
+            inner: list(inner),
+        }
+    }
+
+    #[test]
+    fn edge_materials_are_checked_when_set() {
+        let mut s = stack(vec![h(100.0), l(50.0)]);
+        let e = s.set_edge_materials(edges(&[&l(0.0)], &[])).unwrap_err();
+        assert!(e.contains("outer") && e.contains("\"L\""), "{e}");
+        let e = s.set_edge_materials(edges(&[], &[&h(0.0)])).unwrap_err();
+        assert!(e.contains("inner"), "{e}");
+        assert!(s.edge_materials().is_free());
+        s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
+        assert!(!s.edge_materials().is_free());
+    }
+
+    /// An edge film matches a listed material by label, a needle's `#n`
+    /// suffix stripped, so a spectrum off by the last bit still matches;
+    /// a film named otherwise falls back to bit-exact nk.
+    #[test]
+    fn edge_materials_match_by_label_then_by_index() {
+        let e: EdgeMaterial = (Arc::from("H"), h(0.0).nk.clone());
+        let film = |name: &str, n: f64| LayerSpec::constant(name, n, 0.0, 10.0, NW);
+        let off = f64::from_bits(2.35f64.to_bits() + 1);
+        assert!(is_edge_material(&e, &film("H#2", off)));
+        assert!(is_edge_material(&e, &film("H", off)));
+        assert!(is_edge_material(&e, &film("X", h(0.0).nk[0].re)));
+        assert!(!is_edge_material(&e, &film("X", off)));
+        assert!(!is_edge_material(&e, &film("H#", off)));
+        assert!(!is_edge_material(&e, &film("H#b", off)));
+        assert!(!is_edge_material(&e, &film("HH#1", off)));
+
+        let mut s = stack(vec![film("H#1", off), l(50.0)]);
+        s.set_edge_materials(edges(&[&h(0.0)], &[])).unwrap();
+    }
+
+    /// A film on a boundary is a span of its own; everything below moves
+    /// down one row, and nothing is split.
+    #[test]
+    fn a_boundary_film_splits_nothing() {
+        let mut s = stack(vec![h(100.0), l(50.0), h(80.0)]);
+        s.insert_film_at_boundary(1, l(5.0)).unwrap();
+        s.insert_film_at_boundary(4, h(3.0)).unwrap(); // on the substrate
+        let d: Vec<f64> = s.films().iter().map(|f| f.d_nm).collect();
+        assert_eq!(d, vec![100.0, 5.0, 50.0, 80.0, 3.0]);
+        let starts: Vec<usize> = s.spans().iter().map(|sp| sp.start).collect();
+        assert_eq!(starts, vec![0, 1, 2, 3, 4]);
+        assert!(s.spans().iter().all(Span::is_singleton_bulk));
+
+        let e = s.insert_film_at_boundary(9, l(5.0)).unwrap_err();
+        assert!(e.contains("not a span boundary"), "{e}");
+    }
+
+    /// On an outer edge the new film becomes the edge layer, so the edge's
+    /// list decides; inside the stack it does not apply.
+    #[test]
+    fn a_boundary_film_obeys_the_edge_lists() {
+        let mut s = stack(vec![h(100.0), l(50.0)]);
+        s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
+        let e = s.insert_film_at_boundary(0, l(5.0)).unwrap_err();
+        assert!(e.contains("outer"), "{e}");
+        let e = s.insert_film_at_boundary(2, h(5.0)).unwrap_err();
+        assert!(e.contains("inner"), "{e}");
+        assert_eq!(s.films().len(), 2);
+        s.insert_film_at_boundary(1, h(5.0)).unwrap();
+        s.insert_film_at_boundary(0, h(5.0)).unwrap();
+        assert_eq!(s.films().len(), 4);
+    }
+
+    /// A thin edge layer the sweep would remove is held at the floor when
+    /// the layer behind it is no allowed edge, and removed when it is.
+    #[test]
+    fn clamp_holds_an_edge_rather_than_expose_a_disallowed_one() {
+        let films = || vec![h(1.0), l(100.0), h(100.0), l(1.0)];
+
+        let mut s = stack(films());
+        s.set_edge_materials(edges(&[&h(0.0)], &[&l(0.0)])).unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 0);
+        assert_eq!(rep.edges_held, ["outer: H (1.0 nm)", "inner: L (1.0 nm)"]);
+        assert!(!rep.is_empty());
+        let f = s.films();
+        assert_eq!(f.len(), 4);
+        assert_eq!((f[0].d_nm, f[3].d_nm), (2.0, 2.0));
+
+        let mut s = stack(films());
+        let (hh, ll) = (h(0.0), l(0.0));
+        s.set_edge_materials(edges(&[&hh, &ll], &[&ll, &hh]))
+            .unwrap();
+        let rep = s.clamp_all(2.0, 1000.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 2);
+        assert!(rep.edges_held.is_empty());
+        assert_eq!(s.films().len(), 2);
+
+        // The first SURVIVOR decides: two thin layers go together when the
+        // one behind them is allowed.
+        let mut s = stack(vec![h(1.0), l(1.0), h(100.0)]);
+        s.set_edge_materials(edges(&[&h(0.0)], &[])).unwrap();
+        s.clamp_all(2.0, 1000.0, false).unwrap();
+        assert_eq!(s.films().len(), 1);
+        assert_eq!(s.films()[0].d_nm, 100.0);
     }
 
     #[test]
@@ -2053,22 +2804,55 @@ mod tests {
         assert_eq!(sa.incoherent_flags, vec![0, 0, 0]);
     }
 
-    /// C1. The flag used to ride through `solver_arrays` into a solve that
-    /// never read it. It is refused at the one internal constructor now, so
-    /// no route into synthesis can carry it -- and the refusal has to name
-    /// the door that does honor the flag, or it is just a wall.
     #[test]
-    fn synthesis_refuses_an_incoherent_film() {
+    fn solver_arrays_cap_roughness_and_keep_the_stored_value() {
+        let mut thin = h(3.0);
+        thin.rough_type = 5;
+        thin.rough_val = 4.0;
+        let mut s = stack(vec![l(50.0), thin]);
+        // Interface L|thin sits on row 2 and caps at 3 / 2.
+        assert_eq!(s.solver_arrays().rough_vals[2], 1.5);
+        assert_eq!(s.films()[1].rough_val, 4.0);
+        s.set_roughness_cap(0.0).unwrap();
+        assert_eq!(s.solver_arrays().rough_vals[2], 4.0);
+        assert!(s.set_roughness_cap(f64::INFINITY).is_err());
+    }
+
+    /// W6: an incoherent film builds as a fixed spacer, flagged in the
+    /// solver arrays; one left optimizable or open to needles is refused.
+    #[test]
+    fn synthesis_takes_an_incoherent_film_as_a_fixed_spacer() {
         let mut sp = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
         sp.coherent = false;
-        let err = DesignStack::with_films(air(0.0), sub(0.0), vec![sp])
-            .expect_err("an incoherent film must not build a synthesis stack");
+        let err = DesignStack::with_films(air(0.0), sub(0.0), vec![sp.clone()])
+            .expect_err("an optimizable incoherent film must be refused");
         assert!(err.contains("coherent = false"), "{err}");
         assert!(err.contains("spacer"), "{err}");
-        assert!(err.contains("solve_structure"), "{err}");
-        // And a coherent film of the same shape still builds.
-        let ok = LayerSpec::constant("spacer", 1.45, 0.0, 1_000_000.0, NW);
-        assert!(DesignStack::with_films(air(0.0), sub(0.0), vec![ok]).is_ok());
+        sp.optimize = false;
+        assert!(DesignStack::with_films(air(0.0), sub(0.0), vec![sp.clone()]).is_err());
+        sp.needle = false;
+        let mut s = DesignStack::with_films(air(0.0), sub(0.0), vec![h(80.0), sp, l(90.0)])
+            .expect("a fixed incoherent spacer builds");
+        assert!(s.has_incoherent());
+        assert_eq!(s.solver_arrays().incoherent_flags, vec![0, 0, 1, 0, 0]);
+        // The plate is not a thin film: the ceiling leaves it alone.
+        let rep = s.clamp_all(2.0, 2000.0, false).unwrap();
+        assert_eq!(rep.spans_capped, 0);
+        assert_eq!(s.films()[1].d_nm, 1_000_000.0);
+    }
+
+    /// W6: a coherent film of the plate's glass beside the plate stays a
+    /// row of its own.
+    #[test]
+    fn merge_adjacent_keeps_coherence_apart() {
+        let mut plate = LayerSpec::constant("G", 1.52, 0.0, 1_000_000.0, NW);
+        plate.coherent = false;
+        plate.optimize = false;
+        plate.needle = false;
+        let film = LayerSpec::constant("G", 1.52, 0.0, 50.0, NW);
+        let mut s = DesignStack::with_films(air(0.0), sub(0.0), vec![film, plate]).unwrap();
+        assert_eq!(s.merge_adjacent(), 0);
+        assert_eq!(s.films().len(), 2);
     }
 
     // ------------------------------------------------------------------
@@ -2478,16 +3262,18 @@ mod tests {
         assert!(rep3.is_empty());
         assert!((c3.total_thickness_nm() - 150.0).abs() < 1e-12);
 
-        // A fully-deleted span disappears from the partition.
+        // A fully-deleted span disappears from the partition. (D10: a
+        // pinned span is never deleted, so the span is made mixed.)
         let graded = vec![crate::structure::Layer {
             inhomogen: true,
             inh_delta: 0.2,
             ..crate::structure::Layer::film(50.0, "TiO2")
         }];
         let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
-        let (mut g, _) =
+        let (g, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
+        let mut g = mixed(g);
         let n_rows = g.films().len();
         assert!(n_rows > 1);
         let rep = g.clamp_all(100.0, 1000.0, false).unwrap();
@@ -2505,6 +3291,83 @@ mod tests {
     // ------------------------------------------------------------------
     // F0.2 — the span-quantity floor and cap (licence twins)
     // ------------------------------------------------------------------
+
+    /// D10 leaves a pinned span alone, so the F0.2 multi-row rules
+    /// (removed whole, ceiling refusal) now apply only to a span that is
+    /// neither pinned nor scalable. `from_design` does not build one;
+    /// this optimize-flags the first bulk row of span 0 to get one.
+    fn mixed(mut stack: DesignStack) -> DesignStack {
+        let r = stack.spans()[0].bulk_start;
+        stack.set_row_optimize(r, true);
+        let sp = stack.spans()[0];
+        assert!(!span_is_pinned_rows(&sp, stack.films()) && !stack.span_is_scalable(&sp));
+        stack
+    }
+
+    /// D10: a pinned span - a background-pinned graded film, a pinned
+    /// plain film, with or without an interface slice - goes through the
+    /// sweep untouched below the floor and above the ceiling, under every
+    /// policy, and the report stays empty.
+    #[test]
+    fn d10_clamp_leaves_pinned_spans_untouched() {
+        let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
+        let mut nk = HashMap::new();
+        nk.insert(Arc::from("SiO2"), vec![Complex64::new(1.46, 0.0); NW]);
+        nk.insert(Arc::from("TiO2"), vec![Complex64::new(2.35, 0.0); NW]);
+        let films = vec![
+            // Background graded TiO2, 5 nm: below the floor.
+            crate::structure::Layer {
+                inhomogen: true,
+                inh_delta: 0.1,
+                ..crate::structure::Layer::film(5.0, "TiO2")
+            },
+            // A free film, kept above the floor so it is not the subject.
+            crate::structure::Layer::film(80.0, "SiO2"),
+            // Background graded TiO2, 1000 nm: above the ceiling.
+            crate::structure::Layer {
+                inhomogen: true,
+                inh_delta: 0.5,
+                ..crate::structure::Layer::film(1000.0, "TiO2")
+            },
+        ];
+        let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
+        let (mut base, _) =
+            DesignStack::from_design(air(0.0), sub(0.0), &films, &nk, &HashMap::new(), &wl, &bg)
+                .unwrap();
+        // Two pinned plain films: one thin, one thick.
+        let mut thin = LayerSpec::constant("H", 2.35, 0.0, 0.5, NW);
+        thin.optimize = false;
+        thin.needle = false;
+        let mut thick = LayerSpec::constant("L", 1.46, 0.0, 5000.0, NW);
+        thick.optimize = false;
+        thick.needle = false;
+        let n = base.spans().len();
+        base.insert_span(n, thin, false).unwrap();
+        base.insert_span(n + 1, thick, false).unwrap();
+        let before: Vec<f64> = base.films().iter().map(|f| f.d_nm).collect();
+
+        for policy in [
+            ThinLayerPolicy::Remove,
+            ThinLayerPolicy::ClampUpFinal,
+            ThinLayerPolicy::ClampUpAlways,
+        ] {
+            for final_pass in [false, true] {
+                let mut s = base.clone();
+                let rep = s.clamp_all_policy(2.0, 300.0, policy, final_pass).unwrap();
+                assert!(rep.is_empty(), "{policy:?}/{final_pass}: {rep:?}");
+                let after: Vec<f64> = s.films().iter().map(|f| f.d_nm).collect();
+                assert_eq!(after, before, "{policy:?}/{final_pass}");
+                assert_eq!(s.spans().len(), base.spans().len());
+            }
+        }
+
+        // Control: the same thin film, free, is removed (or clamped up).
+        let mut free = LayerSpec::constant("H", 2.35, 0.0, 0.5, NW);
+        free.needle = false;
+        let mut s = DesignStack::with_films(air(0.0), sub(0.0), vec![free]).unwrap();
+        let rep = s.clamp_all(2.0, 300.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 1);
+    }
 
     /// Licence item 1, measured (A2): a background-pinned 5 nm graded
     /// film (delta = 0.1 -> four 1.25 nm sublayers) under the default
@@ -2534,7 +3397,8 @@ mod tests {
     /// Licence item 1, reported: the floor above the span total removes
     /// the span AS A UNIT and the report names it. The assertion is on
     /// the report - a silent correct deletion and a silent wrong one
-    /// look identical from the outside.
+    /// look identical from the outside. D10: on a mixed span (a pinned
+    /// one is never removed).
     #[test]
     fn f02_floor_above_a_span_removes_it_whole_and_names_it() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
@@ -2546,9 +3410,10 @@ mod tests {
             ..crate::structure::Layer::film(5.0, "TiO2")
         }];
         let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
-        let (mut stack, _) =
+        let (stack, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
+        let mut stack = mixed(stack);
         let rep = stack.clamp_all(6.0, 1000.0, false).unwrap();
         assert_eq!(rep.rows_removed, 4);
         assert_eq!(rep.spans_removed.len(), 1);
@@ -2560,11 +3425,13 @@ mod tests {
         assert!(stack.films().is_empty());
     }
 
-    /// Licence item 2, measured: a PINNED 1000 nm graded span
-    /// (delta = 0.5 -> 57 rows) under a 300 nm ceiling refuses -
-    /// message names the span material and both numbers. F1.6 narrows
-    /// this to pinned spans; a scalable span is capped instead
-    /// (f16_scalable_span_above_ceiling_is_capped_not_refused).
+    /// Licence item 2, measured: a 1000 nm graded span (delta = 0.5 ->
+    /// 57 rows) under a 300 nm ceiling refuses - message names the span
+    /// material and both numbers. F1.6 narrowed this to non-scalable
+    /// spans (a scalable span is capped instead,
+    /// f16_scalable_span_above_ceiling_is_capped_not_refused), and D10 to
+    /// non-pinned ones (a pinned span passes through), so the span here
+    /// is mixed.
     #[test]
     fn f02_cap_refuses_a_multirow_span_above_the_ceiling() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
@@ -2576,9 +3443,10 @@ mod tests {
             ..crate::structure::Layer::film(1000.0, "TiO2")
         }];
         let bg: HashSet<String> = ["TiO2".to_string()].into_iter().collect();
-        let (mut stack, _) =
+        let (stack, _) =
             DesignStack::from_design(air(0.0), sub(0.0), &graded, &nk, &HashMap::new(), &wl, &bg)
                 .unwrap();
+        let mut stack = mixed(stack);
         assert_eq!(stack.films().len(), 57, "the plan's measured row count");
         let err = stack.clamp_all(2.0, 300.0, false).unwrap_err();
         // The exact message (C3): deterministic format! output over

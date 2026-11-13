@@ -1,0 +1,164 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
+"""Boundary needles: `NeedleCycleConfig(boundary_needles=True)`.
+
+The scan also tries every span boundary, the outer edges included, and a
+needle there is a new film between two layers. The mechanics (sites,
+neighbour filter, span bookkeeping, P continuity) are pinned in the core;
+these are the seams:
+
+  * off is the old run bit for bit;
+  * on, a film too thin to split is reached through its boundaries, and
+    the report says which insertions were boundary needles;
+  * the edge lists and the insertion rules hold on boundaries too;
+  * a rough boundary is scored by a trial and its needle goes in at the
+    start thickness, a smooth one at the seed;
+  * the multi-environment door scans the design's boundaries jointly: two
+    identical environments take the needle one does, and the merit is
+    the sum.
+"""
+import numpy as np
+import pytest
+
+from navette.spectralweave.target import SpectralTarget, TargetCollection
+from navette.synthesis.pipeline import NeedleCycleConfig, PipelineConfig, run_needle
+
+WL = np.linspace(450.0, 750.0, 31)
+N = {"L": 1.46 + 0j, "M": 1.65 + 0j, "H": 2.35 + 0j}
+MATERIALS = {k: np.full(WL.shape, v) for k, v in N.items()}
+
+
+def _targets():
+    tc = TargetCollection()
+    tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
+                          "s", "R", angle_deg=0.0))
+    return tc
+
+
+def _run(seed, names, boundary=None, **kw):
+    if boundary is not None:
+        kw["needle_config"] = NeedleCycleConfig(boundary_needles=boundary)
+    return run_needle(layers=[(MATERIALS[n], d) for n, d in seed], names=names,
+                      targets=_targets(), angles_deg=[0.0], wavelengths=WL,
+                      materials=MATERIALS, substrate=(1.52, "sub"),
+                      pipeline_config=PipelineConfig(max_macro_cycles=2,
+                                                     needles_per_cycle=2),
+                      **kw)
+
+
+def _insertions(res):
+    return [nr["insertion"] for p in res["phases"]
+            for nr in p["needle_results"] if nr["insertion"]]
+
+
+def _labels(res):
+    out = []
+    for f in res["stack"].films():
+        n = complex(np.asarray(f["nk"])[0])
+        out.append(next(k for k, v in N.items() if v == n))
+    return out
+
+
+AR = ([("L", 300.0), ("M", 200.0)], ["L", "M"])
+THIN = ([("M", 3.0)], ["M"])
+# Held at 3 nm: free, the optimizer would thin M (it only adds reflection
+# on glass) and remove it, leaving no film to scan.
+PIN = {"per_film_flags": {"M": {"optimize": False}}}
+
+
+def test_off_is_the_old_run_bit_for_bit():
+    base = _run(*AR)
+    off = _run(*AR, boundary=False)
+    assert off["final_mf"].hex() == base["final_mf"].hex()
+    assert off["final_layer_count"] == base["final_layer_count"]
+    assert all(i["boundary"] is False for i in _insertions(off))
+
+
+def test_a_film_too_thin_to_split_is_reached_on_its_boundaries():
+    assert not _insertions(_run(*THIN, boundary=False, **PIN))
+    res = _run(*THIN, boundary=True, **PIN)
+    ins = _insertions(res)
+    assert ins, "no boundary needle landed on the 3 nm film"
+    assert ins[0]["boundary"] and ins[0]["depth_into_layer_nm"] == 0.0
+    assert res["final_mf"] < _run(*THIN, boundary=False, **PIN)["final_mf"]
+    labels = _labels(res)
+    assert "M" in labels
+    assert all(a != b for a, b in zip(labels, labels[1:])), labels
+
+
+def test_the_edge_lists_hold_with_boundary_needles():
+    # The free run's first needle is L on the substrate side; listing only
+    # M for the inner edge keeps the bottom M.
+    free = _insertions(_run(*THIN, boundary=True, **PIN))
+    assert (free[0]["material"], free[0]["film_idx"], free[0]["boundary"]) == ("L", 1, True)
+    res = _run(*THIN, boundary=True, outer=["M", "H"], inner=["M"], **PIN)
+    labels = _labels(res)
+    assert labels[0] in ("M", "H") and labels[-1] == "M", labels
+
+
+def test_the_insertion_rules_hold_on_boundaries():
+    # M is closed, so nothing goes next to it: its two boundaries are the
+    # only sites a 3 nm film has.
+    assert not _insertions(_run(*THIN, boundary=True, insert_rules={"M": []}, **PIN))
+
+
+def _first_on_l_m(sigma):
+    # L 3 nm | M 3 nm, both held, M's top face rough. The edge lists close
+    # the outer edges, so L|M is the only site; H there raises R, which the
+    # target asks for. M's sigma 4 is capped to 1.5 by the 3 nm films.
+    tc = TargetCollection()
+    tc.add(SpectralTarget(WL, np.ones_like(WL), np.full_like(WL, 0.01),
+                          "s", "R", angle_deg=0.0))
+    flags = {"L": {"optimize": False},
+             "M": {"optimize": False, "rough_type": 5, "rough_val": sigma}}
+    res = run_needle(
+        layers=[(MATERIALS["L"], 3.0), (MATERIALS["M"], 3.0)], names=["L", "M"],
+        targets=tc, angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
+        substrate=(1.52, "sub"), outer=["L"], inner=["M"], per_film_flags=flags,
+        pipeline_config=PipelineConfig(max_macro_cycles=1, needles_per_cycle=1),
+        needle_config=NeedleCycleConfig(boundary_needles=True,
+                                        needle_seed_thickness_nm=1.0))
+    return next(nr for p in res["phases"] for nr in p["needle_results"]
+                if nr["insertion"])
+
+
+def test_a_rough_boundary_needle_goes_in_at_its_start_thickness():
+    # Scored by a trial at max(seed, 2 * 1.5) = 3 nm, not by P.
+    rec = _first_on_l_m(4.0)
+    ins = rec["insertion"]
+    assert (ins["material"], ins["film_idx"], ins["boundary"]) == ("H", 1, True)
+    assert ins["seed_nm"] == 3.0
+    assert rec["best_p"] is None
+    assert rec["predicted_improvement"] > 0.0
+
+
+def test_a_smooth_boundary_needle_goes_in_at_the_seed():
+    rec = _first_on_l_m(0.0)
+    assert rec["insertion"]["seed_nm"] == 1.0
+    assert rec["best_p"] < 0.0
+
+
+def _joint_thin(names):
+    tc = TargetCollection()
+    for env in names:
+        tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.01),
+                              "s", "R", environment=env, angle_deg=0.0))
+    return run_needle(
+        targets=tc, angles_deg=[0.0], wavelengths=WL, materials=MATERIALS,
+        design={"coat": [(N["M"], 3.0, "M")]},
+        environments=[{"name": n, "stack": [{"design": "coat"}]} for n in names],
+        pipeline_config=PipelineConfig(max_macro_cycles=1, needles_per_cycle=1,
+                                       enable_cleanup=False, enable_inflate=False,
+                                       thin_layer_policy="clamp_up_final"),
+        needle_config=NeedleCycleConfig(boundary_needles=True),
+        substrate=(1.52, "sub"), **PIN)
+
+
+def test_the_environments_door_takes_boundary_needles_jointly():
+    one, two = _joint_thin(["a"]), _joint_thin(["a", "b"])
+    ins = _insertions(one)
+    assert ins and all(i["boundary"] for i in ins), ins
+    assert [(i["material"], i["film_idx"]) for i in _insertions(two)] == \
+        [(i["material"], i["film_idx"]) for i in ins]
+    assert _labels(two) == _labels(one)
+    assert two["final_mf"] == pytest.approx(2.0 * one["final_mf"], rel=1e-6)

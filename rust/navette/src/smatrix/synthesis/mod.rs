@@ -41,3 +41,4 @@ pub mod structure;
 pub mod targets;
 pub mod thick_opt;
 pub mod trf;
+pub mod weights;

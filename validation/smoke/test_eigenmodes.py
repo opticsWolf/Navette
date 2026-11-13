@@ -41,7 +41,7 @@ _SPP = 1.7139416834 + 0.0226069147j
 
 
 def _stack():
-    return ScatterMatrix(_N, _D, wavelengths=np.array([_LAM]), angles=[0.0])
+    return ScatterMatrix(_N, _D, wavelengths=np.array([_LAM]), angles_deg=[0.0])
 
 
 # --------------------------------------------------------------------------

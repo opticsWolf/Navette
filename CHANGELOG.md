@@ -5,6 +5,550 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [Unreleased]
+
+## [0.9.0] - synthesis targets belong to the whole design
+
+Needle synthesis draws from a material pool, runs through incoherent
+plates, scores every target type (retardance, log-normalized, weighted
+points) and checks once, at setup, what the complete stack can answer:
+a demand it cannot is dropped with one warning instead of failing a
+solve. Angles are radians inside and named at every door; a material
+is its label. Several of these break call sites; see *Changed
+(breaking)*.
+
+### Changed (breaking)
+
+- **A demand the complete stack cannot answer is dropped once, with a
+  warning.** Targets belong to the whole design; at run setup
+  (`run_design`, `run_design_environments`, `run_needle`) each
+  environment's assembled stack is checked once (`driver::drop_infeasible`):
+  phase demands through an incoherent film, and back-incidence demands
+  where the exit medium absorbs (k > 1e-3), are dropped with ONE
+  `UserWarning` per kind, naming the environments and exit media. The
+  flat door used to fail mid-run on both; a joint run used to refuse
+  when every phase demand was dropped. A run now refuses only when no
+  demand is left. Nothing inside the optimization loops checks or
+  warns; the needle pins are unchanged. A bare `SmatrixContext` keeps
+  its per-solve `ValueError`s.
+
+- **Run results name the coating thickness as such**
+  (`docs/plans/synthesis_open_items.md` D7). The value always counted
+  coherent films only, so a plate made "total" wrong. Renamed keys:
+  `final_total_thickness_nm` → `final_coating_thickness_nm`, the
+  per-phase `total_thickness_nm` → `coating_thickness_nm`, and the
+  inflate report's `total_thickness_before`/`_after` →
+  `coating_thickness_before`/`_after`. `DesignStack.total_thickness()`
+  keeps its meaning (plates included); the budget knob
+  `PipelineConfig.max_total_thickness_nm` keeps its name.
+
+- **A failed needle refold is an error** (D1). When the solver failed
+  while refolding the targets for a new cycle, the cycle silently kept
+  the previous fold. It now stops the run with an error naming the
+  cycle (or, in a joint run, the environment).
+
+- **A demand on a curve the evaluator did not produce is an error**
+  (D2). The merit used to add a fixed penalty and carry on; the
+  evaluator now refuses, naming the curve. `check_spec` refuses such a
+  spec up front, so this only fires on a spec/evaluator mismatch.
+
+- **A pinned film (`optimize = False`) is never touched by synthesis**
+  (`docs/plans/synthesis_open_items.md` D10). Inflate skipped no film by
+  its flag, and the clamp sweep removed, clamped up, capped or refused
+  a pinned film like a free one; only cleanup checked the flag. Now:
+  - inflate and `round_to_qwot` skip pinned films;
+  - the clamp sweep passes a pinned span (every bulk row pinned)
+    through unchanged, below the floor or above the ceiling, and does
+    not report it - this includes a background-pinned graded span
+    (removed whole before) and a pinned edge film (held and reported
+    as `edges_held` before);
+  - `merge_adjacent` no longer fuses a pinned film with a free film of
+    the same index (the merged row took the first one's flag). An
+    interface slice, whose flag is derived, still merges as before.
+  A pinned film with `needle = True` can still be split by an insertion;
+  its halves stay pinned.
+
+- **The needle P is the slope of the merit the LM minimises, at any
+  angle** (`docs/plans/synthesis_targets_plan.md` W1). The fold used to
+  hand one set of (target, weight) pairs to both polarization branches.
+  At normal incidence that came out right for s and p demands; off
+  normal it pulled on the wrong polarization, and colour on an
+  unpolarized curve got half its gradient. The fold now has one branch
+  per polarization. An s or p intensity demand folds at twice its
+  weight on its own branch (the intensity kernels return half the
+  slope). A phase demand folds at its weight on its own branch. An
+  unpolarized demand folds at its weight on both, each branch's target
+  shifted so that both share the u residual. A Rust oracle checks P
+  against a finite difference of the merit after a real needle
+  insertion, for every demand type at 0°, 30° and 60°.
+  - `build_needle_targets` returns `{"s": branch, "p": branch}`; each
+    branch has the keys the flat dict had. Feed `"s"` to
+    `needle_gradient(pol="s")` and `"p"` to `pol="p"`.
+  - `needle_gradient(gain_shift_phi=)` now adds the shift (it
+    subtracted it, opposite to the native cycle). It also spreads the
+    shift over the spectral points, so `P_PHI` summed over them carries
+    it once, not once per point.
+  - Fixed on the way: a differential-phase (`PDts`/`PDtp`) demand
+    handed the kernel its target without the reference phase, and its
+    gain shift used the unwrapped residual.
+  - Needle trajectories move. At normal incidence they move only in the
+    last bits of the predicted gains; off normal they change, and in a
+    six-problem comparison the final merits were the same or better:
+
+    | problem (6 macro cycles)   | before   | after    |
+    |----------------------------|----------|----------|
+    | pin targets, 0°/30°        | 9.058    | 9.058    |
+    | AR Rs, 0°                  | 0.7014   | 0.7014   |
+    | AR Ru, 45°                 | 14.55    | 14.55    |
+    | PBS Rs→1 / Rp→0, 45°       | 9483     | 4969     |
+    | bandpass Tu, 30°           | 93122    | 24319    |
+    | Ts 0.5 / Tp 0.9, 60°       | 2543     | 1.045    |
+
+    With a lossless H the oblique rows read AR Ru 9.92 → 8.87, PBS
+    9435 → 3641, bandpass 93688 → 21303, and mixed s/p 215 → 7.07.
+- **Synthesis scores every target type, and refuses up front what it
+  cannot** (`docs/plans/synthesis_targets_plan.md` W2, W3). The
+  synthesis evaluator used to fill only Rs, Rp, Ts, Tp and the complex
+  forward t; a demand on unpolarized R/T/A, back-incidence RB/TB/AB, or
+  front/back reflection phase cost a constant 1e6 in `evaluate_merit`
+  and failed the LM mid-run with "missing curve". It now fills every row
+  the spec reads (unpolarized as the s/p average, as the engine; back
+  rows from the same block solve) and nothing more, so intensity-only
+  specs run unchanged. The analytic LM Jacobian covers all of these rows:
+  unpolarized, front reflection phase, and back intensities and phases,
+  whose thickness slopes of r_b and t_b come from the same sweep as the
+  front ones (only colour demands still run on finite differences).
+  Specs without a back demand build exactly the deposits they did
+  before. Back demands raise a `ValueError` when the
+  exit medium absorbs (k > 1e-3) inside their span, where back
+  incidence is undefined. Any demand an evaluator does not produce is
+  refused at construction of `SmatrixContext`, `NeedlePipeline`,
+  `run_design`, `run_design_environments` and `run_needle`, naming each
+  curve once with its angles (and environment, in a joint run); the
+  check is `MeritSpec::check_supported` against
+  `SmatrixContext::provides()`.
+- **Angles: radians inside, the unit named at every door.** Every
+  calculation in Rust and Python works in radians (`Radians`, a
+  range-checked newtype in `smatrix/angle.rs`). Every Python door that
+  takes an angle has two keyword-only arguments, and exactly one must be
+  given; both or neither raises a `ValueError` naming the pair:
+  - Grids, `angles_deg=` / `angles_rad=`: `ScatterMatrix`,
+    `solve_structure`, `SmatrixContext`, `NeedlePipeline`, `run_design`,
+    `run_design_environments`, `run_needle`, `SimCurves`,
+    `sim_curves_from_arrays`, `build_needle_targets`, and
+    `TargetWeaver.add_angular_target`.
+  - Single angles, `angle_deg=` / `angle_rad=`: `SpectralTarget`,
+    `ColorTarget`, `MeritSpec.add_key`, `reference_rotation`,
+    `apply_reference_rotation`, and `TargetWeaver.add_spectral_target`.
+    `AngularTarget` takes `angles_deg=` / `angles_rad=`. The angle is no
+    longer positional, so the arguments after it move up one place.
+  - The range is [0, pi/2] (0 to 90 degrees). A value outside it or NaN
+    is an error that gives the index, the value and the unit, so degrees
+    passed as radians fail at once.
+  - Target JSON uses `"angle_deg"` / `"angle_rad"` (`"angles_deg"` /
+    `"angles_rad"` for angular targets). The old `"angle"` key is rejected
+    with a message naming the new keys.
+  - `TargetWeaver` keys hold radians, and `export_entries` reports
+    `angle_rad`. `calculate_merit` warns when a target key has no
+    simulated curve, which is what a simulation keyed in degrees would
+    cause.
+  - Removed: `angles_in_radians`, `angles=`, `angle=`, and the helpers
+    `deg_to_sin`, `angles_to_sin`, `angles_as_degrees`,
+    `reference_rotation_radians`. `ScatterMatrix.sin_theta` and
+    `Solver.sin_theta` are new. There is no default angle: omitting it
+    is the same error as giving both. `ColorTarget` is the one exception,
+    where neither means normal incidence. See
+    `docs/plans/angle_units_plan.md`.
+- **Needle synthesis draws from a material pool, not a contrast map.**
+  The `contrast` map (film name -> one seed material) is gone. A run now
+  has one pool of needle materials, and the needle scan tries every
+  (position, material) pair and inserts the single best one:
+  - A film can receive a needle when its own `needle` flag is set;
+    `optimize` decides whether its thickness may change. Film names play
+    no part.
+  - A film accepts every pool material other than its own (see the
+    label entry below).
+  - The pool defaults to one entry per material among the design's
+    layers. `materials=` (a `{label: nk}` mapping in Python,
+    `DesignRequest.materials` as library codes in config,
+    `NeedlePipeline(materials=[LayerSpec, ...])`) supplies another, for
+    example SiO2, Al2O3 and HfO2 for a design that starts as SiO2 alone.
+    An empty pool inserts nothing. On the multi-environment door the
+    default pool is the design's films only, never the surroundings.
+  - Each needle is a new film named `"<label>#<n>"` (unique in the
+    stack), with `optimize` and `needle` set, so needles host needles.
+    The `<host>_seed` names are gone.
+  - Passing `contrast=` raises a `TypeError` that names `materials`.
+- **Touching layers of one index merge, whatever their names.** Rows
+  derived from a layer (graded sublayers, interface slices) still merge
+  only on name and index, so they stay apart. The first row's properties
+  win.
+- **A material is its label, not its index** (`docs/plans/
+  synthesis_targets_plan.md` W7). Two deposited materials can share one
+  fitted index and still differ in group or insertion rules. Films now
+  carry the label of their material (`LayerSpec(label=)`, a `label`
+  property and a `"label"` key in `DesignStack.films()`): design films
+  their code (config doors), needles their pool entry's. Films without a
+  label are matched by index as before: films built by hand, or through
+  `run_needle` / `stack_from_layers` / `DesignStack.from_design`, whose
+  names are free; the half-spaces; surroundings.
+  - Two films of different labels are different materials at any index:
+    they no longer merge, and either may take the other's needle.
+  - The pool holds one entry per label. A code repeated in `materials=` is
+    one entry; one label with two indices is an error. Two codes of one
+    index are two entries and share one scan sweep.
+  - A given pool (`DesignRequest.materials`) takes the codes' group n/k
+    factors, as the default pool always did, so both pools agree.
+  - Insertion rules find a film's row by its label. An unlabelled film
+    whose index two entries with different rules share is an error.
+- **The grading sign is the literature's: `+inh_delta` raises the index
+  toward the outer surface.** The inhomogeneity is defined as
+  `δ = (n_outer − n_substrate) / n̄` (Borgogno et al., Appl. Opt. 23, 3567
+  (1984); the OptiLayer glossary). Navette's `inh_delta` was `−δ`: rows run
+  from the incidence face and the first carried `1 − d/2`. It now carries
+  `1 + d/2`, so the same number means the same film as in the literature.
+  - `d` and `−d` are exact negations, so a migrated film solves bit for bit
+    as before.
+  - The structure state schema and the program envelope go to **v3**.
+    v1/v2 states and programs (and legacy flat documents) still load; the
+    reader negates `inh_delta`, the `RateCapped` rate, `inh_delta_summand`
+    and the `abs_mean_delta_g/h` offsets of `inh_delta_error_params`, so
+    each file describes the same films. Note that `Layer.film`'s default
+    `inh_delta` of 0.1 reads back as -0.1 on an ungraded legacy layer.
+  - Not versioned, so not migrated: design-request JSON, flag dicts, and
+    values passed in code. A positive value there now grades the other way.
+  - The program config accepts `inh_delta` in `[-1, 1]` (it refused
+    negatives with `[0, 1]`).
+  - The forward golden's graded cases take negated inputs, so the stored
+    arrays are unchanged.
+- The needle pin's trajectory moves deliberately (cycle 2 now inserts H
+  into an earlier L needle); both platform digests are re-recorded, Linux
+  from CI. `bench_eval` reports
+  `n_pool_materials` in place of its contrast count.
+
+### Fixed
+
+- **A masked host shifted the needle P of every later host** (1.1 /
+  D8). In a stack with spacer blocks, the multiblock P locator skipped
+  masked hosts instead of keeping their slot, so the values after one
+  were assigned to the wrong positions. Masked hosts now keep their
+  slot and get 0. The Python needle P solver went through the same
+  path and is fixed with it.
+
+- **An environment's own exit medium was refused.** `run_needle(
+  environments=…)` appended the run's `ambient` and `substrate` rows to
+  every environment, so one that ends in its own `layer_type=2` row (or
+  starts with its own `layer_type=0` row) failed with "at most one
+  substrate". The default is now added only where the environment has
+  none.
+
+- **Integral phase and retardance demands gave the needle a wrong
+  slope** (`docs/plans/synthesis_targets_plan.md` §5.9). The integral fold
+  emitted per-point pairs whose residual is the mean gap times the point
+  count, and the phase kernel wrapped that: once the mean phase error
+  passed π/N (3.6° at 50 points) P was wrong in size and could flip sign.
+  A band whose phase crosses ±π also took its gap from the raw-phase mean,
+  2π off per point past the cut. The fold now uses the mean of the wrapped
+  residuals, as the merit does, and emits large gaps with a small residual
+  and a matching weight, so the kernel never wraps them.
+- **A negative grading strength solved flat; it is now the reversed
+  ramp.** The sub-layer refinement read the signed delta, so a
+  `RateCapped` drift with a negative rate (allowed, by design) lost rows
+  and collapsed to one sub-layer past delta -0.2: a 400 nm film solved
+  homogeneous, against 23 rows for its positive twin. The refinement now
+  reads `|delta|`. `RateCapped` also capped only the positive side, so a
+  negative drift saturated at twice the positive strength; it is now
+  bounded to `[-cap, cap]`. Fixed mode accepts a negative `inh_delta` (it
+  was refused for the collapse, not for the physics: real films grade
+  both ways) and the window is `(-2, 2)`. (The sign itself then flipped;
+  see Changed.)
+- **Synthesis T into an absorbing substrate was wrong.** The synthesis
+  forward model (`SmatrixContext.simulate`, every needle and LM run) took
+  Ts/Tp from the backward channel, |t_back|²·Re(y_0)/Re(y_exit). That
+  equals the forward transmittance only when both half-spaces are
+  transparent; into an absorbing substrate it divides by a near-zero
+  Re(y_exit) (T = 84 on bare Ag at 400 nm, 1e-5 off on Si). It now takes
+  the forward |t_fwd|²·Re(y_exit)/Re(y_0), the value the engine reports
+  and the needle gradient already used, and the thickness gradient
+  follows it. On transparent substrates T moves by up to 1.1e-14: the
+  forward golden baseline is regenerated, both needle digests are
+  re-recorded (Linux from CI), and the
+  bench merit moves by 2 ulps (`46dc154d6946ee40`).
+- **Transmitted Stokes S2_T/S3_T lacked the exit-medium factor.** They
+  came from `tp·conj(ts)` while S0_T/S1_T carry the flux factor, so DOP_T
+  of a coherent stack was below 1 whenever the exit index differed from
+  the ambient (0.658 for a film on glass, 0.19-0.28 on bare Si). Each
+  block's transmitted cross term is now scaled by the real √(f_s·f_p),
+  forward and, in `COHERENCY_MATRIX`, backward, so |cross_T|² = Ts·Tp
+  for one coherent block and the p-s phase is kept; an absorbing exit
+  has f_s ≠ f_p, so no common factor on the fields would do. Without
+  flux (past TIR) cross_T is exactly +0: Retardance_T reads 0 there
+  instead of the evanescent field's phase. cross_T, S2_T, S3_T, DOP_T
+  and Retardance_T change; Psi_T and Delta_T only in the last bit, the
+  `COHERENCY_MATRIX` reflection echoes by 1e-16. The numba parity
+  reference carries the same factor, and the forward golden baseline is
+  regenerated. Synthesis does not read the cross channel: the needle
+  digest and the bench merit do not move.
+- **A needle could land as an air gap.** The old scan swept each seed
+  material over every needle-flagged film, inserted seeds included,
+  which had no contrast entry; a winning site there fell back to
+  n = 1.0. The pool removes the mechanism: every candidate is a pool
+  material, and there is no lookup to miss.
+- **Two phase demands on one S-matrix element could pull the needle the
+  wrong way.** The fold sums them into one bucket, which acts on their
+  weighted-mean target; when one target sat more than π from the
+  operating phase (an Rp phase demand near +π against an operating phase
+  near −π, say), that mean was on the wrong side and P had the wrong
+  sign. Each wrapped-phase target now moves to its representative
+  nearest the operating phase before the fold. Single phase demands and
+  the integral fold are unchanged.
+
+### Added
+
+- **The supported-target matrix is measured, not written.**
+  `tools/check_target_matrix.py` compiles and scores every label on a
+  coherent stack, a stack with a plate and an absorbing exit, and
+  rewrites the table in `docs/spectralweave-target-kinds.md`
+  (`--write`). CI fails when the table and the code disagree, or when a
+  label compiles that no row lists. The table now shows that `AB` and
+  back-side phase are dropped on an absorbing exit, like `RB`/`TB`
+  intensity.
+
+- **`DesignStack.coating_thickness()`**: the summed thickness of the
+  coherent films, the figure the synthesis budget and run results use
+  (`total_thickness()` also counts incoherent plates).
+
+- **Synthesis through an incoherent plate**
+  (`docs/plans/synthesis_targets_plan.md` W6, first cut). A film with
+  `coherent=False`, `optimize=False` and `needle=False` is a fixed plate:
+  `ambient | front films | plate | back films | substrate` designs a
+  plate coated on both faces, with the exit medium as the substrate.
+  The forward model splits the stack into coherent blocks and joins them
+  by intensity, as the engine does (front rows bit-identical to it). The
+  needle scan differentiates through the same cascade for every
+  intensity, absorption and colour demand, front and back, and the LM
+  takes the analytic Jacobian through it (one sweep per iteration, not
+  one per film; a joint run still differences). The thickness budget and
+  `final_total_thickness_nm` count coating only, and clamp, inflate and
+  merge leave the plate alone.
+  Refused with a named error: phase demands on such a stack and a plate
+  left optimizable or open to needles. In a multi-environment run a
+  phase demand in an environment with a plate is dropped from that
+  environment with a `UserWarning` naming it, and keeps binding the
+  coherent environments; the run refuses only when every phase demand
+  was dropped.
+  Multi-environment runs take a plate in any environment, in a fixed
+  segment or as a pinned film of a design segment; each environment
+  solves through its own cascade and the joint needle sums their slopes.
+  A face with no film on it stays bare; give it a starting film. What is
+  still open is listed in `docs/plans/synthesis_open_items.md`.
+  Previously any `coherent=False` film was refused.
+- **Per-point weights: `weights` and `weight_profile`**
+  (`docs/plans/synthesis_targets_plan.md` W4). `SpectralTarget` and
+  `AngularTarget` take one weight per point (`weights=`) or a
+  `WeightProfile` over their axis (nm for spectral, degrees for angular):
+  `constant`, `ramp`, `gaussian`, `bands`, `table` (pchip or linear,
+  held flat past the ends) and `product` of those. Named profiles go in
+  `TargetCollection.weight_profiles` and a target names one. A pointwise
+  residual is scaled by √w_i; an integral target takes the weighted
+  mean of its diffs over the weighted mean of its tolerances; the needle
+  fold carries the same weights and stays the merit's slope. Tolerances
+  keep their meaning (scale, band), and shrinking a tolerance by √w to
+  emphasise a region is no longer needed. Profiles are evaluated and
+  validated in Rust when the merit spec compiles (finite, ≥ 0, right
+  length, not all zero). Weights on an integral angular target refuse,
+  and so does `TargetCollection.build_weaver` (the weaver path does not
+  read them). All ones is bit-identical to no weights.
+  `MeritSpec.add_target(point_weights=)` is the low-level door, and
+  `WeightProfile` is importable from `navette.spectralweave`.
+
+- **Log-normalized targets in needle synthesis**
+  (`docs/plans/synthesis_targets_plan.md` W5). The needle refused any
+  intensity demand with `normalization_mode="log"`, mid-run, and
+  `"auto"` picks log for any curve spanning 100× or more. Such a demand
+  now folds the tangent of its log residual at the operating point:
+  the needle gradient is the merit's (checked against the merit slope
+  for every kind, unpolarized, absorption, back side, weighted and
+  integral demands). Before the first simulation, and at the merit's
+  1e-12 clamp, a log demand folds nothing. `complex` normalization still
+  refuses.
+
+- **Retardance targets: `RetR`, `RetT`, `DeltaR`, `DeltaT`**
+  (`docs/plans/synthesis_targets_plan.md` W8a). `Ret = arg(z_p·conj(z_s))`
+  of r_f or t_f, the engine's `Retardance_R`/`Retardance_T`;
+  `DeltaR = RetR − π` and `DeltaT = RetT` (wrapped), the engine's
+  `Delta_R`/`Delta_T`. They take `polarization="u"` and `phase=True`
+  (anything else raises) and score as phase demands: `wrap(Ret − t)/tol`
+  in raw radians. Synthesis does not floor `DeltaR` where Rs < 1e-12,
+  as the engine does. The LM Jacobian is analytic and the needle fold
+  matches the merit slope at 45° and 70°. At normal incidence retardance
+  is identically 0, so a demand at only 0° compiles with a warning.
+  `MeritSpec.add_target(retardance=True)` sets the same demand on a
+  p curve (`Rp`, `Tp`, `RBp`, `TBp`) directly.
+
+- **Needle rules: which materials go where, and the edge layers.** Two
+  options narrow a needle run without changing an unconstrained one (no
+  rules is the old run bit for bit):
+  - `insert_rules` maps a host label to the needle labels it accepts,
+    for example `{"SiO2": ["HfO2"], "HfO2": ["SiO2", "Al2O3"]}`. A host
+    with no key keeps the default (every pool material of another
+    index); `[]` closes a host. A film is matched to its pool entry by
+    index. The `"*"` key is the rule for films whose index is no pool
+    entry's; with rules set, such a film without a `"*"` rule refuses.
+    A host that lists itself, or any label outside the pool, refuses.
+  - `outer` (ambient side) and `inner` (substrate side) list the pool
+    materials the first and last film may be. The starting design must
+    comply. Insertion never changes an edge film; cleanup skips a
+    removal that would expose a disallowed one, and the thin-layer clamp
+    holds such a film at the floor instead of removing it.
+  - On the multi-environment door edge lists belong to a design segment:
+    `"outer"` / `"inner"` on the segment (`DesignSegmentCfg`, or
+    `design={"coat": {"layers": [...], "outer": ..., "inner": ...}}` on
+    `run_needle`), checked on the segment's own first and last film in
+    every environment. Request-level `outer` / `inner` are the segment's
+    lists when there is one segment; with several they refuse as
+    ambiguous, as does setting both a request-level list and the
+    segment's own.
+  - Every door takes them: `run_needle(insert_rules=, outer=, inner=)`
+    (flat and multi-environment), `NeedlePipeline(...)`,
+    `run_design(...)` and `DesignRequest` in the core; config's
+    `pipeline_from_config` takes `outer` / `inner`.
+  - An edge film matches a listed material by label, a needle's `#n`
+    suffix stripped (`"H#3"` is `"H"`), with bit-exact nk as the
+    fallback. Matching by nk alone failed once a spectrum was rescaled or
+    re-evaluated.
+  - The floor reports an edge it holds: the phase's `clamp_report` gains
+    `edges_held`, e.g. `["outer: L (1.0 nm)"]`. An edge is held only when
+    the film behind it is not on the list; otherwise it goes like any
+    thin film.
+  - `seed_edges=` (nm) on `run_needle`, `NeedlePipeline`, `run_design`,
+    `pipeline_from_config` and `DesignRequest`: a starting design whose
+    edge film is off its list gets a film of the list's first material,
+    this thick, on that edge instead of an error, and the old edge film
+    stays behind it. The clamp floor is the natural value. On the
+    multi-environment door it seeds a segment's edge in every copy, at
+    the top of a forward copy and the bottom of a turned one.
+  - An edge must be a layer. A film with an interface slice qualifies
+    (its bulk row is matched); a graded or gradient film never does, and
+    `seed_edges` is the way past one.
+- **Repeated design segments.** An environment's design reference takes
+  `repeat` (`{"design": "coat", "repeat": 3}`, default 1), and a design
+  segment may be referenced more than once: every environment now uses
+  each design segment at least once rather than exactly once. Copies are
+  one design. Each film stays one parameter: its first copy in the first
+  environment is free, the other copies follow it (`optimize` false in
+  the returned stack). A needle lands in every copy, its gain summed over
+  all of them. One environment with copies runs on the joint path, with
+  the joint path's refusals (cleanup, inflate, `thin_layer_policy
+  'remove'`). Segment edge lists are checked on every copy. The program
+  bridge (`design_from_program`) now carries `repeat` and a segment's
+  `outer` / `inner`; it dropped the edge lists before.
+- **Inverted design segments.** A design reference also takes
+  `inverted` (`{"design": "coat", "inverted": true}`): the segment is
+  placed turned over, last film first, as the Architect expands an
+  inverted block. Interface slices and roughness stay with their planes,
+  so a turned copy is not the forward rows reversed; it is re-emitted
+  through the expander from the design at every evaluation. A needle
+  lands in a turned copy at the mirror depth, with its gain summed over
+  every copy. The first copy in the first environment is the free one
+  whichever way it faces. A segment's `outer` list still belongs to its
+  first film, which in a turned copy faces away from the light. Refused:
+  `inverted` on a fixed segment, a graded film in an inverted copy, and a
+  film whose interface slice one copy can place and another cannot (the
+  first film of a stack and the last of a turned copy have no plane of
+  their own). A turned segment runs on the joint path, even alone. The
+  program bridge carries `inverted`.
+- **Boundary needles.** `NeedleCycleConfig(boundary_needles=True)` also
+  scans every span boundary, the outer edges included. A needle there is
+  a new film between two layers, so it reaches films too thin for an
+  interior site (under `2 * scan_step_nm`) and can change the edge
+  layers. Off by default; off, the run is bit-identical.
+  - One site per boundary: P is single-valued there (the needle adds a
+    slab and the fields are continuous), so no new kernel is needed.
+  - The needle's index differs from both neighbours', the ambient and
+    substrate included. Every neighbouring needle host must accept it
+    under `insert_rules`, and on an outer edge it must be on `outer` /
+    `inner`.
+  - Insertion records carry `boundary` (true for a boundary needle; its
+    `film_idx` is the row the new film occupies) and `seed_nm`, the
+    thickness the needle went in at.
+    `DesignStack.insert_film_at_boundary(row, film)` is the move.
+  - A boundary on a rough interface is scored by a trial, not by P. A
+    film slipped into a rough interface never thins back to it
+    (Névot-Croce reads both media), so the merit jumps on insertion, by
+    about a 1 nm needle's effect, and a first-order score cannot see
+    that. The merit is evaluated with the needle in place at
+    `max(needle_seed_thickness_nm, roughness_cap * sigma)`, where the cap
+    leaves the interface's roughness whole, and a winner goes in at that
+    thickness. Its record has `best_p: None` and the measured gain as
+    `predicted_improvement`. Smooth boundaries and interior sites are
+    scored by P as before.
+  - A multi-environment run scans the design's boundaries jointly. A
+    boundary is a plane of the design, between two of a segment's films
+    or at a segment's edge, and it lands in every environment and every
+    copy, forward or turned, with P summed over all of them. Inside a
+    segment the flat rules apply in every placement. At a segment edge
+    the neighbour outside the design (a surrounding, the ambient, the
+    substrate) excludes a needle only where it has the needle's index in
+    every placement, so a needle that matters in one environment is
+    allowed. Fixed films never host. A boundary that is rough in any
+    placement is trial-scored, at the largest start thickness any
+    placement asks for. A plane that would give an interface slice a new
+    neighbour in one copy and not another refuses. One environment with
+    segment edges and the option on runs on the joint path.
+  - Inserting a film on a boundary now re-mixes the interface slice of
+    the layer below, as the expander mixes it, from the layer and the new
+    film. This changes flat runs only where the layer below has a slice.
+- `examples/dual_band_ar.py`: a three-oxide (SiO2, Al2O3, HfO2)
+  dual-band anti-reflection coating on fused silica, with a VIS band
+  (420-680 nm) and a NIR band (1044-1084 nm). Needle synthesis at a 2 nm floor, then a
+  re-optimization with every film at 10 nm or more: 14 films, 1134 nm,
+  0.35 % mean reflectance over the VIS band and 0.003 % at 1064 nm. The
+  site's design section now shows this run in place of the two-material
+  TiO2/SiO2 broadband AR.
+
+### Changed
+
+- **Doors called in a loop warn once.** `Navette_Structure` and
+  `Navette_Architect` `get_solver_inputs`/`get_error_solver_inputs`, `MeritSpec.merit`/
+  `residuals`, `build_needle_targets` and `calculate_merit` remember the
+  warnings they last emitted (per object) and stay silent while the same
+  set comes back, even under an "always" warnings filter; a changed set
+  warns again (and for the structure doors, one that was fixed and then
+  comes back). A Monte-Carlo loop over `error_inputs` used to
+  repeat the validation warnings on every sample. `solve_structure` no
+  longer re-validates in Python before the input doors, which gate the
+  same issues themselves.
+
+- **Roughness is capped by film thickness.** Each interface is solved
+  with `min(sigma, d / roughness_cap)` over the films on both sides
+  (half-spaces never cap; default `roughness_cap = 2.0`, 0 turns it
+  off). A film thinner than its roughness cannot carry two separate
+  rough faces, and without the cap a film thinned to zero still left a
+  sharp-plus-rough interface pair behind: inside a 10 nm rough host it
+  moved R by about as much as a 1 nm needle does. The stored roughness
+  is kept as given; only the values the solver reads are capped, once,
+  at the `Solver` constructor and in `DesignStack.solver_arrays`, so
+  every solve path reads the same array. Stacks whose films are at
+  least twice their roughness are bit-identical.
+  - `ScatterMatrix(..., roughness_cap=2.0)`, `Solver(...,
+    roughness_cap=)`, and a `roughness_cap` property on `Solver` and
+    `DesignStack`.
+  - Within the capped range the merit's dependence on thickness through
+    sigma is not in the analytic Jacobian; the finite-difference
+    Jacobian sees it.
+- `examples/rugate_gradient_vs_discrete.py` is now a realistic rugate:
+  a 1550 nm notch in co-sputtered SiO2:Ta2O5 on BK7, with dispersive
+  materials and Bruggeman mixing. The profile is ln n sinusoidal in
+  optical thickness, apodized and index-matched to the substrate, and
+  built from linear `FixedSpan` spans at 12 per period (converged). It
+  replaces the 8-period triangular profile at fixed indices. Against
+  quarter-wave pairs of the same two mixtures, the stepped stack
+  reflects 100 % at its third-order band (525 nm) where the rugate
+  stays at 3.6 %. The rugate's passband peaks at 5.8 %, against 33 %
+  for the same sinusoid without apodization. The site's
+  graded-versus-stepped figure and `docs/graded-media.md` follow it.
+
 ## [0.8.1] - needle insertions can be timed, and the scan was never the expensive part
 
 `bench_refold` timed the re-fold on a one-film toy and never reached the

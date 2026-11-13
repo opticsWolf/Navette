@@ -31,7 +31,7 @@ HALF_SPACES = np.array([1, 0, 0, 0, 1], dtype=np.int32)
 
 
 def _sm(flags, mode=CoherenceMode.FRONT_BLOCK):
-    return ScatterMatrix(IDX, THICK, wavelengths=WLS, angles=ANG,
+    return ScatterMatrix(IDX, THICK, wavelengths=WLS, angles_deg=ANG,
                          incoherent_flags=flags, coherence_mode=mode)
 
 
@@ -188,7 +188,7 @@ def test_both_doors_explain_the_cross_channel_the_same_way():
          Layer(0.0, "glass")],
         {}, DictMaterialProvider(dict(mats), wavelength=WLS))
     with pytest.raises(ValueError) as rexc:
-        solve_structure(st, WLS, 0.0, request=int(Request.DOP_R))
+        solve_structure(st, WLS, request=int(Request.DOP_R), angles_deg=0.0)
     rust_msg = str(rexc.value)
     assert shared in rust_msg, (
         f"the two doors have drifted apart / python: {shared!r} / "

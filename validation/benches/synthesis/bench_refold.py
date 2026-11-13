@@ -51,17 +51,17 @@ def check(name, ok, detail=""):
 def problem():
     # Same satisfiable problem as test_pipeline.py (insertions occur).
     layers = [(MaterialSpec("Konstant", dict(n=np.sqrt(1.52))), 120.0)]
-    contrast = {"film0": MaterialSpec("Konstant", dict(n=2.35))}
+    materials = {"H": MaterialSpec("Konstant", dict(n=2.35))}
     tc = TargetCollection()
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R",
-                          kind="e", weight=2.0))
-    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), 0.0, "s", "R",
-                          kind="a", integral=True, weight=3.0))
-    return layers, contrast, tc
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), "s", "R",
+                          kind="e", weight=2.0, angle_deg=0.0))
+    tc.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.05), "s", "R",
+                          kind="a", integral=True, weight=3.0, angle_deg=0.0))
+    return layers, materials, tc
 
 
 def timed_run(refold, repeats=3):
-    layers, contrast, tc = problem()
+    layers, materials, tc = problem()
     cfg = PipelineConfig(max_macro_cycles=2, needles_per_cycle=2,
                          enable_cleanup=False, enable_inflate=False,
                          stagnation_window=100)
@@ -70,8 +70,8 @@ def timed_run(refold, repeats=3):
     dt_best = float("inf")
     for _ in range(repeats):
         t0 = time.perf_counter()
-        res = run_needle(layers, tc, ANGS, WL, contrast, pipeline_config=cfg,
-                         needle_config=nc, names=["L"])
+        res = run_needle(layers, tc, WL, materials, pipeline_config=cfg,
+                         needle_config=nc, names=["L"], angles_deg=ANGS)
         dt = time.perf_counter() - t0
         if dt < dt_best:
             dt_best, best = dt, res
@@ -100,15 +100,15 @@ def main():
           "no insertions in either mode — bench is degenerate")
 
     print("--- cost breakdown (one re-fold vs one LM optimize) ---")
-    layers, contrast, tc = problem()
+    layers, materials, tc = problem()
     spec = build_merit_spec(tc)
     stack, _ = stack_from_layers(layers, WL, {}, names=["L"])
-    ctx = SmatrixContext(spec, ANGS, WL)
+    ctx = SmatrixContext(spec, WL, angles_deg=ANGS)
     t0 = time.perf_counter()
     sim = ctx.simulate(stack)
     dt_sim = time.perf_counter() - t0
     t0 = time.perf_counter()
-    build_needle_targets(spec, ANGS, WL, sim)
+    build_needle_targets(spec, WL, sim, angles_deg=ANGS)
     dt_fold = time.perf_counter() - t0
     # fresh stack for the optimize timing (LM cost depends on start point).
     stack2, _ = stack_from_layers(layers, WL, {}, names=["L"])
@@ -132,16 +132,16 @@ def main():
              90.0 + 7.0 * i) for i in range(n_films)]
     names = [f"L{i}" for i in range(n_films)]
     tc2 = TargetCollection()
-    tc2.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), 0.0, "s", "R",
-                           kind="e", weight=1.0))
+    tc2.add(SpectralTarget(WL, np.zeros(3), np.full(3, 0.01), "s", "R",
+                           kind="e", weight=1.0, angle_deg=0.0))
     spec2 = build_merit_spec(tc2)
 
     def timed_opt(mode, repeats=3):
         best, rep_best = float("inf"), None
         for _ in range(repeats):
             st, _ = stack_from_layers(deep, WL, {}, names=names)
-            c = SmatrixContext(spec2, ANGS, WL,
-                               lm=LmConfig(jacobian=mode, max_iterations=60))
+            c = SmatrixContext(spec2, WL,
+                               lm=LmConfig(jacobian=mode, max_iterations=60), angles_deg=ANGS)
             t0 = time.perf_counter()
             mf, rep = c.optimize_thicknesses_report(st)
             dt = time.perf_counter() - t0

@@ -10,6 +10,7 @@ use navette::spectralweave::opticalweaver::{wl_bits_eq, OpticalKey, SpectralData
 use navette::spectralweave::targetweaver::{ResolvedNormMode, TargetKind, TargetWeaver};
 
 use super::spectralweave_optical::PyOpticalWeaver;
+use super::structure::WarnOnce;
 
 // ---------------------------------------------------------------------------
 // Python bindings
@@ -18,6 +19,8 @@ use super::spectralweave_optical::PyOpticalWeaver;
 /// Optimization target store plus merit evaluation.
 pub struct PyTargetWeaver {
     pub(crate) inner: Arc<TargetWeaver>,
+    /// `calculate_merit`'s missing-key warning, once per distinct message.
+    warned: WarnOnce,
 }
 
 #[pymethods]
@@ -28,11 +31,14 @@ impl PyTargetWeaver {
     fn new(cache_size: usize, tolerance_floor: f64) -> Self {
         PyTargetWeaver {
             inner: Arc::new(TargetWeaver::new(cache_size, tolerance_floor)),
+            warned: WarnOnce::default(),
         }
     }
 
-    #[pyo3(signature = (wavelengths, values, tolerances, angle, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false))]
+    #[pyo3(signature = (wavelengths, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false, *, angle_deg=None, angle_rad=None))]
     /// Ingest one target curve over wavelengths (kind e/a/b/r/c, norm mode).
+    /// The angle is `angle_deg=` or `angle_rad=` (exactly one); the key
+    /// holds it in radians, so the simulation weaver must key in radians.
     /// `band` holds optional per-point half-widths for `r`/`c` (raw units).
     /// `weight` scales the frame's merit sum; `normalize_count` divides it by
     /// the point count (target-level equal say regardless of sampling density).
@@ -44,7 +50,6 @@ impl PyTargetWeaver {
         wavelengths: PyReadonlyArray1<'_, f64>,
         values: PyReadonlyArray1<'_, f64>,
         tolerances: PyReadonlyArray1<'_, f64>,
-        angle: f64,
         polarization: String,
         spectral: String,
         kind: String,
@@ -53,7 +58,10 @@ impl PyTargetWeaver {
         weight: f64,
         normalize_count: bool,
         integral: bool,
+        angle_deg: Option<f64>,
+        angle_rad: Option<f64>,
     ) -> PyResult<()> {
+        let angle = crate::angles::pick_one("angle", angle_deg, angle_rad)?;
         let k = TargetKind::from_str(&kind).ok_or_else(|| {
             PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')")
         })?;
@@ -78,7 +86,7 @@ impl PyTargetWeaver {
                 ));
             }
         }
-        let key = OpticalKey::from((angle, polarization, spectral));
+        let key = OpticalKey::from((angle.get(), polarization, spectral));
 
         let wl_ptr = wl.as_ptr() as usize;
         let wl_len = wl.len();
@@ -141,7 +149,7 @@ impl PyTargetWeaver {
                 let (angle, polarization, spectral) = key.as_tuple();
                 let d = PyDict::new(py);
                 d.set_item("uid", frame.uid)?;
-                d.set_item("angle", angle)?;
+                d.set_item("angle_rad", angle)?;
                 d.set_item("polarization", polarization)?;
                 d.set_item("spectral", spectral)?;
                 d.set_item("wavelengths", PyArray::from_vec(py, wl.clone()))?;
@@ -166,8 +174,10 @@ impl PyTargetWeaver {
         Ok(out)
     }
 
-    #[pyo3(signature = (wavelength, angles, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false))]
+    #[pyo3(signature = (wavelength, values, tolerances, polarization, spectral, kind, norm_mode, band=None, weight=1.0, normalize_count=false, integral=false, *, angles_deg=None, angles_rad=None))]
     /// Ingest one target curve over angles (kind e/a/b/r/c, norm mode).
+    /// The grid is `angles_deg=` or `angles_rad=` (exactly one); the keys
+    /// hold it in radians.
     /// `band` holds optional per-point half-widths for `r`/`c` (raw units).
     /// `weight` scales the target's merit sum; `normalize_count` divides by
     /// the TARGET-level angle count (shared across this target's single-point
@@ -177,7 +187,6 @@ impl PyTargetWeaver {
         &self,
         py: Python<'_>,
         wavelength: f64,
-        angles: PyReadonlyArray1<'_, f64>,
         values: PyReadonlyArray1<'_, f64>,
         tolerances: PyReadonlyArray1<'_, f64>,
         polarization: String,
@@ -188,7 +197,10 @@ impl PyTargetWeaver {
         weight: f64,
         normalize_count: bool,
         integral: bool,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
+        let angs = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let k = TargetKind::from_str(&kind).ok_or_else(|| {
             PyValueError::new_err("Invalid kind (use 'e', 'a', 'b', 'r', or 'c')")
         })?;
@@ -202,7 +214,6 @@ impl PyTargetWeaver {
                 "integral targets reject normalize_count (the mean already is one)",
             ));
         }
-        let angs = angles.as_slice()?;
         let vals = values.as_slice()?;
         let tols = tolerances.as_slice()?;
         let band_sl = band.as_ref().map(|b| b.as_slice()).transpose()?;
@@ -218,7 +229,6 @@ impl PyTargetWeaver {
         // it across points (per-point resolution would weight each angle by
         // its own magnitude, unlike spectral targets).
         let (shared_mode, shared_nf) = TargetWeaver::resolve_norm(vals, &norm_mode);
-        let a_ptr = angs.as_ptr() as usize;
         let a_len = angs.len();
         let v_ptr = vals.as_ptr() as usize;
         let v_len = vals.len();
@@ -232,7 +242,6 @@ impl PyTargetWeaver {
         let spec = spectral.clone();
 
         py.detach(move || -> PyResult<()> {
-            let a_data = unsafe { std::slice::from_raw_parts(a_ptr as *const f64, a_len) };
             let v_data = unsafe { std::slice::from_raw_parts(v_ptr as *const f64, v_len) };
             let t_data = unsafe { std::slice::from_raw_parts(t_ptr as *const f64, t_len) };
             let b_data: &[f64] = if band_len == 0 {
@@ -248,7 +257,7 @@ impl PyTargetWeaver {
                 .map_err(PyValueError::new_err)?;
 
             for i in 0..a_len {
-                let key = OpticalKey::from((a_data[i], pol.clone(), spec.clone()));
+                let key = OpticalKey::from((angs[i].get(), pol.clone(), spec.clone()));
                 let val_arr = vec![v_data[i]];
                 let tol_arr = vec![t_data[i]];
                 let band_arr = if b_data.is_empty() {
@@ -330,147 +339,193 @@ fn kind_contribution(kind: TargetKind, scaled_diff: f64, tol: f64, band: f64) ->
 #[pyfunction]
 #[pyo3(signature = (sim_weaver, target_weaver, missing_penalty=1e6))]
 /// Merit of simulated weaves vs targets (exact/above/below residuals).
+/// A target key the simulation weaver does not hold costs `missing_penalty`
+/// and warns: keys match bit for bit and target angles are radians, so a
+/// simulation keyed in degrees would otherwise match nothing without a word.
 pub fn calculate_merit(
     py: Python<'_>,
     sim_weaver: &PyOpticalWeaver,
     target_weaver: &PyTargetWeaver,
     missing_penalty: f64,
-) -> f64 {
+) -> PyResult<f64> {
     let sim_core = sim_weaver.inner.clone();
     let tw_core = target_weaver.inner.clone();
 
-    py.detach(move || {
-        let mut total_merit = 0.0;
-        let target_keys = tw_core.inner.inner.keys();
-        let meta_guard = tw_core.target_metadata.read();
+    // The keys `merit_sum` will charge missing_penalty for, found by a
+    // lookup per key so the sum itself carries no bookkeeping. (A key the
+    // weaver holds with no data is charged too, but not named here.)
+    let missing: Vec<OpticalKey> = tw_core
+        .inner
+        .inner
+        .keys()
+        .into_iter()
+        .filter(|k| !sim_core.inner.contains_key(k))
+        .collect();
 
-        for key in target_keys {
-            let sim_res = sim_core.get_weaved(&key);
-            let (sim_wl, sim_val) = match sim_res {
-                Ok((w, v)) if !w.is_empty() => (w, v),
-                _ => {
-                    total_merit += missing_penalty;
-                    continue;
-                }
-            };
+    let merit = py.detach(move || merit_sum(&sim_core, &tw_core, missing_penalty));
+    // Once per distinct message on this target weaver: a fit loop calling
+    // this every iteration hears it the first time only.
+    if let Some(first) = missing.first() {
+        let (angle, polarization, spectral) = first.as_tuple();
+        let msg = format!(
+            "calculate_merit: {} target key(s) have no simulated curve and cost \
+missing_penalty, e.g. ({angle}, {polarization:?}, {spectral:?}). Keys match bit for \
+bit and target angles are radians: key the simulation weaver in radians",
+            missing.len()
+        );
+        if target_weaver.warned.fresh(std::slice::from_ref(&msg)) {
+            let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+            PyErr::warn(
+                py,
+                &user_warning,
+                std::ffi::CString::new(msg)?.as_c_str(),
+                1,
+            )?;
+        }
+    }
+    Ok(merit)
+}
 
-            let target_frames = match tw_core.inner.inner.frames_for_key(&key) {
-                Some(f) => f,
+/// The merit sum proper: one `missing_penalty` per target key with no
+/// simulated curve, plus every frame's residual sum. Never inlined, so the
+/// code around its call cannot change how the inner loop compiles (folding
+/// the missing-key warning into `calculate_merit` once cost 15%).
+#[inline(never)]
+fn merit_sum(
+    sim_core: &navette::spectralweave::opticalweaver::OpticalWeaver,
+    tw_core: &TargetWeaver,
+    missing_penalty: f64,
+) -> f64 {
+    let mut total_merit = 0.0;
+    let target_keys = tw_core.inner.inner.keys();
+    let meta_guard = tw_core.target_metadata.read();
+
+    for key in target_keys {
+        let sim_res = sim_core.get_weaved(&key);
+        let (sim_wl, sim_val) = match sim_res {
+            Ok((w, v)) if !w.is_empty() => (w, v),
+            _ => {
+                total_merit += missing_penalty;
+                continue;
+            }
+        };
+
+        let target_frames = match tw_core.inner.inner.frames_for_key(&key) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        for frm in target_frames {
+            let t_wl = frm.wavelength();
+            if t_wl.is_empty() {
+                continue;
+            }
+
+            let entry = match meta_guard.get(&frm.uid).and_then(|m| m.entries.get(&key)) {
+                Some(e) => e,
                 None => continue,
             };
 
-            for frm in target_frames {
-                let t_wl = frm.wavelength();
-                if t_wl.is_empty() {
-                    continue;
-                }
+            // Skip frames whose grid does not overlap the simulated curve.
+            if sim_wl.last().is_none_or(|&l| l < t_wl[0])
+                || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
+            {
+                continue;
+            }
 
-                let entry = match meta_guard.get(&frm.uid).and_then(|m| m.entries.get(&key)) {
-                    Some(e) => e,
-                    None => continue,
+            // Fast path: when the target grid coincides bit-for-bit with a
+            // contiguous block of the simulated grid, read simulated values
+            // directly — no interpolation, no per-point division. Mirrors the
+            // OpticalWeaver `candidate == frame_wl` alignment shortcut, and is
+            // the common case when the solver is sampled on the target grid.
+            let offset = sim_wl.partition_point(|&x| x < t_wl[0]);
+            let aligned = offset + t_wl.len() <= sim_wl.len()
+                && wl_bits_eq(&sim_wl[offset..offset + t_wl.len()], t_wl);
+
+            // Misaligned case: two-pointer interpolation. `sim_idx` advances
+            // monotonically across the sorted target grid, giving O(n + m)
+            // instead of an O(m log n) per-point binary search.
+            // Frame-local sum: user weight + count normalization apply
+            // ONCE per frame below (defaults 1.0/None = legacy sum).
+            // Integral frames instead accumulate mean diff/tol/band and
+            // apply the kind ONCE to the mean (see `kind_contribution`).
+            let mut frame_sum = 0.0;
+            let mut int_d = 0.0;
+            let mut int_tol = 0.0;
+            let mut int_bw = 0.0;
+            let mut sim_idx = 0;
+            for i in 0..t_wl.len() {
+                let sim_raw = if aligned {
+                    sim_val[offset + i]
+                } else {
+                    let target_w = t_wl[i];
+                    while sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx + 1] < target_w {
+                        sim_idx += 1;
+                    }
+                    if sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx] <= target_w {
+                        let w0 = sim_wl[sim_idx];
+                        let w1 = sim_wl[sim_idx + 1];
+                        let v0 = sim_val[sim_idx];
+                        let v1 = sim_val[sim_idx + 1];
+                        if (w1 - w0).abs() < 1e-14 {
+                            v0
+                        } else {
+                            v0 + (target_w - w0) * (v1 - v0) / (w1 - w0)
+                        }
+                    } else if sim_idx < sim_wl.len() {
+                        sim_val[sim_idx]
+                    } else {
+                        sim_val[sim_val.len() - 1]
+                    }
                 };
 
-                // Skip frames whose grid does not overlap the simulated curve.
-                if sim_wl.last().is_none_or(|&l| l < t_wl[0])
-                    || sim_wl.first().zip(t_wl.last()).is_none_or(|(&f, &l)| f > l)
-                {
-                    continue;
-                }
+                let target_scaled = entry.normalized_targets[i];
 
-                // Fast path: when the target grid coincides bit-for-bit with a
-                // contiguous block of the simulated grid, read simulated values
-                // directly — no interpolation, no per-point division. Mirrors the
-                // OpticalWeaver `candidate == frame_wl` alignment shortcut, and is
-                // the common case when the solver is sampled on the target grid.
-                let offset = sim_wl.partition_point(|&x| x < t_wl[0]);
-                let aligned = offset + t_wl.len() <= sim_wl.len()
-                    && wl_bits_eq(&sim_wl[offset..offset + t_wl.len()], t_wl);
-
-                // Misaligned case: two-pointer interpolation. `sim_idx` advances
-                // monotonically across the sorted target grid, giving O(n + m)
-                // instead of an O(m log n) per-point binary search.
-                // Frame-local sum: user weight + count normalization apply
-                // ONCE per frame below (defaults 1.0/None = legacy sum).
-                // Integral frames instead accumulate mean diff/tol/band and
-                // apply the kind ONCE to the mean (see `kind_contribution`).
-                let mut frame_sum = 0.0;
-                let mut int_d = 0.0;
-                let mut int_tol = 0.0;
-                let mut int_bw = 0.0;
-                let mut sim_idx = 0;
-                for i in 0..t_wl.len() {
-                    let sim_raw = if aligned {
-                        sim_val[offset + i]
-                    } else {
-                        let target_w = t_wl[i];
-                        while sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx + 1] < target_w {
-                            sim_idx += 1;
-                        }
-                        if sim_idx + 1 < sim_wl.len() && sim_wl[sim_idx] <= target_w {
-                            let w0 = sim_wl[sim_idx];
-                            let w1 = sim_wl[sim_idx + 1];
-                            let v0 = sim_val[sim_idx];
-                            let v1 = sim_val[sim_idx + 1];
-                            if (w1 - w0).abs() < 1e-14 {
-                                v0
-                            } else {
-                                v0 + (target_w - w0) * (v1 - v0) / (w1 - w0)
-                            }
-                        } else if sim_idx < sim_wl.len() {
-                            sim_val[sim_idx]
-                        } else {
-                            sim_val[sim_val.len() - 1]
-                        }
-                    };
-
-                    let target_scaled = entry.normalized_targets[i];
-
-                    let scaled_diff = match entry.resolved_mode {
-                        ResolvedNormMode::Phase => {
-                            // Wrap the residual to [-pi, pi] without trig — cheaper
-                            // than the equivalent sin/cos/atan2 formulation.
-                            let diff = sim_raw - target_scaled;
-                            diff - std::f64::consts::TAU * (diff / std::f64::consts::TAU).round()
-                        }
-                        ResolvedNormMode::Log => {
-                            sim_raw.max(1e-12).log10() * entry.norm_factor - target_scaled
-                        }
-                        ResolvedNormMode::Linear | ResolvedNormMode::Complex => {
-                            sim_raw * entry.norm_factor - target_scaled
-                        }
-                    };
-
-                    let tol = entry.tolerances[i];
-
-                    if entry.integral {
-                        // Mean branch: accumulate raw ingredients; the kind
-                        // applies ONCE to the mean after the loop.
-                        int_d += scaled_diff;
-                        int_tol += tol;
-                        int_bw += entry.band.get(i).copied().unwrap_or(0.0);
-                    } else {
-                        frame_sum += kind_contribution(
-                            entry.kind,
-                            scaled_diff,
-                            tol,
-                            entry.band.get(i).copied().unwrap_or(0.0),
-                        );
+                let scaled_diff = match entry.resolved_mode {
+                    ResolvedNormMode::Phase => {
+                        // Wrap the residual to [-pi, pi] without trig — cheaper
+                        // than the equivalent sin/cos/atan2 formulation.
+                        let diff = sim_raw - target_scaled;
+                        diff - std::f64::consts::TAU * (diff / std::f64::consts::TAU).round()
                     }
-                }
+                    ResolvedNormMode::Log => {
+                        sim_raw.max(1e-12).log10() * entry.norm_factor - target_scaled
+                    }
+                    ResolvedNormMode::Linear | ResolvedNormMode::Complex => {
+                        sim_raw * entry.norm_factor - target_scaled
+                    }
+                };
+
+                let tol = entry.tolerances[i];
+
                 if entry.integral {
-                    // Single mean residual R = mean(d)/mean(tol); kinds
-                    // constrain the MEAN (integral-`a` = lower bound on the
-                    // average). Weight multiplies; count is moot (rejected
-                    // at ingestion — the mean already is one).
-                    let n = t_wl.len() as f64;
-                    let tol_bar = (int_tol / n).max(1e-300);
-                    total_merit += entry.weight
-                        * kind_contribution(entry.kind, int_d / n, tol_bar, int_bw / n);
+                    // Mean branch: accumulate raw ingredients; the kind
+                    // applies ONCE to the mean after the loop.
+                    int_d += scaled_diff;
+                    int_tol += tol;
+                    int_bw += entry.band.get(i).copied().unwrap_or(0.0);
                 } else {
-                    total_merit += frame_sum * entry.weight / entry.count_norm.unwrap_or(1.0);
+                    frame_sum += kind_contribution(
+                        entry.kind,
+                        scaled_diff,
+                        tol,
+                        entry.band.get(i).copied().unwrap_or(0.0),
+                    );
                 }
             }
+            if entry.integral {
+                // Single mean residual R = mean(d)/mean(tol); kinds
+                // constrain the MEAN (integral-`a` = lower bound on the
+                // average). Weight multiplies; count is moot (rejected
+                // at ingestion — the mean already is one).
+                let n = t_wl.len() as f64;
+                let tol_bar = (int_tol / n).max(1e-300);
+                total_merit +=
+                    entry.weight * kind_contribution(entry.kind, int_d / n, tol_bar, int_bw / n);
+            } else {
+                total_merit += frame_sum * entry.weight / entry.count_norm.unwrap_or(1.0);
+            }
         }
-        total_merit
-    })
+    }
+    total_merit
 }

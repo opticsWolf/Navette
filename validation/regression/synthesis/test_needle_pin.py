@@ -9,7 +9,7 @@ first line of ``DesignStack`` changes, so every later "fingerprint
 unmoved" claim names a test that lives in the tree (F0.1, ground rule 5).
 
 The run is deterministic by construction: fixed design, fixed targets,
-fixed seed materials, no error groups (so `from_design` expands
+fixed needle materials, no error groups (so `from_design` expands
 deterministically), a deterministic P-function scan and deterministic LM.
 The double-run assertion proves that at pin time; the recorded digest is
 what every later item in the plan must hold.
@@ -62,10 +62,11 @@ LAYERS = [
     (np.full(WL.shape, _N_H), 150.0),
 ]
 NAMES = ["film0", "film1", "film2"]
-CONTRAST = {
-    "film0": np.full(WL.shape, _N_L),
-    "film1": np.full(WL.shape, _N_H),
-    "film2": np.full(WL.shape, _N_L),
+# The needle pool: the films' own two materials, so every film accepts
+# the other one, and every needle is a film that accepts needles.
+MATERIALS = {
+    "H": np.full(WL.shape, _N_H),
+    "L": np.full(WL.shape, _N_L),
 }
 
 
@@ -73,13 +74,13 @@ def _targets():
     # Satisfiable mix: spectral exact + integral band + angular exact.
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.full(31, 0.15), np.full(31, 0.02),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     tc.add(SpectralTarget(WL, np.full(31, 0.85), np.full(31, 0.10),
-                          0.0, "s", "T", kind="a", integral=True,
-                          weight=3.0))
-    tc.add(AngularTarget(600.0, np.array([0.0]), np.array([0.0]),
+                          "s", "T", kind="a", integral=True,
+                          weight=3.0, angle_deg=0.0))
+    tc.add(AngularTarget(600.0, np.array([0.0]),
                          np.array([0.05]), "p", "R", kind="e",
-                         normalize_count=True))
+                         normalize_count=True, angles_deg=np.array([0.0])))
     return tc
 
 
@@ -114,7 +115,7 @@ def _digest(res):
         "termination": res["termination"],
         "final_mf": res["final_mf"],
         "final_layer_count": res["final_layer_count"],
-        "final_total_thickness_nm": res["final_total_thickness_nm"],
+        "final_total_thickness_nm": res["final_coating_thickness_nm"],
         "stagnation_detail": res["stagnation_detail"],
         "phases": res["phases"],
         "stack": res["stack"].to_dict(),
@@ -126,9 +127,32 @@ def _digest(res):
     # cannot move it, which is also what makes the pin prove the
     # trajectory itself is bit-identical across F0.2. The report's own
     # behaviour is pinned by its deletion-report twin, not by this file.
-    payload = _strip_keys(payload, {"clamp_report"})
+    # Insertion records gained `boundary` with boundary needles (always
+    # False here: the option is off); stripping it keeps the pin a
+    # trajectory fingerprint, and the recorded digests stand. The key's
+    # own behaviour is pinned by test_boundary_needles.py. `seed_nm` (the
+    # thickness the needle went in at) is the seed thickness here, and
+    # stripped for the same reason. Films gained `label` (W7: a needle's
+    # pool label, `None` for these freely named films), stripped too.
+    payload = _strip_keys(payload, {"clamp_report", "boundary", "seed_nm", "label"})
+    # D7 renamed the thickness keys to say coating (same values: these
+    # stacks have no incoherent film). Hashing them under the names the
+    # digests were recorded with keeps the pin a trajectory fingerprint.
+    payload = _rename_keys(payload, {
+        "coating_thickness_nm": "total_thickness_nm",
+        "coating_thickness_before": "total_thickness_before",
+        "coating_thickness_after": "total_thickness_after",
+    })
     blob = repr(_canon(payload)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def _rename_keys(obj, names):
+    if isinstance(obj, dict):
+        return {names.get(k, k): _rename_keys(v, names) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_rename_keys(v, names) for v in obj]
+    return obj
 
 
 def _strip_keys(obj, drop):
@@ -142,9 +166,36 @@ def _strip_keys(obj, drop):
 # Recorded on the 0.6.32 release build BEFORE F0.1 touched DesignStack.
 # Placeholder on first run; the value below is what F0.1 and every later
 # item must reproduce bit-exactly.
+#
+# Re-recorded (Windows) for the needle material pool, a deliberate
+# trajectory change: a needle is now a film of its own that accepts
+# needles (cycle 2 inserts H into an earlier L needle), needles are named
+# "<label>#<n>", and touching layers of one index merge whatever their
+# names.
+#
+# Re-recorded (Windows) when synthesis Ts/Tp moved from the backward
+# channel |t_back|^2 Re(y0)/Re(y_exit) to the forward one the engine
+# reports, |t_fwd|^2 Re(y_exit)/Re(y0). Equal in exact arithmetic on this
+# transparent substrate, not in the last bits; into an absorbing substrate
+# the backward one was wrong.
+#
+# Linux re-read for both changes at once from CI run 40737848279
+# (``4c2d969``, ubuntu-24.04, release build; the python and the
+# dependency-floors jobs printed the same digest).
+#
+# Re-recorded (Windows) for the polarization-correct needle fold (W1): the
+# fold now has one branch per polarization, an s or p demand folding at
+# twice its weight on its own branch where it used to fold at its weight
+# on both. At normal incidence that is the same sum in exact arithmetic,
+# not in the last bits of the predicted gains the phases record.
+#
+# Linux re-read for W1 from CI run 43078666530 (``d93c93c``, ubuntu-24.04,
+# release build; the python and the dependency-floors jobs printed the
+# same digest, as has every run of this branch since the retardance
+# targets, so the later work moved it no more than it moved Windows).
 RECORDED_DIGESTS = {
-    "Windows": "cf753a910c7bf1d2e6c5ea5b9f5c696601ab675abaf497db28bac5340a63044d",
-    "Linux": "5c30981320d71b9228a2dbc3b1942599a59a0bcdecd1c921c8b49cc8dbf547da",
+    "Windows": "1c90eef35848e074ff094175c98a1181f5677b36979107b1300ae77f293ba021",
+    "Linux": "b391180a707bf96bcd1c571b07a253bcfac07851ee1b380a36e964086a303095",
 }
 DIGEST = RECORDED_DIGESTS.get(platform.system())
 
@@ -155,10 +206,10 @@ def test_needle_run_is_deterministic_and_matches_the_recorded_digest():
             f"no recorded needle digest for {platform.system()} - "
             "record one at the current tree before gating it (amendment 3, C1)"
         )
-    res1 = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
-                      pipeline_config=_cfg(), names=NAMES)
-    res2 = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
-                      pipeline_config=_cfg(), names=NAMES)
+    res1 = run_needle(LAYERS, _targets(), WL, MATERIALS,
+                      pipeline_config=_cfg(), names=NAMES, angles_deg=ANGS)
+    res2 = run_needle(LAYERS, _targets(), WL, MATERIALS,
+                      pipeline_config=_cfg(), names=NAMES, angles_deg=ANGS)
     d1, d2 = _digest(res1), _digest(res2)
     # Determinism first: two runs of the same inputs, one digest. If this
     # fails the pin is measuring noise, and the recorded value is void.
@@ -173,8 +224,8 @@ def test_needle_run_shape():
     # Sanity on the pin's problem: the run must actually exercise the
     # machinery the fingerprint is supposed to cover (insertions happened,
     # cleanup ran, more than one macro cycle).
-    res = run_needle(LAYERS, _targets(), ANGS, WL, CONTRAST,
-                     pipeline_config=_cfg(), names=NAMES)
+    res = run_needle(LAYERS, _targets(), WL, MATERIALS,
+                     pipeline_config=_cfg(), names=NAMES, angles_deg=ANGS)
     assert len(res["phases"]) == 3
     assert any(p["needle_results"] for p in res["phases"]), (
         "the pin must cover needle insertions - this design inserts nothing"

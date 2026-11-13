@@ -139,7 +139,7 @@ def thin_film_problem(wl, angles):
     """A two-film AR-ish demand: R -> 0 across the band, s-polarized."""
     tc = TargetCollection()
     tc.add(SpectralTarget(wl, np.zeros(wl.size), np.full(wl.size, 0.01),
-                          0.0, "s", "R", kind="e", weight=2.0))
+                          "s", "R", kind="e", weight=2.0, angle_deg=0.0))
     return build_merit_spec(tc)
 
 
@@ -153,7 +153,7 @@ def residual_fn(spec, ctx, stack):
 
 
 def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
-    ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max)
+    ctx = SmatrixContext(spec, wl, NO_REMOVAL_MIN, clamp_max, angles_deg=angles)
     stack, _ = stack_from_layers(layers, wl, {}, names=names)
     sp = least_squares(residual_fn(spec, ctx, stack), np.asarray(x0, float),
                        method="trf",
@@ -164,9 +164,9 @@ def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
 
 def run_engine(spec, wl, angles, layers, names, x0, clamp_max,
                max_iterations=200, optimizer="builtin", jacobian="analytic"):
-    ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, clamp_max,
+    ctx = SmatrixContext(spec, wl, NO_REMOVAL_MIN, clamp_max,
                          LmConfig(max_iterations=max_iterations,
-                                  optimizer=optimizer, jacobian=jacobian))
+                                  optimizer=optimizer, jacobian=jacobian), angles_deg=angles)
     stack, _ = stack_from_layers(
         [(m, float(d)) for (m, _), d in zip(layers, x0)], wl, {}, names=names)
     cost, report = ctx.optimize_thicknesses_report(stack)
@@ -243,7 +243,7 @@ def part_a():
         _, ecost2, _ = run_engine(spec, wl, angles, layers, names, ex,
                                   CLAMP_MAX, max_iterations=FAR_ITERS)
 
-        ctx = SmatrixContext(spec, angles, wl, NO_REMOVAL_MIN, CLAMP_MAX)
+        ctx = SmatrixContext(spec, wl, NO_REMOVAL_MIN, CLAMP_MAX, angles_deg=angles)
         st0, _ = stack_from_layers(layers, wl, {}, names=names)
         cost0 = ctx.evaluate_merit(st0)
 
@@ -337,7 +337,7 @@ def part_c():
     layers = [(MaterialSpec("Konstant", dict(n=2.35)), 70.0),
               (MaterialSpec("Konstant", dict(n=1.46)), 110.0)]
 
-    ctx = SmatrixContext(spec, angles, wl, CLAMP_MIN, CLAMP_MAX)
+    ctx = SmatrixContext(spec, wl, CLAMP_MIN, CLAMP_MAX, angles_deg=angles)
     stack, _ = stack_from_layers(layers, wl, {}, names=["A", "B"])
     before = ctx.evaluate_merit(stack)
     after = ctx.optimize_thicknesses(stack)
@@ -596,7 +596,7 @@ def part_f():
     for case in basin_cases():
         args = case_arguments(case)
         sx, scost, _ = run_scipy(**args)
-        ctx = SmatrixContext(case["spec"], case["angles"], case["wl"])
+        ctx = SmatrixContext(case["spec"], case["wl"], angles_deg=case["angles"])
         stack, _ = stack_from_layers(case["layers"], case["wl"], {}, names=case["names"])
         start_r = residual_fn(case["spec"], ctx, stack)(case["x0"])
         cost0 = float(np.dot(start_r, start_r))

@@ -23,9 +23,25 @@ pub trait DesignContext {
 
     /// Full simulation on the context grid (rows + PD metadata).
     ///
-    /// Used for per-cycle needle-target re-folds; contexts without a
-    /// solver return `Err` and callers fall back to the static fold.
+    /// Used for per-cycle needle-target re-folds.
     fn simulate(&self, stack: &DesignStack) -> Result<SimCurves, String>;
+
+    /// Whether `simulate` is a real solve (D1). A context without one
+    /// (the analytic test contexts) says `false`, and the needle cycle
+    /// keeps the static fold; with one, a failed refold is an error rather
+    /// than a silent fall back to a fold of another operating point.
+    fn has_simulator(&self) -> bool {
+        false
+    }
+
+    /// `simulate`, for environment `env`'s assembly in a joint run (D4):
+    /// the rows built are the ones that environment's demands read, so
+    /// a plate environment with no phase demand solves where a flat
+    /// `simulate` of the same stack would refuse.
+    fn simulate_env(&self, stack: &DesignStack, env: usize) -> Result<SimCurves, String> {
+        let _ = env;
+        self.simulate(stack)
+    }
 
     /// Bounded thickness re-optimization IN PLACE.
     ///

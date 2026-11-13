@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-//! synthesis::design_config — typed config → native `(DesignStack, ContrastMap)`.
+//! synthesis::design_config — typed config → native `(DesignStack, MaterialPool)`.
 //!
 //! Rust-first assembly for synthesis designs: a [`DesignRequest`] (the
 //! JSON mirror of the Python pydantic configs) evaluates materials on
@@ -15,7 +15,9 @@ use num_complex::Complex64;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::cycle::ContrastMap;
+use super::cycle::{
+    InsertRules, MaterialPool, NeedleRules, label_pool, pool_entry, pool_from_layers,
+};
 use super::structure::{DesignStack, LayerSpec};
 use crate::structure::{
     ErrorParams, ErrorType, Group, Layer, LayerType, MaterialSpec, RoughnessType,
@@ -357,8 +359,26 @@ pub struct StructureCfg {
 pub struct DesignRequest {
     pub structure: StructureCfg,
     pub library: Vec<MaterialDef>,
+    /// The needle material pool, as library codes. Absent: one entry per
+    /// distinct index among the design's layers.
     #[serde(default)]
-    pub contrast: BTreeMap<String, String>,
+    pub materials: Option<Vec<String>>,
+    /// Which needles go into which materials: host label -> needle labels
+    /// (pool labels, see [`InsertRules`]). Absent: every pair of
+    /// different index.
+    #[serde(default)]
+    pub insert_rules: Option<InsertRules>,
+    /// Allowed materials (pool labels) of the layer facing the ambient.
+    #[serde(default)]
+    pub outer: Option<Vec<String>>,
+    /// Allowed materials (pool labels) of the layer on the substrate.
+    #[serde(default)]
+    pub inner: Option<Vec<String>>,
+    /// Seed an edge off its list with a film this thick (nm) of the
+    /// list's first material (see [`NeedleRules::seed_edges`]). Flat
+    /// designs only.
+    #[serde(default)]
+    pub seed_edges: Option<f64>,
     #[serde(default)]
     pub film_flags: BTreeMap<String, Value>,
     #[serde(default)]
@@ -376,6 +396,18 @@ pub struct DesignRequest {
     /// named `"default"` holding the flat films.
     #[serde(default)]
     pub environments: Vec<super::environments::EnvironmentCfg>,
+}
+
+impl DesignRequest {
+    /// The request's insertion rules and edge materials.
+    pub fn needle_rules(&self) -> NeedleRules {
+        NeedleRules {
+            insert: self.insert_rules.clone(),
+            outer: self.outer.clone(),
+            inner: self.inner.clone(),
+            seed_edges: self.seed_edges,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -570,40 +602,45 @@ fn fixed_spec(name: &str, nk: Vec<Complex64>) -> LayerSpec {
         rough_val: 0.0,
         optimize: false,
         needle: false,
+        label: None,
     }
 }
 
-/// Build the needle contrast map: one zero-thickness, coherent,
-/// optimizable seed per host film.
+/// Build the needle material pool from `materials` (library codes), each
+/// entry labelled by its code; a repeated code is one entry. `None` (no
+/// list given) answers `None`: the caller takes the default pool of its
+/// own layers.
 ///
-/// Shared by both doors so the seed's flags cannot drift between them
-/// (a seed that is not `optimize + needle` is not a seed - it is a film
-/// the scan will never touch).
-pub(crate) fn build_contrast(
-    contrast: &BTreeMap<String, String>,
+/// W7: an entry's index is its code's library index under the code's
+/// group n/k factors, the index a film of that code is expanded with, so
+/// this pool and the default one agree. (A needle's thickness takes no
+/// group factor: it is grown, not specified.)
+///
+/// Shared by both doors so the pool cannot drift between them.
+pub(crate) fn build_pool(
+    materials: Option<&[String]>,
     nk: &HashMap<Arc<str>, Vec<Complex64>>,
-) -> Result<ContrastMap, String> {
-    let mut cmap = ContrastMap::new();
-    for (host, seed) in contrast {
-        let spectrum = nk
-            .get(seed.as_str())
+    groups: &HashMap<String, Group>,
+) -> Result<Option<MaterialPool>, String> {
+    let Some(codes) = materials else {
+        return Ok(None);
+    };
+    let mut entries = Vec::with_capacity(codes.len());
+    for code in codes {
+        let mut spectrum = nk
+            .get(code.as_str())
             .cloned()
-            .ok_or_else(|| format!("material code {seed:?} not found in library"))?;
-        cmap.insert(
-            Arc::from(host.as_str()),
-            LayerSpec {
-                material: Arc::from(format!("{host}_seed")),
-                nk: Arc::from(spectrum),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
+            .ok_or_else(|| format!("needle material code {code:?} not found in library"))?;
+        if let Some(g) = groups.get(code.as_str())
+            && (g.n_factor != 1.0 || g.k_factor != 1.0)
+        {
+            for z in &mut spectrum {
+                *z = Complex64::new(z.re * g.n_factor, z.im * g.k_factor);
+            }
+        }
+        entries.push(pool_entry(code, Arc::from(spectrum)));
     }
-    Ok(cmap)
+    label_pool(entries).map(Some)
 }
 
 /// Everything [`split_and_build_films`] needs besides the rows themselves.
@@ -638,6 +675,11 @@ pub(crate) struct RowAssembly<'a> {
     pub wavelengths: &'a [f64],
     /// Names the door in gradient-validation refusals.
     pub gate_label: &'a str,
+    /// A film name may appear more than once: the segmented door's copies
+    /// of a repeated design segment share their films' names, because a
+    /// name is a design parameter and the copies are one design. The flat
+    /// door refuses a repeat, where it can only be a mistake.
+    pub copies: bool,
 }
 
 /// Split `(name, row)` pairs by layer type and build the film layers.
@@ -694,7 +736,7 @@ pub(crate) fn split_and_build_films(
     let mut films: Vec<Layer> = Vec::with_capacity(film_rows.len());
     let mut seen: HashSet<&str> = HashSet::new();
     for (name, row) in film_rows {
-        if !seen.insert(name.as_str()) {
+        if !seen.insert(name.as_str()) && !ctx.copies {
             return Err(format!(
                 "duplicate film material code {name:?} (film names key the nk table)"
             ));
@@ -763,13 +805,13 @@ pub(crate) fn eval_library(
 }
 
 /// Assemble a design: evaluate the library, build films + groups, expand
-/// once via [`DesignStack::from_design`]. Returns `(stack, contrast,
+/// once via [`DesignStack::from_design`]. Returns `(stack, needle pool,
 /// warnings)` — warnings (homogenized graded films) are for the caller
 /// to re-emit; nothing is ever refused or silent.
 pub fn build_design(
     req: &DesignRequest,
     wavelengths: &[f64],
-) -> Result<(DesignStack, ContrastMap, Vec<String>), String> {
+) -> Result<(DesignStack, MaterialPool, Vec<String>), String> {
     // Library → nk on the grid, keyed by code (else name).
     let nk_table = eval_library(&req.library, wavelengths)?;
     // Split + build through the shared assembler. The flat door names
@@ -792,6 +834,7 @@ pub fn build_design(
             // `LayerRow` whose flags default true, so there is no
             // forced-false invariant here for M1 to protect.
             fixed_films: &HashSet::new(),
+            copies: false,
             nk: &nk_table,
             film_flags: &req.film_flags,
             per_film_flags: &req.per_film_flags,
@@ -802,13 +845,12 @@ pub fn build_design(
         },
     )?;
 
-    // Contrast seeds: zero-thickness, coherent, optimizable carriers.
-    let cmap = build_contrast(&req.contrast, &nk_table)?;
-
     let mut groups = HashMap::new();
     for row in &req.structure.groups {
         groups.insert(row.name.clone(), build_group(row)?);
     }
+
+    let pool = build_pool(req.materials.as_deref(), &nk_table, &groups)?;
 
     // Background is implied, not declared (mirrors the Python driver).
     // A4: a gradient carrier is a profiled film for this rule too.
@@ -818,7 +860,7 @@ pub fn build_design(
         .map(|l| l.material.clone())
         .collect();
 
-    let (stack, warnings) = DesignStack::from_design(
+    let (mut stack, warnings) = DesignStack::from_design(
         amb,
         sub,
         &films,
@@ -827,7 +869,12 @@ pub fn build_design(
         wavelengths,
         &background,
     )?;
-    Ok((stack, cmap, warnings))
+    let pool = match pool {
+        Some(p) => p,
+        None => pool_from_layers(&stack, |_| true)?,
+    };
+    let pool = req.needle_rules().apply(&mut stack, pool)?;
+    Ok((stack, pool, warnings))
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,7 +1069,11 @@ mod tests {
                 groups: vec![],
             },
             library: lib(),
-            contrast: [("H".to_string(), "L".to_string())].into_iter().collect(),
+            materials: None,
+            insert_rules: None,
+            outer: None,
+            inner: None,
+            seed_edges: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -1033,13 +1084,86 @@ mod tests {
     #[test]
     fn builds_flat_stack_standalone() {
         let wl = vec![500.0, 600.0];
-        let (stack, cmap, warnings) =
+        let (stack, pool, warnings) =
             build_design(&req(vec![film("L", 100.0), film("H", 60.0)]), &wl).unwrap();
         assert!(warnings.is_empty());
-        assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("H"));
+        // The default pool: the layers' own materials, in stack order.
+        let labels: Vec<&str> = pool.iter().map(|m| m.material.as_ref()).collect();
+        assert_eq!(labels, ["L", "H"]);
         // 2 flat films (half-spaces are not films).
         assert_eq!(stack.films().len(), 2);
+    }
+
+    /// A given pool may hold materials no layer is made of; a code the
+    /// library lacks is refused, and a repeated code is swept once.
+    #[test]
+    fn a_given_pool_overrides_the_layers() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 100.0)]);
+        r.materials = Some(vec!["L".into(), "H".into(), "H".into()]);
+        let (_, pool, _) = build_design(&r, &wl).unwrap();
+        let labels: Vec<&str> = pool.iter().map(|m| m.material.as_ref()).collect();
+        assert_eq!(labels, ["L", "H"]);
+        r.materials = Some(vec!["Q".into()]);
+        let err = build_design(&r, &wl).unwrap_err();
+        assert!(err.contains("\"Q\""), "{err}");
+    }
+
+    /// W7: a given pool takes the group n/k factors a film of its code is
+    /// expanded with, so it agrees with the default pool; two codes of one
+    /// library index are two entries, apart once a group scales one.
+    #[test]
+    fn given_and_default_pools_agree_under_groups() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 100.0), film("H", 60.0)]);
+        r.structure.groups =
+            vec![serde_json::from_str(r#"{"name": "H", "n_factor": 1.1}"#).unwrap()];
+        let (stack, default, _) = build_design(&r, &wl).unwrap();
+        r.materials = Some(vec!["L".into(), "H".into()]);
+        let (_, given, _) = build_design(&r, &wl).unwrap();
+        assert_eq!(default.len(), 2);
+        for (d, g) in default.iter().zip(given.iter()) {
+            assert_eq!(d.material, g.material);
+            assert_eq!(d.nk, g.nk);
+        }
+        assert!((given[1].nk[0].re - 2.1 * 1.1).abs() < 1e-12);
+        assert_eq!(stack.films()[1].nk, given[1].nk);
+
+        let mut hb = r.library[1].clone();
+        hb.name = "Hb".to_string();
+        r.library.push(hb);
+        r.structure.groups = vec![];
+        r.materials = Some(vec!["H".into(), "Hb".into()]);
+        let (_, same, _) = build_design(&r, &wl).unwrap();
+        assert_eq!(same.len(), 2);
+        assert_eq!(same[0].nk, same[1].nk);
+        r.structure.groups =
+            vec![serde_json::from_str(r#"{"name": "Hb", "n_factor": 1.1}"#).unwrap()];
+        let (_, apart, _) = build_design(&r, &wl).unwrap();
+        assert_ne!(apart[0].nk, apart[1].nk);
+    }
+
+    /// The request's rules reach the pool (an empty list closes L) and the
+    /// stack (the edges are set and checked against the design).
+    #[test]
+    fn request_rules_reach_pool_and_stack() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 100.0), film("H", 50.0)]);
+        r.insert_rules = Some([("L".to_string(), vec![])].into_iter().collect());
+        r.outer = Some(vec!["L".into()]);
+        r.inner = Some(vec!["H".into(), "L".into()]);
+        let (stack, _, _) = build_design(&r, &wl).unwrap();
+        let edges = stack.edge_materials();
+        assert_eq!(edges.outer.as_ref().unwrap().len(), 1);
+        assert_eq!(edges.inner.as_ref().unwrap().len(), 2);
+
+        r.outer = Some(vec!["H".into()]);
+        let err = build_design(&r, &wl).unwrap_err();
+        assert!(err.contains("outer") && err.contains("\"L\""), "{err}");
+        r.outer = None;
+        r.insert_rules = Some([("Q".to_string(), vec![])].into_iter().collect());
+        let err = build_design(&r, &wl).unwrap_err();
+        assert!(err.contains("\"Q\" is not a pool material"), "{err}");
     }
 
     #[test]

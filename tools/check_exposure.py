@@ -48,6 +48,10 @@ ALLOWLIST = {
     # Nevot-Croce interface factors: shared by all four rtype-5 branches,
     # reached through every solve/field/needle path (R1.1)
     "nevot_croce_factors",
+    # roughness cap (via Solver / DesignStack.solver_arrays): Python sets the
+    # ratio as `roughness_cap` on ScatterMatrix and DesignStack; the array
+    # kernel and its finite-value check have nothing more for a caller.
+    "effective_roughness", "check_roughness_cap",
     # gradient expansion internals (F1.1): `mix_row` is the EMA dispatch
     # the expansion branch and the design-path homogenize call; the count
     # rule is D3's resolved formula. Both are reached through
@@ -98,7 +102,7 @@ ALLOWLIST = {
     "char_func", "char_func_xy", "reflection_coefficient_helper", "n_eff_bound",
     # pipeline stages (via NeedlePipeline::run / run_design)
     "run_needle_cycles", "run_needle_pass", "needle_pass_scan",
-    "build_scan_sites", "cleanup_design", "remove_thin_layers",
+    "build_scan_sites", "build_boundary_sites", "cleanup_design", "remove_thin_layers",
     "inflate_design", "qwot_nm", "qwot_to_thickness", "round_to_qwot",
     "thickness_to_qwot", "levenberg_marquardt",
     # analytic-Jacobian internals (R4.5): reachable from Python through the

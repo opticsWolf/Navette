@@ -3,8 +3,9 @@
 # (submodule of the aggregated navette._navette extension, built from
 # rust/navette-py over the navette Rust crate).
 #
-# Wavelengths are nanometres, thicknesses nanometres, angles degrees unless a
-# parameter says otherwise. The `n_stack_cache` buffers are wav-major flat:
+# Wavelengths are nanometres, thicknesses nanometres. Every incidence angle
+# names its unit: exactly one of `angles_deg=` / `angles_rad=` (or
+# `angle_deg=` / `angle_rad=`), range-checked to [0, 90] deg / [0, pi/2] rad. The `n_stack_cache` buffers are wav-major flat:
 # layer `j` at wavelength `i` lives at `i * n_layers + j`. `Solver.__init__` is
 # the exception -- its `indices` is layer-major (`layer * n_wavs + wav`), which
 # is what a C-contiguous `(n_layers, n_wavs)` array ravels to; the Rust side
@@ -225,14 +226,12 @@ class Solver:
     index cache.
 
     `indices` is layer-major flat (`layer * n_wavs + wav`), i.e. exactly a
-    C-contiguous `(n_layers, n_wavs)` array raveled. `angles` are degrees
-    unless `angles_in_radians`.
+    C-contiguous `(n_layers, n_wavs)` array raveled.
     """
 
     def __init__(
         self,
         wavelengths: FloatArray,
-        angles: FloatArray,
         indices: ComplexArray,
         n_layers: int,
         thicknesses: FloatArray | None = ...,
@@ -240,10 +239,22 @@ class Solver:
         roughness_types: IntArray | None = ...,
         roughness_values: FloatArray | None = ...,
         coherence_mode: int = ...,
-        angles_in_radians: bool = ...,
+        roughness_cap: float = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     @property
+    def roughness_cap(self) -> float:
+        """Each interface is solved with `min(sigma, d / roughness_cap)` over
+        the films touching it; 0 is off. Default 2.0."""
+        ...
+    @property
     def n_angles(self) -> int: ...
+    @property
+    def sin_theta(self) -> FloatArray:
+        """The sines of the incidence grid, exactly as the solve uses them."""
+        ...
     @property
     def n_wavs(self) -> int: ...
     def solve(self, requested: int) -> dict[str, Any]:
@@ -335,11 +346,13 @@ class SimCurves:
 
     def __init__(
         self,
-        angles: FloatArray,
         wavelengths: FloatArray,
         total_d: float = ...,
         n_front: float | FloatArray = ...,
         n_back: float | FloatArray = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def set_curve(self, curve_id: str, values: FloatArray) -> None: ...
     def set_complex(self, curve_id: str, values: ComplexArray) -> None: ...
@@ -348,7 +361,9 @@ class MeritSpec:
     """Compiled merit: keys (angle, curve) plus the targets hung off them."""
 
     def __init__(self) -> None: ...
-    def add_key(self, angle: float, curve_id: str) -> int: ...
+    def add_key(
+        self, curve_id: str, *, angle_deg: float | None = ..., angle_rad: float | None = ...
+    ) -> int: ...
     def add_target(
         self,
         key_idx: int,
@@ -364,18 +379,42 @@ class MeritSpec:
         weight: float = ...,
         count_norm: float | None = ...,
         integral: bool = ...,
+        retardance: bool = ...,
+        point_weights: FloatArray | None = ...,
     ) -> None: ...
     def merit(self, sim: SimCurves, missing_penalty: float) -> float: ...
     def residuals(self, sim: SimCurves) -> FloatArray: ...
     def n_residuals(self) -> int: ...
 
+class WeightProfile:
+    """A weight over a target's axis: nm for spectral, degrees for angular."""
+
+    @staticmethod
+    def constant(value: float) -> WeightProfile: ...
+    @staticmethod
+    def ramp(lo: float, hi: float, w_lo: float, w_hi: float) -> WeightProfile: ...
+    @staticmethod
+    def gaussian(center: float, fwhm: float, peak: float, base: float = ...) -> WeightProfile: ...
+    @staticmethod
+    def bands(bands: list[tuple[float, float, float]], outside: float = ...) -> WeightProfile: ...
+    @staticmethod
+    def table(x: list[float], w: list[float], interp: str = ...) -> WeightProfile: ...
+    @staticmethod
+    def product(*factors: WeightProfile) -> WeightProfile: ...
+    @staticmethod
+    def from_json(text: str) -> WeightProfile: ...
+    def evaluate(self, x: FloatArray) -> FloatArray: ...
+    def to_json(self) -> str: ...
+
 def compile_merit_spec(request_json: str) -> MeritSpec: ...
 def reference_rotation(
     wavelengths: FloatArray,
-    angle_deg: float,
     n_inc: float | FloatArray = ...,
     total_d: float = ...,
     passes: float = ...,
+    *,
+    angle_deg: float | None = ...,
+    angle_rad: float | None = ...,
 ) -> ComplexArray:
     """`exp(-i * passes * k * D * cos)` per wavelength — the differential-phase
     reference."""
@@ -384,16 +423,20 @@ def reference_rotation(
 def rotate_rows(rows: Sequence[complex], rot: Sequence[complex]) -> list[complex]: ...
 def build_needle_targets(
     spec: MeritSpec,
-    angles: FloatArray,
     wavelengths: FloatArray,
     sim: SimCurves | None = ...,
+    *,
+    angles_deg: FloatArray | None = ...,
+    angles_rad: FloatArray | None = ...,
 ) -> dict[str, Any]:
     """Per-channel `targets`/`weights` surfaces for `needle_gradient`.
 
-    Colour demands deposit into internal `grad_r`/`grad_t` buckets that this
-    dict does **not** carry; a hand-assembled Python needle cycle therefore
-    sees zero colour gradient. Use the `NeedlePipeline` / `run_design` path
-    when the spec has colour demands.
+    Returns `{"s": branch, "p": branch}`; feed `"s"` to
+    `needle_gradient(pol="s")` and `"p"` to `pol="p"`. Each branch holds
+    `r`/`t`/`a`/`rb`/`tb`/`ab` and `phi0..phi3` pairs (`phi*` with a
+    `gain_shift`) plus the colour buckets `grads_r`/`grads_t`. Summed over
+    both branches and the spectral points, the needle P is the merit's
+    slope `dM/dδ`.
     """
     ...
 
@@ -412,6 +455,7 @@ class LayerSpec:
         rough_val: float = ...,
         optimize: bool = ...,
         needle: bool = ...,
+        label: str | None = ...,
     ) -> None: ...
     @property
     def material(self) -> str: ...
@@ -429,6 +473,9 @@ class LayerSpec:
     def optimize(self) -> bool: ...
     @property
     def needle(self) -> bool: ...
+    @property
+    def label(self) -> str | None:
+        """The pool material this film is made of, or ``None``."""
 
 class DesignStack:
     """Ambient / films / substrate, with the film edits synthesis performs."""
@@ -449,18 +496,28 @@ class DesignStack:
     @staticmethod
     def design_from_config(
         request_json: str, wavelengths: FloatArray
-    ) -> tuple[DesignStack, dict[str, Any]]: ...
+    ) -> tuple[DesignStack, list[LayerSpec]]: ...
     def film_count(self) -> int: ...
     def total_thickness(self) -> float: ...
+    def coating_thickness(self) -> float: ...
     def films(self) -> list[dict[str, Any]]: ...
     def to_dict(self) -> dict[str, Any]: ...
     def set_thickness(self, film_idx: int, thickness: float) -> None: ...
     def insert_needle_seed(
         self, film_idx: int, depth_into_layer_nm: float, seed: LayerSpec
     ) -> None: ...
+    def insert_film_at_boundary(self, row: int, film: LayerSpec) -> None: ...
     def merge_adjacent(self) -> int: ...
     def remove_film(self, film_idx: int) -> LayerSpec: ...
     def clamp_all(self, min_nm: float, max_nm: float) -> tuple[int, int]: ...
+    @property
+    def roughness_cap(self) -> float:
+        """Each interface is solved with `min(sigma, d / roughness_cap)` over
+        the films touching it; 0 is off. Default 2.0. The films keep their
+        stored roughness."""
+        ...
+    @roughness_cap.setter
+    def roughness_cap(self, ratio: float) -> None: ...
 
 class LmConfig:
     """Levenberg-Marquardt settings. `optimizer` selects the backend;
@@ -520,6 +577,21 @@ class NeedleCycleConfig:
     insertion, plus `initial_lm` (the pass's opening optimization, on its
     first record only). Off (the default), no clock is read and the records
     carry no `timing` key; on or off, the run itself is bit-identical.
+
+    `boundary_needles=True` also scans every span boundary, the outer
+    edges included: a needle there is a new film between two layers. Its
+    index must differ from both neighbours', every neighbouring needle
+    host must accept it under the insertion rules, and on an outer edge it
+    must be on that edge's list. Such insertions carry `boundary: True`.
+    A boundary on a rough interface is not scored by P, which cannot see
+    the jump a film slipped into a rough interface makes: the merit is
+    evaluated with the needle in place at its start thickness
+    `max(needle_seed_thickness_nm, roughness_cap * sigma)`, and the needle
+    goes in at that thickness. Such a record has `best_p: None` and the
+    measured gain as `predicted_improvement`. Every insertion record
+    carries `seed_nm`, the thickness the needle went in at.
+    Off (the default), the run is exactly what it was. Flat runs only: a
+    multi-environment run refuses it.
     """
 
     def __init__(
@@ -530,6 +602,7 @@ class NeedleCycleConfig:
         scan_step_nm: float = ...,
         refold_per_cycle: bool = ...,
         record_timing: bool = ...,
+        boundary_needles: bool = ...,
     ) -> None: ...
 
 class SmatrixContext:
@@ -539,12 +612,14 @@ class SmatrixContext:
     def __init__(
         self,
         spec: MeritSpec,
-        angles_deg: FloatArray,
         wavelengths: FloatArray,
         clamp_min: float = ...,
         clamp_max: float = ...,
         lm: LmConfig | None = ...,
         thin_layer_policy: str = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def simulate(self, stack: DesignStack) -> SimCurves: ...
     def evaluate_merit(self, stack: DesignStack) -> float: ...
@@ -554,19 +629,29 @@ class SmatrixContext:
     ) -> tuple[float, dict[str, Any] | None]: ...
 
 class NeedlePipeline:
-    """Needle synthesis over one contrast pair. `run` reports through
-    `callback`, which may abort by raising."""
+    """Needle synthesis over a material pool (`None`: the stack's layers'
+    own materials). `insert_rules` ({host label: [needle labels]}),
+    `outer` and `inner` (allowed edge materials) take pool labels;
+    `seed_edges` (nm) puts a film of the list's first material on an edge
+    off its list instead of refusing. `run` reports through `callback`,
+    which may abort by raising."""
 
     def __init__(
         self,
         stack: DesignStack,
         spec: MeritSpec,
-        angles_deg: FloatArray,
         wavelengths: FloatArray,
-        contrast: Mapping[str, LayerSpec],
+        materials: Sequence[LayerSpec] | None = ...,
         pipeline_config: PipelineConfig | None = ...,
         needle_config: NeedleCycleConfig | None = ...,
         lm: LmConfig | None = ...,
+        insert_rules: Mapping[str, Sequence[str]] | None = ...,
+        outer: Sequence[str] | None = ...,
+        inner: Sequence[str] | None = ...,
+        seed_edges: float | None = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def run(self, callback: Callable[..., Any] | None = ...) -> dict[str, Any]: ...
 
@@ -582,9 +667,9 @@ def assemble_design(
     substrate_name: str,
     films: Sequence[Any],
     groups: Mapping[str, Any],
-    seeds: Sequence[tuple[str, str, Sequence[complex]]],
+    materials: Sequence[tuple[str, Sequence[complex]]] | None,
     wavelengths: FloatArray,
-) -> tuple[DesignStack, dict[str, Any]]: ...
+) -> tuple[DesignStack, list[LayerSpec]]: ...
 def run_design(
     ambient_nk: Sequence[complex],
     ambient_name: str,
@@ -592,22 +677,30 @@ def run_design(
     substrate_name: str,
     films: Sequence[Any],
     groups: Mapping[str, Any],
-    seeds: Sequence[tuple[str, str, Sequence[complex]]],
+    materials: Sequence[tuple[str, Sequence[complex]]] | None,
     wavelengths: FloatArray,
-    angles_deg: FloatArray,
     spec: MeritSpec,
     pipeline_config: PipelineConfig | None = ...,
     needle_config: NeedleCycleConfig | None = ...,
     lm: LmConfig | None = ...,
     callback: Callable[..., Any] | None = ...,
+    insert_rules: Mapping[str, Sequence[str]] | None = ...,
+    outer: Sequence[str] | None = ...,
+    inner: Sequence[str] | None = ...,
+    seed_edges: float | None = ...,
+    *,
+    angles_deg: FloatArray | None = ...,
+    angles_rad: FloatArray | None = ...,
 ) -> dict[str, Any]: ...
 def run_design_environments(
     request_json: str,
     wavelengths: FloatArray,
-    angles_deg: FloatArray,
     spec: MeritSpec,
     pipeline_config: PipelineConfig | None = ...,
     needle_config: NeedleCycleConfig | None = ...,
     lm: LmConfig | None = ...,
     callback: Callable[..., Any] | None = ...,
+    *,
+    angles_deg: FloatArray | None = ...,
+    angles_rad: FloatArray | None = ...,
 ) -> dict[str, Any]: ...

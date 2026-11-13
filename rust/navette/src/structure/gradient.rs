@@ -475,20 +475,20 @@ impl GradientJson {
 ///
 /// `Fixed` is today's behavior, byte for byte: the grading strength is
 /// the authored `inh_delta`. `RateCapped` (F1.3) makes the strength grow
-/// with thickness - D2's `delta_layer = min(rate * thickness /
-/// ref_thickness, cap)` - a deposition drift that scales with the film
-/// instead of being a fixed property. The clamp that binds the
-/// COMBINED nominal is two-sided ([-cap, cap]): a negative rate
-/// inverts the drift direction (the frozen ramp `1 - delta ..= 1 +
-/// delta` runs inverted), and the magnitude still saturates at `cap`.
+/// with thickness - D2's `delta_layer = rate * thickness /
+/// ref_thickness`, bounded to `[-cap, cap]` - a deposition drift that
+/// scales with the film instead of being a fixed property. A negative
+/// rate inverts the drift direction (the frozen ramp `1 - delta ..= 1 +
+/// delta` runs inverted) and saturates at the same `cap`; the clamp on
+/// the COMBINED nominal at emission is two-sided as well.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum InhMode {
     /// Current behavior, bit-identical: `delta = inh_delta`.
     #[default]
     Fixed,
-    /// `delta_layer = min(rate * thickness / ref_thickness, cap)`
-    /// (D2's formula: the positive side saturates at `cap` in the
-    /// delta itself; the nominal clamp below bounds both sides).
+    /// `delta_layer = rate * thickness / ref_thickness`, bounded to
+    /// `[-cap, cap]` (D2's formula, saturating symmetrically; the
+    /// nominal clamp at emission bounds the summand-combined value).
     RateCapped {
         rate: f64,
         ref_thickness: f64,

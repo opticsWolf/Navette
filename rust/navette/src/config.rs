@@ -33,7 +33,11 @@ use crate::structure::{
 /// not refusal: §1.2's failure class, one gate over. The section
 /// whitelist below closes the hole for every section added after this
 /// one; the bump is what protects the documents written before it.
-pub const PROGRAM_SCHEMA_VERSION: u32 = 2;
+///
+/// v3 flips the grading sign to the literature's (`+inh_delta` rises
+/// toward the surface); `gate_document` negates an older document's
+/// grading keys on read, so v1/v2 stay readable.
+pub const PROGRAM_SCHEMA_VERSION: u32 = 3;
 
 /// The oldest program envelope this build READS (F2.4, mirroring F1.4's
 /// state gate). A v1 program has no `design`/`environments` sections, so
@@ -176,8 +180,11 @@ impl LayerRow {
         }
         crate::structure::RoughnessType::try_from_i32(self.rough_type)
             .map_err(|e| format!("rough_type: {e}"))?;
-        if !(0.0..=1.0).contains(&self.inh_delta) {
-            return Err("inh_delta must be in [0, 1].".to_string());
+        // Signed: the sign is the ramp's direction (`+` rises toward the
+        // surface). The layer gate holds the physical window (-2, 2); this
+        // door keeps the config's tighter one, mirrored.
+        if !(-1.0..=1.0).contains(&self.inh_delta) {
+            return Err("inh_delta must be in [-1, 1].".to_string());
         }
         if self.interface_thickness_nm < 0.0 {
             return Err("interface_thickness_nm must be >= 0.".to_string());
@@ -296,7 +303,64 @@ fn code_key(def: &MaterialDef) -> &str {
 /// Gate + classify a parsed document.
 /// Returns `(kind, name, payload)`; legacy-flat maps to
 /// `("materials"|"structure", None, section-content)`.
+///
+/// A document older than v3 (and every legacy-flat one) wrote its grading
+/// with the pre-v3 sign; its payload comes back negated, so it describes
+/// the same films under the literature sign.
 pub fn gate_document(raw: &Value) -> Result<(String, Option<String>, Value), String> {
+    let (kind, name, mut payload) = gate_envelope(raw)?;
+    let legacy = match raw.get("kind") {
+        None => true,
+        Some(_) => raw
+            .get("schema_version")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|v| v < GRADING_SIGN_PROGRAM_VERSION as u64),
+    };
+    if legacy {
+        flip_legacy_grading(&mut payload);
+    }
+    Ok((kind, name, payload))
+}
+
+/// First program envelope whose grading keys carry the literature sign.
+pub const GRADING_SIGN_PROGRAM_VERSION: u32 = 3;
+
+/// Negate the grading keys of a pre-v3 payload, wherever they sit: layer
+/// rows and per-layer overrides (`inh_delta`), group rows
+/// (`inh_delta_summand`, and the offsets of `inh_delta_error_params`).
+/// Keyed by name because a program nests rows at several depths; only
+/// numbers are touched, so a string naming the key is left alone.
+fn flip_legacy_grading(v: &mut Value) {
+    use crate::structure::version::flip_grading;
+    let flip = |x: &mut Value| {
+        if let Some(f) = x.as_f64() {
+            *x = Value::from(flip_grading(f));
+        }
+    };
+    match v {
+        Value::Object(map) => {
+            for (k, child) in map.iter_mut() {
+                match k.as_str() {
+                    "inh_delta" | "inh_delta_summand" => flip(child),
+                    "inh_delta_error_params" => {
+                        if let Value::Object(p) = child {
+                            for key in ["abs_mean_delta_g", "abs_mean_delta_h"] {
+                                if let Some(x) = p.get_mut(key) {
+                                    flip(x);
+                                }
+                            }
+                        }
+                    }
+                    _ => flip_legacy_grading(child),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(flip_legacy_grading),
+        _ => {}
+    }
+}
+
+fn gate_envelope(raw: &Value) -> Result<(String, Option<String>, Value), String> {
     let top = raw
         .as_object()
         .ok_or_else(|| "document top level must be a mapping.".to_string())?;
@@ -848,10 +912,18 @@ mod tests {
                 &grid
             )
             .is_ok(),
-            "v2 is what this build writes"
+            "v2 predates the grading-sign flip and still reads"
+        );
+        assert!(
+            load_program_json(
+                "{\"schema_version\": 3, \"kind\": \"program\", \"sections\": {}}",
+                &grid
+            )
+            .is_ok(),
+            "v3 is what this build writes"
         );
         let newer = load_program_json(
-            "{\"schema_version\": 3, \"kind\": \"program\", \"sections\": {}}",
+            "{\"schema_version\": 4, \"kind\": \"program\", \"sections\": {}}",
             &grid,
         )
         .unwrap_err();
@@ -861,7 +933,7 @@ mod tests {
             &grid,
         )
         .unwrap_err();
-        assert!(stale.contains("reads 1..=2"), "{stale}");
+        assert!(stale.contains("reads 1..=3"), "{stale}");
         // An unknown SECTION refuses by name rather than being dropped.
         let bogus = load_program_json(
             "{\"schema_version\": 2, \"kind\": \"program\", \"sections\": {\"bogus\": []}}",
@@ -881,6 +953,42 @@ mod tests {
             .is_err()
         );
         assert!(load_program_json("{\"layers\": []}", &grid).is_err()); // legacy, no materials key
+    }
+
+    /// v3 flipped the grading sign: a v1/v2 document is negated on read,
+    /// so it grades the same film; a v3 document reads as written.
+    #[test]
+    fn a_pre_v3_program_keeps_its_grading_direction() {
+        let doc = |version: u32| {
+            serde_json::json!({
+              "schema_version": version,
+              "kind": "program",
+              "sections": {
+                "materials": [
+                  {"name": "H", "code": "H", "model": "Konstant", "params": {"n": 2.1}},
+                ],
+                "groups": [{"name": "H", "inh_delta_summand": 0.05,
+                            "inh_delta_error_params": {"abs_mean_delta_g": 0.01}}],
+                "structures": [{"label": "main", "layers": [
+                  {"material_code": "H", "thickness_nm": 60.0,
+                   "inhomogen": true, "inh_delta": 0.2},
+                ], "groups": []}],
+              }
+            })
+            .to_string()
+        };
+        for (version, sign) in [(1, -1.0), (2, -1.0), (3, 1.0)] {
+            let prog = load_program_json(&doc(version), &grid()).unwrap();
+            let main = prog.structures["main"].borrow();
+            assert_eq!(main.layers[0].inh_delta, sign * 0.2, "v{version}");
+            let g = &prog.groups["H"];
+            assert_eq!(g.inh_delta_summand, sign * 0.05, "v{version}");
+            assert_eq!(
+                g.inh_delta_error_params.abs_mean_delta_g,
+                sign * 0.01,
+                "v{version}"
+            );
+        }
     }
 
     #[test]

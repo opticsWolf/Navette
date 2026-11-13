@@ -19,6 +19,7 @@ use crate::smatrix::optics_core::{
 
 const POL_S: i32 = 0;
 const LOG_MIN: f64 = 1e-100;
+const LOG_MIN_SQ: f64 = LOG_MIN * LOG_MIN;
 const EPS_COS: f64 = 1e-12;
 
 /// Result of a coherent block solve:
@@ -100,7 +101,7 @@ fn solve_pol_specialized<const IS_S: bool>(
         let y_next = admittance::<IS_S>(n_next, cos_next);
 
         let den = y_curr + y_next;
-        let den_safe = if den.norm() < LOG_MIN {
+        let den_safe = if den.norm_sqr() < LOG_MIN_SQ {
             Complex64::new(LOG_MIN, LOG_MIN)
         } else {
             den
@@ -356,7 +357,7 @@ pub fn solve_coherent_block_fields_dual(
         // --- s-polarization interface + propagation ---
         {
             let den = ys_curr + ys_next;
-            let den_safe = if den.norm() < LOG_MIN {
+            let den_safe = if den.norm_sqr() < LOG_MIN_SQ {
                 Complex64::new(LOG_MIN, LOG_MIN)
             } else {
                 den
@@ -381,7 +382,7 @@ pub fn solve_coherent_block_fields_dual(
         // --- p-polarization interface + propagation ---
         {
             let den = yp_curr + yp_next;
-            let den_safe = if den.norm() < LOG_MIN {
+            let den_safe = if den.norm_sqr() < LOG_MIN_SQ {
                 Complex64::new(LOG_MIN, LOG_MIN)
             } else {
                 den

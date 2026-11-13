@@ -70,8 +70,8 @@ def bench(fn, n=25):
 
 with warnings.catch_warnings():
   warnings.simplefilter("ignore")
-  a = bench(lambda: solve_structure(make(True), WAVLS, 0.0))
-  b = bench(lambda: solve_structure(make(False), WAVLS, 0.0))
+  a = bench(lambda: solve_structure(make(True), WAVLS, angles_deg=0.0))
+  b = bench(lambda: solve_structure(make(False), WAVLS, angles_deg=0.0))
 
 from navette.structure import _assert_provider_grids as chk
 st = make(True)

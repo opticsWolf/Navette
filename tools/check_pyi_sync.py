@@ -99,7 +99,9 @@ def stub_surface(path: Path) -> tuple[set[str], dict[str, list[str]]]:
         got = [p.arg for p in (*a.posonlyargs, *a.args)]
         if drop_self and got and got[0] in ("self", "cls"):
             got = got[1:]
-        return got + [p.arg for p in a.kwonlyargs]
+        # `*factors` is a parameter the native signature names too.
+        star = [a.vararg.arg] if a.vararg else []
+        return got + star + [p.arg for p in a.kwonlyargs]
 
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):

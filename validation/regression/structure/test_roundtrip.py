@@ -71,12 +71,15 @@ def test_v1_state_fixture_loads_and_expands_bit_identically():
 
   loaded = Navette_Architect.from_state(state, materials=MATS)
 
+  # The fixture predates v3's grading-sign flip, so it reads negated: its
+  # 0.2 / 0.1 / rate 0.05 are these -0.2 / -0.1 / -0.05 (the same films).
+  # The glass layer is ungraded, but its default 0.1 is negated all the same.
   layers = [
     Layer(thickness=100.0, material_name="TiO2", inhomogen=True,
-          inh_delta=0.2, optimize=True, needle=False),
-    Layer(thickness=50.0, material_name="glass"),
-    Layer(thickness=30.0, material_name="TiO2", inhomogen=True,
-          inh_mode={"RateCapped": {"rate": 0.05, "ref_thickness": 100.0,
+          inh_delta=-0.2, optimize=True, needle=False),
+    Layer(thickness=50.0, material_name="glass", inh_delta=-0.1),
+    Layer(thickness=30.0, material_name="TiO2", inhomogen=True, inh_delta=-0.1,
+          inh_mode={"RateCapped": {"rate": -0.05, "ref_thickness": 100.0,
                                     "cap": 0.3}}),
   ]
   live_group = Group("TiO2", n_factor=1.1)
@@ -142,10 +145,12 @@ def test_stale_schema_versions_refused():
   layer_state = _full_layer().get_state()
   assert layer_state["schema_version"] == SCHEMA_VERSION
   # The readable past: a v1-tagged state (this test's pre-F1.4
-  # 'SCHEMA_VERSION - 1' case) loads.
+  # 'SCHEMA_VERSION - 1' case) loads - with its grading negated, since it
+  # predates v3's flip.
   older = dict(layer_state)
   older["schema_version"] = MIN_READABLE_SCHEMA_VERSION
-  assert Layer.from_state(older).get_state() == layer_state
+  assert Layer.from_state(older).get_state() == dict(
+    layer_state, inh_delta=-layer_state["inh_delta"])
   untagged = dict(layer_state)
   del untagged["schema_version"]  # no past before v1: untagged is malformed
   with pytest.raises(ValueError):
@@ -172,8 +177,11 @@ def test_stale_schema_versions_refused():
 #   (F1.3's inh_mode, F1.4's gradient)           -> the key list here
 #   grows a conditional entry, and the plain key set stays byte-
 #   identical to every earlier release.
+#
+# v3 (the grading-sign flip) changed no key, only the sign of the grading
+# keys, which the reader migrates; the key set below is v2's unchanged.
 FINGERPRINT = {
-  "version": 2,
+  "version": 3,
   "Layer": ["coherent", "inh_delta", "inhomogen", "interface",
               "interface_thickness", "layer_type", "material_name",
               "needle", "optimize", "rough_type", "roughness",

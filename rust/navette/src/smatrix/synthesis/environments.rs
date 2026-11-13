@@ -30,15 +30,18 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+use num_complex::Complex64;
 use serde::Deserialize;
 
-use super::cycle::ContrastMap;
+use super::cycle::{MaterialPool, new_needle, pool_entry, pool_from_layers};
 use super::design_config::{
-    DesignRequest, LayerRow, RowAssembly, build_contrast, d_inh_delta, d_layer_type, d_true,
+    DesignRequest, LayerRow, RowAssembly, build_pool, d_inh_delta, d_layer_type, d_true,
     eval_library, split_and_build_films,
 };
-use super::structure::DesignStack;
-use crate::structure::Group;
+use super::needle_pass::{ScanSite, span_admissible};
+use super::structure::{DesignStack, EdgeMaterials, LayerSpec, edge_allows, span_index_of_row};
+use crate::structure::providers::MaterialProvider;
+use crate::structure::{ExpandOptions, Group, Layer, RoughnessType};
 
 // ---------------------------------------------------------------------------
 // Request schema (additive-optional: absent == today's flat request)
@@ -115,10 +118,20 @@ impl FixedLayerRow {
 }
 
 /// One named design segment: an ordered film list, defined once.
+///
+/// `outer` and `inner` are the segment's own edge lists (pool labels):
+/// the materials allowed for its first film, which faces the incoming
+/// light, and for its last, which faces away from it. They are checked on
+/// the segment's own top and bottom in every environment, whatever
+/// surrounds it there. `None` leaves that edge free.
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesignSegmentCfg {
     pub layers: Vec<LayerRow>,
+    #[serde(default)]
+    pub outer: Option<Vec<String>>,
+    #[serde(default)]
+    pub inner: Option<Vec<String>>,
 }
 
 /// One entry in an environment's ordered stack: inline fixed layers, or
@@ -130,6 +143,16 @@ pub struct DesignSegmentCfg {
 /// not match any variant" — it throws away *which* shape was wrong and
 /// why, and every refusal in this module is required to name its
 /// environment and segment.
+///
+/// `repeat` (design references only, default 1) places that many copies
+/// of the segment back to back. Every copy is the same design: one
+/// parameter per film, one needle landing in every copy.
+///
+/// `inverted` (design references only) places the segment last film
+/// first, as the Architect expands an inverted block: each interface and
+/// roughness stays with the plane it belongs to, so a copy is the
+/// segment turned over, not its rows reversed. Its outer film still
+/// carries the outer list and now faces away from the light.
 #[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvSegmentCfg {
@@ -137,6 +160,10 @@ pub struct EnvSegmentCfg {
     pub layers: Option<Vec<FixedLayerRow>>,
     #[serde(default)]
     pub design: Option<String>,
+    #[serde(default)]
+    pub repeat: Option<usize>,
+    #[serde(default)]
+    pub inverted: bool,
 }
 
 /// One environment: a name and its ordered segment list.
@@ -186,13 +213,104 @@ pub struct CompiledEnvironments {
     names: Vec<String>,
     stacks: Vec<DesignStack>,
     slots: Vec<DesignSlot>,
-    /// `routing[slot][env]` = index into `stacks[env].spans()`.
+    /// `routing[slot][env]` = the indices into `stacks[env].spans()` of
+    /// every copy of that film, in assembly order. `routing[slot][0][0]`
+    /// is the primary: the copy in the design object (environment 0's
+    /// stack) that the optimizer moves. Every other copy, environment 0's
+    /// own included, is pinned (`optimize` false) and follows it.
     ///
     /// Spans, not rows: post-F0.1 a design film can expand to several
     /// solver rows, and the parameter belongs to the span. Building this
     /// row-keyed would have had to be rebuilt span-keyed after Phase A —
     /// which is the whole reason Phase B sits after gradients.
-    routing: Vec<Vec<usize>>,
+    routing: Vec<Vec<Vec<usize>>>,
+    /// Edge lists per design segment id; a segment with neither list set
+    /// has no entry. Empty for a flat request, whose stack carries its own.
+    segment_edges: BTreeMap<Arc<str>, EdgeMaterials>,
+    /// `inverted[env][span]`: the span is an entry of an inverted copy.
+    /// Only design spans are ever inverted.
+    inverted: Vec<Vec<bool>>,
+    /// Per design film, what an inverted copy is re-emitted from.
+    faces: Vec<Face>,
+    /// The simulation grid the stacks were assembled on.
+    wavelengths: Vec<f64>,
+}
+
+/// One design film as the expander sees it, group policy already applied:
+/// its index, coherence, and the roughness and interface slice on its
+/// forward top face. An inverted copy moves both to the plane they
+/// belong to, which is why it is re-emitted from these rather than copied
+/// row by row.
+#[derive(Clone, Debug)]
+struct Face {
+    nk: Arc<[Complex64]>,
+    coherent: bool,
+    rough_val: f64,
+    rough_type: i32,
+    /// The interface slice's thickness as emitted, when the film has one.
+    slice: Option<f64>,
+}
+
+/// A boundary locus of the shared design: the plane before film `k` of
+/// design segment `seg` (an index into [`CompiledEnvironments::segments`]),
+/// in the segment's forward order; `k` equal to the segment's length is
+/// the plane after its last film. Every copy of the segment in every
+/// environment has the locus once. Where two segments touch, the plane is
+/// two loci, one per segment: a film there joins one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Gap {
+    pub seg: usize,
+    pub k: usize,
+}
+
+/// One placement of a [`Gap`] in one environment's stack.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GapPlace {
+    pub env: usize,
+    /// The span index the new film's span takes.
+    pub at: usize,
+    /// The new film's row once it is in; the rows above it stay put, so
+    /// it is also the boundary's row before (`films.len()`: the substrate
+    /// side).
+    pub row: usize,
+    /// The copy is inverted.
+    pub inverted: bool,
+    /// The slice opening span `at` moves into the new span, ahead of it.
+    pub take_slice: bool,
+}
+
+/// Serves one inverted run's films to the expander, keyed by their
+/// position in the run.
+struct RunProvider<'a>(Vec<&'a [Complex64]>);
+
+impl MaterialProvider for RunProvider<'_> {
+    fn nk(&self, name: &str, _wavelengths: &[f64]) -> Result<Vec<Complex64>, String> {
+        name.parse::<usize>()
+            .ok()
+            .and_then(|i| self.0.get(i))
+            .map(|nk| nk.to_vec())
+            .ok_or_else(|| format!("inverted run: no film {name:?}"))
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        name.parse::<usize>().is_ok_and(|i| i < self.0.len())
+    }
+
+    fn grid(&self) -> Option<&[f64]> {
+        None
+    }
+}
+
+fn rough_kind(code: i32) -> Result<RoughnessType, String> {
+    Ok(match code {
+        0 => RoughnessType::None,
+        1 => RoughnessType::Linear,
+        2 => RoughnessType::Step,
+        3 => RoughnessType::Exponential,
+        4 => RoughnessType::Gaussian,
+        5 => RoughnessType::NevotCroce,
+        _ => return Err(format!("unknown roughness type {code}")),
+    })
 }
 
 impl CompiledEnvironments {
@@ -219,6 +337,12 @@ impl CompiledEnvironments {
         &self.slots
     }
 
+    /// The edge lists of design segment `segment`, or `None` when both of
+    /// its edges are free.
+    pub fn segment_edges(&self, segment: &str) -> Option<&EdgeMaterials> {
+        self.segment_edges.get(segment)
+    }
+
     pub fn n_envs(&self) -> usize {
         self.names.len()
     }
@@ -229,23 +353,202 @@ impl CompiledEnvironments {
         self.names.len() == 1
     }
 
+    /// True when some design film is used more than once in some
+    /// environment (a `repeat`, or a second reference).
+    pub fn has_copies(&self) -> bool {
+        self.routing
+            .iter()
+            .any(|per| per.iter().any(|copies| copies.len() > 1))
+    }
+
+    /// True when some design segment has an edge list.
+    pub fn has_segment_edges(&self) -> bool {
+        !self.segment_edges.is_empty()
+    }
+
+    /// True when some design segment is placed inverted somewhere.
+    pub fn has_inverted(&self) -> bool {
+        self.inverted.iter().any(|env| env.contains(&true))
+    }
+
+    /// True when the run must take the joint path: more than one
+    /// environment, one environment with copies, or an inverted copy (its
+    /// rows are re-emitted from the design at every evaluation). A single
+    /// environment whose films are each used once, forward, is the flat
+    /// run exactly.
+    pub fn is_joint(&self) -> bool {
+        !self.is_single() || self.has_copies() || self.has_inverted()
+    }
+
+    /// True when span `span` of environment `env` is an entry of an
+    /// inverted copy.
+    pub fn is_inverted(&self, env: usize, span: usize) -> bool {
+        self.inverted
+            .get(env)
+            .and_then(|v| v.get(span))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// True when the inverted entry at `span` has its own interface slice
+    /// carved by the next entry of its run (the slice then sits at the
+    /// start of that entry's span). The last entry of a run drops it.
+    fn carves_next(&self, env: usize, span: usize, slot: usize) -> bool {
+        self.is_inverted(env, span)
+            && self.is_inverted(env, span + 1)
+            && self.faces[slot].slice.is_some()
+    }
+
+    /// True when copy span `span` of design film `slot` in environment
+    /// `env` emits the film's own interface slice. A forward copy emits it
+    /// unless it is the first film of its stack (the incident plane is
+    /// clean); an inverted copy emits it when the next entry of its run
+    /// carves it. Every copy of a film agrees (checked at the compile).
+    fn emits_slice(&self, env: usize, span: usize, slot: usize) -> bool {
+        if self.is_inverted(env, span) {
+            self.carves_next(env, span, slot)
+        } else {
+            self.stacks[env].spans()[span].slice
+        }
+    }
+
+    /// The bulk thickness of design film `slot`, read from its primary in
+    /// `design`. Every copy's bulk is the same slab: the copies agree on
+    /// whether the film's own slice is emitted, and it is the same
+    /// thickness wherever it is.
+    fn forward_bulk(&self, design: &DesignStack, slot: usize) -> f64 {
+        let p = self.routing[slot][0][0];
+        design.films()[design.spans()[p].bulk_start].d_nm
+    }
+
+    /// The film's whole thickness, its own slice included when emitted:
+    /// what an inverted copy is re-emitted at.
+    fn film_total(&self, design: &DesignStack, slot: usize) -> f64 {
+        let b = self.forward_bulk(design, slot);
+        match self.faces[slot].slice {
+            Some(s) if self.emits_slice(0, self.routing[slot][0][0], slot) => b + s,
+            _ => b,
+        }
+    }
+
+    /// The depth from the forward top of a design film's bulk of a point
+    /// `depth` below the top of row `row` in environment `env`, when that
+    /// row is the bulk of an inverted copy; `None` for every other row.
+    pub(crate) fn forward_depth(
+        &self,
+        env: usize,
+        row: usize,
+        depth: f64,
+        design: &DesignStack,
+    ) -> Option<f64> {
+        let span = span_index_of_row(self.stacks[env].spans(), row);
+        if !self.is_inverted(env, span) {
+            return None;
+        }
+        let (slot, _) = self.copy_of_span(env, span)?;
+        Some(self.forward_bulk(design, slot) - depth)
+    }
+
+    /// The interior needle sites of `st`, environment `env`'s expanded
+    /// stack. Forward rows get [`build_scan_sites`]' grid; the bulk row of
+    /// an inverted copy gets the same grid measured from the film's
+    /// forward top, so every copy of a film offers the same loci in the
+    /// same order of depth into the forward film.
+    ///
+    /// [`build_scan_sites`]: super::needle_pass::build_scan_sites
+    pub(crate) fn scan_sites(
+        &self,
+        env: usize,
+        st: &DesignStack,
+        design: &DesignStack,
+        step: f64,
+    ) -> Vec<ScanSite> {
+        assert!(step > 0.0, "scan_step_nm must be positive");
+        let spans = st.spans();
+        let mut sites = Vec::new();
+        let mut cumulative = 0.0f64;
+        for (film_idx, layer) in st.films().iter().enumerate() {
+            let d = layer.d_nm;
+            if layer.needle && d > 0.0 && span_admissible(spans, film_idx) {
+                let span = span_index_of_row(spans, film_idx);
+                let mirrored = self
+                    .is_inverted(env, span)
+                    .then(|| self.copy_of_span(env, span))
+                    .flatten();
+                if let Some((slot, _)) = mirrored {
+                    let b = self.forward_bulk(design, slot);
+                    let n_steps = (b / step) as i32;
+                    for k in (1..n_steps).rev() {
+                        let pos_in_layer = b - k as f64 * step;
+                        sites.push(ScanSite {
+                            film_idx,
+                            depth_into_layer_nm: pos_in_layer,
+                            z_nm: cumulative + pos_in_layer,
+                            boundary: false,
+                        });
+                    }
+                } else {
+                    let n_steps = (d / step) as i32;
+                    for k in 1..n_steps {
+                        let pos_in_layer = k as f64 * step;
+                        sites.push(ScanSite {
+                            film_idx,
+                            depth_into_layer_nm: pos_in_layer,
+                            z_nm: cumulative + pos_in_layer,
+                            boundary: false,
+                        });
+                    }
+                }
+            }
+            cumulative += d;
+        }
+        sites
+    }
+
     /// Resolve an environment name to its index.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.names.iter().position(|n| n == name)
     }
 
-    /// Span index of design parameter `slot` inside environment `env`.
+    /// Span index of design parameter `slot`'s first copy inside
+    /// environment `env` (in environment 0, the primary).
     pub fn span_of(&self, slot: usize, env: usize) -> Option<usize> {
-        self.routing.get(slot).and_then(|per| per.get(env)).copied()
+        self.spans_of(slot, env).first().copied()
+    }
+
+    /// Span indices of every copy of design parameter `slot` inside
+    /// environment `env`, in assembly order.
+    pub fn spans_of(&self, slot: usize, env: usize) -> &[usize] {
+        self.routing
+            .get(slot)
+            .and_then(|per| per.get(env))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// How many places design parameter `slot` occupies, over every
+    /// environment and every copy.
+    pub fn n_placements(&self, slot: usize) -> usize {
+        self.routing
+            .get(slot)
+            .map_or(0, |per| per.iter().map(Vec::len).sum())
     }
 
     /// Reverse lookup: which shared parameter (if any) owns span `span`
     /// of environment `env`. Surroundings answer `None` — they never
     /// deposit into the shared buckets (§4.4).
     pub fn slot_of_span(&self, env: usize, span: usize) -> Option<usize> {
-        self.routing
-            .iter()
-            .position(|per| per.get(env) == Some(&span))
+        self.copy_of_span(env, span).map(|(slot, _)| slot)
+    }
+
+    /// Which shared parameter owns span `span` of environment `env`, and
+    /// which of its copies there that span is.
+    pub fn copy_of_span(&self, env: usize, span: usize) -> Option<(usize, usize)> {
+        self.routing.iter().enumerate().find_map(|(slot, per)| {
+            per.get(env)?
+                .iter()
+                .position(|&s| s == span)
+                .map(|c| (slot, c))
+        })
     }
 
     /// F2.3: which shared parameter owns solver row `row` of environment
@@ -257,21 +560,28 @@ impl CompiledEnvironments {
     /// `None` — surroundings never deposit, and they are inadmissible
     /// hosts anyway, so this is a second lock on the same door.
     pub fn slot_of_row(&self, env: usize, row: usize) -> Option<usize> {
+        self.copy_of_row(env, row).map(|(slot, _)| slot)
+    }
+
+    /// [`Self::slot_of_row`], plus which copy of the parameter the row
+    /// belongs to.
+    pub fn copy_of_row(&self, env: usize, row: usize) -> Option<(usize, usize)> {
         let span = self.stacks[env]
             .spans()
             .iter()
             .position(|sp| row >= sp.start && row < sp.end)?;
-        self.slot_of_span(env, span)
+        self.copy_of_span(env, span)
     }
 
     /// F2.3: the host row of shared parameter `slot` inside environment
-    /// `env` — the second half of the locus translation.
+    /// `env` — the second half of the locus translation. The first copy's
+    /// (in environment 0, the primary's).
     ///
     /// The bulk row, not the span start: an interface-carrying design film
     /// is a legal needle host (N1 — singleton-*bulk*), and its slice row is
     /// derived, never a host.
     pub fn host_row(&self, env: usize, slot: usize) -> Option<usize> {
-        let span = *self.routing.get(slot)?.get(env)?;
+        let span = self.span_of(slot, env)?;
         Some(self.stacks[env].spans()[span].bulk_start)
     }
 
@@ -279,17 +589,18 @@ impl CompiledEnvironments {
     ///
     /// This is what makes "one insertion edits the single shared design
     /// object" true of the assemblies as well as of the model. Every
-    /// environment's template is split at ITS OWN row for that slot, with
-    /// the same depth and the same seed, so the K assemblies stay the same
-    /// design in different surroundings rather than drifting apart after
-    /// the first needle.
+    /// environment's template is split at ITS OWN row for every copy of
+    /// that slot, with the same depth and the same seed, so the K
+    /// assemblies stay the same design in different surroundings rather
+    /// than drifting apart after the first needle.
     ///
     /// The host becomes three parameters — top, seed, bottom — exactly as
     /// `insert_needle_seed` splits one span into three, so the slot list
-    /// grows by two at `slot + 1` and every later slot's span index shifts
-    /// by two. The caller splits the pipeline's design stack itself with
-    /// the same `(row, depth, seed)`; `expand`'s alignment check is what
-    /// catches it if the two ever disagree.
+    /// grows by two at `slot + 1` and every later span shifts by two per
+    /// copy split before it. The caller splits the pipeline's design stack
+    /// with [`Self::split_design`] first, from the same routing;
+    /// `expand`'s alignment check is what catches it if the two ever
+    /// disagree.
     pub fn insert_seed(
         &mut self,
         slot: usize,
@@ -302,35 +613,52 @@ impl CompiledEnvironments {
                 self.slots.len()
             ));
         }
-        let hosts: Vec<usize> = (0..self.names.len())
-            .map(|e| {
-                self.host_row(e, slot).ok_or_else(|| {
-                    format!(
-                        "insert_seed: slot {slot} has no host in environment {:?}",
-                        self.names[e]
-                    )
-                })
-            })
-            .collect::<Result<_, _>>()?;
-        let host_spans: Vec<usize> = (0..self.names.len())
-            .map(|e| self.routing[slot][e])
-            .collect();
-
-        for (e, &row) in hosts.iter().enumerate() {
-            self.stacks[e]
-                .insert_needle_seed(row, depth_into_layer_nm, seed.clone())
-                .map_err(|msg| format!("environment {:?}: {msg}", self.names[e]))?;
+        for e in 0..self.names.len() {
+            if self.routing[slot][e].is_empty() {
+                return Err(format!(
+                    "insert_seed: slot {slot} has no host in environment {:?}",
+                    self.names[e]
+                ));
+            }
         }
 
-        // Spans after the host shifted by two in every environment.
-        for per in self.routing.iter_mut() {
-            for (e, s) in per.iter_mut().enumerate() {
-                if *s > host_spans[e] {
-                    *s += 2;
+        for e in 0..self.names.len() {
+            // Last copy first: a split moves only the spans after it, so
+            // the copies before keep their indices until their turn.
+            let mut copies = self.routing[slot][e].clone();
+            copies.reverse();
+            for host in copies {
+                // A template's thicknesses are stale (the design's are
+                // copied in at every expansion), so an inverted copy is
+                // split at its own row's mirror depth: only the shape
+                // matters, and the re-emission sets the rows.
+                let inv = self.is_inverted(e, host);
+                let depth = if inv {
+                    let d = self.stacks[e].films()[self.stacks[e].spans()[host].bulk_start].d_nm;
+                    (d - depth_into_layer_nm).max(0.0)
+                } else {
+                    depth_into_layer_nm
+                };
+                split_copy(
+                    &mut self.stacks[e],
+                    host,
+                    depth,
+                    seed,
+                    e == 0 && host != self.routing[slot][0][0],
+                )
+                .map_err(|msg| format!("environment {:?}: {msg}", self.names[e]))?;
+                self.inverted[e].splice(host + 1..host + 1, [inv, inv]);
+                for per in self.routing.iter_mut() {
+                    for s in per[e].iter_mut() {
+                        if *s > host {
+                            *s += 2;
+                        }
+                    }
                 }
             }
         }
-        // The host's own entry stays put: the top portion keeps the span.
+
+        // The host's own entries stay put: the top portion keeps the span.
         let segment = self.slots[slot].segment.clone();
         let host_name = self.slots[slot].name.clone();
         self.slots.insert(
@@ -349,10 +677,45 @@ impl CompiledEnvironments {
                 intra: 0,
             },
         );
-        self.routing
-            .insert(slot + 1, host_spans.iter().map(|s| s + 1).collect());
-        self.routing
-            .insert(slot + 2, host_spans.iter().map(|s| s + 2).collect());
+        let shifted = |by: usize| -> Vec<Vec<usize>> {
+            self.routing[slot]
+                .iter()
+                .map(|copies| copies.iter().map(|s| s + by).collect())
+                .collect()
+        };
+        let (seeds, bottoms) = (shifted(1), shifted(2));
+        self.routing.insert(slot + 1, seeds);
+        self.routing.insert(slot + 2, bottoms);
+        // An inverted copy meets the pieces bottom first: the host's span
+        // holds the bottom portion and the top portion comes after the
+        // seed.
+        for e in 0..self.names.len() {
+            for c in 0..self.routing[slot][e].len() {
+                let host = self.routing[slot][e][c];
+                if self.is_inverted(e, host) {
+                    self.routing[slot][e][c] = host + 2;
+                    self.routing[slot + 2][e][c] = host;
+                }
+            }
+        }
+        // The top portion keeps the host's face; the bottom portion is a
+        // clone of the host's bulk row (its roughness included) with no
+        // slice; the seed is the seed.
+        let bottom = Face {
+            slice: None,
+            ..self.faces[slot].clone()
+        };
+        self.faces.insert(
+            slot + 1,
+            Face {
+                nk: seed.nk.clone(),
+                coherent: seed.coherent,
+                rough_val: seed.rough_val,
+                rough_type: seed.rough_type,
+                slice: None,
+            },
+        );
+        self.faces.insert(slot + 2, bottom);
         // `intra` stops being the AUTHORING index the moment a needle
         // lands, so it is re-derived as the position within the segment -
         // which is what every reader after the compile actually wants.
@@ -365,15 +728,397 @@ impl CompiledEnvironments {
         Ok(())
     }
 
+    /// Split every copy of shared parameter `slot` in the pipeline's design
+    /// stack (environment 0's), as [`Self::insert_seed`] splits the
+    /// templates. Call it before `insert_seed`: it reads the routing as it
+    /// stands. The seed in the primary is a free parameter; the seeds in
+    /// the other copies are pinned and follow it.
+    ///
+    /// `depth_into_layer_nm` is measured from the forward top of the
+    /// film's bulk; an inverted copy is split at the mirror depth.
+    pub fn split_design(
+        &self,
+        design: &mut DesignStack,
+        slot: usize,
+        depth_into_layer_nm: f64,
+        seed: &crate::smatrix::synthesis::structure::LayerSpec,
+    ) -> Result<(), String> {
+        let copies = self.spans_of(slot, 0);
+        let Some(&primary) = copies.first() else {
+            return Err(format!(
+                "split_design: slot {slot} has no host in environment {:?}",
+                self.names[0]
+            ));
+        };
+        let b = self.forward_bulk(design, slot);
+        for &host in copies.iter().rev() {
+            let depth = if self.is_inverted(0, host) {
+                b - depth_into_layer_nm
+            } else {
+                depth_into_layer_nm
+            };
+            split_copy(design, host, depth, seed, host != primary)?;
+        }
+        Ok(())
+    }
+
+    /// The design segments as slot ranges, in slot order. A segment's
+    /// films are consecutive slots, and a needle joins its host's segment,
+    /// so they stay consecutive.
+    pub(crate) fn segments(&self) -> Vec<std::ops::Range<usize>> {
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        for (i, sl) in self.slots.iter().enumerate() {
+            match out.last_mut() {
+                Some(r) if self.slots[r.start].segment == sl.segment => r.end = i + 1,
+                _ => out.push(i..i + 1),
+            }
+        }
+        out
+    }
+
+    /// Every boundary locus of the design, segment by segment, top to
+    /// bottom in forward order.
+    pub(crate) fn gaps(&self) -> Vec<Gap> {
+        self.segments()
+            .iter()
+            .enumerate()
+            .flat_map(|(seg, r)| (0..=r.len()).map(move |k| Gap { seg, k }))
+            .collect()
+    }
+
+    /// The design slots on either side of `gap` in forward order: the film
+    /// above and the film below, `None` past the segment's edge.
+    pub(crate) fn gap_neighbours(&self, gap: Gap) -> (Option<usize>, Option<usize>) {
+        let r = &self.segments()[gap.seg];
+        (
+            (gap.k > 0).then(|| r.start + gap.k - 1),
+            (gap.k < r.len()).then(|| r.start + gap.k),
+        )
+    }
+
+    /// The edge lists `gap` answers to: the segment's outer list on its top
+    /// edge, its inner list on its bottom edge.
+    pub(crate) fn gap_edges(&self, gap: Gap) -> (Option<&EdgeMaterials>, bool, bool) {
+        let r = &self.segments()[gap.seg];
+        (
+            self.segment_edges(&self.slots[r.start].segment),
+            gap.k == 0,
+            gap.k == r.len(),
+        )
+    }
+
+    /// Where `gap` sits in each copy of its segment in environment `env`,
+    /// whose stack has `spans` over `n_films` rows, in assembly order.
+    ///
+    /// A forward copy puts the new film before its slot `k` (after its
+    /// last film when `k` is the segment's length). An inverted copy meets
+    /// the films last first, so the same locus is after its slot `k`
+    /// there, and the plane before the forward first film is below the
+    /// copy. An inverted span that opens with a slice holds the slice its
+    /// predecessor carved, and the new film takes it over: the slice stays
+    /// against the film it belongs to.
+    pub(crate) fn gap_places(
+        &self,
+        env: usize,
+        spans: &[crate::structure::Span],
+        n_films: usize,
+        gap: Gap,
+    ) -> Vec<GapPlace> {
+        let r = self.segments()[gap.seg].clone();
+        let n = r.len();
+        (0..self.routing[r.start][env].len())
+            .map(|c| {
+                let span_of = |slot: usize| self.routing[slot][env][c];
+                let inverted = self.is_inverted(env, span_of(r.start));
+                let at = match (inverted, gap.k == n) {
+                    (false, false) => span_of(r.start + gap.k),
+                    (false, true) => span_of(r.end - 1) + 1,
+                    (true, false) => span_of(r.start + gap.k) + 1,
+                    (true, true) => span_of(r.end - 1),
+                };
+                let take_slice = inverted
+                    && spans
+                        .get(at)
+                        .is_some_and(|sp| sp.slice && self.is_inverted(env, at));
+                let row = match spans.get(at) {
+                    Some(sp) if take_slice => sp.bulk_start,
+                    Some(sp) => sp.start,
+                    None => n_films,
+                };
+                GapPlace {
+                    env,
+                    at,
+                    row,
+                    inverted,
+                    take_slice,
+                }
+            })
+            .collect()
+    }
+
+    /// True when a film placed at `pl` leaves every film's own slice where
+    /// it was. The one move that would not: a film turned into the end of an
+    /// inverted run whose last entry has a slice it could not place before
+    /// (the plane below it belonged to the next segment) and now could.
+    pub(crate) fn gap_keeps_slices(&self, pl: &GapPlace) -> bool {
+        let prev = pl.at.checked_sub(1);
+        let stranded = prev.is_some_and(|p| {
+            self.is_inverted(pl.env, p)
+                && !self.is_inverted(pl.env, pl.at)
+                && self
+                    .slot_of_span(pl.env, p)
+                    .is_some_and(|s| self.faces[s].slice.is_some())
+        });
+        !(pl.inverted && stranded)
+    }
+
+    /// The slot a film inserted at `gap` takes.
+    fn gap_slot(&self, gap: Gap) -> usize {
+        self.segments()[gap.seg].start + gap.k
+    }
+
+    /// Insert `film` at boundary locus `gap` in every copy in the
+    /// pipeline's design stack (environment 0's), as
+    /// [`Self::insert_boundary`] does in the templates. Call it first: it
+    /// reads the routing as it stands. The first copy is the free one; the
+    /// others are pinned and follow it.
+    pub fn boundary_design(
+        &self,
+        design: &mut DesignStack,
+        gap: Gap,
+        film: &LayerSpec,
+    ) -> Result<(), String> {
+        let places = self.gap_places(0, design.spans(), design.films().len(), gap);
+        insert_places(design, &places, film, true)
+    }
+
+    /// F2.3 for a boundary: insert `film` at locus `gap` in every copy in
+    /// every environment's template, as a new design slot in the gap's
+    /// segment. Routing shifts by one per copy placed before a span; the
+    /// caller places the film in the design stack with
+    /// [`Self::boundary_design`] first. Returns the new slot.
+    ///
+    /// A film turned into an inverted copy gets its face like any other:
+    /// its own index and coherence, no roughness and no slice, so the
+    /// plane above it in forward order is smooth wherever the film lands.
+    pub fn insert_boundary(&mut self, gap: Gap, film: &LayerSpec) -> Result<usize, String> {
+        let slot = self.gap_slot(gap);
+        let segment = self.slots[self.segments()[gap.seg].start].segment.clone();
+        let all: Vec<Vec<GapPlace>> = (0..self.names.len())
+            .map(|e| {
+                let st = &self.stacks[e];
+                self.gap_places(e, st.spans(), st.films().len(), gap)
+            })
+            .collect();
+        if let Some(pl) = all.iter().flatten().find(|pl| !self.gap_keeps_slices(pl)) {
+            return Err(format!(
+                "environment {:?}: a film at span {} would give the inverted copy \
+                 above it an interface slice that has nowhere to go",
+                self.names[pl.env], pl.at
+            ));
+        }
+        let mut new_routing = Vec::with_capacity(self.names.len());
+        for (e, places) in all.iter().enumerate() {
+            insert_places(&mut self.stacks[e], places, film, e == 0)
+                .map_err(|msg| format!("environment {:?}: {msg}", self.names[e]))?;
+            // Every span at or after a placement moves down one for it.
+            for per in self.routing.iter_mut() {
+                for s in per[e].iter_mut() {
+                    *s += places.iter().filter(|pl| pl.at <= *s).count();
+                }
+            }
+            // In assembly order the c-th new span sits c further down, for
+            // the c films placed above it.
+            let placed: Vec<usize> = places.iter().enumerate().map(|(c, pl)| pl.at + c).collect();
+            for (pl, &p) in places.iter().zip(&placed) {
+                self.inverted[e].insert(p, pl.inverted);
+            }
+            new_routing.push(placed);
+        }
+        self.routing.insert(slot, new_routing);
+        self.slots.insert(
+            slot,
+            DesignSlot {
+                name: film.material.clone(),
+                segment,
+                intra: 0,
+            },
+        );
+        self.faces.insert(
+            slot,
+            Face {
+                nk: film.nk.clone(),
+                coherent: film.coherent,
+                rough_val: film.rough_val,
+                rough_type: film.rough_type,
+                slice: None,
+            },
+        );
+        self.renumber_intra();
+        Ok(slot)
+    }
+
+    /// `intra` as the position within the segment, re-derived after a
+    /// structural move.
+    fn renumber_intra(&mut self) {
+        let mut next: HashMap<Arc<str>, usize> = HashMap::new();
+        for sl in self.slots.iter_mut() {
+            let n = next.entry(sl.segment.clone()).or_insert(0);
+            sl.intra = *n;
+            *n += 1;
+        }
+    }
+
+    /// Copy every design film's primary thicknesses into its other copies
+    /// in `design` (environment 0's stack), in place.
+    ///
+    /// The optimizer moves the primaries only; this is what makes the
+    /// copies in the stack the pipeline carries (and returns) agree with
+    /// them. A design without copies is left untouched.
+    pub fn sync(&self, design: &mut DesignStack) -> Result<(), String> {
+        if !self.has_copies() && !self.has_inverted() {
+            return Ok(());
+        }
+        let src = design.clone();
+        self.fill(0, design, &src)
+    }
+
+    /// Write the design's current state into `st`, environment `env`'s
+    /// stack (in environment 0, a copy of the design itself).
+    ///
+    /// A forward copy of a forward primary takes its rows one for one;
+    /// copying per ROW rather than per span total is what keeps a graded
+    /// design film's profile intact. A forward copy of an inverted primary
+    /// takes the forward bulk (inverted films are plain). Every inverted
+    /// run is then re-emitted whole through the expander, from the films'
+    /// faces at the primaries' thicknesses: an inverted entry carves its
+    /// predecessor, so a run is one emission, not one per film.
+    fn fill(&self, env: usize, st: &mut DesignStack, design: &DesignStack) -> Result<(), String> {
+        for (slot, per) in self.routing.iter().enumerate() {
+            let p = per[0][0];
+            let src = design.spans()[p];
+            let forward = !self.is_inverted(0, p);
+            for (c, &dst_i) in per[env].iter().enumerate() {
+                if (env == 0 && c == 0) || self.is_inverted(env, dst_i) {
+                    continue;
+                }
+                let dst = st.spans()[dst_i];
+                if forward {
+                    for (a, b) in (src.start..src.end).zip(dst.start..dst.end) {
+                        st.set_thickness(b, design.films()[a].d_nm)?;
+                    }
+                } else {
+                    st.set_thickness(dst.bulk_start, self.forward_bulk(design, slot))?;
+                }
+            }
+        }
+        let flags = &self.inverted[env];
+        let mut i = 0;
+        while i < flags.len() {
+            if !flags[i] {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < flags.len() && flags[j] {
+                j += 1;
+            }
+            self.reemit_run(env, st, design, i..j)?;
+            i = j;
+        }
+        Ok(())
+    }
+
+    /// Re-emit the inverted run on spans `run` of `st` (environment `env`).
+    /// A primary's bulk rows keep their thickness: they are the optimizer's
+    /// parameters, and the emission would give them back only to rounding.
+    fn reemit_run(
+        &self,
+        env: usize,
+        st: &mut DesignStack,
+        design: &DesignStack,
+        run: std::ops::Range<usize>,
+    ) -> Result<(), String> {
+        let mut slots = Vec::with_capacity(run.len());
+        let mut seq: Vec<(Layer, bool)> = Vec::with_capacity(run.len());
+        for (k, span) in run.clone().enumerate() {
+            let (slot, copy) = self.copy_of_span(env, span).ok_or_else(|| {
+                format!(
+                    "inverted span {span} of environment {:?} is not a design film",
+                    self.names[env]
+                )
+            })?;
+            let face = &self.faces[slot];
+            let thickness = self.film_total(design, slot);
+            seq.push((
+                Layer {
+                    material: k.to_string(),
+                    thickness,
+                    coherent: face.coherent,
+                    rough_type: rough_kind(face.rough_type)?,
+                    roughness: face.rough_val,
+                    interface: face.slice.is_some(),
+                    interface_thickness: face.slice.unwrap_or(0.0),
+                    ..Layer::default()
+                },
+                true,
+            ));
+            slots.push(env == 0 && copy == 0);
+        }
+        let provider = RunProvider(
+            run.clone()
+                .map(|span| {
+                    let slot = self.slot_of_span(env, span).expect("checked above");
+                    &*self.faces[slot].nk
+                })
+                .collect(),
+        );
+        let (sa, spans) = crate::structure::expand(
+            &seq,
+            &provider,
+            &self.wavelengths,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )?;
+        let base = st.spans()[run.start].start;
+        for (k, span) in run.enumerate() {
+            let have = st.spans()[span];
+            let want = spans[k];
+            if have.end - have.start != want.end - want.start || have.slice != want.slice {
+                return Err(format!(
+                    "environment {:?}: an inverted copy no longer has the rows its \
+                     re-emission gives ({} vs {} at span {span})",
+                    self.names[env],
+                    have.end - have.start,
+                    want.end - want.start
+                ));
+            }
+            for r in want.start..want.end {
+                let row = base + r;
+                let keep = slots[k] && row >= have.bulk_start;
+                st.rewrite_row(
+                    row,
+                    (!keep).then_some(sa.thicknesses[r]),
+                    sa.row(r),
+                    !sa.incoherent[r],
+                    sa.rough_types[r],
+                    sa.rough_vals[r],
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// F2.2: the K stacks to solve, given the shared design's CURRENT
     /// thicknesses.
     ///
     /// `design` is environment 0's stack — the object the pipeline carries
-    /// and the thickness optimizer writes into. Every other environment is
-    /// its compiled template with the design spans' row thicknesses copied
-    /// across by [`Self::span_of`]. Copying per ROW rather than per span
-    /// total is what keeps a graded design film's profile intact: the
-    /// fractions never go through a divide.
+    /// and the thickness optimizer writes into. Its copies are re-synced
+    /// from their primaries ([`Self::sync`]); every other environment is
+    /// its compiled template with each design film's primary row
+    /// thicknesses copied into every copy by the routing. Copying per ROW
+    /// rather than per span total is what keeps a graded design film's
+    /// profile intact: the fractions never go through a divide.
     ///
     /// This is deliberately not a re-assembly. Under K > 1 the structure is
     /// frozen BETWEEN evaluations: the only structural move that exists is
@@ -393,24 +1138,20 @@ impl CompiledEnvironments {
     pub fn expand(&self, design: &DesignStack) -> Result<Vec<DesignStack>, String> {
         self.check_alignment(design)?;
         let mut out = Vec::with_capacity(self.names.len());
-        out.push(design.clone());
+        let mut first = design.clone();
+        self.fill(0, &mut first, design)?;
+        out.push(first);
         for e in 1..self.names.len() {
             let mut st = self.stacks[e].clone();
-            for slot in 0..self.slots.len() {
-                let src = design.spans()[self.routing[slot][0]];
-                let dst = self.stacks[e].spans()[self.routing[slot][e]];
-                for (a, b) in (src.start..src.end).zip(dst.start..dst.end) {
-                    st.set_thickness(b, design.films()[a].d_nm)?;
-                }
-            }
+            self.fill(e, &mut st, design)?;
             out.push(st);
         }
         Ok(out)
     }
 
     /// The cross-environment alignment assert: the live design stack still
-    /// has the span layout the compile recorded, and every slot still names
-    /// the same film in every environment.
+    /// has the span layout the compile recorded, and every copy of every
+    /// slot still names the same film in every environment.
     ///
     /// Span layout, not row indices — the same object produces the same
     /// spans wherever it is embedded, and that is a stronger and cheaper
@@ -431,43 +1172,90 @@ impl CompiledEnvironments {
                 self.stacks[0].spans().len()
             ));
         }
+        // Bulk rows, not span rows: an inverted copy's interface slices sit
+        // in the neighbouring span, so only the bulk is the same everywhere.
         for (slot, ds) in self.slots.iter().enumerate() {
-            let src = design.spans()[self.routing[slot][0]];
-            let n_src = src.end - src.start;
+            let src = design.spans()[self.routing[slot][0][0]];
+            let n_src = src.end - src.bulk_start;
             for e in 0..self.names.len() {
-                let dst = self.stacks[e].spans()[self.routing[slot][e]];
-                if dst.end - dst.start != n_src {
-                    return Err(format!(
-                        "design film '{}' (segment '{}') is {} row(s) in \
-                         environment '{}' and {} in '{}' - the shared design \
-                         must expand identically everywhere",
-                        ds.name,
-                        ds.segment,
-                        n_src,
-                        self.names[0],
-                        dst.end - dst.start,
-                        self.names[e]
-                    ));
-                }
-                if self.stacks[e].films()[dst.bulk_start].material
-                    != design.films()[src.bulk_start].material
-                {
-                    return Err(format!(
-                        "design film '{}' (segment '{}') routes to material \
-                         '{}' in environment '{}' but '{}' in '{}' - the \
-                         routing table and the stacks have drifted apart",
-                        ds.name,
-                        ds.segment,
-                        design.films()[src.bulk_start].material,
-                        self.names[0],
-                        self.stacks[e].films()[dst.bulk_start].material,
-                        self.names[e]
-                    ));
+                for &c in &self.routing[slot][e] {
+                    let dst = self.stacks[e].spans()[c];
+                    if dst.end - dst.bulk_start != n_src {
+                        return Err(format!(
+                            "design film '{}' (segment '{}') is {} bulk row(s) in \
+                             environment '{}' and {} in '{}' - the shared design \
+                             must expand identically everywhere",
+                            ds.name,
+                            ds.segment,
+                            n_src,
+                            self.names[0],
+                            dst.end - dst.bulk_start,
+                            self.names[e]
+                        ));
+                    }
+                    if self.stacks[e].films()[dst.bulk_start].material
+                        != design.films()[src.bulk_start].material
+                    {
+                        return Err(format!(
+                            "design film '{}' (segment '{}') routes to material \
+                             '{}' in environment '{}' but '{}' in '{}' - the \
+                             routing table and the stacks have drifted apart",
+                            ds.name,
+                            ds.segment,
+                            design.films()[src.bulk_start].material,
+                            self.names[0],
+                            self.stacks[e].films()[dst.bulk_start].material,
+                            self.names[e]
+                        ));
+                    }
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Place `film` at every one of `places` in `stack` (one environment's
+/// placements, in assembly order). With `pin`, every copy but the first is
+/// pinned: it follows the first.
+fn insert_places(
+    stack: &mut DesignStack,
+    places: &[GapPlace],
+    film: &LayerSpec,
+    pin: bool,
+) -> Result<(), String> {
+    // Last copy first: an insertion moves only the spans after it.
+    for (c, pl) in places.iter().enumerate().rev() {
+        stack.insert_span(pl.at, film.clone(), pl.take_slice)?;
+        if pin && c > 0 {
+            let sp = stack.spans()[pl.at];
+            for r in sp.start..sp.end {
+                stack.set_row_optimize(r, false);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Split one copy (span `host`) of a design film in `stack` with `seed`.
+/// `pin` pins the new seed (`optimize` false): it is a copy in the design
+/// object, not the primary, so it follows the primary's seed.
+fn split_copy(
+    stack: &mut DesignStack,
+    host: usize,
+    depth_into_layer_nm: f64,
+    seed: &crate::smatrix::synthesis::structure::LayerSpec,
+    pin: bool,
+) -> Result<(), String> {
+    let row = stack.spans()[host].bulk_start;
+    stack.insert_needle_seed(row, depth_into_layer_nm, seed.clone())?;
+    if pin {
+        let sp = stack.spans()[host + 1];
+        for r in sp.start..sp.end {
+            stack.set_row_optimize(r, false);
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -478,8 +1266,7 @@ impl CompiledEnvironments {
 ///
 /// Surroundings are auto-named only (§8 question 5, answered: auto-only
 /// in v1). A user name there would address nothing — no buckets, no
-/// contrast keys — and inviting one invites a `contrast` entry that
-/// silently never splits.
+/// needle sites — and inviting one invites the belief that it does.
 fn fixed_name(env: &str, seg: usize, i: usize) -> String {
     format!("{env}.fixed[{seg}][{i}]")
 }
@@ -528,8 +1315,8 @@ fn compile_slots(design: &BTreeMap<String, DesignSegmentCfg>) -> Result<Vec<Desi
 
 /// Validate one environment's segment list and flatten it to named rows.
 ///
-/// Returns the rows in assembly order, the authoring index each design
-/// slot this environment carries landed at, and the NAMES of the rows
+/// Returns the rows in assembly order, the authoring indices each design
+/// slot's copies landed at (in assembly order), and the NAMES of the rows
 /// that came from a fixed segment.
 ///
 /// That third value is M1's fix (review PB). `to_row` forces
@@ -542,14 +1329,15 @@ fn compile_env_rows(
     env: &EnvironmentCfg,
     design: &BTreeMap<String, DesignSegmentCfg>,
     slots: &[DesignSlot],
-) -> Result<(Vec<(String, LayerRow)>, Vec<usize>, HashSet<String>), String> {
+) -> Result<CompiledRows, String> {
     let mut rows: Vec<(String, LayerRow)> = Vec::new();
+    let mut inverted: Vec<bool> = Vec::new();
     let mut fixed: HashSet<String> = HashSet::new();
-    let mut refs: HashMap<&str, usize> = HashMap::new();
-    // Authoring index per slot: films only, in the order the assembler
-    // will see them. Half-space rows do not advance it.
+    let mut refs: HashSet<&str> = HashSet::new();
+    // Authoring indices per slot, one per copy: films only, in the order
+    // the assembler will see them. Half-space rows do not advance it.
     let mut film_idx: usize = 0;
-    let mut slot_at: Vec<Option<usize>> = vec![None; slots.len()];
+    let mut slot_at: Vec<Vec<usize>> = vec![Vec::new(); slots.len()];
 
     for (s, seg) in env.stack.iter().enumerate() {
         match (&seg.layers, &seg.design) {
@@ -561,6 +1349,22 @@ fn compile_env_rows(
                 ));
             }
             (Some(layers), None) => {
+                if seg.repeat.is_some() {
+                    return Err(format!(
+                        "environment {:?} segment {s}: \"repeat\" applies to a \
+                         design reference - list a fixed segment again to use \
+                         it twice",
+                        env.name
+                    ));
+                }
+                if seg.inverted {
+                    return Err(format!(
+                        "environment {:?} segment {s}: \"inverted\" applies to a \
+                         design reference - list fixed layers in the order you \
+                         want them",
+                        env.name
+                    ));
+                }
                 for (i, layer) in layers.iter().enumerate() {
                     let name = fixed_name(&env.name, s, i);
                     let row = layer.to_row(&format!("{name:?}"))?;
@@ -569,6 +1373,7 @@ fn compile_env_rows(
                         // segment never reaches the per-film override.
                         film_idx += 1;
                         fixed.insert(name.clone());
+                        inverted.push(false);
                     }
                     rows.push((name, row));
                 }
@@ -591,51 +1396,81 @@ fn compile_env_rows(
                         env.name
                     )
                 })?;
-                *refs.entry(id.as_str()).or_insert(0) += 1;
-                for (i, row) in seg_def.layers.iter().enumerate() {
-                    let name = row.material_code.clone();
-                    let slot = slots
+                let repeat = seg.repeat.unwrap_or(1);
+                if repeat == 0 {
+                    return Err(format!(
+                        "environment {:?} segment {s}: \"repeat\" must be at \
+                         least 1",
+                        env.name
+                    ));
+                }
+                refs.insert(id.as_str());
+                if seg.inverted
+                    && let Some(row) = seg_def
+                        .layers
                         .iter()
-                        .position(|sl| &*sl.segment == id.as_str() && sl.intra == i)
-                        .expect("every design layer has a slot (compile_slots)");
-                    slot_at[slot] = Some(film_idx);
-                    film_idx += 1;
-                    rows.push((name, row.clone()));
+                        .find(|r| r.inhomogen || r.gradient.is_some())
+                {
+                    return Err(format!(
+                        "environment {:?} segment {s}: design film {:?} is graded - \
+                         an inverted copy cannot carry a profile",
+                        env.name, row.material_code
+                    ));
+                }
+                let order: Vec<usize> = if seg.inverted {
+                    (0..seg_def.layers.len()).rev().collect()
+                } else {
+                    (0..seg_def.layers.len()).collect()
+                };
+                for _ in 0..repeat {
+                    for &i in &order {
+                        let row = &seg_def.layers[i];
+                        let name = row.material_code.clone();
+                        inverted.push(seg.inverted);
+                        let slot = slots
+                            .iter()
+                            .position(|sl| &*sl.segment == id.as_str() && sl.intra == i)
+                            .expect("every design layer has a slot (compile_slots)");
+                        slot_at[slot].push(film_idx);
+                        film_idx += 1;
+                        rows.push((name, row.clone()));
+                    }
                 }
             }
         }
     }
 
-    // Exact-once (§4.2, §8 question 4 answered: refuse in v1). Omission
-    // today is almost certainly a typo'd environment, and silent
-    // non-contribution would lie about jointness.
+    // At least once (§4.2; exact-once until segments could repeat).
+    // Omission is almost certainly a typo'd environment, and silent
+    // non-contribution would lie about jointness. A segment used twice is
+    // two copies of one design: one parameter per film, routed to both.
     for id in design.keys() {
-        match refs.get(id.as_str()).copied().unwrap_or(0) {
-            1 => {}
-            0 => {
-                return Err(format!(
-                    "environment {:?} does not reference design segment \
-                     {id:?} - every environment must reference each design \
-                     segment exactly once",
-                    env.name
-                ));
-            }
-            n => {
-                return Err(format!(
-                    "environment {:?} references design segment {id:?} {n} \
-                     times - every environment must reference each design \
-                     segment exactly once",
-                    env.name
-                ));
-            }
+        if !refs.contains(id.as_str()) {
+            return Err(format!(
+                "environment {:?} does not reference design segment {id:?} - \
+                 every environment must reference each design segment at \
+                 least once",
+                env.name
+            ));
         }
     }
 
-    let at = slot_at
-        .into_iter()
-        .map(|o| o.expect("exact-once check fills every slot"))
-        .collect();
-    Ok((rows, at, fixed))
+    Ok(CompiledRows {
+        rows,
+        slot_at,
+        fixed,
+        inverted,
+    })
+}
+
+/// One environment's segment list, flattened (see [`compile_env_rows`]).
+struct CompiledRows {
+    rows: Vec<(String, LayerRow)>,
+    slot_at: Vec<Vec<usize>>,
+    fixed: HashSet<String>,
+    /// Per film (half-space rows excluded), in assembly order: the film is
+    /// an entry of an inverted copy.
+    inverted: Vec<bool>,
 }
 
 /// Compile a request into K assemblies plus the routing table.
@@ -649,7 +1484,7 @@ fn compile_env_rows(
 pub fn build_environments(
     req: &DesignRequest,
     wavelengths: &[f64],
-) -> Result<(CompiledEnvironments, ContrastMap, Vec<String>), String> {
+) -> Result<(CompiledEnvironments, MaterialPool, Vec<String>), String> {
     if req.environments.is_empty() {
         if !req.design.is_empty() {
             return Err(
@@ -659,7 +1494,7 @@ pub fn build_environments(
                     .to_string(),
             );
         }
-        let (stack, cmap, warnings) = super::design_config::build_design(req, wavelengths)?;
+        let (stack, pool, warnings) = super::design_config::build_design(req, wavelengths)?;
         let slots: Vec<DesignSlot> = stack
             .spans()
             .iter()
@@ -669,15 +1504,36 @@ pub fn build_environments(
                 intra: sp.logical,
             })
             .collect();
-        let routing = (0..slots.len()).map(|i| vec![i]).collect();
+        let routing = (0..slots.len()).map(|i| vec![vec![i]]).collect();
+        // Forward throughout, so the faces are never re-emitted from; they
+        // are read off the rows to keep the slot list and the faces aligned.
+        let faces = stack
+            .spans()
+            .iter()
+            .map(|sp| {
+                let bulk: &LayerSpec = &stack.films()[sp.bulk_start];
+                Face {
+                    nk: bulk.nk.clone(),
+                    coherent: bulk.coherent,
+                    rough_val: bulk.rough_val,
+                    rough_type: bulk.rough_type,
+                    slice: sp.slice.then(|| stack.films()[sp.start].d_nm),
+                }
+            })
+            .collect();
+        let inverted = vec![vec![false; stack.spans().len()]];
         return Ok((
             CompiledEnvironments {
                 names: vec![DEFAULT_ENV.to_string()],
                 stacks: vec![stack],
                 slots,
                 routing,
+                segment_edges: BTreeMap::new(),
+                inverted,
+                faces,
+                wavelengths: wavelengths.to_vec(),
             },
-            cmap,
+            pool,
             warnings,
         ));
     }
@@ -725,11 +1581,18 @@ pub fn build_environments(
     // and one aliased table serves every assembly - no per-environment
     // copy of the spectra.
     let mut per_env_rows: Vec<Vec<(String, LayerRow)>> = Vec::with_capacity(req.environments.len());
-    let mut per_env_slot_at: Vec<Vec<usize>> = Vec::with_capacity(req.environments.len());
+    let mut per_env_slot_at: Vec<Vec<Vec<usize>>> = Vec::with_capacity(req.environments.len());
     let mut per_env_fixed: Vec<HashSet<String>> = Vec::with_capacity(req.environments.len());
+    let mut per_env_inverted: Vec<Vec<bool>> = Vec::with_capacity(req.environments.len());
     let mut nk = nk_base.clone();
     for env in &req.environments {
-        let (rows, at, fixed) = compile_env_rows(env, &req.design, &slots)?;
+        let CompiledRows {
+            rows,
+            slot_at: at,
+            fixed,
+            inverted,
+        } = compile_env_rows(env, &req.design, &slots)?;
+        per_env_inverted.push(inverted);
         for (name, row) in &rows {
             if name != &row.material_code {
                 // Auto-named surrounding: alias its name onto the
@@ -759,9 +1622,11 @@ pub fn build_environments(
         }
     }
 
-    let cmap = build_contrast(&req.contrast, &nk)?;
+    let pool = build_pool(req.materials.as_deref(), &nk, &groups)?;
 
     let mut stacks: Vec<DesignStack> = Vec::with_capacity(req.environments.len());
+    let mut inverted: Vec<Vec<bool>> = Vec::with_capacity(req.environments.len());
+    let mut env0_films: Vec<Layer> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     for (e, env) in req.environments.iter().enumerate() {
         let borrowed: Vec<(String, &LayerRow)> = per_env_rows[e]
@@ -779,6 +1644,10 @@ pub fn build_environments(
                 substrate_name: &req.substrate_name,
                 wavelengths,
                 gate_label: "build_environments",
+                // Names are unique per design film (`compile_slots`) and
+                // per surrounding (`fixed_name`), so a repeated name here
+                // is a copy of a repeated segment.
+                copies: true,
             },
         )
         .map_err(|e| format!("environment {:?}: {e}", env.name))?;
@@ -788,45 +1657,287 @@ pub fn build_environments(
             .filter(|l| (l.inhomogen || l.gradient.is_some()) && !l.optimize && !l.needle)
             .map(|l| l.material.clone())
             .collect();
-        let (stack, warns) =
-            DesignStack::from_design(amb, sub, &films, &nk, &groups, wavelengths, &background)
-                .map_err(|e| format!("environment {:?}: {e}", env.name))?;
+        let orient = &per_env_inverted[e];
+        if orient.len() != films.len() {
+            return Err(format!(
+                "environment {:?}: {} films assembled from {} compiled films",
+                env.name,
+                films.len(),
+                orient.len()
+            ));
+        }
+        let (mut stack, warns) = DesignStack::from_design_oriented(
+            amb,
+            sub,
+            &films,
+            orient,
+            &nk,
+            &groups,
+            wavelengths,
+            &background,
+        )
+        .map_err(|e| format!("environment {:?}: {e}", env.name))?;
+        // W7: a surrounding's auto-name is no material label.
+        stack.unlabel_films(&per_env_fixed[e]);
         warnings.extend(warns.into_iter().map(|w| format!("{}: {w}", env.name)));
+        inverted.push(stack.spans().iter().map(|sp| orient[sp.logical]).collect());
         stacks.push(stack);
-    }
-
-    // design_slot -> (env, span). `Span::logical` is the authoring film
-    // index, which is what `compile_env_rows` recorded per slot.
-    let mut routing: Vec<Vec<usize>> = vec![Vec::with_capacity(stacks.len()); slots.len()];
-    for (e, stack) in stacks.iter().enumerate() {
-        for (slot, per) in routing.iter_mut().enumerate() {
-            let want = per_env_slot_at[e][slot];
-            let idx = stack
-                .spans()
-                .iter()
-                .position(|sp| sp.logical == want)
-                .ok_or_else(|| {
-                    format!(
-                        "environment {:?}: design film {:?} lost its span at \
-                         assembly (authoring index {want})",
-                        req.environments[e].name, slots[slot].name
-                    )
-                })?;
-            per.push(idx);
+        if e == 0 {
+            env0_films = films;
         }
     }
 
+    // design_slot -> (env, copies' spans). `Span::logical` is the
+    // authoring film index, which is what `compile_env_rows` recorded per
+    // copy.
+    let mut routing: Vec<Vec<Vec<usize>>> = vec![Vec::with_capacity(stacks.len()); slots.len()];
+    for (e, stack) in stacks.iter().enumerate() {
+        for (slot, per) in routing.iter_mut().enumerate() {
+            let copies = per_env_slot_at[e][slot]
+                .iter()
+                .map(|&want| {
+                    stack
+                        .spans()
+                        .iter()
+                        .position(|sp| sp.logical == want)
+                        .ok_or_else(|| {
+                            format!(
+                                "environment {:?}: design film {:?} lost its span at \
+                                 assembly (authoring index {want})",
+                                req.environments[e].name, slots[slot].name
+                            )
+                        })
+                })
+                .collect::<Result<Vec<usize>, String>>()?;
+            per.push(copies);
+        }
+    }
+    // Each film's face from its authored layer through its group, by the
+    // expander's own arithmetic: the same whichever way the primary faces.
+    let default_group = Group::new("_default_");
+    let faces: Vec<Face> = routing
+        .iter()
+        .enumerate()
+        .map(|(slot, per)| {
+            let layer = &env0_films[per_env_slot_at[0][slot][0]];
+            let group = groups
+                .get(layer.material.as_str())
+                .unwrap_or(&default_group);
+            let total = (layer.thickness * group.thick_factor + group.thick_summand).max(0.0);
+            let bulk = stacks[0].spans()[per[0][0]].bulk_start;
+            Face {
+                nk: stacks[0].films()[bulk].nk.clone(),
+                coherent: layer.coherent,
+                rough_val: (layer.roughness + group.roughness_summand).max(0.0),
+                rough_type: layer.rough_type as i32,
+                slice: layer
+                    .interface
+                    .then(|| (layer.interface_thickness + group.interface_summand).min(total)),
+            }
+        })
+        .collect();
+
+    // One parameter per design film: in the design object (environment
+    // 0's stack) every copy but the primary is pinned and follows it.
+    for per in &routing {
+        for &c in &per[0][1..] {
+            let sp = stacks[0].spans()[c];
+            for r in sp.start..sp.end {
+                stacks[0].set_row_optimize(r, false);
+            }
+        }
+    }
+
+    // The default pool is the shared design's own layers: a surrounding's
+    // material is never a needle unless the request names it.
+    let pool = match pool {
+        Some(p) => p,
+        None => {
+            let design_rows: HashSet<usize> = routing
+                .iter()
+                .map(|per| stacks[0].spans()[per[0][0]].bulk_start)
+                .collect();
+            pool_from_layers(&stacks[0], |row| design_rows.contains(&row))?
+        }
+    };
+    let pool = match &req.insert_rules {
+        Some(r) => pool.with_insert_rules(r)?,
+        None => pool,
+    };
+    let segment_edges = segment_edge_lists(req, &pool)?;
     let names = req.environments.iter().map(|e| e.name.clone()).collect();
-    Ok((
-        CompiledEnvironments {
-            names,
-            stacks,
-            slots,
-            routing,
-        },
-        cmap,
-        warnings,
-    ))
+    let mut compiled = CompiledEnvironments {
+        names,
+        stacks,
+        slots,
+        routing,
+        segment_edges,
+        inverted,
+        faces,
+        wavelengths: wavelengths.to_vec(),
+    };
+    compiled.check_slices()?;
+    if let Some(d) = req.seed_edges {
+        compiled.seed_edges(d)?;
+    }
+    compiled.check_edges()?;
+    Ok((compiled, pool, warnings))
+}
+
+impl CompiledEnvironments {
+    /// The edge lists are per segment, checked on each segment's own first
+    /// and last film in every copy in every environment. A joint run never
+    /// removes a layer (removal is refused while K > 1, and the floor is an
+    /// LM bound), an interior needle lands strictly inside its host, and a
+    /// boundary needle on a segment edge is on that edge's list, so the
+    /// segments' edges hold for the whole run.
+    fn check_edges(&self) -> Result<(), String> {
+        for (id, edges) in &self.segment_edges {
+            let r = self
+                .segments()
+                .into_iter()
+                .find(|r| self.slots[r.start].segment == *id)
+                .expect("every segment with edge lists has films");
+            for (e, stack) in self.stacks.iter().enumerate() {
+                let spans = stack.spans();
+                // Every copy has its own top and bottom: the n-th copy of
+                // the first film pairs with the n-th copy of the last.
+                let tops = &self.routing[r.start][e];
+                let bottoms = &self.routing[r.end - 1][e];
+                for (&t, &b) in tops.iter().zip(bottoms) {
+                    edges
+                        .check(stack.films(), Some(&spans[t]), Some(&spans[b]))
+                        .map_err(|err| {
+                            format!(
+                                "environment {:?}, design segment {id:?}: {err}",
+                                self.names[e]
+                            )
+                        })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `seed_edges` on the joint door: a segment whose first (last) film is
+    /// off its outer (inner) list gets a `d_nm` film of the list's first
+    /// material on that edge, in every copy, as a boundary needle would
+    /// put it there. The film is a design film like any other (named
+    /// `"<label>#<n>"`, optimized, a host), and the old edge film stays
+    /// behind it. The edge is the segment's, wherever the segment sits.
+    fn seed_edges(&mut self, d_nm: f64) -> Result<(), String> {
+        if !(d_nm.is_finite() && d_nm > 0.0) {
+            return Err(format!(
+                "seed_edges: the seed film's thickness must be positive and finite (got {d_nm} nm)"
+            ));
+        }
+        let ids: Vec<Arc<str>> = self.segment_edges.keys().cloned().collect();
+        for id in ids {
+            let edges = self.segment_edges[&id].clone();
+            for (list, outer) in [(&edges.outer, true), (&edges.inner, false)] {
+                let Some(first) = list.as_ref().and_then(|l| l.first()) else {
+                    continue;
+                };
+                let segs = self.segments();
+                let seg = segs
+                    .iter()
+                    .position(|r| self.slots[r.start].segment == id)
+                    .expect("every segment with edge lists has films");
+                let r = segs[seg].clone();
+                let edge = if outer { r.start } else { r.end - 1 };
+                let design = &self.stacks[0];
+                let sp = design.spans()[self.routing[edge][0][0]];
+                if edge_allows(list, design.films(), &sp) {
+                    continue;
+                }
+                let film = new_needle(design.films(), &pool_entry(&first.0, first.1.clone()), d_nm);
+                let gap = Gap {
+                    seg,
+                    k: if outer { 0 } else { r.len() },
+                };
+                self.insert_boundary(gap, &film)
+                    .map_err(|e| format!("seed_edges, design segment {id:?}: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every copy of a design film must agree on whether the film's own
+    /// interface slice is emitted, or the copies are different films: a
+    /// forward copy at the top of its stack has no plane above it to put
+    /// the slice on, and neither has the last film of an inverted copy
+    /// (that plane faces the next segment).
+    fn check_slices(&self) -> Result<(), String> {
+        for (slot, per) in self.routing.iter().enumerate() {
+            if self.faces[slot].slice.is_none() {
+                continue;
+            }
+            let want = self.emits_slice(0, per[0][0], slot);
+            for (e, copies) in per.iter().enumerate() {
+                if copies.iter().any(|&c| self.emits_slice(e, c, slot) != want) {
+                    let (with, without) = if want {
+                        (&self.names[0], &self.names[e])
+                    } else {
+                        (&self.names[e], &self.names[0])
+                    };
+                    return Err(format!(
+                        "design film {:?} (segment {:?}) has an interface slice that \
+                         environment {with:?} puts on a plane and environment \
+                         {without:?} cannot: there the film is the first of its \
+                         stack, or the last of an inverted copy, and that plane \
+                         belongs to its neighbour. Give the film no interface, or \
+                         place every copy where the plane is the film's own",
+                        self.slots[slot].name, self.slots[slot].segment
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Each design segment's edge lists, resolved against the pool.
+///
+/// The request-level `outer`/`inner` predate per-segment lists. With one
+/// design segment they are that segment's lists; with several they would
+/// not say which segment they mean, so they refuse, and so does a request
+/// that sets both a request-level list and the segment's own.
+fn segment_edge_lists(
+    req: &DesignRequest,
+    pool: &MaterialPool,
+) -> Result<BTreeMap<Arc<str>, EdgeMaterials>, String> {
+    let global = req.outer.is_some() || req.inner.is_some();
+    if global && req.design.len() > 1 {
+        return Err(format!(
+            "outer/inner: with {} design segments the request-level edge \
+             lists are ambiguous - set \"outer\"/\"inner\" on each design \
+             segment instead",
+            req.design.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for (id, seg) in &req.design {
+        let own = seg.outer.is_some() || seg.inner.is_some();
+        if global && own {
+            return Err(format!(
+                "outer/inner: design segment {id:?} sets its own edge lists \
+                 and the request sets them too - give them in one place"
+            ));
+        }
+        let (outer, inner) = if own {
+            (seg.outer.as_deref(), seg.inner.as_deref())
+        } else {
+            (req.outer.as_deref(), req.inner.as_deref())
+        };
+        if outer.is_none() && inner.is_none() {
+            continue;
+        }
+        let edges = pool
+            .edge_materials(outer, inner)
+            .map_err(|e| format!("design segment {id:?}: {e}"))?;
+        out.insert(Arc::from(id.as_str()), edges);
+    }
+    Ok(out)
 }
 
 /// Resolve a demand's `environment` tag to an index.
@@ -860,6 +1971,8 @@ pub fn resolve_env(tag: Option<&str>, names: &[String], demand: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     use serde_json::Value;
 
     use super::super::design_config::DesignRequest;
@@ -926,14 +2039,27 @@ mod tests {
                 groups: vec![],
             },
             library: lib(),
-            contrast: BTreeMap::new(),
+            materials: Some(vec![]), // no needles unless a test asks
+            insert_rules: None,
+            outer: None,
+            inner: None,
+            seed_edges: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
             substrate_name: "sub".to_string(),
             design: design
                 .into_iter()
-                .map(|(id, layers)| (id.to_string(), DesignSegmentCfg { layers }))
+                .map(|(id, layers)| {
+                    (
+                        id.to_string(),
+                        DesignSegmentCfg {
+                            layers,
+                            outer: None,
+                            inner: None,
+                        },
+                    )
+                })
                 .collect(),
             environments: envs,
         }
@@ -947,7 +2073,11 @@ mod tests {
                 groups: vec![],
             },
             library: lib(),
-            contrast: BTreeMap::new(),
+            materials: Some(vec![]), // no needles unless a test asks
+            insert_rules: None,
+            outer: None,
+            inner: None,
+            seed_edges: None,
             film_flags: BTreeMap::new(),
             per_film_flags: BTreeMap::new(),
             ambient_name: "air".to_string(),
@@ -961,6 +2091,8 @@ mod tests {
         EnvSegmentCfg {
             layers: None,
             design: Some(id.to_string()),
+            repeat: None,
+            inverted: false,
         }
     }
 
@@ -968,6 +2100,8 @@ mod tests {
         EnvSegmentCfg {
             layers: Some(rows),
             design: None,
+            repeat: None,
+            inverted: false,
         }
     }
 
@@ -984,7 +2118,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(k).unwrap();
         let key = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         for e in 0..k {
@@ -1000,6 +2134,8 @@ mod tests {
                 band: Arc::from([].as_slice()),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
+                point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
                 count_norm: None,
@@ -1337,7 +2473,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(k),
                 thickness_only_cfg(),
                 Default::default(),
@@ -1394,7 +2530,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec_named(&["e1", "e0"]),
             thickness_only_cfg(),
             Default::default(),
@@ -1425,7 +2561,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 spec,
                 thickness_only_cfg(),
                 Default::default(),
@@ -1456,7 +2592,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(1),
             thickness_only_cfg(),
             Default::default(),
@@ -1470,26 +2606,22 @@ mod tests {
 
     // --- F2.3: the joint needle ----------------------------------------
 
-    fn with_contrast(mut r: DesignRequest) -> DesignRequest {
-        r.contrast = [
-            ("L".to_string(), "H".to_string()),
-            ("H".to_string(), "L".to_string()),
-        ]
-        .into_iter()
-        .collect();
+    /// `r` with the default needle pool: the design's own L and H.
+    fn with_pool(mut r: DesignRequest) -> DesignRequest {
+        r.materials = None;
         r
     }
 
-    /// `two_env_req` plus the L <-> H contrast map the needle sweep needs.
+    /// `two_env_req` plus the L, H pool the needle sweep needs.
     fn needle_req(k: usize) -> DesignRequest {
-        with_contrast(two_env_req(k))
+        with_pool(two_env_req(k))
     }
 
     /// Two environments that genuinely DIFFER: the same coat bare, and
     /// behind a laminate. The design rows sit at different depths, so a
     /// locus is only shared through the routing table.
     fn two_cover_req() -> DesignRequest {
-        with_contrast(req(
+        with_pool(req(
             vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
             vec![
                 EnvironmentCfg {
@@ -1539,20 +2671,31 @@ mod tests {
     /// the insertion rounds differently (the same reason F2.2's run twin is
     /// not bitwise). What must be identical is the STRUCTURE: same rows,
     /// same materials, same order.
+    ///
+    /// The LM gets room to converge. At the default 200 iterations both
+    /// runs stop about 1 nm short of the minimum, partway down a slow
+    /// valley, and where each stops depends on rounding: an optimized
+    /// build put K = 1 and K = 2 0.09 nm apart (74.496 vs 74.404 nm). Both
+    /// reach the same minimum (73.445 nm, 1e-6 apart) when they converge.
     #[test]
     fn a_joint_needle_over_identical_environments_lands_where_one_does() {
         use crate::smatrix::synthesis::driver::run_environments;
+        use crate::smatrix::synthesis::thick_opt::LmConfig;
+        let lm = LmConfig {
+            max_iterations: 2000,
+            ..LmConfig::default()
+        };
         let run = |k: usize| {
             let (envs, cmap, _) = build_environments(&needle_req(k), &WL).unwrap();
             run_environments(
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(k),
                 one_needle_cfg(),
                 Default::default(),
-                Default::default(),
+                lm.clone(),
                 |_, _| Ok(()),
             )
             .unwrap()
@@ -1571,16 +2714,17 @@ mod tests {
         );
         for (i, (a, b)) in s1.films().iter().zip(s2.films()).enumerate() {
             assert_eq!(a.material, b.material, "row {i}");
-            // Relative, and loose on purpose. The two runs insert the same
-            // seed at the same place and then descend differently - K = 2
-            // differences the Jacobian and carries twice the residuals, so
-            // the LM that follows the insertion rounds its way to a
-            // slightly different point on the same minimum (F2.2's
-            // CORRECTION 8, one insertion further along). A real
-            // disagreement about WHERE to put the needle shows up in the
-            // material sequence above, not in the fourth decimal.
+            // Relative. The two runs insert the same seed at the same place
+            // and then descend differently - K = 2 differences the
+            // Jacobian and carries twice the residuals, so the LM that
+            // follows the insertion rounds its way to a slightly different
+            // point on the same minimum (F2.2's CORRECTION 8, one insertion
+            // further along). Converged, that is about 1e-6; 1e-5 leaves
+            // room for other platforms' rounding. A real disagreement about
+            // WHERE to put the needle shows up in the material sequence
+            // above.
             assert!(
-                (a.d_nm - b.d_nm).abs() <= 1e-3 * a.d_nm.max(1.0),
+                (a.d_nm - b.d_nm).abs() <= 1e-5 * a.d_nm.max(1.0),
                 "row {i}: {} vs {} nm",
                 a.d_nm,
                 b.d_nm
@@ -1594,6 +2738,852 @@ mod tests {
     /// laminate sits above it, under the SAME name, because a design
     /// parameter is identified by name and not by position.
     #[test]
+    fn joint_rules_check_the_design_edges_and_narrow_the_pool() {
+        // The coat is L over H, behind nothing in one environment and a
+        // laminate in the other: the edges are the DESIGN's, not env 0's
+        // outermost row.
+        let mut r = two_cover_req();
+        r.outer = Some(vec!["L".into()]);
+        r.inner = Some(vec!["H".into()]);
+        build_environments(&r, &WL).unwrap();
+
+        r.outer = Some(vec!["H".into()]);
+        let e = build_environments(&r, &WL).err().unwrap();
+        assert!(e.contains("outer") && e.contains("\"L\""), "{e}");
+
+        r.outer = None;
+        r.insert_rules = Some(
+            [("L".to_string(), vec!["Z".to_string()])]
+                .into_iter()
+                .collect(),
+        );
+        let e = build_environments(&r, &WL).err().unwrap();
+        assert!(e.contains("\"Z\" is not a pool material"), "{e}");
+    }
+
+    /// Step 5a: a segment used twice is one design in two places. Every
+    /// copy routes to the same parameter; in the design object the primary
+    /// is free and the other copy pinned; `expand` writes the primary into
+    /// every copy in every environment.
+    #[test]
+    fn a_repeated_segment_routes_one_film_to_every_copy() {
+        use crate::smatrix::synthesis::context::DesignContext;
+        let mut twice = design_seg("coat");
+        twice.repeat = Some(2);
+        let r = req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![
+                EnvironmentCfg {
+                    name: "rep".to_string(),
+                    stack: vec![twice.clone()],
+                },
+                EnvironmentCfg {
+                    name: "refs".to_string(),
+                    stack: vec![
+                        fixed_seg(vec![fixed("G", 300.0, 1)]),
+                        design_seg("coat"),
+                        fixed_seg(vec![fixed("M", 40.0, 1)]),
+                        design_seg("coat"),
+                    ],
+                },
+            ],
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        assert_eq!(
+            envs.slots().len(),
+            2,
+            "one parameter per film, not per copy"
+        );
+        assert_eq!(envs.spans_of(0, 0), &[0, 2]);
+        assert_eq!(envs.spans_of(1, 0), &[1, 3]);
+        assert_eq!(envs.spans_of(0, 1), &[1, 4]);
+        assert_eq!(envs.n_placements(0), 4);
+        assert_eq!(envs.copy_of_span(1, 4), Some((0, 1)));
+        assert_eq!(envs.copy_of_span(1, 3), None, "a surrounding");
+        assert!(envs.has_copies() && envs.is_joint());
+
+        let d = envs.stacks()[0].films();
+        assert!(d[0].optimize && d[1].optimize, "the primaries are free");
+        assert!(!d[2].optimize && !d[3].optimize, "the copies follow");
+        assert!(d.iter().all(|f| f.needle), "every copy is scanned");
+
+        // One step on the primary reaches every copy everywhere.
+        let mut design = envs.stacks()[0].clone();
+        design.set_thickness(0, 120.0).unwrap();
+        let out = envs.expand(&design).unwrap();
+        assert_eq!(out[0].films()[2].d_nm, 120.0);
+        assert_eq!(out[1].films()[1].d_nm, 120.0);
+        assert_eq!(out[1].films()[4].d_nm, 120.0);
+        envs.sync(&mut design).unwrap();
+        assert_eq!(design.films()[2].d_nm, 120.0);
+
+        // One environment with copies is still joint, and solves as the
+        // same rows solved flat, bit for bit.
+        let one = req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![EnvironmentCfg {
+                name: "rep".to_string(),
+                stack: vec![twice],
+            }],
+        );
+        let (one, _, _) = build_environments(&one, &WL).unwrap();
+        assert!(one.is_single() && one.is_joint());
+        assert!(
+            !build_environments(&two_env_req(1), &WL)
+                .unwrap()
+                .0
+                .is_joint()
+        );
+        let stack = one.stacks()[0].clone();
+        assert_eq!(stack.films().len(), 4);
+        let a = ctx(env_spec(1), None).evaluate_merit(&stack).unwrap();
+        let b = ctx(env_spec(1), Some(Arc::new(one)))
+            .evaluate_merit(&stack)
+            .unwrap();
+        assert_eq!(a.to_bits(), b.to_bits(), "{a} vs {b}");
+    }
+
+    /// Step 5a at the run level: a needle in a repeated segment lands in
+    /// every copy, and the optimizer keeps the copies the same design.
+    #[test]
+    fn a_needle_lands_in_every_copy_of_a_repeated_segment() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let mut twice = design_seg("coat");
+        twice.repeat = Some(2);
+        let r = with_pool(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![EnvironmentCfg {
+                name: "rep".to_string(),
+                stack: vec![twice],
+            }],
+        ));
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        let (_, s, _) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &env_spec(1),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        let f = s.films();
+        assert!(
+            f.len() > 4,
+            "no needle was inserted - the test tests nothing"
+        );
+        assert_eq!(
+            f.len() % 2,
+            0,
+            "{} films: the copies split differently",
+            f.len()
+        );
+        let (a, b) = f.split_at(f.len() / 2);
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.material, y.material, "film {i}");
+            assert_eq!(x.d_nm.to_bits(), y.d_nm.to_bits(), "film {i}");
+            assert!(
+                x.optimize && !y.optimize,
+                "film {i}: only the primary is free"
+            );
+        }
+    }
+
+    // --- Step 5b: inverted copies --------------------------------------
+
+    fn inverted_seg(id: &str) -> EnvSegmentCfg {
+        EnvSegmentCfg {
+            inverted: true,
+            ..design_seg(id)
+        }
+    }
+
+    /// L over H over M, every plane carrying something: an interface
+    /// slice on L and H, roughness on all three.
+    fn faced_coat() -> Vec<LayerRow> {
+        let mut l = film("L", 100.0);
+        l.interface = true;
+        l.interface_thickness_nm = 3.0;
+        l.roughness_nm = 1.5;
+        l.rough_type = 1;
+        let mut h = film("H", 80.0);
+        h.interface = true;
+        h.interface_thickness_nm = 2.0;
+        h.roughness_nm = 0.8;
+        h.rough_type = 1;
+        let mut m = film("M", 60.0);
+        m.roughness_nm = 0.4;
+        m.rough_type = 1;
+        vec![l, h, m]
+    }
+
+    /// `faced_coat` with the films' own thicknesses `d`, turned over.
+    fn turned_rows(d: [f64; 3]) -> SolverArrays {
+        let c = faced_coat();
+        let films: Vec<(&str, f64, Option<f64>, f64)> = c
+            .iter()
+            .zip(d)
+            .map(|(r, d)| {
+                (
+                    r.material_code.as_str(),
+                    d,
+                    r.interface.then_some(r.interface_thickness_nm),
+                    r.roughness_nm,
+                )
+            })
+            .collect();
+        turned(&films)
+    }
+
+    /// Forward films `(material, thickness, slice, roughness)` turned over
+    /// and expanded the Architect's way (an inverted run, linear
+    /// roughness).
+    fn turned(films: &[(&str, f64, Option<f64>, f64)]) -> SolverArrays {
+        let nk = eval_library(&lib(), &WL).unwrap();
+        let provider = crate::structure::DictProvider::with_grid(
+            nk.iter()
+                .map(|(k, v)| (k.to_string(), crate::structure::Entry::Array(v.clone())))
+                .collect(),
+            WL.to_vec(),
+        )
+        .unwrap();
+        let mut seq: Vec<(Layer, bool)> = films
+            .iter()
+            .map(|&(m, d, slice, rough)| {
+                (
+                    Layer {
+                        material: m.to_string(),
+                        thickness: d,
+                        roughness: rough,
+                        rough_type: if rough > 0.0 {
+                            RoughnessType::Linear
+                        } else {
+                            RoughnessType::None
+                        },
+                        interface: slice.is_some(),
+                        interface_thickness: slice.unwrap_or(0.0),
+                        ..Layer::default()
+                    },
+                    true,
+                )
+            })
+            .collect();
+        seq.reverse();
+        crate::structure::expand(
+            &seq,
+            &provider,
+            &WL,
+            &HashMap::new(),
+            ExpandOptions::deterministic(),
+        )
+        .unwrap()
+        .0
+    }
+
+    use crate::structure::SolverArrays;
+
+    fn assert_rows_are(st: &DesignStack, want: &SolverArrays, tol: f64) {
+        let f = st.films();
+        assert_eq!(f.len(), want.n_rows(), "row count");
+        for (r, row) in f.iter().enumerate() {
+            assert!(
+                (row.d_nm - want.thicknesses[r]).abs() <= tol,
+                "row {r}: {} vs {} nm",
+                row.d_nm,
+                want.thicknesses[r]
+            );
+            assert_eq!(&*row.nk, want.row(r), "row {r}: index");
+            assert_eq!(
+                row.rough_type, want.rough_types[r],
+                "row {r}: roughness type"
+            );
+            assert_eq!(row.rough_val, want.rough_vals[r], "row {r}: roughness");
+        }
+    }
+
+    /// An inverted copy is the Architect's expansion of the segment turned
+    /// over, bit for bit: each slice and roughness moves with its plane
+    /// rather than with its row.
+    #[test]
+    fn an_inverted_copy_is_the_segment_turned_over() {
+        let r = req(
+            vec![("coat", faced_coat())],
+            vec![
+                EnvironmentCfg {
+                    name: "front".to_string(),
+                    stack: vec![design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "back".to_string(),
+                    stack: vec![inverted_seg("coat")],
+                },
+            ],
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let want = turned_rows([100.0, 80.0, 60.0]);
+        assert_rows_are(&envs.stacks()[1], &want, 0.0);
+
+        // What moved, in words. Turned over, M comes first and meets the
+        // light with a clean plane; H's bulk carries M's roughness; L's
+        // span opens with H's slice, carved from H. L's own slice is on
+        // neither stack: L is the first film forward and the last turned,
+        // and both planes are clean.
+        let back = &envs.stacks()[1];
+        let sp = back.spans();
+        assert_eq!(sp.len(), 3);
+        assert!(!sp[0].slice && back.films()[0].rough_val == 0.0);
+        assert!(!sp[1].slice && back.films()[sp[1].bulk_start].rough_val == 0.4);
+        assert!(sp[2].slice && back.films()[sp[2].start].d_nm == 2.0);
+        assert_eq!(back.films()[sp[2].bulk_start].d_nm, 100.0);
+        assert_eq!(back.films()[sp[2].bulk_start].rough_val, 0.8);
+        assert!(envs.is_inverted(1, 0) && !envs.is_inverted(0, 0));
+        assert!(envs.is_joint());
+
+        // A thickness step on the primary re-emits the turned copy as a
+        // fresh compile at the new thickness would.
+        let mut design = envs.stacks()[0].clone();
+        let l_bulk = design.spans()[0].bulk_start;
+        design.set_thickness(l_bulk, 110.0).unwrap();
+        let out = envs.expand(&design).unwrap();
+        assert_rows_are(&out[1], &turned_rows([110.0, 80.0, 60.0]), 1e-12);
+    }
+
+    /// Lossless and between equal media, a stack reflects the same from
+    /// either side: the coat turned over, behind the same glass both ways,
+    /// has the forward coat's merit.
+    #[test]
+    fn a_turned_coat_reflects_as_the_coat_does() {
+        let glass = || fixed_seg(vec![fixed("G", 0.0, 0)]);
+        let base = || fixed_seg(vec![fixed("G", 0.0, 2)]);
+        let r = req(
+            vec![(
+                "coat",
+                vec![film("L", 100.0), film("H", 80.0), film("M", 60.0)],
+            )],
+            vec![
+                EnvironmentCfg {
+                    name: "front".to_string(),
+                    stack: vec![glass(), design_seg("coat"), base()],
+                },
+                EnvironmentCfg {
+                    name: "back".to_string(),
+                    stack: vec![glass(), inverted_seg("coat"), base()],
+                },
+            ],
+        );
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let m = env_merits(&envs, &envs.stacks()[0]);
+        assert!(m[0] > 0.0);
+        assert!(
+            (m[0] - m[1]).abs() <= 1e-12 * m[0],
+            "front {} vs back {}",
+            m[0],
+            m[1]
+        );
+    }
+
+    /// A needle splits the turned copy at the mirror depth, and the pieces
+    /// take their planes with them: after inserting M 30 nm into H's bulk,
+    /// the turned copy is the turned expansion of the split coat.
+    #[test]
+    fn a_needle_splits_an_inverted_copy_at_the_mirror_depth() {
+        let r = req(
+            vec![("coat", faced_coat())],
+            vec![
+                EnvironmentCfg {
+                    name: "front".to_string(),
+                    stack: vec![design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "back".to_string(),
+                    stack: vec![inverted_seg("coat")],
+                },
+            ],
+        );
+        let (mut envs, _, _) = build_environments(&r, &WL).unwrap();
+        let mut design = envs.stacks()[0].clone();
+        let seed = LayerSpec::constant("M", 1.8, 0.0, 10.0, WL.len());
+        envs.split_design(&mut design, 1, 30.0, &seed).unwrap();
+        envs.insert_seed(1, 30.0, &seed).unwrap();
+
+        // Forward: H keeps its slice and 30 nm of bulk above the seed, and
+        // the 48 nm below it is a clone of H's bulk, roughness included.
+        let d: Vec<f64> = design.films().iter().map(|f| f.d_nm).collect();
+        assert_eq!(d, [100.0, 2.0, 30.0, 10.0, 48.0, 60.0]);
+        assert_eq!(envs.slots().len(), 5);
+
+        let (h, seed_rough) = (0.8, 0.0);
+        let want = turned(&[
+            ("L", 100.0, Some(3.0), 1.5),
+            ("H", 32.0, Some(2.0), h),
+            ("M", 10.0, None, seed_rough),
+            ("H", 48.0, None, h),
+            ("M", 60.0, None, 0.4),
+        ]);
+        let out = envs.expand(&design).unwrap();
+        assert_rows_are(&out[1], &want, 1e-12);
+        // Routing: in the turned copy the bottom portion comes first.
+        assert_eq!(envs.spans_of(3, 1), &[1]);
+        assert_eq!(envs.spans_of(2, 1), &[2]);
+        assert_eq!(envs.spans_of(1, 1), &[3]);
+    }
+
+    /// One environment holding the coat both ways round, either way round
+    /// first: a needle run keeps the turned copy the forward copy's rows
+    /// in reverse, and only the primary (the first copy) is free.
+    #[test]
+    fn a_needle_run_keeps_the_turned_copy_turned() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        for turned_first in [false, true] {
+            let mut stack = vec![
+                fixed_seg(vec![fixed("G", 0.0, 0)]),
+                design_seg("coat"),
+                fixed_seg(vec![fixed("G", 40.0, 1)]),
+                inverted_seg("coat"),
+                fixed_seg(vec![fixed("G", 0.0, 2)]),
+            ];
+            if turned_first {
+                stack.swap(1, 3);
+            }
+            let r = with_pool(req(
+                vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+                vec![EnvironmentCfg {
+                    name: "both".to_string(),
+                    stack,
+                }],
+            ));
+            let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+            assert!(envs.is_joint());
+            let (_, s, _) = run_environments(
+                envs,
+                cmap,
+                &WL,
+                &[Radians::ZERO],
+                &env_spec(1),
+                one_needle_cfg(),
+                Default::default(),
+                Default::default(),
+                |_, _| Ok(()),
+            )
+            .unwrap();
+            let f = s.films();
+            assert!(
+                f.len() > 5,
+                "no needle was inserted - the test tests nothing"
+            );
+            let n = (f.len() - 1) / 2;
+            let (first, rest) = f.split_at(n);
+            let (glass, second) = rest.split_at(1);
+            assert_eq!(glass[0].d_nm, 40.0, "the spacer stayed put");
+            for (i, (x, y)) in first.iter().zip(second.iter().rev()).enumerate() {
+                assert_eq!(x.material, y.material, "film {i} ({turned_first})");
+                assert_eq!(
+                    x.d_nm.to_bits(),
+                    y.d_nm.to_bits(),
+                    "film {i} ({turned_first})"
+                );
+                assert!(
+                    x.optimize && !y.optimize,
+                    "film {i}: only the primary is free"
+                );
+            }
+        }
+    }
+
+    // --- Step 6: boundary needles -------------------------------------
+
+    /// The same rows and the same span shape, to `tol` in thickness.
+    fn assert_same_rows(got: &DesignStack, want: &DesignStack, tol: f64, what: &str) {
+        let shape = |s: &DesignStack| -> Vec<(usize, usize, bool, usize)> {
+            s.spans()
+                .iter()
+                .map(|sp| (sp.start, sp.end, sp.slice, sp.bulk_start))
+                .collect()
+        };
+        assert_eq!(shape(got), shape(want), "{what}: spans");
+        for (r, (a, b)) in got.films().iter().zip(want.films()).enumerate() {
+            assert!(
+                (a.d_nm - b.d_nm).abs() <= tol,
+                "{what}, row {r}: {} vs {} nm",
+                a.d_nm,
+                b.d_nm
+            );
+            assert_eq!(a.nk, b.nk, "{what}, row {r}: index");
+            assert_eq!(
+                a.rough_type, b.rough_type,
+                "{what}, row {r}: roughness type"
+            );
+            assert_eq!(a.rough_val, b.rough_val, "{what}, row {r}: roughness");
+        }
+    }
+
+    /// The faced coat forward, and turned over twice behind a spacer.
+    fn faced_envs(coat: Vec<LayerRow>) -> DesignRequest {
+        req(
+            vec![("coat", coat)],
+            vec![
+                EnvironmentCfg {
+                    name: "front".to_string(),
+                    stack: vec![design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "back".to_string(),
+                    stack: vec![
+                        inverted_seg("coat"),
+                        fixed_seg(vec![fixed("G", 40.0, 1)]),
+                        inverted_seg("coat"),
+                    ],
+                },
+            ],
+        )
+    }
+
+    /// A film placed on a boundary locus is the film authored there: every
+    /// copy, forward and turned, has the rows a fresh compile of the coat
+    /// with the film in it gives, slices re-mixed and moved with their
+    /// planes. The plane above L in forward order is the one locus that
+    /// refuses: L's slice would gain a plane in the turned copies that the
+    /// forward copy does not give it.
+    #[test]
+    fn a_boundary_film_is_the_film_authored_there() {
+        let film_g = LayerSpec::constant("G", 1.52, 0.0, 10.0, WL.len());
+        for k in 1..=3 {
+            let (mut envs, _, _) = build_environments(&faced_envs(faced_coat()), &WL).unwrap();
+            let gap = Gap { seg: 0, k };
+            let mut design = envs.stacks()[0].clone();
+            envs.boundary_design(&mut design, gap, &film_g).unwrap();
+            let slot = envs.insert_boundary(gap, &film_g).unwrap();
+            assert_eq!(slot, k);
+            assert_eq!(envs.slots().len(), 4);
+            assert_eq!(envs.n_placements(slot), 3);
+            let got = envs.expand(&design).unwrap();
+
+            let mut coat = faced_coat();
+            coat.insert(k, film("G", 10.0));
+            let (fresh, _, _) = build_environments(&faced_envs(coat), &WL).unwrap();
+            let want = fresh.expand(&fresh.stacks()[0]).unwrap();
+            for (e, (g, w)) in got.iter().zip(&want).enumerate() {
+                assert_same_rows(g, w, 1e-12, &format!("k = {k}, environment {e}"));
+            }
+            assert_same_rows(&design, &want[0], 0.0, &format!("k = {k}, the design"));
+            // Every copy but the primary follows it.
+            let rows: Vec<bool> = envs
+                .spans_of(slot, 0)
+                .iter()
+                .map(|&s| design.films()[design.spans()[s].bulk_start].optimize)
+                .collect();
+            assert_eq!(rows, [true]);
+        }
+
+        let (mut envs, _, _) = build_environments(&faced_envs(faced_coat()), &WL).unwrap();
+        let e = envs
+            .insert_boundary(Gap { seg: 0, k: 0 }, &film_g)
+            .unwrap_err();
+        assert!(e.contains("nowhere to go"), "{e}");
+    }
+
+    /// The cases table at a segment edge. The neighbour outside the design
+    /// brings no rules and excludes a needle only when it has the needle's
+    /// index everywhere; inside, the design film's index and rules apply.
+    #[test]
+    fn a_segment_edge_takes_a_needle_that_matters_somewhere() {
+        let edge = |covers: [Option<&str>; 2]| -> Vec<String> {
+            let envs: Vec<EnvironmentCfg> = covers
+                .iter()
+                .enumerate()
+                .map(|(i, cover)| EnvironmentCfg {
+                    name: format!("e{i}"),
+                    stack: match cover {
+                        Some(m) => vec![fixed_seg(vec![fixed(m, 300.0, 1)]), design_seg("coat")],
+                        None => vec![design_seg("coat")],
+                    },
+                })
+                .collect();
+            let mut r = req(
+                vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+                envs,
+            );
+            r.materials = Some(["L", "H", "M", "G"].map(String::from).to_vec());
+            let (envs, pool, _) = build_environments(&r, &WL).unwrap();
+            let stacks = envs.expand(&envs.stacks()[0]).unwrap();
+            let gap = Gap { seg: 0, k: 0 };
+            let places: Vec<Vec<GapPlace>> = stacks
+                .iter()
+                .enumerate()
+                .map(|(e, st)| envs.gap_places(e, st.spans(), st.films().len(), gap))
+                .collect();
+            (0..pool.len())
+                .filter(|&m| pool.gap_accepts(&envs, &stacks, gap, &places, m).unwrap())
+                .map(|m| pool[m].material.to_string())
+                .collect()
+        };
+        // L is the inside neighbour's index everywhere.
+        assert_eq!(edge([None, None]), ["H", "M", "G"]);
+        // M under an M cover does nothing there, but it is a film in air.
+        assert_eq!(edge([None, Some("M")]), ["H", "M", "G"]);
+        assert_eq!(edge([Some("M"), Some("M")]), ["H", "G"]);
+        assert_eq!(edge([Some("M"), Some("G")]), ["H", "M", "G"]);
+    }
+
+    /// A joint boundary run over two identical environments lands where
+    /// the single-environment run does: with no interior site, the needle
+    /// goes on a boundary of the coat, the same one, at the same thickness.
+    ///
+    /// The host is held at 100 nm. A film the LM has converged gives its
+    /// boundaries no first-order gain (measured: the merit change of an L
+    /// film on top of a converged H film falls as the square of its
+    /// thickness), so no boundary would pass the convergence gate.
+    #[test]
+    fn a_joint_boundary_needle_over_identical_environments_lands_where_one_does() {
+        use crate::smatrix::synthesis::cycle::NeedleCycleConfig;
+        use crate::smatrix::synthesis::driver::run_environments;
+        use crate::smatrix::synthesis::thick_opt::LmConfig;
+        let lm = LmConfig {
+            max_iterations: 2000,
+            ..LmConfig::default()
+        };
+        let run = |k: usize| {
+            let mut r = two_env_req(k);
+            let mut h = film("H", 100.0);
+            h.optimize = false;
+            r.design.get_mut("coat").unwrap().layers = vec![h];
+            r.materials = Some(["L", "H"].map(String::from).to_vec());
+            let (envs, pool, _) = build_environments(&r, &WL).unwrap();
+            assert_eq!(envs.is_joint(), k > 1);
+            run_environments(
+                envs,
+                pool,
+                &WL,
+                &[Radians::ZERO],
+                &env_spec(k),
+                one_needle_cfg(),
+                // A step longer than any film: no interior site anywhere.
+                NeedleCycleConfig {
+                    boundary_needles: true,
+                    scan_step_nm: 1000.0,
+                    ..Default::default()
+                },
+                lm.clone(),
+                |_, _| Ok(()),
+            )
+            .unwrap()
+        };
+        let (r1, s1, _) = run(1);
+        let (r2, s2, _) = run(2);
+        let ins = |r: &crate::smatrix::synthesis::pipeline::PipelineResult| {
+            r.phases
+                .iter()
+                .flat_map(|p| &p.needle_results)
+                .filter_map(|h| h.insertion.clone())
+                .map(|i| (i.film_idx, i.material, i.boundary, i.seed_nm))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            !ins(&r1).is_empty(),
+            "no needle was inserted - the test tests nothing"
+        );
+        assert!(ins(&r1).iter().all(|i| i.2), "{:?}", ins(&r1));
+        assert_eq!(ins(&r1), ins(&r2));
+        assert_eq!(s1.films().len(), s2.films().len());
+        for (i, (a, b)) in s1.films().iter().zip(s2.films()).enumerate() {
+            assert_eq!(a.material, b.material, "film {i}");
+            assert!(
+                (a.d_nm - b.d_nm).abs() <= 1e-5 * a.d_nm.max(1.0),
+                "film {i}: {} vs {} nm",
+                a.d_nm,
+                b.d_nm
+            );
+        }
+        assert!(
+            (r2.final_mf - 2.0 * r1.final_mf).abs() <= 1e-7 * r2.final_mf.abs(),
+            "{} vs 2 x {}",
+            r2.final_mf,
+            r1.final_mf
+        );
+    }
+
+    /// `seed_edges` on the joint door seeds the segment's edge in every
+    /// copy: on top forward, at the bottom of a turned copy.
+    #[test]
+    fn seed_edges_seed_a_segment_edge_in_every_copy() {
+        let mut r = with_pool(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![
+                EnvironmentCfg {
+                    name: "front".to_string(),
+                    stack: vec![design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "back".to_string(),
+                    stack: vec![inverted_seg("coat")],
+                },
+            ],
+        ));
+        r.design.get_mut("coat").unwrap().outer = Some(vec!["H".into()]);
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(e.contains("outer"), "{e}");
+
+        r.seed_edges = Some(5.0);
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let names = |st: &DesignStack| -> Vec<(String, f64)> {
+            st.films()
+                .iter()
+                .map(|f| (f.material.to_string(), f.d_nm))
+                .collect()
+        };
+        let front = names(&envs.stacks()[0]);
+        assert_eq!(front[0], ("H#1".to_string(), 5.0));
+        assert!(envs.stacks()[0].films()[0].optimize);
+        let back = names(&envs.expand(&envs.stacks()[0]).unwrap()[1]);
+        assert_eq!(back.last().unwrap(), &("H#1".to_string(), 5.0));
+        assert_eq!(envs.slots().len(), 3);
+
+        r.seed_edges = Some(0.0);
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(e.contains("positive"), "{e}");
+    }
+
+    /// Inverting a fixed segment, or a segment with a graded film,
+    /// refuses at the compile.
+    #[test]
+    fn an_inverted_reference_refuses_what_it_cannot_turn() {
+        let env = |seg: EnvSegmentCfg| EnvironmentCfg {
+            name: "e".to_string(),
+            stack: vec![seg, design_seg("coat")],
+        };
+        let mut fixed_turned = fixed_seg(vec![fixed("G", 10.0, 1)]);
+        fixed_turned.inverted = true;
+        let r = req(
+            vec![("coat", vec![film("L", 100.0)])],
+            vec![env(fixed_turned)],
+        );
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(
+            e.contains("\"inverted\" applies to a design reference"),
+            "{e}"
+        );
+
+        let mut graded = film("H", 80.0);
+        graded.inhomogen = true;
+        let r = req(
+            vec![("coat", vec![film("L", 100.0)]), ("grad", vec![graded])],
+            vec![EnvironmentCfg {
+                name: "e".to_string(),
+                stack: vec![design_seg("coat"), inverted_seg("grad")],
+            }],
+        );
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(
+            e.contains("\"H\" is graded") && e.contains("inverted copy"),
+            "{e}"
+        );
+
+        // L's slice sits on a plane behind the cover forward; turned, L is
+        // the last film and the plane belongs to the substrate.
+        let r = req(
+            vec![("coat", faced_coat())],
+            vec![
+                EnvironmentCfg {
+                    name: "covered".to_string(),
+                    stack: vec![fixed_seg(vec![fixed("G", 50.0, 1)]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "turned".to_string(),
+                    stack: vec![inverted_seg("coat")],
+                },
+            ],
+        );
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(
+            e.contains("design film \"L\"")
+                && e.contains("\"covered\" puts on a plane")
+                && e.contains("\"turned\" cannot"),
+            "{e}"
+        );
+    }
+
+    /// J1: each segment's lists are checked on its own first and last film
+    /// in every environment. Here the segments run a-then-b in one
+    /// environment and b-then-a behind a laminate in the other, so the
+    /// assembly's outermost design film is a different segment's edge in
+    /// each.
+    #[test]
+    fn edge_lists_belong_to_their_segment() {
+        let two_segments = || {
+            with_pool(req(
+                vec![
+                    ("a", vec![film("L", 100.0), film("H", 80.0)]),
+                    ("b", vec![film("M", 60.0), film("G", 40.0)]),
+                ],
+                vec![
+                    EnvironmentCfg {
+                        name: "ab".to_string(),
+                        stack: vec![design_seg("a"), design_seg("b")],
+                    },
+                    EnvironmentCfg {
+                        name: "ba".to_string(),
+                        stack: vec![
+                            fixed_seg(vec![fixed("G", 300.0, 1)]),
+                            design_seg("b"),
+                            design_seg("a"),
+                        ],
+                    },
+                ],
+            ))
+        };
+        let set = |r: &mut DesignRequest, id: &str, outer: &str, inner: &str| {
+            let seg = r.design.get_mut(id).unwrap();
+            seg.outer = Some(vec![outer.into()]);
+            seg.inner = Some(vec![inner.into()]);
+        };
+
+        let mut r = two_segments();
+        set(&mut r, "a", "L", "H");
+        set(&mut r, "b", "M", "G");
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        let a = envs.segment_edges("a").unwrap();
+        assert_eq!(&*a.outer.as_ref().unwrap()[0].0, "L");
+        assert_eq!(&*a.inner.as_ref().unwrap()[0].0, "H");
+        assert!(envs.segment_edges("b").is_some());
+
+        // b's top film is M wherever b sits, so a list without M refuses
+        // and names the segment.
+        set(&mut r, "b", "H", "G");
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(
+            e.contains("design segment \"b\"") && e.contains("outer") && e.contains("\"M\""),
+            "{e}"
+        );
+
+        // One segment free, the other listed.
+        let mut r = two_segments();
+        r.design.get_mut("b").unwrap().inner = Some(vec!["G".into()]);
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        assert!(envs.segment_edges("a").is_none());
+        assert!(envs.segment_edges("b").unwrap().outer.is_none());
+
+        // Request-level lists do not say which of two segments they mean.
+        let mut r = two_segments();
+        r.outer = Some(vec!["L".into()]);
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(e.contains("ambiguous"), "{e}");
+
+        // With one segment they are its lists, but not on top of its own.
+        let mut r = two_cover_req();
+        r.outer = Some(vec!["L".into()]);
+        r.design.get_mut("coat").unwrap().inner = Some(vec!["H".into()]);
+        let e = build_environments(&r, &WL).unwrap_err();
+        assert!(e.contains("one place"), "{e}");
+        r.outer = None;
+        r.design.get_mut("coat").unwrap().outer = Some(vec!["L".into()]);
+        let (envs, _, _) = build_environments(&r, &WL).unwrap();
+        assert!(envs.segment_edges("coat").is_some());
+    }
+
+    #[test]
     fn the_joint_needle_lands_in_the_design_of_every_environment() {
         use crate::smatrix::synthesis::cycle::{NeedleCycleConfig, run_needle_cycles};
         use crate::smatrix::synthesis::pipeline::SpectralInputs;
@@ -1602,7 +3592,7 @@ mod tests {
         let before: Vec<usize> = envs.stacks().iter().map(|s| s.films().len()).collect();
         let mut stack = envs.stacks()[0].clone();
         let mut solver = ctx(env_spec(2), Some(Arc::new(envs)));
-        let spectral = SpectralInputs::from_spec(&env_spec(2), &[0.0], &WL).unwrap();
+        let spectral = SpectralInputs::from_spec(&env_spec(2), &[Radians::ZERO], &WL).unwrap();
         let hist = run_needle_cycles(
             &mut solver,
             &mut stack,
@@ -1650,14 +3640,20 @@ mod tests {
             .slot_of_row(0, ins.film_idx)
             .expect("host is a design row");
         let seed_slot = host_slot + 1;
+        // The needle's own name: fresh, of the winning pool label.
+        let seed_name = &stack.films()[ins.film_idx + 1].material;
+        assert!(
+            seed_name.starts_with(&format!("{}#", ins.material)),
+            "{seed_name}"
+        );
         let mut seed_rows = Vec::new();
         for e in 0..envs.n_envs() {
             let row = envs
                 .host_row(e, seed_slot)
                 .expect("the seed is a parameter");
             assert_eq!(
-                envs.stacks()[e].films()[row].material,
-                ins.material,
+                &envs.stacks()[e].films()[row].material,
+                seed_name,
                 "environment {:?} seed material",
                 envs.names()[e]
             );
@@ -1692,23 +3688,306 @@ mod tests {
     /// F2.3 agree — the sweep's arithmetic and `insert_seed`'s bookkeeping.
     #[test]
     fn the_joint_slope_is_the_sum_of_the_environments_slopes() {
+        check_joint_slope(two_cover_req());
+    }
+
+    /// `two_cover_req`'s bare environment beside one that puts the coat on
+    /// a 1 mm incoherent plate: `segments` is that environment's stack.
+    fn plate_req(segments: Vec<EnvSegmentCfg>) -> DesignRequest {
+        with_pool(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0)])],
+            vec![
+                EnvironmentCfg {
+                    name: "bare".to_string(),
+                    stack: vec![fixed_seg(vec![]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "on_plate".to_string(),
+                    stack: segments,
+                },
+            ],
+        ))
+    }
+
+    fn plate() -> EnvSegmentCfg {
+        fixed_seg(vec![FixedLayerRow {
+            coherent: false,
+            ..fixed("G", 1_000_000.0, 1)
+        }])
+    }
+
+    /// W6 item 2: the same gate with a plate in one environment - the coat
+    /// in front of it (first coherent block), behind it (last block), and
+    /// once on each face (one design, a copy in each block). Each
+    /// environment's slope comes through its own cascade; the sum is
+    /// still the joint merit's derivative.
+    #[test]
+    fn the_joint_slope_sums_through_an_incoherent_plate() {
+        for (segments, copies) in [
+            (vec![design_seg("coat"), plate()], 1),
+            (vec![plate(), design_seg("coat")], 1),
+            (vec![design_seg("coat"), plate(), design_seg("coat")], 2),
+        ] {
+            let r = plate_req(segments);
+            let (envs, _, _) = build_environments(&r, &WL).unwrap();
+            let st = &envs.stacks()[1];
+            assert!(st.has_incoherent() && !envs.stacks()[0].has_incoherent());
+            let n = (0..st.films().len())
+                .filter(|&row| envs.copy_of_row(1, row).map(|c| c.0) == Some(0))
+                .count();
+            assert_eq!(n, copies, "copies of the first design film");
+            check_joint_slope(r);
+        }
+    }
+
+    /// W6 item 2 end to end: a joint run (needles, boundary needles on and
+    /// off, LM, clamp) where one environment puts the coat on a plate - in
+    /// front, behind, on both faces, and as an inverted copy on the back
+    /// face. The run completes and lowers the joint merit.
+    #[test]
+    fn a_joint_run_goes_through_an_incoherent_plate() {
+        use crate::smatrix::synthesis::context::DesignContext;
+        use crate::smatrix::synthesis::cycle::NeedleCycleConfig;
+        use crate::smatrix::synthesis::driver::run_environments;
+        let inverted = EnvSegmentCfg {
+            inverted: true,
+            ..design_seg("coat")
+        };
+        for segments in [
+            vec![design_seg("coat"), plate()],
+            vec![plate(), design_seg("coat")],
+            vec![design_seg("coat"), plate(), design_seg("coat")],
+            vec![design_seg("coat"), plate(), inverted],
+        ] {
+            for boundary_needles in [false, true] {
+                let what = format!("{segments:?} boundary={boundary_needles}");
+                let (envs, cmap, _) = build_environments(&plate_req(segments.clone()), &WL)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                let start = envs.stacks()[0].clone();
+                let mf0 = ctx(env_spec(2), Some(Arc::new(envs.clone())))
+                    .evaluate_merit(&start)
+                    .unwrap();
+                let needle_cfg = NeedleCycleConfig {
+                    boundary_needles,
+                    ..Default::default()
+                };
+                let (res, stack, _) = run_environments(
+                    envs,
+                    cmap,
+                    &WL,
+                    &[Radians::ZERO],
+                    &env_spec(2),
+                    one_needle_cfg(),
+                    needle_cfg,
+                    Default::default(),
+                    |_, _| Ok(()),
+                )
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(res.final_mf < mf0, "{what}: {} !< {mf0}", res.final_mf);
+                assert!(!stack.has_incoherent(), "{what}");
+                assert!(
+                    stack.spans().len() > start.spans().len(),
+                    "{what}: no needle went in ({} spans)",
+                    stack.spans().len()
+                );
+            }
+        }
+    }
+
+    /// The plate as a film of the design itself (pinned, incoherent): it is
+    /// routed like any design film into both environments, the joint run
+    /// goes through it, and it comes out at its authored thickness.
+    #[test]
+    fn a_design_plate_is_routed_and_left_alone_in_a_joint_run() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let plate_film = LayerRow {
+            coherent: false,
+            optimize: false,
+            needle: false,
+            ..film("G", 1_000_000.0)
+        };
+        let r = with_pool(req(
+            vec![("coat", vec![film("L", 100.0), film("H", 80.0), plate_film])],
+            vec![
+                EnvironmentCfg {
+                    name: "bare".to_string(),
+                    stack: vec![fixed_seg(vec![]), design_seg("coat")],
+                },
+                EnvironmentCfg {
+                    name: "laminated".to_string(),
+                    stack: vec![
+                        fixed_seg(vec![fixed("G", 300.0, 1), fixed("M", 40.0, 1)]),
+                        design_seg("coat"),
+                    ],
+                },
+            ],
+        ));
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        assert!(envs.stacks().iter().all(DesignStack::has_incoherent));
+        check_joint_slope(r.clone());
+        let (_, stack, _) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &env_spec(2),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        let plates: Vec<_> = stack.films().iter().filter(|f| !f.coherent).collect();
+        assert_eq!(plates.len(), 1);
+        assert_eq!(plates[0].d_nm, 1_000_000.0);
+    }
+
+    /// `env_spec(2)` plus a `Ts` phase demand in each environment `envs`
+    /// lists.
+    fn phase_spec(envs: &[u32]) -> MeritSpec {
+        use crate::smatrix::synthesis::merit::{
+            ConstraintKind, CurveId, MeritKey, MeritTarget, SimTransform,
+        };
+        let mut spec = env_spec(2);
+        let key = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Ts,
+        }) as u32;
+        for &e in envs {
+            spec.add_target(MeritTarget {
+                key_idx: key,
+                env_idx: e,
+                wavelengths: Arc::from(WL.as_slice()),
+                kind: ConstraintKind::Exact,
+                transform: SimTransform::Phase,
+                norm_factor: 1.0,
+                normalized_targets: Arc::from([0.0, 0.0, 0.0].as_slice()),
+                tolerances: Arc::from([0.1, 0.1, 0.1].as_slice()),
+                band: Arc::from([].as_slice()),
+                phase: true,
+                differential_passes: None,
+                retardance: false,
+                point_weights: Vec::new().into(),
+                integral: false,
+                weight: 1.0,
+                count_norm: None,
+            })
+            .unwrap();
+        }
+        spec
+    }
+
+    /// D4: a phase demand in both environments runs; the plate
+    /// environment's copy is dropped with a warning that names it, and
+    /// the coherent environment's copy still binds.
+    #[test]
+    fn d4_phase_is_dropped_where_a_plate_is_and_kept_elsewhere() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        use crate::smatrix::synthesis::merit::CurveId;
+        let r = plate_req(vec![design_seg("coat"), plate()]);
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        // The flat solver refuses the plate assembly under this spec; the
+        // per-environment one, after the drop, does not.
+        let mut kept = phase_spec(&[0, 1]);
+        let solver = ctx(kept.clone(), None);
+        let err = solver.simulate(&envs.stacks()[1]).unwrap_err();
+        assert!(err.contains("phase"), "{err}");
+        assert_eq!(kept.drop_phase_demands(&[false, true]).len(), 1);
+        assert!(kept.uses_phase_in(0) && !kept.uses_phase_in(1));
+        let sim = ctx(kept, None).simulate_env(&envs.stacks()[1], 1).unwrap();
+        assert!(sim.complex_curve(CurveId::Ts).is_none());
+
+        let (res, _, warnings) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &phase_spec(&[0, 1]),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(res.final_mf.is_finite());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("1 phase demand") && warnings[0].contains("'on_plate'"),
+            "{warnings:?}"
+        );
+    }
+
+    /// D4: a phase demand only behind a plate is dropped with the same one
+    /// warning; the intensity demands left still run.
+    #[test]
+    fn d4_a_run_whose_every_phase_demand_is_dropped_warns_and_runs() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let r = plate_req(vec![design_seg("coat"), plate()]);
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        let (res, _, warnings) = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &phase_spec(&[1]),
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(res.final_mf.is_finite());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("'on_plate'"), "{warnings:?}");
+    }
+
+    /// A run whose every demand is dropped has nothing left to synthesize,
+    /// so it refuses, naming why.
+    #[test]
+    fn a_run_left_with_no_demand_refuses() {
+        use crate::smatrix::synthesis::driver::run_environments;
+        let r = plate_req(vec![design_seg("coat"), plate()]);
+        let (envs, cmap, _) = build_environments(&r, &WL).unwrap();
+        let mut spec = phase_spec(&[1]);
+        spec.drop_targets(|t, _| !t.phase);
+        let err = run_environments(
+            envs,
+            cmap,
+            &WL,
+            &[Radians::ZERO],
+            &spec,
+            one_needle_cfg(),
+            Default::default(),
+            Default::default(),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("no demand is left") && err.contains("'on_plate'"),
+            "{err}"
+        );
+    }
+
+    fn check_joint_slope(request: DesignRequest) {
         use crate::smatrix::synthesis::needle_pass::{
             NeedlePassInput, build_needle_targets_env, run_needle_pass,
         };
 
-        let (envs, cmap, _) = build_environments(&two_cover_req(), &WL).unwrap();
+        let (envs, cmap, _) = build_environments(&request, &WL).unwrap();
         let base = envs.stacks()[0].clone();
         let spec = env_spec(2);
         let solver = ctx(spec.clone(), Some(Arc::new(envs)));
         let envs = solver.envs.as_ref().unwrap();
 
-        // The locus: 40 nm into the first design film, seeded with L's
-        // contrast partner.
+        // The locus: 40 nm into the first design film (L), seeded with
+        // the pool's other material.
         const SLOT: usize = 0;
         const DEPTH: f64 = 40.0;
+        let host_nk = &base.films()[envs.host_row(0, SLOT).unwrap()].nk;
         let partner = cmap
-            .get(&base.films()[envs.host_row(0, SLOT).unwrap()].material)
-            .expect("L has a contrast partner")
+            .iter()
+            .find(|m| &m.nk != host_nk)
+            .expect("the pool offers L a needle")
             .clone();
 
         // Reference: per environment, analytically, through the flat doors.
@@ -1716,7 +3995,8 @@ mod tests {
         let mut analytic = 0.0f64;
         for (e, st) in stacks.iter().enumerate() {
             let sim = solver.simulate(st).unwrap();
-            let fold = build_needle_targets_env(&spec, &[0.0], &WL, Some(&sim), e as u32).unwrap();
+            let fold = build_needle_targets_env(&spec, &[Radians::ZERO], &WL, Some(&sim), e as u32)
+                .unwrap();
             let sa = st.solver_arrays();
             let res = run_needle_pass(
                 &NeedlePassInput {
@@ -1731,6 +4011,7 @@ mod tests {
                     needle_n_per_wav: &partner.nk,
                     start_idx: 0,
                     end_idx: (sa.n_layers - 1) as usize,
+                    incoherent_flags: &sa.incoherent_flags,
                     calc_s: true,
                     calc_p: true,
                 },
@@ -1739,15 +4020,28 @@ mod tests {
                 2.0,
             )
             .unwrap();
-            let host = envs.host_row(e, SLOT).unwrap();
-            let (i, _) = res
+            // Every copy of the slot in this environment is one place of
+            // the locus; the insertion grows all of them.
+            let hits: Vec<usize> = res
                 .sites
                 .iter()
                 .enumerate()
-                .find(|(_, s)| s.film_idx == host && (s.depth_into_layer_nm - DEPTH).abs() < 1e-9)
-                .expect("the locus is on this environment's scan grid");
-            analytic += res.p_profile[i];
-            analytic += fold.phi_gain_shift.iter().sum::<f64>();
+                .filter(|(_, s)| {
+                    envs.copy_of_row(e, s.film_idx).map(|c| c.0) == Some(SLOT)
+                        && (s.depth_into_layer_nm - DEPTH).abs() < 1e-9
+                })
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                !hits.is_empty(),
+                "the locus is on this environment's scan grid"
+            );
+            let p_env: f64 = hits.iter().map(|&i| res.p_profile[i]).sum();
+            // Every environment pulls: a zero here would let an
+            // environment drop out of the sum unnoticed.
+            assert!(p_env.abs() > 1e-9, "environment {e} contributes no slope");
+            analytic += p_env;
+            analytic += fold.phi_gain_shift();
         }
 
         // Measurement: insert a thin seed there, everywhere at once, and
@@ -1762,6 +4056,7 @@ mod tests {
             rough_val: 0.0,
             optimize: true,
             needle: true,
+            label: partner.label.clone(),
         };
         let mut grown = envs.as_ref().clone();
         let mut stack = base.clone();
@@ -1795,7 +4090,7 @@ mod tests {
         let mut iface = film("L", 100.0);
         iface.interface = true;
         iface.interface_thickness_nm = 2.0;
-        let r = with_contrast(req(
+        let r = with_pool(req(
             vec![("coat", vec![iface, film("H", 80.0)])],
             vec![
                 // Both covers are non-empty: an interface slice is
@@ -1852,7 +4147,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(2),
             thickness_only_cfg(),
             Default::default(),
@@ -1867,7 +4162,7 @@ mod tests {
             solo_envs,
             solo_cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(1),
             thickness_only_cfg(),
             Default::default(),
@@ -1916,7 +4211,7 @@ mod tests {
             envs,
             cmap,
             &WL,
-            &[0.0],
+            &[Radians::ZERO],
             &env_spec(2),
             cfg,
             Default::default(),
@@ -2020,7 +4315,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(2),
                 cfg,
                 Default::default(),
@@ -2038,7 +4333,7 @@ mod tests {
                 envs,
                 cmap,
                 &WL,
-                &[0.0],
+                &[Radians::ZERO],
                 &env_spec(1),
                 crate::smatrix::synthesis::config::PipelineConfig {
                     max_macro_cycles: 1,
@@ -2153,17 +4448,24 @@ mod tests {
         // Omitted design segment.
         let e = build_environments(&one(vec![fixed_seg(vec![])]), &WL).unwrap_err();
         assert!(e.contains("\"bare\"") && e.contains("\"coat\""), "{e}");
-        assert!(e.contains("exactly once"), "{e}");
+        assert!(e.contains("at least once"), "{e}");
 
-        // Referenced twice.
-        let e = build_environments(&one(vec![design_seg("coat"), design_seg("coat")]), &WL)
-            .unwrap_err();
-        assert!(e.contains("2 times") && e.contains("exactly once"), "{e}");
+        // A repeat of none, and a repeat on a fixed segment.
+        let mut zero = design_seg("coat");
+        zero.repeat = Some(0);
+        let e = build_environments(&one(vec![zero]), &WL).unwrap_err();
+        assert!(e.contains("segment 0") && e.contains("at least 1"), "{e}");
+        let mut fixed_twice = fixed_seg(vec![]);
+        fixed_twice.repeat = Some(2);
+        let e = build_environments(&one(vec![fixed_twice, design_seg("coat")]), &WL).unwrap_err();
+        assert!(e.contains("design reference"), "{e}");
 
         // Both keys / neither key on a segment.
         let both = EnvSegmentCfg {
             layers: Some(vec![]),
             design: Some("coat".to_string()),
+            repeat: None,
+            inverted: false,
         };
         let e = build_environments(&one(vec![both]), &WL).unwrap_err();
         assert!(e.contains("exactly one of"), "{e}");
@@ -2321,6 +4623,8 @@ mod tests {
             "coat".to_string(),
             DesignSegmentCfg {
                 layers: vec![film("L", 10.0)],
+                outer: None,
+                inner: None,
             },
         );
         let e = build_environments(&r, &WL).unwrap_err();

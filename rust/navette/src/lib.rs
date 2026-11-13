@@ -54,3 +54,9 @@ pub mod smatrix;
 pub mod spectralweave;
 /// Stack model: layers, groups, providers, expansion, architect.
 pub mod structure;
+
+// The test binary allocates through mimalloc, as the Python extension does
+// (navette-py), so a profile taken in a test is the extension's profile.
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

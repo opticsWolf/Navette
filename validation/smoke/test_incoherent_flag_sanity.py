@@ -41,13 +41,13 @@ _THIN = dict(
     layer_indices=np.array([1.0, 1.45, 2.35, 1.52]),
     thicknesses=[0.0, 60.0, 100.0, 0.0],
     wavelengths=WLS,
-    angles=[0.0],
+    angles_deg=[0.0],
 )
 _THICK = dict(
     layer_indices=np.array([1.0, 1.45, 1.52]),
     thicknesses=[0.0, 50_000.0, 0.0],
     wavelengths=WLS,
-    angles=[0.0],
+    angles_deg=[0.0],
 )
 
 
@@ -119,7 +119,7 @@ def test_a_zero_thickness_flagged_layer_does_not_warn_about_thickness():
     msgs = _warns(
         layer_indices=np.array([1.0, 1.45, 2.35, 1.52]),
         thicknesses=[0.0, 0.0, 100.0, 0.0],
-        wavelengths=WLS, angles=[0.0], incoherent_flags=[0, 1, 0, 0],
+        wavelengths=WLS, angles_deg=[0.0], incoherent_flags=[0, 1, 0, 0],
     )
     assert [m for m in msgs if "optical thickness" in m] == []
 
@@ -186,7 +186,7 @@ def test_both_doors_explain_thin_flags_the_same_way():
         {}, DictMaterialProvider(dict(mats), wavelength=WLS))
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        solve_structure(st, WLS, 0.0, request=int(Request.RS))
+        solve_structure(st, WLS, request=int(Request.RS), angles_deg=0.0)
     rust_msgs = [str(w.message) for w in rec if "incoherent layer at row" in str(w.message)]
     assert rust_msgs, f"the Rust door said nothing: {[str(w.message) for w in rec]}"
     assert shared in rust_msgs[0], (

@@ -79,7 +79,7 @@ def _catch(fn):
 def _scatter_matrix_warning() -> str:
     idx = np.stack([_ABSORBING_AIR, _HI, _SUB])
     _, rec = _catch(lambda: ScatterMatrix(idx, [0.0, 120.0, 0.0],
-                                          wavelengths=_WLS, angles=_ANGS))
+                                          wavelengths=_WLS, angles_deg=_ANGS))
     return _only_ambient_warning(rec)
 
 
@@ -158,18 +158,17 @@ def test_a_full_design_run_is_not_the_silent_one():
     from navette._smatrix import NeedleCycleConfig, PipelineConfig
 
     tc = TargetCollection()
-    tc.add(SpectralTarget(_WLS, np.zeros(_NW), np.full(_NW, 0.01), 0.0,
-                          "s", "R", kind="e", weight=1.0))
+    tc.add(SpectralTarget(_WLS, np.zeros(_NW), np.full(_NW, 0.01), "s", "R", kind="e", weight=1.0, angle_deg=0.0))
     cfg = PipelineConfig(max_macro_cycles=1, needles_per_cycle=1,
                          enable_cleanup=False, enable_inflate=False,
                          stagnation_window=100)
     nc = NeedleCycleConfig(scan_step_nm=20.0, refold_per_cycle=False)
 
     def run():
-        return run_needle([(_LO, 120.0)], tc, _ANGS, _WLS,
+        return run_needle([(_LO, 120.0)], tc, _WLS,
                           {"film0": _HI}, pipeline_config=cfg, needle_config=nc,
                           names=["L"], ambient=(_ABSORBING_AIR, "air"),
-                          substrate=(_SUB, "sub"))
+                          substrate=(_SUB, "sub"), angles_deg=_ANGS)
 
     res, rec = _catch(run)
     _only_ambient_warning(rec)
@@ -315,7 +314,7 @@ def test_the_native_solver_is_still_permissive():
     idx = np.concatenate([_ABSORBING_AIR, _HI, _SUB])
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        s = Solver(_WLS, _ANGS, idx, 3, thicknesses=np.array([0.0, 120.0, 0.0]))
+        s = Solver(_WLS, idx, 3, thicknesses=np.array([0.0, 120.0, 0.0]), angles_deg=_ANGS)
         out = s.solve(int(Request.RS))
     assert [str(w.message) for w in rec] == []
     assert np.all(np.isfinite(np.asarray(out["Rs"], dtype=float)))

@@ -13,10 +13,11 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use super::config::PipelineConfig;
-use super::cycle::ContrastMap;
-use super::cycle::NeedleCycleConfig;
+use super::cycle::{
+    MaterialPool, NeedleCycleConfig, NeedleRules, label_pool, pool_entry, pool_from_layers,
+};
 use super::evaluator::SmatrixContext;
-use super::merit::MeritSpec;
+use super::merit::{MeritSpec, Radians};
 use super::pipeline::SpectralInputs;
 use super::pipeline::{NeedlePipeline, PipelineResult};
 use super::structure::{ClampReport, DesignStack, LayerSpec};
@@ -48,11 +49,10 @@ pub struct ArrayFilm {
     pub gradient: Option<crate::structure::gradient::GradientJson>,
 }
 
-/// One contrast seed: host name → fresh seed carrier.
+/// One needle pool material: a label and its evaluated nk on the grid.
 #[derive(Clone, Debug)]
-pub struct ArraySeed {
-    pub host: String,
-    pub seed_name: String,
+pub struct ArrayMaterial {
+    pub name: String,
     pub nk: Vec<Complex64>,
 }
 
@@ -70,6 +70,7 @@ fn fixed_half(name: &str, nk: Vec<Complex64>) -> LayerSpec {
         rough_val: 0.0,
         optimize: false,
         needle: false,
+        label: None,
     }
 }
 
@@ -182,20 +183,29 @@ pub fn assemble_stack(
         wavelengths,
         &background,
     )
-    .map(|(stack, warnings)| {
+    .map(|(mut stack, warnings)| {
+        // W7: film names here are free, not material labels.
+        stack.clear_labels();
         film_warnings.extend(warnings);
         (stack, film_warnings)
     })
 }
 
 /// End-to-end design run: assemble, fold demands, execute the macro-loop.
-/// `angles_deg` in degrees; `callback` fires per macro-cycle.
+/// `callback` fires per macro-cycle.
+///
+/// `materials` is the needle pool; `None` takes one entry per distinct
+/// index among the assembled layers ([`pool_from_layers`]). `rules` narrow
+/// which needles go into which materials and which materials may form the
+/// edge layers ([`NeedleRules`]); their labels are pool labels.
 ///
 /// Returns `(report, stack, warnings)`. The warnings are the assembly's --
 /// a dropped ambient absorption (R3.4), a homogenized graded film -- and they
 /// must be surfaced upstream. They were dropped on the floor here until
 /// 0.6.27, which made this the one design path that corrected inputs in
-/// silence.
+/// silence. The list also carries the run setup's feasibility drops
+/// (phase through an incoherent film, back incidence from an absorbing
+/// exit; [`drop_infeasible`]), made once before the pipeline starts.
 #[allow(clippy::too_many_arguments)]
 pub fn run_design(
     ambient_name: &str,
@@ -204,16 +214,18 @@ pub fn run_design(
     substrate_nk: Vec<Complex64>,
     films: &[ArrayFilm],
     groups: &HashMap<String, Group>,
-    seeds: &[ArraySeed],
+    materials: Option<&[ArrayMaterial]>,
+    rules: &NeedleRules,
     wavelengths: &[f64],
-    angles_deg: &[f64],
+    angles: &[Radians],
     spec: &MeritSpec,
     cfg: PipelineConfig,
     needle_cfg: NeedleCycleConfig,
     lm: LmConfig,
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
-    let (stack, warnings) = assemble_stack(
+    SmatrixContext::check_spec(spec)?;
+    let (mut stack, mut warnings) = assemble_stack(
         ambient_name,
         ambient_nk,
         substrate_name,
@@ -222,33 +234,38 @@ pub fn run_design(
         groups,
         wavelengths,
     )?;
-    let mut cmap = ContrastMap::new();
-    for s in seeds {
-        if s.nk.len() != wavelengths.len() {
-            return Err(format!(
-                "contrast '{}': nk length {} != {} wavelengths",
-                s.host,
-                s.nk.len(),
-                wavelengths.len()
-            ));
+    let pool = match materials {
+        None => pool_from_layers(&stack, |_| true)?,
+        Some(ms) => {
+            for m in ms {
+                if m.nk.len() != wavelengths.len() {
+                    return Err(format!(
+                        "needle material '{}': nk length {} != {} wavelengths",
+                        m.name,
+                        m.nk.len(),
+                        wavelengths.len()
+                    ));
+                }
+            }
+            label_pool(
+                ms.iter()
+                    .map(|m| pool_entry(&m.name, Arc::from(m.nk.clone()))),
+            )?
         }
-        cmap.insert(
-            Arc::from(s.host.as_str()),
-            LayerSpec {
-                material: Arc::from(s.seed_name.as_str()),
-                nk: Arc::from(s.nk.clone()),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
-    }
-    let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
+    };
+    let pool = rules.apply(&mut stack, pool)?;
+    let (spec, dropped) = drop_infeasible(
+        "run_design",
+        spec,
+        std::slice::from_ref(&stack),
+        &[],
+        wavelengths,
+    )?;
+    let spec = &spec;
+    warnings.extend(dropped);
+    let spectral = SpectralInputs::from_spec(spec, angles, wavelengths)?;
+    let sin_theta = spectral.sin_theta.clone();
     let cfg = cfg.validated()?;
-    let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();
     let mut ctx = SmatrixContext {
         wavls: wavelengths.to_vec(),
         sin_theta,
@@ -260,7 +277,7 @@ pub fn run_design(
         clamp_accumulator: ClampReport::default(),
         envs: None,
     };
-    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, cmap)?;
+    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, pool)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
     Ok((report, pipe.stack, warnings))
 }
@@ -298,19 +315,31 @@ pub fn run_design(
 /// and the context pins the floor as an LM bound for the duration
 /// ([`SmatrixContext::optimize_thicknesses`]), so the span layout moves
 /// only through `insert_seed`.
+///
+/// **Demands an environment cannot answer are dropped, once.** A phase
+/// demand in an environment whose assembly holds an incoherent film (D4),
+/// or a back demand where its exit medium absorbs, is dropped with one
+/// warning per kind in the returned list; the same run keeps those
+/// demands in the environments that can answer them. Only a run left with
+/// no demand at all refuses ([`drop_infeasible`]).
 #[allow(clippy::too_many_arguments)]
 pub fn run_environments(
     envs: super::environments::CompiledEnvironments,
-    contrast: ContrastMap,
+    pool: MaterialPool,
     wavelengths: &[f64],
-    angles_deg: &[f64],
+    angles: &[Radians],
     spec: &MeritSpec,
     cfg: PipelineConfig,
     needle_cfg: NeedleCycleConfig,
     lm: LmConfig,
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+    SmatrixContext::check_spec(spec)?;
     let k = envs.n_envs();
+    // A segment's edge lists live in the compile, not on the flat stack,
+    // so boundary needles that could reach a segment edge take the joint
+    // path even in one environment.
+    let joint = envs.is_joint() || (needle_cfg.boundary_needles && envs.has_segment_edges());
     if spec.n_envs() != k {
         return Err(format!(
             "run_environments: the merit spec has {} environment(s) but the \
@@ -340,7 +369,7 @@ pub fn run_environments(
             envs.names().join(", ")
         ));
     }
-    if k > 1 {
+    if joint {
         let mut blocked: Vec<&str> = Vec::new();
         if cfg.enable_cleanup {
             blocked.push("enable_cleanup");
@@ -353,7 +382,7 @@ pub fn run_environments(
         }
         if !blocked.is_empty() {
             return Err(format!(
-                "run_environments: {} environments with {} - removing a \
+                "run_environments: {} environment(s){} with {} - removing a \
                  design parameter, or inserting one outside the needle path, \
                  changes the shared design's span layout in a direction the \
                  compile cannot yet follow (F2.3 gave it `insert_seed`, not \
@@ -361,15 +390,32 @@ pub fn run_environments(
                  run today: use thin_layer_policy 'clamp_up_final' and leave \
                  cleanup and inflate off, or run one environment.",
                 k,
+                if envs.has_copies() {
+                    ", a design segment used more than once,"
+                } else {
+                    ""
+                },
                 blocked.join(" and ")
             ));
         }
     }
 
+    // Once, here: what each environment's complete stack cannot answer
+    // is dropped with a warning; the same demand still binds the
+    // environments that can.
+    let (spec, warnings) = drop_infeasible(
+        "run_environments",
+        spec,
+        envs.stacks(),
+        envs.names(),
+        wavelengths,
+    )?;
+    let spec = &spec;
+
     let stack = envs.stacks()[0].clone();
-    let spectral = SpectralInputs::from_spec(spec, angles_deg, wavelengths)?;
+    let spectral = SpectralInputs::from_spec(spec, angles, wavelengths)?;
+    let sin_theta = spectral.sin_theta.clone();
     let cfg = cfg.validated()?;
-    let sin_theta: Vec<f64> = angles_deg.iter().map(|a| a.to_radians().sin()).collect();
     let mut ctx = SmatrixContext {
         wavls: wavelengths.to_vec(),
         sin_theta,
@@ -379,12 +425,139 @@ pub fn run_environments(
         thin_layer_policy: cfg.thin_layer_policy,
         lm,
         clamp_accumulator: ClampReport::default(),
-        // The branch. One environment keeps the flat path exactly.
-        envs: if k == 1 { None } else { Some(Arc::new(envs)) },
+        // The branch. One environment whose design films are each used
+        // once keeps the flat path exactly.
+        envs: if joint { Some(Arc::new(envs)) } else { None },
     };
-    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, contrast)?;
+    let mut pipe = NeedlePipeline::new(stack, spectral, cfg, needle_cfg, pool)?;
     let report = pipe.run(&mut ctx, |cycle, phase, _det| callback(cycle, phase))?;
-    Ok((report, pipe.stack, Vec::new()))
+    // The final clamp moves primaries only; the returned stack's copies
+    // follow them.
+    if let Some(envs) = &ctx.envs {
+        envs.sync(&mut pipe.stack)?;
+    }
+    Ok((report, pipe.stack, warnings))
+}
+
+/// `" in environment(s) 'a', 'b'"` for the environments `mask` marks, or
+/// `""` when there are no names to give (the flat door's one stack).
+fn env_list(names: &[String], mask: &[bool]) -> String {
+    let marked: Vec<String> = names
+        .iter()
+        .zip(mask)
+        .filter(|(_, m)| **m)
+        .map(|(n, _)| format!("'{n}'"))
+        .collect();
+    if marked.is_empty() {
+        String::new()
+    } else {
+        format!(" in environment(s) {}", marked.join(", "))
+    }
+}
+
+/// The run doors' one-time feasibility pass: drop the demands the
+/// assembled stacks cannot answer, and say so once.
+///
+/// Targets belong to the whole design; whether a demand can be computed
+/// depends on the complete stack it scores against (`stacks[env]`), so
+/// this is checked here, at run setup, and never inside the pipeline:
+///
+/// - **Phase across an incoherent film (D4).** Only intensities cross an
+///   incoherent layer; a phase demand on such a stack is dropped.
+/// - **Back incidence from an absorbing exit medium (W2).** A back demand
+///   whose wavelengths reach a point where the exit medium has
+///   k > [`BACK_EXIT_MAX_K`] is dropped: incidence from inside a
+///   semi-infinite absorber has no defined incident flux.
+///
+/// Each kind gives ONE warning per run, however many demands it drops.
+/// The run refuses only when nothing the caller asked for is left. The
+/// evaluator keeps its per-solve refusals as a safety net for a
+/// `SmatrixContext` built by hand; after this pass the run doors never
+/// reach them, so the loops carry no check and emit nothing.
+fn drop_infeasible(
+    door: &str,
+    spec: &MeritSpec,
+    stacks: &[DesignStack],
+    names: &[String],
+    wavelengths: &[f64],
+) -> Result<(MeritSpec, Vec<String>), String> {
+    use super::evaluator::BACK_EXIT_MAX_K;
+    let mut spec = spec.clone();
+    let had_demands = spec.has_demands();
+    let mut warnings = Vec::new();
+
+    let lose_phase: Vec<bool> = stacks.iter().map(|st| st.has_incoherent()).collect();
+    let dropped = spec.drop_phase_demands(&lose_phase);
+    if !dropped.is_empty() {
+        warnings.push(format!(
+            "{} phase demand(s) dropped{}: the stack holds an incoherent film, \
+             and phase is not defined across an incoherent layer (only \
+             intensity, absorption and colour demands reach through one)",
+            dropped.len(),
+            env_list(names, &lose_phase)
+        ));
+    }
+
+    // Per environment, the grid points where the exit medium absorbs.
+    let absorbs: Vec<Vec<bool>> = stacks
+        .iter()
+        .map(|st| {
+            st.substrate()
+                .nk
+                .iter()
+                .map(|n| n.im.abs() > BACK_EXIT_MAX_K)
+                .collect()
+        })
+        .collect();
+    let mut hit = vec![false; stacks.len()];
+    let dropped = spec.drop_targets(|t, curve| {
+        let e = t.env_idx as usize;
+        if !curve.is_back() || t.wavelengths.is_empty() {
+            return false;
+        }
+        let Some(abs) = absorbs.get(e) else {
+            return false;
+        };
+        let lo = t.wavelengths.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = t
+            .wavelengths
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let bad = wavelengths
+            .iter()
+            .zip(abs)
+            .any(|(&lam, &a)| a && lam >= lo && lam <= hi);
+        if bad {
+            hit[e] = true;
+        }
+        bad
+    });
+    if !dropped.is_empty() {
+        let exits: Vec<String> = stacks
+            .iter()
+            .zip(&hit)
+            .filter(|(_, h)| **h)
+            .map(|(st, _)| format!("'{}'", st.substrate().material))
+            .collect();
+        warnings.push(format!(
+            "{} back-incidence demand(s) dropped{}: the exit medium ({}) absorbs \
+             (k > {BACK_EXIT_MAX_K:e}) over their wavelengths, and incidence from \
+             inside a semi-infinite absorber is undefined (RB/TB/AB demands need \
+             a transparent exit medium)",
+            dropped.len(),
+            env_list(names, &hit),
+            exits.join(", ")
+        ));
+    }
+
+    if had_demands && !spec.has_demands() {
+        return Err(format!(
+            "{door}: no demand is left to synthesize - {}",
+            warnings.join("; ")
+        ));
+    }
+    Ok((spec, warnings))
 }
 
 // ---------------------------------------------------------------------------
@@ -469,5 +642,93 @@ mod tests {
         let mut bad = films();
         bad[0].nk = vec![Complex64::new(1.45, 0.0); 3];
         assert!(assemble_stack("air", air, "sub", sub, &bad, &HashMap::new(), &wl).is_err());
+    }
+
+    /// One demand on `curve` at 0°, over both grid points.
+    fn demand(spec: &mut MeritSpec, curve: super::super::merit::CurveId, phase: bool) {
+        use super::super::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
+        let key = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve,
+        }) as u32;
+        spec.add_target(MeritTarget {
+            key_idx: key,
+            env_idx: 0,
+            wavelengths: Arc::from([500.0, 600.0].as_slice()),
+            kind: ConstraintKind::Exact,
+            transform: if phase {
+                SimTransform::Phase
+            } else {
+                SimTransform::Linear
+            },
+            norm_factor: 1.0,
+            normalized_targets: Arc::from([0.0, 0.0].as_slice()),
+            tolerances: Arc::from([0.1, 0.1].as_slice()),
+            band: Arc::from([].as_slice()),
+            phase,
+            differential_passes: None,
+            retardance: false,
+            point_weights: Vec::new().into(),
+            integral: false,
+            weight: 1.0,
+            count_norm: None,
+        })
+        .unwrap();
+    }
+
+    /// The setup-time pass drops what the complete stack cannot answer -
+    /// phase through an incoherent film, back incidence from an absorbing
+    /// exit - with one warning per kind, keeps the rest untouched, and
+    /// refuses only when nothing is left.
+    #[test]
+    fn drop_infeasible_warns_once_per_kind() {
+        use super::super::merit::CurveId;
+        let wl = vec![500.0, 600.0];
+        let mut fs = films();
+        fs[1].coherent = false;
+        fs[1].d_nm = 1.0e6;
+        fs[1].optimize = false;
+        fs[1].needle = false;
+        let (stack, _) = assemble_stack(
+            "air",
+            vec![Complex64::new(1.0, 0.0); 2],
+            "metal",
+            vec![Complex64::new(0.2, 3.0); 2],
+            &fs,
+            &HashMap::new(),
+            &wl,
+        )
+        .unwrap();
+        let stacks = std::slice::from_ref(&stack);
+
+        let mut spec = MeritSpec::new();
+        demand(&mut spec, CurveId::Rs, false);
+        demand(&mut spec, CurveId::Ts, true);
+        demand(&mut spec, CurveId::Tp, true);
+        demand(&mut spec, CurveId::TBs, false);
+        let (kept, warnings) = drop_infeasible("t", &spec, stacks, &[], &wl).unwrap();
+        assert_eq!(kept.targets().len(), 1);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("2 phase demand(s) dropped:"),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("'metal'"), "{warnings:?}");
+
+        // A spec the stack can answer passes through unchanged and silent.
+        let mut front = MeritSpec::new();
+        demand(&mut front, CurveId::Rs, false);
+        let (kept, warnings) = drop_infeasible("t", &front, stacks, &[], &wl).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(kept.targets().len(), 1);
+
+        // Nothing left: refuse, carrying the reasons.
+        let mut back = MeritSpec::new();
+        demand(&mut back, CurveId::RBp, false);
+        let err = drop_infeasible("t", &back, stacks, &[], &wl).unwrap_err();
+        assert!(
+            err.contains("no demand is left") && err.contains("'metal'"),
+            "{err}"
+        );
     }
 }

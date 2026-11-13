@@ -77,9 +77,8 @@ pub(crate) fn gate_document(request_json: &str) -> PyResult<(String, Option<Stri
 /// dataclass holders; the authoritative checks run at ingestion).
 #[pyfunction]
 pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
-    let set: navette::smatrix::synthesis::targets::TargetSet =
-        serde_json::from_str(request_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid target set: {e}")))?;
+    let set = navette::smatrix::synthesis::targets::TargetSet::from_json(request_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid target set: {e}")))?;
     for t in &set.spectral {
         check_target(
             &t.values,
@@ -94,11 +93,21 @@ pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
             }),
             t.kind.as_str(),
         )?;
+        // W4: explicit weights and inline profiles check here; a named
+        // profile resolves at compile, where the registry is.
+        navette::smatrix::synthesis::targets::resolve_point_weights(
+            &t.weights,
+            &t.weight_profile,
+            &t.wavelengths,
+            None,
+            "SpectralTarget",
+        )
+        .map_err(PyValueError::new_err)?;
     }
     for t in &set.angular {
         check_target(
             &t.values,
-            &t.angles,
+            &navette::smatrix::angle::to_degrees_vec(&t.angles),
             &t.tolerances,
             t.weight,
             t.integral,
@@ -109,6 +118,14 @@ pub(crate) fn validate_targets(request_json: &str) -> PyResult<()> {
             }),
             t.kind.as_str(),
         )?;
+        navette::smatrix::synthesis::targets::resolve_point_weights(
+            &t.weights,
+            &t.weight_profile,
+            &navette::smatrix::angle::to_degrees_vec(&t.angles),
+            None,
+            "AngularTarget",
+        )
+        .map_err(PyValueError::new_err)?;
     }
     // Color demands: full single-validator check (curve vocabulary, compat
     // matrix, table resolution) — key stamped at compile, unchecked here.

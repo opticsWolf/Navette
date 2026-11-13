@@ -6,13 +6,13 @@ from navette.smatrix.needle import NeedleRequest, needle_gradient
 N = np.array([1.0+0j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j])
 D = np.array([0.0, 120.0, 200.0, 80.0, 0.0])
 WLS = np.linspace(450.0, 750.0, 31)
-st0 = ScatterMatrix(N, D, wavelengths=WLS, angles=[0.0, 30.0])
+st0 = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[0.0, 30.0])
 NN = np.full(WLS.size, 1.8+0.05j, dtype=np.complex128)
 
 def stack_ins(delta):
     idx = np.array([1.0+0j, 2.35+0j, 1.46+0j, 1.8+0.05j, 1.46+0j, 2.10+0j, 1.52+0j])
     thick = np.array([0.0, 120.0, 100.0, delta, 100.0, 80.0, 0.0])
-    return ScatterMatrix(idx, thick, wavelengths=WLS, angles=[0.0, 30.0])
+    return ScatterMatrix(idx, thick, wavelengths=WLS, angles_deg=[0.0, 30.0])
 
 # one-sided 2nd-order stencil; converge h until the O(h^2) plateau is
 # reached (h=2nm sits above the stencil truncation on this oscillatory

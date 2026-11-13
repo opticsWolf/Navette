@@ -73,55 +73,55 @@ WLS = np.linspace(450.0, 750.0, 31)
 print("=== ScatterMatrix garbage-in ===")
 run("NaN index in one layer", "raises",
     lambda: ScatterMatrix(np.array([1.0+0j, np.nan, 1.46+0j, 2.10+0j, 1.52+0j]),
-                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS))
+                          D, wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS))
 run("inf (lossless-style) index", "raises",
     lambda: ScatterMatrix(np.array([1.0+0j, 1e308+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
-                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS))
+                          D, wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS))
 run("NaN wavelength", "raises",
     lambda: ScatterMatrix(N, D, wavelengths=np.where(WLS == WLS[5], np.nan, WLS),
-                          angles=[30.0]).compute(Request.RS))
+                          angles_deg=[30.0]).compute(Request.RS))
 run("angle 90 deg (grazing, sin=1)", "silent-clean",
-    lambda: ScatterMatrix(N, D, wavelengths=WLS, angles=[90.0]).compute(Request.RS), note="grazing is physical: R = 1")
+    lambda: ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[90.0]).compute(Request.RS), note="grazing is physical: R = 1")
 run("angle 95 deg (sin>1, TIR-invalid)", "raises",
-    lambda: ScatterMatrix(N, D, wavelengths=WLS, angles=[95.0]).compute(Request.RS))
+    lambda: ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[95.0]).compute(Request.RS))
 run("angle 120 deg (retrograde)", "raises",
-    lambda: ScatterMatrix(N, D, wavelengths=WLS, angles=[120.0]).compute(Request.RS))
+    lambda: ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[120.0]).compute(Request.RS))
 run("single wavelength grid", "silent-clean",
-    lambda: ScatterMatrix(N, D, wavelengths=np.array([550.0]), angles=[30.0]).compute(
+    lambda: ScatterMatrix(N, D, wavelengths=np.array([550.0]), angles_deg=[30.0]).compute(
         Request.RS | Request.DISP_R_S), note="no spacing to differentiate; dispersion is 0, not NaN")
 run("two identical wavelengths", "raises",
-    lambda: ScatterMatrix(N, D, wavelengths=np.array([550.0, 550.0]), angles=[30.0]).compute(
+    lambda: ScatterMatrix(N, D, wavelengths=np.array([550.0, 550.0]), angles_deg=[30.0]).compute(
         Request.RS | Request.DISP_R_S))
 run("descending wavelengths", "raises",
-    lambda: ScatterMatrix(N, D, wavelengths=WLS[::-1].copy(), angles=[30.0]).compute(Request.RS))
+    lambda: ScatterMatrix(N, D, wavelengths=WLS[::-1].copy(), angles_deg=[30.0]).compute(Request.RS))
 run("negative thickness (already known, S19)", "raises",
     lambda: ScatterMatrix(N, np.array([0.0, 120.0, -50.0, 80.0, 0.0]),
-                          wavelengths=WLS, angles=[30.0]).compute(Request.RS))
+                          wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS))
 run("NaN thickness", "raises",
     lambda: ScatterMatrix(N, np.array([0.0, 120.0, np.nan, 80.0, 0.0]),
-                          wavelengths=WLS, angles=[30.0]).compute(Request.RS))
+                          wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS))
 run("absorbing incident medium (R3.4)", "warns",
     lambda: ScatterMatrix(np.array([1.0+0.05j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
-                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+                          D, wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS),
     note="k dropped, transparent ambient solved instead; R = |r|^2 is not an energy ratio there")
 run("barely absorbing incident medium k=1e-14", "warns",
     lambda: ScatterMatrix(np.array([1.0+1e-14j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0j]),
-                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+                          D, wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS),
     note="no tolerance band: 1e-14 was already enough to flip the branch, so it is corrected too")
 run("absorbing substrate", "silent-clean",
     lambda: ScatterMatrix(np.array([1.0+0j, 2.35+0j, 1.46+0j, 2.10+0j, 1.52+0.05j]),
-                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+                          D, wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS),
     note="T is normalized by Re(y); the exit side is well posed")
 run("absorbing interior layer", "silent-clean",
     lambda: ScatterMatrix(np.array([1.0+0j, 2.35+0.4j, 1.46+0j, 2.10+0j, 1.52+0j]),
-                          D, wavelengths=WLS, angles=[30.0]).compute(Request.RS),
+                          D, wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS),
     note="the ordinary case; 1-(nsin/n)^2 never reaches the branch flip")
 run("huge thickness 1e9 nm", "silent-clean",
     lambda: ScatterMatrix(N, np.array([0.0, 120.0, 1e9, 80.0, 0.0]),
-                          wavelengths=WLS, angles=[30.0]).compute(Request.RS), note="no upper cap by design")
+                          wavelengths=WLS, angles_deg=[30.0]).compute(Request.RS), note="no upper cap by design")
 
 print("=== needle_gradient garbage-in ===")
-st = ScatterMatrix(N, D, wavelengths=WLS, angles=[30.0])
+st = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=[30.0])
 NN = np.full(WLS.size, 1.8+0.05j, dtype=np.complex128)
 run("NaN needle index", "raises",
     lambda: needle_gradient(st, np.where(WLS == WLS[3], np.nan+0j, NN), [220.0],

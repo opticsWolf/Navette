@@ -21,7 +21,9 @@ use serde_json::Value;
 use crate::structure::enums::{LayerType, RoughnessType};
 use crate::structure::gradient::{GradientSpec, InhMode};
 use crate::structure::validation::ValidationIssue;
-use crate::structure::version::{SCHEMA_VERSION, check_schema_version};
+use crate::structure::version::{
+    SCHEMA_VERSION, check_schema_version, flip_grading, legacy_grading_sign,
+};
 
 /// Serialize a fieldless enum as its wire int (solver contract, not name).
 pub(crate) fn ser_int<T: Copy + Into<i32>, S: Serializer>(v: &T, s: S) -> Result<S::Ok, S::Error> {
@@ -71,7 +73,15 @@ pub struct Layer {
     pub inhomogen: bool,
     /// Roughness form factor (solver contract).
     pub rough_type: RoughnessType,
-    /// Grading strength driving the sub-layer refinement.
+    /// Grading strength: the signed peak-to-peak fractional swing of the
+    /// complex index across the film, window (-2, 2). Rows run from the
+    /// incidence side, so the first sub-layer carries `1 + d/2` and the
+    /// last `1 - d/2`: positive `d` raises the index toward the outer
+    /// surface (it rises as the film grows), negative `d` toward the
+    /// substrate. This is the literature's sign, `d = (n_outer -
+    /// n_substrate) / n_mean`; up to 0.8.1 it was the opposite, and states
+    /// written before schema v3 are negated on read. The sub-layer
+    /// refinement reads `|d|`.
     pub inh_delta: f64,
     /// Roughness rms sigma [nm].
     pub roughness: f64,
@@ -152,7 +162,8 @@ impl Layer {
     /// loudly there, not silently here.
     pub fn sub_layer_count(&self) -> u32 {
         if self.inhomogen && self.thickness > 0.0 {
-            let factor = 1.0 + (self.delta_layer() / 0.1) * 0.5;
+            // The magnitude: a reversed ramp needs as many rows as its twin.
+            let factor = 1.0 + (self.delta_layer().abs() / 0.1) * 0.5;
             (self.thickness.powf(0.4).ceil() * factor) as u32 + 1
         } else {
             1
@@ -164,7 +175,10 @@ impl Layer {
     /// row-count predictions, the advisory, the PyO3 getter - so a
     /// predicted count and an emitted count cannot diverge between
     /// modes). `Fixed` reads the authored `inh_delta`;
-    /// `RateCapped` computes D2's `min(rate * t / ref, cap)`.
+    /// `RateCapped` computes D2's `rate * t / ref`, bounded to
+    /// `[-cap, cap]` so a negative rate saturates at the same strength as
+    /// its positive twin. (`min` then `max` rather than `clamp`: a cap the
+    /// gate has not seen yet must not panic.)
     pub fn delta_layer(&self) -> f64 {
         match self.inh_mode {
             InhMode::Fixed => self.inh_delta,
@@ -172,7 +186,7 @@ impl Layer {
                 rate,
                 ref_thickness,
                 cap,
-            } => (rate * self.thickness / ref_thickness).min(cap),
+            } => (rate * self.thickness / ref_thickness).min(cap).max(-cap),
         }
     }
 
@@ -238,30 +252,24 @@ impl Layer {
         }
 
         // Grading strength. Expansion ramps the whole complex index by factors
-        // `1 - d/2 ..= 1 + d/2`, so the physical window is [0, 2).
+        // `1 + d/2 ..= 1 - d/2`, so the physical window is (-2, 2). The sign is
+        // the ramp's direction, `+d` rising toward the surface: real films grade
+        // both ways (porous columnar growth lowers the index toward the top,
+        // densification raises it).
+        // Up to 0.8.1 a negative value was refused, because the refinement
+        // read the signed delta and collapsed to one row; it now reads |d|.
         if !self.inh_delta.is_finite() {
             issues.push(bad(format!("Non-finite inh_delta {}.", self.inh_delta)));
-        } else if self.inh_delta < 0.0 {
-            // Measured before this gate: a negative delta drives the refinement
-            // factor negative, `as u32` saturates it to 0, and `sub_layer_count`
-            // returns 1 — the grading is dropped and the caller gets a flat film
-            // with no indication. Writing -0.2 to mean "ramp the other way" is the
-            // obvious way to hit this.
-            issues.push(bad(format!(
-                "Negative inh_delta {}. Grading strength is a magnitude, not a \
-         direction: a negative value collapses the sub-layer count to 1, so \
-         the profile is dropped and the film solves as homogeneous.",
-                self.inh_delta
-            )));
-        } else if self.inh_delta >= 2.0 {
+        } else if self.inh_delta.abs() >= 2.0 {
             // Measured before this gate: inh_delta = 2.5 on a 2.35 + 0.05i film
             // put rows of n = -0.59, k = -0.0125 into the solver. Negative k is
             // gain — the layer amplifies. There is no correction worth making;
             // clamping to 1.99 only buys an index that grazes zero instead.
+            // d <= -2 does the same at the other face.
             issues.push(bad(format!(
-                "inh_delta {} is outside [0, 2). The profile scales the complex index \
-         by 1 - d/2 ..= 1 + d/2, so d >= 2 drives Re(n) through zero and flips \
-         the sign of k -- which is optical gain, not a graded film.",
+                "inh_delta {} is outside (-2, 2). The profile scales the complex index \
+         by 1 + d/2 ..= 1 - d/2, so |d| >= 2 drives Re(n) through zero at one \
+         face and flips the sign of k -- which is optical gain, not a graded film.",
                 self.inh_delta
             )));
         } else if self.inhomogen && self.delta_layer() == 0.0 {
@@ -459,6 +467,10 @@ impl<'de> Deserialize<'de> for Layer {
             .and_then(|v| v.as_u64())
             .map(|v| v as u32);
         check_schema_version(found, "Layer").map_err(serde::de::Error::custom)?;
+        // v3 flipped the grading sign; an older state is negated on read so
+        // it keeps the profile it described.
+        let legacy = legacy_grading_sign(found);
+        let sign = |x: f64| if legacy { flip_grading(x) } else { x };
         let get = |k: &str| map.get(k).cloned().unwrap_or(Value::Null);
         let req_f = |k: &str| {
             get(k).as_f64().ok_or_else(|| {
@@ -489,7 +501,7 @@ impl<'de> Deserialize<'de> for Layer {
                     ));
                 }
             },
-            inh_delta: req_f("inh_delta")?,
+            inh_delta: sign(req_f("inh_delta")?),
             roughness: req_f("roughness")?,
             interface: req_b("interface")?,
             interface_thickness: req_f("interface_thickness")?,
@@ -517,7 +529,18 @@ impl<'de> Deserialize<'de> for Layer {
             // state reads unchanged); present = the tagged mode.
             inh_mode: match get("inh_mode") {
                 Value::Null => InhMode::Fixed,
-                v => serde_json::from_value(v).map_err(serde::de::Error::custom)?,
+                v => match serde_json::from_value(v).map_err(serde::de::Error::custom)? {
+                    InhMode::RateCapped {
+                        rate,
+                        ref_thickness,
+                        cap,
+                    } => InhMode::RateCapped {
+                        rate: sign(rate),
+                        ref_thickness,
+                        cap,
+                    },
+                    mode => mode,
+                },
             },
         })
     }
@@ -596,7 +619,7 @@ mod tests {
         assert_eq!(v["layer_type"], json!(1));
         // F1.4: the writer tags at the current version; a plain layer's
         // key set is UNCHANGED from the v1 list (only-when-Some).
-        assert_eq!(v["schema_version"], json!(2));
+        assert_eq!(v["schema_version"], json!(3));
         // Unknown keys ignored; version enforced.
         let mut with_bogus = v.clone();
         with_bogus["bogus"] = json!(1);
@@ -645,14 +668,17 @@ mod tests {
         assert!(errs(&probe(&|l| l.thickness = f64::NAN))[0].contains("Non-finite thickness"));
         assert!(errs(&probe(&|l| l.roughness = -20.0))[0].contains("Negative roughness"));
         assert!(errs(&probe(&|l| l.interface_thickness = -2.0))[0].contains("Negative interface"));
-        assert!(errs(&probe(&|l| l.inh_delta = -0.2))[0].contains("Negative inh_delta"));
-        assert!(errs(&probe(&|l| l.inh_delta = 2.5))[0].contains("outside [0, 2)"));
+        assert!(errs(&probe(&|l| l.inh_delta = 2.5))[0].contains("outside (-2, 2)"));
+        assert!(errs(&probe(&|l| l.inh_delta = -2.5))[0].contains("outside (-2, 2)"));
         assert!(errs(&probe(&|l| l.inh_delta = f64::INFINITY))[0].contains("Non-finite inh_delta"));
 
-        // 2.0 is out, 1.999 is in: the window is half-open on purpose (d = 2
-        // drives Re(n) to zero).
+        // +-2.0 are out, +-1.999 are in: the window is open on purpose (|d| = 2
+        // drives Re(n) to zero at one face). A negative delta is a direction.
         assert_eq!(errs(&probe(&|l| l.inh_delta = 2.0)).len(), 1);
+        assert_eq!(errs(&probe(&|l| l.inh_delta = -2.0)).len(), 1);
         assert!(errs(&probe(&|l| l.inh_delta = 1.999)).is_empty());
+        assert!(errs(&probe(&|l| l.inh_delta = -1.999)).is_empty());
+        assert!(errs(&probe(&|l| l.inh_delta = -0.2)).is_empty());
 
         // Advisory, never blocking.
         let overhang = probe(&|l| {
@@ -689,7 +715,7 @@ mod tests {
         l.roughness = f64::NAN;
         l.interface_thickness = -1.0;
         l.interface = true;
-        l.inh_delta = -1.0;
+        l.inh_delta = -3.0;
         let mut all: Vec<ValidationIssue> = l.property_issues("Layer");
         for d in [2.5, 0.0, f64::NAN] {
             let mut g = Layer::film(100.0, "TiO2");
@@ -792,10 +818,11 @@ mod tests {
         // The knee is exact: at t = 600 the delta IS the cap.
         assert_eq!(mk(600.0).delta_layer(), 0.3);
         assert_eq!(mk(1200.0).delta_layer(), 0.3, "saturated");
-        // A negative rate inverts the direction (negative delta, bounded
-        // by the nominal clamp at emission, not by the delta formula).
-        let neg = Layer {
-            thickness: 400.0,
+        // A negative rate inverts the direction and mirrors the positive
+        // side exactly: same magnitude below the knee, the same cap past it.
+        let neg = |t: f64| Layer {
+            thickness: t,
+            inhomogen: true,
             inh_mode: InhMode::RateCapped {
                 rate: -0.05,
                 ref_thickness: 100.0,
@@ -803,10 +830,48 @@ mod tests {
             },
             ..Layer::default()
         };
-        assert_eq!(neg.delta_layer(), {
-            let raw: f64 = -0.05 * 400.0 / 100.0;
-            raw.min(0.3)
-        });
+        for t in [10.0, 100.0, 400.0, 600.0, 1200.0] {
+            assert_eq!(neg(t).delta_layer(), -oracle(t), "t = {t}");
+        }
+    }
+
+    /// The refinement reads the magnitude: a reversed ramp gets exactly the
+    /// rows of its positive twin, in both modes. Up to 0.8.1 the signed
+    /// delta drove the factor to zero and the film solved flat (-0.05/100 nm
+    /// at 400 nm: one row against 23).
+    #[test]
+    fn a_reversed_ramp_is_refined_like_its_twin() {
+        for t in [50.0, 200.0, 400.0, 1000.0] {
+            for d in [0.05, 0.2, 1.5] {
+                let mk = |d: f64| Layer {
+                    thickness: t,
+                    inhomogen: true,
+                    inh_delta: d,
+                    ..Layer::default()
+                };
+                assert_eq!(
+                    mk(-d).sub_layer_count(),
+                    mk(d).sub_layer_count(),
+                    "t {t} d {d}"
+                );
+                assert!(mk(-d).sub_layer_count() > 1);
+            }
+            let rc = |rate: f64| Layer {
+                thickness: t,
+                inhomogen: true,
+                inh_mode: InhMode::RateCapped {
+                    rate,
+                    ref_thickness: 100.0,
+                    cap: 0.3,
+                },
+                ..Layer::default()
+            };
+            assert_eq!(
+                rc(-0.05).sub_layer_count(),
+                rc(0.05).sub_layer_count(),
+                "t {t}"
+            );
+        }
     }
 
     /// The mode's refusals surface in `property_issues` (the one rule
@@ -882,6 +947,44 @@ mod tests {
         assert_eq!(back, capped);
     }
 
+    /// v3 flipped the grading sign: a v1/v2 state's `inh_delta` and
+    /// `RateCapped` rate are negated on read (same film, new sign), a v3
+    /// state reads as written, and an ungraded legacy state stays `+0.0`.
+    #[test]
+    fn a_pre_v3_state_keeps_its_grading_direction() {
+        let mut l = Layer::film(50.0, "TiO2");
+        l.inhomogen = true;
+        l.inh_delta = 0.2;
+        l.inh_mode = InhMode::RateCapped {
+            rate: 0.05,
+            ref_thickness: 100.0,
+            cap: 0.3,
+        };
+        let v3 = serde_json::to_value(&l).unwrap();
+        assert_eq!(serde_json::from_value::<Layer>(v3.clone()).unwrap(), l);
+        for old in [1, 2] {
+            let mut v = v3.clone();
+            v["schema_version"] = json!(old);
+            let back: Layer = serde_json::from_value(v).unwrap();
+            assert_eq!(back.inh_delta, -0.2, "v{old}");
+            assert_eq!(
+                back.inh_mode,
+                InhMode::RateCapped {
+                    rate: -0.05,
+                    ref_thickness: 100.0,
+                    cap: 0.3,
+                },
+                "v{old}"
+            );
+        }
+        let mut flat = Layer::film(50.0, "TiO2");
+        flat.inh_delta = 0.0;
+        let mut plain = serde_json::to_value(&flat).unwrap();
+        plain["schema_version"] = json!(2);
+        let back: Layer = serde_json::from_value(plain).unwrap();
+        assert!(back.inh_delta == 0.0 && back.inh_delta.is_sign_positive());
+    }
+
     /// F1.4: the state carries `gradient` only when the layer has one
     /// (the same additive-key policy as `inh_mode`), a v1-shaped state
     /// (no key at all, version tag 1) reads as a plain layer under the
@@ -897,11 +1000,18 @@ mod tests {
         let v = serde_json::to_value(&plain).unwrap();
         assert!(!v.as_object().unwrap().contains_key("gradient"));
 
-        // A v1-shaped state (tag 1, no gradient key) still reads.
+        // A v1-shaped state (tag 1, no gradient key) still reads, with its
+        // (default, ungraded) inh_delta negated like any pre-v3 grading.
         let mut v1 = v.clone();
         v1["schema_version"] = json!(1);
         let back: Layer = serde_json::from_value(v1).unwrap();
-        assert_eq!(back, plain);
+        assert_eq!(
+            back,
+            Layer {
+                inh_delta: -plain.inh_delta,
+                ..plain.clone()
+            }
+        );
         assert!(back.gradient.is_none());
 
         // A gradient layer: gains exactly the one key and round-trips.

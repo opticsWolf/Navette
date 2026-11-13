@@ -65,7 +65,7 @@ def _raw_core_engine(k: float):
 # ---- the refusal -----------------------------------------------------------
 def test_the_python_door_refuses_gain():
     with pytest.raises(ValueError) as exc:
-        ScatterMatrix(_GAIN, THICK, wavelengths=WLS, angles=[0.0])
+        ScatterMatrix(_GAIN, THICK, wavelengths=WLS, angles_deg=[0.0])
     msg = str(exc.value)
     assert "`layer_indices`" in msg, "must name the argument the caller passed"
     assert "layer 1" in msg, "must name the row, not just the fact"
@@ -106,7 +106,7 @@ def test_gain_anywhere_in_the_stack_refuses_including_the_ambient():
         n = np.array([1.0, 2.35, 1.52], dtype=complex)
         n[row] -= 0.01j
         with pytest.raises(ValueError, match="optical gain"):
-            ScatterMatrix(n, THICK, wavelengths=WLS, angles=[0.0])
+            ScatterMatrix(n, THICK, wavelengths=WLS, angles_deg=[0.0])
 
 
 def test_the_needle_door_refuses_a_gain_needle_material():
@@ -123,7 +123,7 @@ def test_the_needle_door_refuses_a_gain_needle_material():
 
     idx = np.array([1.0 + 0j, 2.35 + 0j, 1.45 + 0j, 1.52 + 0j])
     thick = np.array([0.0, 40.0, 80.0, 0.0])
-    st = ScatterMatrix(idx, thick, wavelengths=WLS, angles=[0.0])
+    st = ScatterMatrix(idx, thick, wavelengths=WLS, angles_deg=[0.0])
     z = [40.0 + 30.0]
 
     ok = needle_gradient(st, np.full(WLS.size, 1.9 + 0j), z, NeedleRequest.P)
@@ -139,7 +139,7 @@ def test_the_needle_door_refuses_a_gain_needle_material():
 
 # ---- what must NOT refuse --------------------------------------------------
 def test_loss_is_the_control_and_still_solves():
-    out = ScatterMatrix(_LOSS, THICK, wavelengths=WLS, angles=[0.0]).compute(
+    out = ScatterMatrix(_LOSS, THICK, wavelengths=WLS, angles_deg=[0.0]).compute(
         Request.RS | Request.TS | Request.A_S, squeeze=False
     )
     a = np.asarray(out["A_s"], float)
@@ -157,9 +157,9 @@ def test_negative_zero_is_not_gain():
     n_neg = np.array([1.0, complex(2.35, -0.0), 1.52])
     n_pos = np.array([1.0, complex(2.35, 0.0), 1.52])
     req = Request.RS | Request.TS
-    a = ScatterMatrix(n_neg, THICK, wavelengths=WLS, angles=[0.0]).compute(
+    a = ScatterMatrix(n_neg, THICK, wavelengths=WLS, angles_deg=[0.0]).compute(
         req, squeeze=False)
-    b = ScatterMatrix(n_pos, THICK, wavelengths=WLS, angles=[0.0]).compute(
+    b = ScatterMatrix(n_pos, THICK, wavelengths=WLS, angles_deg=[0.0]).compute(
         req, squeeze=False)
     for key in a:
         assert np.array_equal(np.asarray(a[key]), np.asarray(b[key])), key
@@ -167,7 +167,7 @@ def test_negative_zero_is_not_gain():
 
 def test_a_transparent_stack_still_builds():
     ScatterMatrix(np.array([1.0, 2.35, 1.52]), THICK,
-                  wavelengths=WLS, angles=[0.0])
+                  wavelengths=WLS, angles_deg=[0.0])
 
 
 # ---- one rule, three doors -------------------------------------------------
@@ -192,7 +192,7 @@ def test_both_doors_explain_gain_the_same_way():
     from navette.structure.materials import DictMaterialProvider
 
     with pytest.raises(ValueError) as pexc:
-        ScatterMatrix(_GAIN, THICK, wavelengths=WLS, angles=[0.0])
+        ScatterMatrix(_GAIN, THICK, wavelengths=WLS, angles_deg=[0.0])
     py_msg = str(pexc.value)
     shared = py_msg[py_msg.index("Im(n) < 0 is optical gain"):]
     assert len(shared) > 600, f"parity slice looks truncated: {shared!r}"
@@ -210,7 +210,7 @@ def test_both_doors_explain_gain_the_same_way():
         [Layer(0.0, "glass"), Layer(2000.0, "amplifier"), Layer(0.0, "glass")],
         {}, DictMaterialProvider(dict(mats), wavelength=WLS))
     with pytest.raises(ValueError) as sexc:
-        solve_structure(st, WLS, 0.0, request=int(Request.RS))
+        solve_structure(st, WLS, request=int(Request.RS), angles_deg=0.0)
     st_msg = str(sexc.value)
     assert "Nominal expansion produced k < 0" in st_msg, st_msg
     assert shared in st_msg, (
@@ -222,7 +222,7 @@ def test_both_doors_explain_gain_the_same_way():
 def test_the_explanation_says_what_each_path_does_and_how_to_fix_it():
     """A refusal that does not say why is a wall, not a message."""
     with pytest.raises(ValueError) as exc:
-        ScatterMatrix(_GAIN, THICK, wavelengths=WLS, angles=[0.0])
+        ScatterMatrix(_GAIN, THICK, wavelengths=WLS, angles_deg=[0.0])
     msg = str(exc.value)
     for fragment in (
         "conjugates",          # what the coherent path does

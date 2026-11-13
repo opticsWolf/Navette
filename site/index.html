@@ -221,30 +221,36 @@
       <div class="wrap">
         <header class="section-head">
           <p class="kicker">02 · Design</p>
-          <h2>From a poor guess to a <span id="needle-rms">0.06</span> % coating</h2>
+          <h2>Two bands, three oxides, one needle run</h2>
           <p>Navette runs Tikhonravov's needle method natively. The optimizer probes every depth
-            in the stack with an infinitesimal layer of the other material, inserts one where the merit
-            gradient is most negative, and re-optimises all thicknesses with bounded Levenberg–Marquardt.</p>
+            in the stack with an infinitesimal layer of every material in its pool, inserts the one
+            (depth, material) pair where the merit gradient is most negative, and re-optimises all thicknesses with bounded Levenberg–Marquardt.
+            Here it designs a dual-band anti-reflection coating with a VIS and a NIR band:
+            <span id="needle-vis">0.35</span> % mean reflectance over the VIS band and
+            <span id="needle-nir">0.003</span> % at <span id="needle-nir-nm">1064</span> nm, from a
+            seed of plain SiO₂ over Al₂O₃, with needles of all three oxides.</p>
         </header>
 
         <div class="design-grid">
           <figure class="card span-2">
-            <figcaption><span class="fig-title">Broadband anti-reflection, 400–700 nm</span><span class="fig-sub">TiO₂ / SiO₂ on glass · log scale · shaded: design band</span></figcaption>
+            <figcaption><span class="fig-title">Dual-band anti-reflection, VIS and NIR</span><span class="fig-sub">SiO₂ / Al₂O₃ / HfO₂ on fused silica · log scale · shaded: design bands and tolerances</span></figcaption>
             <div id="needle-spectrum" class="chart-box"></div>
           </figure>
           <figure class="card">
             <figcaption><span class="fig-title">Merit by macro cycle</span><span class="fig-sub">log scale · hover for the film count</span></figcaption>
             <div id="needle-merit" class="chart-box"></div>
-            <p class="note">Near the optimum, the merit is no longer monotone. The needle pass and the cleanup each
+            <p class="note">Near the optimum, the merit need not be monotone. The needle pass and the cleanup each
               end by re-optimizing all thicknesses, and either can land in a worse local minimum, so a cycle
               can jump up before the next one recovers. Which step jumps, and in which cycle, depends on
-              floating-point detail and differs between platforms. The run ends by re-optimizing every
-              thickness once more; that final design is the one in the spectrum and the stack.</p>
+              floating-point detail and differs between platforms. Synthesis runs at a 2 nm floor and ends
+              with its thinnest film at <span id="needle-thin">6.6</span> nm; a last pass re-optimizes with every
+              film at <span id="needle-floor">10</span> nm or more (thinnest now
+              <span id="needle-floor-thin">13.7</span> nm), and that design is the one in the spectrum and the stack.</p>
           </figure>
           <figure class="card">
             <figcaption><span class="fig-title">The finished stack</span><span class="fig-sub" id="stack-sub">22 films · ambient on the left</span></figcaption>
             <div id="needle-stack" class="stack-viz"></div>
-            <div class="stack-legend"><span><i class="hi"></i>TiO₂ n = 2.35</span><span><i class="lo"></i>SiO₂ n = 1.46</span></div>
+            <div class="stack-legend"><span><i class="hi"></i>HfO₂ n ≈ 2.0</span><span><i class="mid"></i>Al₂O₃ n ≈ 1.64</span><span><i class="lo"></i>SiO₂ n ≈ 1.46</span></div>
           </figure>
         </div>
 
@@ -257,17 +263,21 @@
 
         <article class="feature">
           <div class="feature-copy">
-            <h3>Graded versus stepped</h3>
-            <p>Eight periods at 600 nm, built two ways. As alternating linear <code>FixedSpan</code>
-              gradients (a triangular rugate) and as quarter-wave pairs. The stepped stack has the
-              wider stopband and the stronger sidelobes. Below the band its ripple averages
-              <b>30 %</b>, against <b>5 %</b> for the graded profile. Above the band both ring: a triangle is
-              one Fourier component away from a true sinusoidal rugate, which would suppress that side too.</p>
-            <p class="muted">The cost is real and shown, not hidden: <b id="rugate-rows">80</b> solver rows against
-              <b id="rugate-rows-s">16</b>, because the solver sees each span's sublayers.</p>
+            <h3>A rugate notch, graded versus stepped</h3>
+            <p>A 1550 nm notch in co-sputtered SiO₂:Ta₂O₅ on BK7, both materials dispersive, mixed by
+              Bruggeman: <span id="rugate-periods">40</span> periods between n = 1.55 and 1.95. The rugate
+              is ln&nbsp;n sinusoidal in optical thickness, faded in and out, and ramped onto the substrate
+              and the top layer, drawn as <b id="rugate-spans">504</b> linear <code>FixedSpan</code> spans.
+              The stepped stack, quarter-wave pairs of the same two mixtures, rejects harder, but it also
+              reflects <b id="rugate-third">100</b>&nbsp;% at 525&nbsp;nm: its third-order band, a green
+              mirror. The rugate has none, and nowhere in its passband does it reflect more than
+              <b id="rugate-worst">5.8</b>&nbsp;%, mostly the bare outer surface. Without the fading and the
+              ramps, the same sinusoid has sidelobes up to <b id="rugate-sine">33</b>&nbsp;%.</p>
+            <p class="muted">The cost is shown, not hidden: <b id="rugate-rows">1512</b> solver rows against
+              <b id="rugate-rows-s">80</b>, because the solver sees each span's sublayers.</p>
           </div>
           <figure class="card">
-            <figcaption><span class="fig-title">Rugate vs quarter-wave stack</span><span class="fig-sub">same optical period, same index range</span></figcaption>
+            <figcaption><span class="fig-title">Rugate notch vs quarter-wave stack</span><span class="fig-sub">same period count, same index range</span></figcaption>
             <div id="rugate-chart" class="chart-box"></div>
           </figure>
         </article>

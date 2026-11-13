@@ -80,8 +80,8 @@ fn round_half_even(x: f64) -> f64 {
 pub struct InflateResult {
     pub merit_before: f64,
     pub merit_after: f64,
-    pub total_thickness_before: f64,
-    pub total_thickness_after: f64,
+    pub coating_thickness_before: f64,
+    pub coating_thickness_after: f64,
     pub layer_count: usize,
     pub addon_qwot: f64,
     pub reference_wavelength: f64,
@@ -104,7 +104,7 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
 ) -> Result<InflateResult, String> {
     let mf_before = ctx.evaluate_merit(stack)?;
     let n_films = stack.films().len();
-    let total_before: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+    let total_before: f64 = stack.coating_thickness_nm();
 
     // Precompute per-film qwot scale and delta.
     let deltas: Vec<f64> = stack
@@ -123,8 +123,10 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
     // grows by its own addon qwot, a different amount per sublayer, and a
     // pinned profile comes out with a distorted thickness distribution.
     // The same filter guards round_to_qwot below (no live caller today).
+    // D10: a pinned film (`optimize = false`, an incoherent plate among
+    // them) is never a candidate.
     let eligible: Vec<usize> = (0..n_films)
-        .filter(|&i| stack.span_of_row(i).is_singleton_bulk())
+        .filter(|&i| stack.span_of_row(i).is_singleton_bulk() && stack.films()[i].optimize)
         .collect();
     let inflate_indices: Vec<usize> = match max_layers {
         Some(max_l) if max_l < eligible.len() => {
@@ -149,7 +151,7 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
         let d = stack.films()[i].d_nm;
         stack.set_thickness(i, (d + deltas[i]).max(0.0))?;
     }
-    let total_after_raw: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+    let total_after_raw: f64 = stack.coating_thickness_nm();
     let _ = total_after_raw;
 
     // Re-optimize.
@@ -158,13 +160,13 @@ pub fn inflate_design<C: DesignContext + ?Sized>(
     } else {
         ctx.evaluate_merit(stack)?
     };
-    let total_after_opt: f64 = stack.films().iter().map(|l| l.d_nm).sum();
+    let total_after_opt: f64 = stack.coating_thickness_nm();
 
     Ok(InflateResult {
         merit_before: mf_before,
         merit_after: mf_after,
-        total_thickness_before: total_before,
-        total_thickness_after: total_after_opt,
+        coating_thickness_before: total_before,
+        coating_thickness_after: total_after_opt,
         layer_count: stack.films().len(),
         addon_qwot,
         reference_wavelength: reference_wl,
@@ -190,8 +192,9 @@ pub fn round_to_qwot<C: DesignContext + ?Sized>(
 
     // F0.2 (N3): the same singleton-bulk exemption as inflate_design,
     // for symmetry; round_to_qwot has no live pipeline caller today.
+    // D10: pinned films keep their authored thickness here too.
     for i in 0..stack.films().len() {
-        if !stack.span_of_row(i).is_singleton_bulk() {
+        if !stack.span_of_row(i).is_singleton_bulk() || !stack.films()[i].optimize {
             continue;
         }
         let layer: &LayerSpec = &stack.films()[i];
@@ -338,8 +341,8 @@ mod tests {
         // After perfect re-opt all films sit at their slot targets, so check
         // via total thickness accounting instead: before=90, after = sum of
         // targets = 110 (optimizer pulls everything to targets).
-        assert!((res.total_thickness_before - 90.0).abs() < 1e-12);
-        assert!((res.total_thickness_after - 110.0).abs() < 1e-12);
+        assert!((res.coating_thickness_before - 90.0).abs() < 1e-12);
+        assert!((res.coating_thickness_after - 110.0).abs() < 1e-12);
         assert_eq!(ctx.n_opt_calls, 1); // reoptimize=true default path ran
         assert_eq!(res.layer_count, 3);
 
@@ -369,6 +372,29 @@ mod tests {
         assert!((stack.films()[1].d_nm - (20.0 + d_b)).abs() < 1e-12);
         assert_eq!(ctx.n_opt_calls, 0);
         assert!((res.merit_after - res.merit_before.abs()).abs() >= 0.0); // evaluated
+    }
+
+    /// D10: a pinned film is neither inflated, nor scored as a candidate,
+    /// nor rounded to a QWOT step.
+    #[test]
+    fn d10_inflate_and_round_skip_pinned_films() {
+        let mut pinned = film("P", 1.46, 33.0);
+        pinned.optimize = false;
+        let base =
+            DesignStack::with_films(air(), sub(), vec![film("A", 2.35, 30.0), pinned]).unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![0.0; 2],
+            n_opt_calls: 0,
+        };
+        for max_layers in [None, Some(1)] {
+            let mut st = base.clone();
+            inflate_design(&mut ctx, &mut st, &wavls(), 0.5, 550.0, max_layers, false).unwrap();
+            assert!(st.films()[0].d_nm > 30.0, "{max_layers:?}");
+            assert_eq!(st.films()[1].d_nm, 33.0, "{max_layers:?}");
+        }
+        let mut st = base.clone();
+        round_to_qwot(&mut ctx, &mut st, &wavls(), 550.0, 1.0, false).unwrap();
+        assert_eq!(st.films()[1].d_nm, 33.0);
     }
 
     #[test]

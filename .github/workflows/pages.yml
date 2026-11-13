@@ -17,6 +17,7 @@ on:
     paths:
       - "site/**"
       - "examples/rugate_gradient_vs_discrete.py"
+      - "examples/dual_band_ar.py"
       - ".github/workflows/pages.yml"
   release:
     types: [published]

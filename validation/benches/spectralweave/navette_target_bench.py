@@ -129,7 +129,7 @@ def make_pair(
     curves of `m_points` each. Returns (sim, tw, ref_curves) where ref_curves is
     the aligned-grid reference input (only meaningful when sim_density == 1).
 
-    Each target uses key (angle=i, pol="s", spec="R"); the sim stores a matching
+    Each target uses key (angle=i*1e-4 rad, pol="s", spec="R"); the sim stores a matching
     curve under the same key. sim = target + `delta`.
     """
     cache = cache_size if cache_size is not None else max(8, n_targets * 2)
@@ -141,8 +141,8 @@ def make_pair(
     for i in range(n_targets):
         raw = arr(np.sin(wl / (i + 50.0)) + 2.0)   # strictly positive -> stable norm
         tols = arr(np.full(m_points, tol))
-        angle = float(i)
-        tw.add_spectral_target(wl, raw, tols, angle, "s", "R", kind, norm_mode)
+        angle = i * 1e-4  # a key label in radians, in range for any n_targets <= 15707
+        tw.add_spectral_target(wl, raw, tols, "s", "R", kind, norm_mode, angle_rad=angle)
 
         if sim_density == 1:
             sim_wl = wl
@@ -196,7 +196,7 @@ def run_correctness() -> bool:
     tw2 = TargetWeaver(cache_size=8)
     wl = arr(np.linspace(400, 800, 100))
     tw2.add_spectral_target(wl, arr(np.ones(100) * 2), arr(np.full(100, 0.1)),
-                            5.0, "s", "R", "e", "linear")
+                            "s", "R", "e", "linear", angle_rad=0.5)
     empty_sim = OpticalWeaver(cache_size=8)
     m = calculate_merit(empty_sim, tw2, MISSING)
     check("missing_penalty", _approx(m, MISSING), f"merit={m}")
@@ -229,8 +229,8 @@ def run_correctness() -> bool:
         raw = arr(np.cos(wl / 60) + 2.0)
         tols = arr(np.full(128, 0.05))
         for i in range(n):
-            tw.add_spectral_target(wl, raw, tols, float(i), "s", "R", "e", "linear")
-            sim.set_data((float(i), "s", "R"), arr(raw + 0.02), wl)
+            tw.add_spectral_target(wl, raw, tols, "s", "R", "e", "linear", angle_rad=i * 1e-4)
+            sim.set_data((i * 1e-4, "s", "R"), arr(raw + 0.02), wl)
         return calculate_merit(sim, tw, MISSING)
     check("additivity", _approx(one_and_two(2), 2.0 * one_and_two(1)),
           f"m1={one_and_two(1):.4e} m2={one_and_two(2):.4e}")
@@ -279,7 +279,7 @@ def bench_config(m_points: int, n_targets: int) -> Dict[str, float]:
     def do_ingest():
         tw = TargetWeaver(cache_size=cache)
         for i in range(n_targets):
-            tw.add_spectral_target(wl, raws[i], tols, float(i), "s", "R", "e", "linear")
+            tw.add_spectral_target(wl, raws[i], tols, "s", "R", "e", "linear", angle_rad=i * 1e-4)
     res["ingest_spectral"] = timeit(do_ingest)
 
     # --- merit: aligned grid (identity interp) ---

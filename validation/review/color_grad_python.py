@@ -59,7 +59,7 @@ NW = WLS.size
 LAY_Z = {1: 60.0, 2: 220.0, 3: 360.0}
 LAY_N = {1: 2.35 + 0j, 2: 1.46 + 0j, 3: 2.10 + 0j}
 
-st0 = ScatterMatrix(N, D, wavelengths=WLS, angles=ANGLES)
+st0 = ScatterMatrix(N, D, wavelengths=WLS, angles_deg=ANGLES)
 out0 = st0.compute(Request.RS | Request.TS)
 RS = np.atleast_2d(np.asarray(out0["Rs"], float))
 TS = np.atleast_2d(np.asarray(out0["Ts"], float))
@@ -69,7 +69,7 @@ def make_spec(curve="Rs", quantity="Lab", distance="DeltaE2000", reference=REF):
     doc = {
         "spectral": [], "angular": [],
         "color": [{
-            "curve": curve, "angle": 30.0,
+            "curve": curve, "angle_deg": 30.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": quantity, "reference": reference,
             "distance": distance, "weight": WEIGHT,
@@ -79,7 +79,7 @@ def make_spec(curve="Rs", quantity="Lab", distance="DeltaE2000", reference=REF):
 
 
 def sim_of(rs=None, ts=None):
-    sim = SimCurves(ANGLES, WLS, float(D[1:-1].sum()), 1.0, 1.52)
+    sim = SimCurves(WLS, float(D[1:-1].sum()), 1.0, 1.52, angles_deg=ANGLES)
     sim.set_curve("Rs", np.ascontiguousarray(
         (RS if rs is None else rs).ravel()))
     sim.set_curve("Ts", np.ascontiguousarray(
@@ -88,7 +88,9 @@ def sim_of(rs=None, ts=None):
 
 
 SPEC = make_spec()
-FOLD = build_needle_targets(SPEC, ANGLES, WLS, sim_of())
+# The s branch: an s-curve colour bucket carries 2*dF/dRs (the kernel
+# halves it), so P from this branch is the full merit slope.
+FOLD = build_needle_targets(SPEC, WLS, sim_of(), angles_deg=ANGLES)["s"]
 
 
 # --------------------------------------------------------------------------
@@ -128,8 +130,8 @@ for i in range(NW):
     rm = RS.copy(); rm[0, i] -= h
     fd_dfdr[i] = (merit_of_rs(rp) - merit_of_rs(rm)) / (2 * h)
 
-rel = np.max(np.abs(gr - fd_dfdr)) / max(np.max(np.abs(fd_dfdr)), 1e-300)
-report("grads_r == dF/dR by finite difference (<= 1e-6)", rel < 1e-6,
+rel = np.max(np.abs(0.5 * gr - fd_dfdr)) / max(np.max(np.abs(fd_dfdr)), 1e-300)
+report("grads_r == 2*dF/dR by finite difference (<= 1e-6)", rel < 1e-6,
        f"max rel dev {rel:.3e}")
 
 
@@ -208,7 +210,7 @@ print("=== 5. dF/dthickness through the Python path ===")
 
 
 def merit_of_thickness(th):
-    st = ScatterMatrix(N, np.asarray(th, float), wavelengths=WLS, angles=ANGLES)
+    st = ScatterMatrix(N, np.asarray(th, float), wavelengths=WLS, angles_deg=ANGLES)
     o = st.compute(Request.RS)
     return SPEC.merit(sim_of(rs=np.atleast_2d(np.asarray(o["Rs"], float))), 1e6)
 
@@ -222,12 +224,12 @@ for lay in (1, 2, 3):
     fd = (merit_of_thickness(th + step) - merit_of_thickness(th - step)) / (2 * h_th)
 
     p = grad_at(lay, with_color=True)["P_s"].ravel()
-    analytic = 2.0 * float(np.sum(p))
+    analytic = float(np.sum(p))
 
     ref = needle_gradient(st0, np.full(NW, LAY_N[lay]), [LAY_Z[lay]],
                           NeedleRequest.P, targets_r=np.zeros(NW),
                           weights_r=np.ones(NW))["P_s"].ravel()
-    chain = float(np.sum(gr * (ref / RS.ravel())))
+    chain = 0.5 * float(np.sum(gr * (ref / RS.ravel())))
 
     rel_fd = abs(analytic - fd) / max(abs(fd), abs(analytic), 1e-300)
     rel_ch = abs(analytic - chain) / max(abs(chain), 1e-300)
@@ -242,7 +244,7 @@ for lay in (1, 2, 3):
 # --------------------------------------------------------------------------
 print("=== 6. a transmission color demand rides P_T, not P ===")
 spec_t = make_spec(curve="Ts")
-fold_t = build_needle_targets(spec_t, ANGLES, WLS, sim_of())
+fold_t = build_needle_targets(spec_t, WLS, sim_of(), angles_deg=ANGLES)["s"]
 gr_t = np.asarray(fold_t["grads_r"], float)
 gt_t = np.asarray(fold_t["grads_t"], float)
 report("grads_t is populated and grads_r is empty",

@@ -24,7 +24,9 @@ use serde_json::Value;
 
 use crate::structure::enums::ErrorType;
 use crate::structure::validation::ValidationIssue;
-use crate::structure::version::{SCHEMA_VERSION, check_schema_version};
+use crate::structure::version::{
+    SCHEMA_VERSION, check_schema_version, flip_grading, legacy_grading_sign,
+};
 
 fn one() -> f64 {
     1.0
@@ -509,8 +511,17 @@ impl Group {
         fn gaussian() -> ErrorType {
             ErrorType::Gaussian
         }
-        let raw: Raw = serde_json::from_value(value.clone())
+        let mut raw: Raw = serde_json::from_value(value.clone())
             .map_err(|e| format!("Group: malformed state ({e})."))?;
+        // v3 flipped the grading sign. The summand and the error's offsets
+        // add to the delta, so they flip with it; the relative terms and the
+        // spreads are sign-symmetric and read unchanged.
+        if legacy_grading_sign(found) {
+            raw.inh_delta_summand = flip_grading(raw.inh_delta_summand);
+            let p = &mut raw.inh_delta_error_params;
+            p.abs_mean_delta_g = flip_grading(p.abs_mean_delta_g);
+            p.abs_mean_delta_h = flip_grading(p.abs_mean_delta_h);
+        }
         Ok(Self {
             group_name: raw.group_name,
             thick_factor: raw.thick_factor,
@@ -1285,5 +1296,29 @@ mod tests {
         let mut bad_enum = v.clone();
         bad_enum["n_error_type"] = json!(9);
         assert!(Group::from_state(&bad_enum).is_err());
+    }
+
+    /// v3 flipped the grading sign: a v1/v2 state's summand and grading
+    /// error offsets are negated on read; the spreads are not.
+    #[test]
+    fn a_pre_v3_state_keeps_its_grading_direction() {
+        let mut g = Group::new("TiO2");
+        g.inh_delta_summand = 0.05;
+        g.inh_delta_error_params.abs_mean_delta_g = 0.01;
+        g.inh_delta_error_params.abs_mean_delta_h = 0.02;
+        let v3 = g.to_state();
+        assert_eq!(Group::from_state(&v3).unwrap(), g);
+        for old in [1, 2] {
+            let mut v = v3.clone();
+            v["schema_version"] = json!(old);
+            let back = Group::from_state(&v).unwrap();
+            assert_eq!(back.inh_delta_summand, -0.05, "v{old}");
+            let p = &back.inh_delta_error_params;
+            assert_eq!((p.abs_mean_delta_g, p.abs_mean_delta_h), (-0.01, -0.02));
+            assert_eq!(p.abs_std_dev, g.inh_delta_error_params.abs_std_dev);
+        }
+        let mut plain = Group::new("TiO2").to_state();
+        plain["schema_version"] = json!(2);
+        assert_eq!(Group::from_state(&plain).unwrap(), Group::new("TiO2"));
     }
 }

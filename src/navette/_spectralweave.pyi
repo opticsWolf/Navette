@@ -3,8 +3,9 @@
 # (submodule of the aggregated navette._navette extension, built from
 # rust/navette-py over the navette Rust crate).
 #
-# Keys are the triple (angle_deg, polarization, spectral) — e.g.
-# (0.0, "s", "R"). Wavelengths are in nanometres throughout.
+# Keys are the triple (angle_rad, polarization, spectral) — e.g.
+# (0.0, "s", "R"). TargetWeaver keys hold radians and match the simulation
+# weaver's keys bit for bit, so key simulations in radians too. Wavelengths are in nanometres throughout.
 #
 # Kept in sync with the PyO3 registration list by tools/check_pyi_sync.py.
 from __future__ import annotations
@@ -16,7 +17,7 @@ import numpy.typing as npt
 
 FloatArray = npt.NDArray[np.float64]
 
-#: (angle_deg, polarization, spectral)
+#: (angle_rad, polarization, spectral)
 Key = tuple[float, str, str]
 
 class SpectralDataFrame:
@@ -139,7 +140,6 @@ class TargetWeaver:
         wavelengths: FloatArray,
         values: FloatArray,
         tolerances: FloatArray,
-        angle: float,
         polarization: str,
         spectral: str,
         kind: str,
@@ -148,11 +148,13 @@ class TargetWeaver:
         weight: float = ...,
         normalize_count: bool = ...,
         integral: bool = ...,
+        *,
+        angle_deg: float | None = ...,
+        angle_rad: float | None = ...,
     ) -> None: ...
     def add_angular_target(
         self,
         wavelength: float,
-        angles: FloatArray,
         values: FloatArray,
         tolerances: FloatArray,
         polarization: str,
@@ -163,6 +165,9 @@ class TargetWeaver:
         weight: float = ...,
         normalize_count: bool = ...,
         integral: bool = ...,
+        *,
+        angles_deg: FloatArray | None = ...,
+        angles_rad: FloatArray | None = ...,
     ) -> None: ...
     def export_entries(self) -> list[dict[str, Any]]: ...
 

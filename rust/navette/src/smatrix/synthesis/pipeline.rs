@@ -25,10 +25,10 @@ use crate::smatrix::synthesis::cleanup::{CleanupResult, cleanup_design};
 use crate::smatrix::synthesis::config::{PipelineConfig, TerminationReason, ThinLayerPolicy};
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::cycle::{
-    ContrastMap, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
+    MaterialPool, NeedleCycleConfig, NeedleCycleResult, run_needle_cycles,
 };
 use crate::smatrix::synthesis::inflate::{InflateResult, inflate_design};
-use crate::smatrix::synthesis::merit::MeritSpec;
+use crate::smatrix::synthesis::merit::{MeritSpec, Radians};
 use crate::smatrix::synthesis::needle_pass::{NeedleTargets, build_needle_targets_env};
 use crate::smatrix::synthesis::stagnation::StagnationDetector;
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack};
@@ -42,7 +42,7 @@ pub struct PipelinePhaseResult {
     pub mf_after_inflate: Option<f64>,
     pub mf_end: f64,
     pub layer_count: usize,
-    pub total_thickness_nm: f64,
+    pub coating_thickness_nm: f64,
     pub needle_results: Vec<NeedleCycleResult>,
     pub cleanup_result: Option<CleanupResult>,
     pub inflate_result: Option<InflateResult>,
@@ -61,7 +61,7 @@ pub struct PipelineResult {
     pub termination: TerminationReason,
     pub final_mf: f64,
     pub final_layer_count: usize,
-    pub final_total_thickness_nm: f64,
+    pub final_coating_thickness_nm: f64,
     pub stagnation_detail: Option<String>,
     /// F0.2: the final clamp sweep (after the last optimization). `None`
     /// when it removed and capped nothing (B4).
@@ -73,7 +73,8 @@ pub struct NeedlePipeline {
     pub stack: DesignStack,
     pub cfg: PipelineConfig,
     pub needle_cfg: NeedleCycleConfig,
-    pub contrast: ContrastMap,
+    /// The needle material pool (empty: the needle pass inserts nothing).
+    pub pool: MaterialPool,
     /// Fixed spectral problem definition for the needle pass.
     pub spectral: SpectralInputs,
     detector: StagnationDetector,
@@ -85,7 +86,7 @@ impl NeedlePipeline {
         spectral: SpectralInputs,
         cfg: PipelineConfig,
         needle_cfg: NeedleCycleConfig,
-        contrast: ContrastMap,
+        pool: MaterialPool,
     ) -> Result<Self, String> {
         let cfg = cfg.validated()?;
         // F0.2 (licence item 2) narrowed by F1.6: a PINNED profile above
@@ -136,7 +137,7 @@ impl NeedlePipeline {
             spectral,
             cfg,
             needle_cfg,
-            contrast,
+            pool,
             detector,
         })
     }
@@ -151,7 +152,7 @@ impl NeedlePipeline {
         if self.stack.spans().len() >= self.cfg.max_film_layers {
             return Ok(Some(TerminationReason::LayerBudgetReached));
         }
-        let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
+        let total: f64 = self.stack.coating_thickness_nm();
         if total >= self.cfg.max_total_thickness_nm {
             return Ok(Some(TerminationReason::ThicknessBudgetReached));
         }
@@ -212,14 +213,14 @@ impl NeedlePipeline {
                 ctx,
                 &mut self.stack,
                 &self.spectral,
-                &self.contrast,
+                &self.pool,
                 &needle_cfg,
             )?;
             let mf_needle = ctx.evaluate_merit(&self.stack)?;
 
             // Budget check after needle.
             if let Some(reason) = self.check_budgets(ctx)? {
-                let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
+                let total: f64 = self.stack.coating_thickness_nm();
                 let phase = PipelinePhaseResult {
                     macro_cycle: cycle_i,
                     mf_after_needle: mf_needle,
@@ -227,7 +228,7 @@ impl NeedlePipeline {
                     mf_after_inflate: None,
                     mf_end: mf_needle,
                     layer_count: self.stack.spans().len(),
-                    total_thickness_nm: total,
+                    coating_thickness_nm: total,
                     needle_results,
                     cleanup_result: None,
                     inflate_result: None,
@@ -306,7 +307,7 @@ impl NeedlePipeline {
             let mf_inflate_s = mf_inflate;
 
             // ── Record phase ──
-            let total: f64 = self.stack.films().iter().map(|l| l.d_nm).sum();
+            let total: f64 = self.stack.coating_thickness_nm();
             let mf_end = mf_inflate.or(mf_cleanup).unwrap_or(mf_needle);
             clamp_report.merge(ctx.take_clamp_report().unwrap_or_default());
             phases.push(PipelinePhaseResult {
@@ -316,7 +317,7 @@ impl NeedlePipeline {
                 mf_after_inflate: mf_inflate_s,
                 mf_end,
                 layer_count: self.stack.spans().len(),
-                total_thickness_nm: total,
+                coating_thickness_nm: total,
                 needle_results,
                 cleanup_result,
                 inflate_result,
@@ -395,7 +396,7 @@ impl NeedlePipeline {
             termination,
             final_mf,
             final_layer_count: self.stack.spans().len(),
-            final_total_thickness_nm: self.stack.films().iter().map(|l| l.d_nm).sum(),
+            final_coating_thickness_nm: self.stack.coating_thickness_nm(),
             stagnation_detail: stag_detail,
             final_clamp_report,
         })
@@ -413,7 +414,7 @@ pub struct SpectralInputs {
     pub wavls: Vec<f64>,
     /// Sines of incidence angles.
     pub sin_theta: Vec<f64>,
-    /// Conservative fold of `spec` on (`angles_deg`, `wavls`) — the
+    /// Conservative fold of `spec` on (`angles`, `wavls`) — the
     /// starting fold; re-folded against the live sim each needle cycle
     /// (see `run_needle_cycles`).
     ///
@@ -424,27 +425,23 @@ pub struct SpectralInputs {
     /// single-environment case is a one-element vector and `folds[0]` is
     /// the fold that was here before.
     pub folds: Vec<NeedleTargets>,
-    /// Kept for per-cycle re-folds (spec + degree-convention angles).
+    /// Kept for per-cycle re-folds.
     pub spec: MeritSpec,
-    pub angles_deg: Vec<f64>,
+    pub angles: Vec<Radians>,
 }
 
 impl SpectralInputs {
-    /// Build from a merit spec: `angles_deg` matches the spec's key
-    /// convention (degrees, as produced by the Python converter).
-    pub fn from_spec(spec: &MeritSpec, angles_deg: &[f64], wavls: &[f64]) -> Result<Self, String> {
+    /// Build from a merit spec on the incidence grid `angles`.
+    pub fn from_spec(spec: &MeritSpec, angles: &[Radians], wavls: &[f64]) -> Result<Self, String> {
         let folds = (0..spec.n_envs())
-            .map(|e| build_needle_targets_env(spec, angles_deg, wavls, None, e as u32))
+            .map(|e| build_needle_targets_env(spec, angles, wavls, None, e as u32))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(SpectralInputs {
             wavls: wavls.to_vec(),
-            sin_theta: angles_deg
-                .iter()
-                .map(|a| (a * std::f64::consts::PI / 180.0).sin())
-                .collect(),
+            sin_theta: crate::smatrix::angle::sines(angles),
             folds,
             spec: spec.clone(),
-            angles_deg: angles_deg.to_vec(),
+            angles: angles.to_vec(),
         })
     }
 }
@@ -452,30 +449,22 @@ impl SpectralInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
     use crate::smatrix::synthesis::merit::SimCurves;
     use crate::smatrix::synthesis::structure::LayerSpec;
 
     const NW: usize = 3;
 
     fn dummy_spectral() -> SpectralInputs {
-        let zero = || (vec![0.0f64; NW], vec![0.0f64; NW]);
+        let mut fold = PolFold::zeros(NW);
+        fold.r = (vec![0.0; NW], vec![1.0; NW]);
         SpectralInputs {
             wavls: vec![500.0; NW],
             sin_theta: vec![0.0],
-            folds: vec![NeedleTargets {
-                r: (vec![0.0; NW], vec![1.0; NW]),
-                t: zero(),
-                a: zero(),
-                rb: zero(),
-                tb: zero(),
-                ab: zero(),
-                phi: [zero(), zero(), zero(), zero()],
-                phi_gain_shift: [0.0; 4],
-                grad_r: vec![0.0f64; NW],
-                grad_t: vec![0.0f64; NW],
-            }],
+            folds: vec![NeedleTargets::shared(fold)],
             spec: MeritSpec::new(),
-            angles_deg: vec![0.0],
+            angles: vec![Radians::ZERO],
         }
     }
 
@@ -506,7 +495,7 @@ mod tests {
     }
 
     use crate::smatrix::synthesis::merit::MeritSpec;
-    use crate::smatrix::synthesis::needle_pass::NeedleTargets;
+    use crate::smatrix::synthesis::needle_pass::{NeedleTargets, PolFold};
 
     fn pipeline(cfg_over: impl FnOnce(&mut PipelineConfig)) -> NeedlePipeline {
         let mut cfg = PipelineConfig::default();
@@ -522,7 +511,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(), // no contrast → needle pass inserts nothing
+            MaterialPool::new(), // empty pool → needle pass inserts nothing
         )
         .unwrap()
     }
@@ -624,7 +613,7 @@ mod tests {
         let res = p.run(&mut ctx, |_, _, _| Ok(())).unwrap();
         // needle pass optimize (initial) + per-cycle + FINAL = counted
         assert!(ctx.opt_calls >= 2);
-        assert!(res.final_total_thickness_nm <= 800.0);
+        assert!(res.final_coating_thickness_nm <= 800.0);
     }
 
     // ------------------------------------------------------------------
@@ -674,7 +663,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
@@ -722,7 +711,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("expected the ceiling refusal"),
@@ -758,7 +747,7 @@ mod tests {
                 dummy_spectral(),
                 cfg2,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .is_ok()
         );
@@ -807,7 +796,7 @@ mod tests {
                 dummy_spectral(),
                 cfg,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .is_ok(),
             "a scalable span gets the ceiling as a bound, not a refusal"
@@ -905,7 +894,7 @@ mod tests {
                 ..Default::default()
             },
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let mut ctx = ScalingCtx {
@@ -979,7 +968,7 @@ mod tests {
                 ..Default::default()
             },
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let mut ctx = SnapshotCtx {
@@ -1019,28 +1008,31 @@ mod tests {
 
     /// Licence item 6 (B4): the phase's clamp report is present when the
     /// floor removed something, absent otherwise - a no-span run's phase
-    /// dict is byte-identical. The film is PINNED (optimize = false):
-    /// cleanup's flag-guarded removal skips it, so the clamp is what
-    /// takes it, and the report is what says so.
+    /// dict is byte-identical. Cleanup is off and inflate adds nothing,
+    /// so the clamp after inflate is what takes the film, and the report
+    /// is what says so. (Before D10 the film was pinned to keep cleanup
+    /// off it; a pinned film is now exempt from the clamp too -
+    /// `d10_a_pinned_film_survives_the_run`.)
     #[test]
     fn f02_clamp_report_present_only_when_something_happened() {
         // Floor above the film: one-row span removed and NAMED.
-        let mut pinned = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
-        pinned.optimize = false;
-        pinned.needle = false;
+        let mut free = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
+        free.needle = false;
         let cfg = PipelineConfig {
             max_macro_cycles: 1,
-            enable_inflate: false,
+            enable_inflate: true,
+            inflate_addon_qwot: 0.0,
+            enable_cleanup: false,
             clamp_min_nm: 200.0,
             stagnation_window: usize::MAX,
             ..Default::default()
         };
         let mut p = NeedlePipeline::new(
-            DesignStack::with_films(air(), sub(), vec![pinned]).unwrap(),
+            DesignStack::with_films(air(), sub(), vec![free]).unwrap(),
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         )
         .unwrap();
         let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
@@ -1109,7 +1101,7 @@ mod tests {
                 dummy_spectral(),
                 cfg,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .unwrap();
             let mut ctx = ThinningCtx;
@@ -1153,7 +1145,7 @@ mod tests {
             dummy_spectral(),
             cfg,
             NeedleCycleConfig::default(),
-            ContrastMap::new(),
+            MaterialPool::new(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("expected the conflict refusal"),
@@ -1178,21 +1170,67 @@ mod tests {
                 dummy_spectral(),
                 cfg,
                 NeedleCycleConfig::default(),
-                ContrastMap::new(),
+                MaterialPool::new(),
             )
             .map(|_| ())
             .is_ok()
         );
     }
 
-    /// Span deferral twin: an under-thickness PINNED graded span (the
-    /// carrier is background: optimize forced false) is removed whole
-    /// with the F0.2 report under EVERY policy. F1.6 landed the scale-up
-    /// for SCALABLE spans (f16_under_thickness_scalable_span_is_scaled_to
-    /// _the_floor); a pinned span's profile cannot be re-parameterized by
-    /// the optimizer, so removal is still the honest repair here.
+    /// D10: a pinned film keeps its authored thickness through a whole
+    /// run - every in-run clamp, inflate and the final sweep - even below
+    /// the floor and above the ceiling, while a free neighbour inflates.
     #[test]
-    fn f03_thin_graded_span_is_removed_whole_under_clamp_up_too() {
+    fn d10_a_pinned_film_survives_the_run() {
+        let mut thin = LayerSpec::constant("H", 2.35, 0.0, 1.0, NW);
+        thin.optimize = false;
+        thin.needle = false;
+        let mut thick = LayerSpec::constant("L", 1.46, 0.0, 3000.0, NW);
+        thick.optimize = false;
+        thick.needle = false;
+        let mut free = LayerSpec::constant("H", 2.35, 0.0, 100.0, NW);
+        free.needle = false;
+        for policy in ["remove", "clamp_up_final"] {
+            let cfg = PipelineConfig {
+                max_macro_cycles: 1,
+                enable_inflate: true,
+                needles_per_cycle: 0,
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                stagnation_window: usize::MAX,
+                thin_layer_policy: ThinLayerPolicy::parse(policy).unwrap(),
+                ..Default::default()
+            };
+            let mut p = NeedlePipeline::new(
+                DesignStack::with_films(
+                    air(),
+                    sub(),
+                    vec![thin.clone(), free.clone(), thick.clone()],
+                )
+                .unwrap(),
+                dummy_spectral(),
+                cfg,
+                NeedleCycleConfig::default(),
+                MaterialPool::new(),
+            )
+            .unwrap();
+            let res = p.run(&mut FlatCtx, |_, _, _| Ok(())).unwrap();
+            let d: Vec<f64> = p.stack.films().iter().map(|f| f.d_nm).collect();
+            assert_eq!(d.len(), 3, "{policy}: {d:?}");
+            assert_eq!((d[0], d[2]), (1.0, 3000.0), "{policy}: pinned films moved");
+            assert!(d[1] > 100.0, "{policy}: the free film must still inflate");
+            assert!(res.final_clamp_report.is_none(), "{policy}");
+        }
+    }
+
+    /// Span deferral twin, D10: an under-thickness PINNED graded span
+    /// (the carrier is background: optimize forced false) is left alone
+    /// under every policy. F0.2 removed it whole; D10 makes a pinned
+    /// span the user's fixed layer, untouched by the sweep. F1.6's
+    /// scale-up still covers SCALABLE spans
+    /// (f16_under_thickness_scalable_span_is_scaled_to_the_floor).
+    #[test]
+    fn f03_thin_pinned_graded_span_is_left_alone() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();
         let mut nk = std::collections::HashMap::new();
         nk.insert(
@@ -1216,12 +1254,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stack.spans().len(), 1);
-        // The final-pass clamp_up branch is the strongest form of the
-        // deferral: even told to clamp up, a multi-row span goes whole.
-        let mut stack = stack;
-        let rep = stack.clamp_all(6.0, 1000.0, true).unwrap();
-        assert_eq!(rep.spans_removed.len(), 1);
-        assert_eq!(rep.rows_removed, 4);
-        assert!(stack.films().is_empty());
+        // Neither the removing sweep nor the clamp-up one touches it.
+        for clamp_up in [false, true] {
+            let mut s = stack.clone();
+            let rep = s.clamp_all(6.0, 1000.0, clamp_up).unwrap();
+            assert!(rep.is_empty(), "{rep:?}");
+            assert_eq!(s.films().len(), 4);
+            assert!((s.total_thickness_nm() - 5.0).abs() < 1e-12);
+        }
     }
 }

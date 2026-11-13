@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Union
 
+import json as _json
+
 import numpy as np
 
 # Import the ultra-fast Rust implementation
@@ -18,6 +20,7 @@ try:
   from navette._spectralweave import TargetWeaver
   from navette._spectralweave import OpticalWeaver
   from navette._spectralweave import calculate_merit as _calculate_merit
+  from navette._smatrix import WeightProfile
 except ImportError as exc:  # pragma: no cover - native not built yet
   raise ImportError(
     "Targets need the compiled `navette._spectralweave` extension. "
@@ -25,6 +28,8 @@ except ImportError as exc:  # pragma: no cover - native not built yet
   ) from exc
 
 TargetType = Literal["a", "b", "e", "r", "c"]
+#: Labels that are phase quantities by definition (raw radians, phase=True).
+_PHASE_ONLY = ("PDts", "PDtp", "RetR", "RetT", "DeltaR", "DeltaT")
 NormalizationMode = Literal["auto", "linear", "log", "phase", "complex"]
 
 # ---------------------------------------------------------------------------
@@ -39,9 +44,12 @@ class SpectralTarget:
         spectral:      R | T | A        reflectance / transmittance / absorptance
                        RB | TB | AB     the same, from the BACK side
                        PDts | PDtp      transmitted differential phase
+                       RetR | RetT      retardance arg(p·conj(s)), r_f / t_f
+                       DeltaR | DeltaT  ellipsometric Δ (RetR − π / RetT)
         polarization:  s | p | u        u = unpolarized (the s/p mean)
 
-    giving ``Rs``…``Au``, ``RBs``…``ABu``, and the two differential labels.
+    giving ``Rs``…``Au``, ``RBs``…``ABu``, the two differential labels and
+    the four retardance labels.
     Any other pair raises at construction. ``A`` is derived as 1 − R − T on
     the shared grid, so a missing companion curve fails the whole key group.
 
@@ -54,6 +62,15 @@ class SpectralTarget:
     reflection round trip, but no reflection differential label exists, so
     there is no ``PDrs``/``PDrp`` to reach for. Absolute-phase targets on
     ``R``/``T`` with ``phase=True`` are unaffected and stay available.
+
+    ``RetR``/``RetT``/``DeltaR``/``DeltaT`` are p-minus-s phase
+    differences of one element, so they take ``polarization="u"`` (anything
+    else raises) and, like ``PDts``, need ``phase=True`` and force
+    raw-radian normalization. Their values are the engine's
+    ``Retardance_R``/``Retardance_T`` and ``Delta_R``/``Delta_T``
+    (``Delta_R = Retardance_R − π`` wrapped, ``Delta_T = Retardance_T``).
+    At normal incidence s and p coincide and the retardance is identically
+    0; a retardance demand at 0° only compiles with a warning.
     See ``docs/spectralweave-target-kinds.md`` for the sign convention
     (the reference is ``+kD``, the conjugate of Macleod) and the needle
     ``gain_shift_phi`` bookkeeping.
@@ -67,6 +84,12 @@ class SpectralTarget:
     radians (phase) — see ``docs/spectralweave-target-kinds.md``.
     ``weight`` multiplies the target's merit sum (default 1; relative
     importance across targets — the 200-pt vs 10-pt density question).
+    ``weights`` (one per point) or ``weight_profile`` multiply ``weight``
+    point by point: a residual is scaled by ``√(weight·w_i/count)``, and an
+    integral target takes the weighted means ``Σw_i d_i/Σw_i`` over
+    ``Σw_i tol_i/Σw_i``. Tolerances keep their meaning (scale, band);
+    weights carry emphasis. A profile is evaluated on the target's axis:
+    wavelength in nm here, angle in degrees on :class:`AngularTarget`.
     ``normalize_count=True`` additionally divides by the target-level point
     count (spectral grid size, angular angle count), turning the sum into a
     mean: equal say regardless of sampling density. Both flow verbatim into
@@ -85,7 +108,6 @@ class SpectralTarget:
     wavelengths:  np.ndarray
     values:       np.ndarray
     tolerances:   np.ndarray
-    angle:        float
     polarization: str
     spectral:     str
     kind:         TargetType = "e"
@@ -96,6 +118,16 @@ class SpectralTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
+    #: W4 point weights: one per point (``weights``) or a profile over
+    #: the target's axis (``weight_profile``: a :class:`WeightProfile`, or
+    #: the name of one in the collection's ``weight_profiles``). Give at
+    #: most one.
+    weights:      Union[np.ndarray, None] = None
+    weight_profile: Union["WeightProfile", str, None] = None
+    #: The angle of incidence, in degrees or in radians: give exactly one
+    #: (keyword-only). It is kept as given; the native layer converts.
+    angle_deg:    Union[float, None] = field(default=None, kw_only=True)
+    angle_rad:    Union[float, None] = field(default=None, kw_only=True)
 
     def _dump(self) -> dict:
         band = self.band
@@ -105,10 +137,12 @@ class SpectralTarget:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64)).ravel().tolist()
         return {
             **_dump_environment(self.environment),
+            **_dump_weights(self.weights, self.weight_profile),
             "wavelengths": np.ascontiguousarray(np.asarray(self.wavelengths, dtype=np.float64)).ravel().tolist(),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
-            "angle": float(self.angle), "polarization": str(self.polarization),
+            **_dump_angle("angle", self.angle_deg, self.angle_rad),
+            "polarization": str(self.polarization),
             "spectral": str(self.spectral), "kind": str(self.kind),
             "normalization_mode": str(self.normalization_mode),
             "band": band, "phase": bool(self.phase),
@@ -143,7 +177,6 @@ class AngularTarget:
     Same ``kind``/``band`` semantics as :class:`SpectralTarget`.
     """
     wavelength:   float
-    angles:       np.ndarray
     values:       np.ndarray
     tolerances:   np.ndarray
     polarization: str
@@ -156,6 +189,16 @@ class AngularTarget:
     normalize_count: bool = False
     integral:     bool = False
     environment:  Union[str, None] = None
+    #: W4 point weights: one per point (``weights``) or a profile over
+    #: the target's axis (``weight_profile``: a :class:`WeightProfile`, or
+    #: the name of one in the collection's ``weight_profiles``). Give at
+    #: most one.
+    weights:      Union[np.ndarray, None] = None
+    weight_profile: Union["WeightProfile", str, None] = None
+    #: The angle grid, in degrees or in radians: give exactly one
+    #: (keyword-only). It is kept as given; the native layer converts.
+    angles_deg:   Union[np.ndarray, None] = field(default=None, kw_only=True)
+    angles_rad:   Union[np.ndarray, None] = field(default=None, kw_only=True)
 
     def _dump(self) -> dict:
         band = self.band
@@ -165,8 +208,9 @@ class AngularTarget:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64)).ravel().tolist()
         return {
             **_dump_environment(self.environment),
+            **_dump_weights(self.weights, self.weight_profile),
             "wavelength": float(self.wavelength),
-            "angles": np.ascontiguousarray(np.asarray(self.angles, dtype=np.float64)).ravel().tolist(),
+            **_dump_angle("angles", self.angles_deg, self.angles_rad),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
             "polarization": str(self.polarization),
@@ -187,7 +231,10 @@ class AngularTarget:
         elif band is not None:
             band = np.ascontiguousarray(np.asarray(band, dtype=np.float64))
         # FFI Guard
-        object.__setattr__(self, 'angles', np.ascontiguousarray(self.angles, dtype=np.float64))
+        for name in ('angles_deg', 'angles_rad'):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, np.ascontiguousarray(
+                    np.asarray(getattr(self, name), dtype=np.float64)).ravel())
         object.__setattr__(self, 'values', np.ascontiguousarray(self.values, dtype=np.float64))
         object.__setattr__(self, 'tolerances', np.ascontiguousarray(self.tolerances, dtype=np.float64))
         object.__setattr__(self, 'band', band)
@@ -240,7 +287,6 @@ class ColorTarget:
     no duplication) — shaping here is normalization only.
     """
     curve:        str = "Ru"
-    angle:        float = 0.0
     illuminant:   Union[str, dict] = "D65"
     observer:     Union[str, dict] = "1931_2deg"
     quantity:     str = "Lab"
@@ -253,11 +299,17 @@ class ColorTarget:
     yi_cx:        Union[float, None] = None
     yi_cz:        Union[float, None] = None
     environment:  Union[str, None] = None
+    #: The angle of incidence, in degrees or in radians: give at most one
+    #: (keyword-only); neither is normal incidence. It is kept as given;
+    #: the native layer converts.
+    angle_deg:    Union[float, None] = field(default=None, kw_only=True)
+    angle_rad:    Union[float, None] = field(default=None, kw_only=True)
 
     def _dump(self) -> dict:
         return {
             **_dump_environment(self.environment),
-            "curve": str(self.curve), "angle": float(self.angle),
+            "curve": str(self.curve),
+            **_dump_angle("angle", self.angle_deg, self.angle_rad, normal=True),
             "illuminant": _dump_table(self.illuminant, "illuminant"),
             "observer": _dump_table(self.observer, "observer"),
             "quantity": str(self.quantity),
@@ -273,6 +325,20 @@ class ColorTarget:
         from navette._structure import validate_targets as _validate
         import json as _json
         _validate(_json.dumps({"spectral": [], "angular": [], "color": [self._dump()]}))
+
+
+def _dump_angle(stem: str, deg, rad, normal: bool = False) -> dict:
+    """The JSON angle key(s) as given: ``"<stem>_deg"`` and/or
+    ``"<stem>_rad"``. The native validator refuses both or neither; with
+    ``normal`` (an optional angle), neither is normal incidence."""
+    out = {}
+    for unit, value in (("deg", deg), ("rad", rad)):
+        if value is not None:
+            out[f"{stem}_{unit}"] = (float(value) if np.ndim(value) == 0 else
+                                     np.asarray(value, dtype=np.float64).ravel().tolist())
+    if normal and not out:
+        out[f"{stem}_rad"] = 0.0
+    return out
 
 
 def _dump_environment(env):
@@ -293,6 +359,22 @@ def _dump_environment(env):
     if not isinstance(env, str) or not env:
         raise ValueError("environment must be a non-empty name, or None.")
     return {"environment": env}
+
+
+def _dump_weights(weights, profile) -> dict:
+    """W4: ``weights`` / ``weight_profile``, emitted only when set (so a
+    target without them dumps the JSON it always did). A
+    :class:`WeightProfile` travels as its JSON document, a name as the
+    string the compile resolves against ``weight_profiles``. No checks
+    here: the native validator owns them."""
+    out = {}
+    if weights is not None:
+        out["weights"] = np.ascontiguousarray(
+            np.asarray(weights, dtype=np.float64)).ravel().tolist()
+    if profile is not None:
+        out["weight_profile"] = (profile if isinstance(profile, str)
+                                 else _json.loads(profile.to_json()))
+    return out
 
 
 def _dump_table(spec: Union[str, dict], role: str):
@@ -346,6 +428,8 @@ class TargetCollection:
     _spectral_targets: list[SpectralTarget] = field(default_factory=list)
     _angular_targets:  list[AngularTarget]  = field(default_factory=list)
     _color_targets:    list[ColorTarget]    = field(default_factory=list)
+    #: W4: named profiles a target's ``weight_profile`` may name.
+    weight_profiles:   dict[str, WeightProfile] = field(default_factory=dict)
 
     def add(self, target: BaseTarget) -> None:
         """Append a :class:`SpectralTarget`, :class:`AngularTarget`, or
@@ -389,31 +473,40 @@ class TargetCollection:
         """
         Compiles the defined targets into a Rust-native TargetWeaver.
         """
+        for t in (*self._spectral_targets, *self._angular_targets):
+            if t.weights is not None or t.weight_profile is not None:
+                raise ValueError(
+                    "build_weaver: point weights (weights / weight_profile) are "
+                    "read by the synthesis merit (build_merit_spec) only; "
+                    "calculate_merit would ignore them. Drop them for this path.")
         weaver = TargetWeaver(cache_size=cache_size, tolerance_floor=tolerance_floor)
 
         # Iterating in Python and passing to Rust here is fine because it
         # only happens ONCE during initialization, not inside the hot loop.
-        # PDts/PDtp force phase normalization (raw radians, nf == 1): they
-        # are differential-phase quantities and any other resolution would
-        # not unscale back to radians in the synthesis converter.
+        # PDts/PDtp and the retardance labels force phase normalization
+        # (raw radians, nf == 1): they are phase quantities and any other
+        # resolution would not unscale back to radians in the synthesis
+        # converter.
         for t in self._spectral_targets:
             weaver.add_spectral_target(
                 t.wavelengths, t.values, t.tolerances,
-                t.angle, t.polarization, t.spectral, t.kind,
-                "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
+                t.polarization, t.spectral, t.kind,
+                "phase" if t.spectral in _PHASE_ONLY else t.normalization_mode,
                 t.band,
                 weight=t.weight, normalize_count=t.normalize_count,
                 integral=t.integral,
+                angle_deg=t.angle_deg, angle_rad=t.angle_rad,
             )
 
         for t in self._angular_targets:
             weaver.add_angular_target(
-                t.wavelength, t.angles, t.values, t.tolerances,
+                t.wavelength, t.values, t.tolerances,
                 t.polarization, t.spectral, t.kind,
-                "phase" if t.spectral in ("PDts", "PDtp") else t.normalization_mode,
+                "phase" if t.spectral in _PHASE_ONLY else t.normalization_mode,
                 t.band,
                 weight=t.weight, normalize_count=t.normalize_count,
                 integral=t.integral,
+                angles_deg=t.angles_deg, angles_rad=t.angles_rad,
             )
 
         return weaver

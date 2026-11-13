@@ -65,9 +65,9 @@ TOL = 0.002        # 0.2 % reflectance, the demand's own scale
 #: two, not how good the seed was.
 SEED = [(L, 90.0, "a"), (H, 60.0, "b"), (L, 120.0, "c"), (H, 40.0, "d")]
 
-#: Needle seeds: each film may host the other material. Keyed by film NAME,
-#: which on this surface is the design parameter's identity.
-CONTRAST = {"a": H, "b": L, "c": H, "d": L}
+#: The needle material pool: every design film accepts a needle of the
+#: other index, and every needle is a film that accepts needles.
+MATERIALS = {"L": L, "H": H}
 
 CFG = PipelineConfig(max_macro_cycles=3, needles_per_cycle=1,
                      enable_cleanup=False, enable_inflate=False,
@@ -79,7 +79,7 @@ def demands(*names):
     tc = TargetCollection()
     for name in names:
         tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, TOL),
-                              0.0, "s", "R", environment=name))
+                              "s", "R", environment=name, angle_deg=0.0))
     return tc
 
 
@@ -127,11 +127,11 @@ def score_in(films, env_name):
     names = [f"{n}{i}" for i, (_, _, n) in enumerate(layers)]
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, TOL),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     spec = build_merit_spec(tc)
     stack, _ = stack_from_layers([(nk, d) for nk, d, _ in layers], WL, {},
                                  names=names, substrate=(GLASS, "sub"))
-    ctx = SmatrixContext(spec, np.asarray(ANGLES, dtype=np.float64), WL)
+    ctx = SmatrixContext(spec, WL, angles_deg=np.asarray(ANGLES, dtype=np.float64))
     return float(spec.merit(ctx.simulate(stack), 1e6))
 
 
@@ -150,14 +150,14 @@ def main() -> None:
     # that surface -- this is the "design for one case" baseline.
     bare_only = run_needle(
         targets=demands("bare"), angles_deg=ANGLES, wavelengths=WL,
-        contrast=CONTRAST, design={"coat": SEED},
+        materials=MATERIALS, design={"coat": SEED},
         environments=environments(),
         pipeline_config=CFG, substrate=(GLASS, "sub"))
 
     # --- 2. the joint design ---------------------------------------------
     joint = run_needle(
         targets=demands("bare", "laminated"), angles_deg=ANGLES,
-        wavelengths=WL, contrast=CONTRAST, design={"coat": SEED},
+        wavelengths=WL, materials=MATERIALS, design={"coat": SEED},
         environments=environments(),
         pipeline_config=CFG, substrate=(GLASS, "sub"))
 
@@ -234,7 +234,7 @@ def main() -> None:
 
     from_doc = run_needle(
         targets=demands("bare", "laminated"), angles_deg=ANGLES,
-        wavelengths=WL, contrast=CONTRAST, design=design, environments=envs,
+        wavelengths=WL, materials=MATERIALS, design=design, environments=envs,
         pipeline_config=CFG, substrate=(GLASS, "sub"))
 
     print("the same joint design, two spellings:")

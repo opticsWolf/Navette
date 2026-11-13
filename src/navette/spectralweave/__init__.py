@@ -12,7 +12,7 @@ Thin wrappers over the private native extension
 from __future__ import annotations
 
 from .optical import OpticalFragment, SimulationWeaver
-from .target import SpectralTarget, AngularTarget, ColorTarget, TargetCollection
+from .target import SpectralTarget, AngularTarget, ColorTarget, TargetCollection, WeightProfile
 
 try:
   from navette._spectralweave import (
@@ -36,6 +36,7 @@ __all__ = [
   "AngularTarget",
   "ColorTarget",
   "TargetCollection",
+  "WeightProfile",
   "OpticalWeaver",
   "SpectralDataFrame",
   "OpticalCollection",

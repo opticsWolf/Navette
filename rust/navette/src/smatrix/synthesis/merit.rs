@@ -33,6 +33,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use super::color_merit::{ColorDemand, eval_color};
+pub use crate::smatrix::angle::Radians;
 
 // ---------------------------------------------------------------------------
 // Vocabulary types
@@ -205,6 +206,19 @@ impl CurveId {
         }
     }
 
+    /// The s curve a retardance demand keyed on this p curve reads with
+    /// it: `Ret = arg(z_p · conj(z_s))` of one element. `None` for every
+    /// curve that is not a polarized p amplitude.
+    pub fn retardance_partner(self) -> Option<CurveId> {
+        match self {
+            CurveId::Rp => Some(CurveId::Rs),
+            CurveId::Tp => Some(CurveId::Ts),
+            CurveId::RBp => Some(CurveId::RBs),
+            CurveId::TBp => Some(CurveId::TBs),
+            _ => None,
+        }
+    }
+
     /// Parse curve codes: front `Rs/Rp/Ru/Ts/Tp/Tu`, absorption
     /// `As/Ap/Au`, back `RBs/RBp/RBu/TBs/TBp/TBu` and `ABs/ABp/ABu`.
     /// None for anything else.
@@ -230,6 +244,90 @@ impl CurveId {
             "ABu" => Some(CurveId::ABu),
             _ => None,
         }
+    }
+}
+
+impl CurveId {
+    /// The s/p pair an unpolarized intensity averages: `X_u = ½(X_s + X_p)`
+    /// (the engine's `R_avg`/`T_avg`). `None` for polarized and absorption
+    /// curves (Au/ABu derive from their own unpolarized companions).
+    pub fn unpolarized_parts(self) -> Option<(CurveId, CurveId)> {
+        match self {
+            CurveId::Ru => Some((CurveId::Rs, CurveId::Rp)),
+            CurveId::Tu => Some((CurveId::Ts, CurveId::Tp)),
+            CurveId::RBu => Some((CurveId::RBs, CurveId::RBp)),
+            CurveId::TBu => Some((CurveId::TBs, CurveId::TBp)),
+            _ => None,
+        }
+    }
+
+    /// Position in [`CurveId::ALL`] (the bit of a [`CurveSet`]).
+    pub fn ordinal(self) -> usize {
+        CurveId::ALL
+            .iter()
+            .position(|&c| c == self)
+            .expect("CurveId::ALL lists every variant")
+    }
+}
+
+/// Rows a simulation carries: one bit per [`CurveId`] for intensity rows
+/// and one for complex-amplitude rows (phase demands sample those).
+///
+/// A context states what it produces; [`MeritSpec::check_supported`]
+/// refuses a spec that needs more, up front, instead of the run paying the
+/// missing-curve penalty on every merit call (synthesis targets plan, W3).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct CurveSet {
+    intensity: u32,
+    complex: u32,
+}
+
+impl CurveSet {
+    pub fn with_intensity(mut self, ids: &[CurveId]) -> Self {
+        for &id in ids {
+            self.intensity |= 1 << id.ordinal();
+        }
+        self
+    }
+
+    pub fn with_complex(mut self, ids: &[CurveId]) -> Self {
+        for &id in ids {
+            self.complex |= 1 << id.ordinal();
+        }
+        self
+    }
+
+    pub fn has_intensity(&self, id: CurveId) -> bool {
+        self.intensity & (1 << id.ordinal()) != 0
+    }
+
+    pub fn has_complex(&self, id: CurveId) -> bool {
+        self.complex & (1 << id.ordinal()) != 0
+    }
+
+    /// True if any row, intensity or complex, is a back-incidence row.
+    pub fn any_back(&self) -> bool {
+        CurveId::ALL
+            .iter()
+            .any(|&c| c.is_back() && (self.has_intensity(c) || self.has_complex(c)))
+    }
+
+    /// Readable listing, e.g. `Rs, Rp, Ts, Tp; complex Ts, Tp`.
+    pub fn describe(&self) -> String {
+        let names = |bits: u32| {
+            CurveId::ALL
+                .iter()
+                .filter(|c| bits & (1 << c.ordinal()) != 0)
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut s = names(self.intensity);
+        if self.complex != 0 {
+            s.push_str("; complex ");
+            s.push_str(&names(self.complex));
+        }
+        s
     }
 }
 
@@ -310,7 +408,7 @@ impl SimTransform {
 /// refusal (`reference_length_issue`), naming both numbers.
 #[derive(Clone, Debug)]
 pub struct SimCurves {
-    pub angles: Arc<[f64]>,
+    pub angles: Arc<[Radians]>,
     pub wavelengths: Arc<[f64]>,
     pub total_d: f64,
     /// Real incidence index per wavelength (differential-phase reference).
@@ -490,11 +588,11 @@ impl SimCurves {
     /// Row index for an angle value: argmin(|angles − a|), first minimum
     /// wins — identical to numpy argmin semantics used by
     /// `_simulate_to_weaver`.
-    pub fn angle_row(&self, a: f64) -> usize {
+    pub fn angle_row(&self, a: Radians) -> usize {
         let mut best = 0usize;
         let mut best_d = f64::INFINITY;
         for (i, &ang) in self.angles.iter().enumerate() {
-            let d = (ang - a).abs();
+            let d = (ang.get() - a.get()).abs();
             if d < best_d {
                 best_d = d;
                 best = i;
@@ -546,7 +644,7 @@ fn kind_residual(kind: ConstraintKind, scaled_diff: f64, tol: f64, bw: f64) -> f
 /// One unique (angle, curve) demand — mirrors an `OpticalKey`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct MeritKey {
-    pub angle: f64,
+    pub angle: Radians,
     pub curve: CurveId,
 }
 
@@ -583,6 +681,13 @@ pub struct MeritTarget {
     /// `phase` (rejected otherwise); `passes` is 1 for transmitted, 2 for a
     /// reflection round trip; must be finite and non-negative.
     pub differential_passes: Option<f64>,
+    /// Retardance (`RetR`/`RetT`/`DeltaR`/`DeltaT`): sample
+    /// `arg(z_p · conj(z_s))` of the key's element instead of `arg(z_p)`.
+    /// The key is the p curve; its s partner
+    /// ([`CurveId::retardance_partner`]) is read alongside. Requires `phase`
+    /// and excludes `differential_passes` (rejected otherwise): the two
+    /// polarizations share one propagation reference, which cancels.
+    pub retardance: bool,
     /// User weight (default 1): multiplies this frame's merit sum.
     /// Applied at the residual level (`r × √(weight/count)`) so values,
     /// LM Jacobians and the needle fold stay consistent by construction.
@@ -596,6 +701,20 @@ pub struct MeritTarget {
     /// residual `R = mean(d)/mean(tol)`), not each point. Kinds apply once
     /// to the mean. Rejected with `count_norm` (the mean already is one).
     pub integral: bool,
+    /// W4 point weights, one per wavelength (empty = all ones). A
+    /// pointwise residual is scaled by `√w_i` on top of `rscale`; an
+    /// integral target takes the weighted means `Σw_i d_i / Σw_i` and
+    /// `Σw_i tol_i / Σw_i`. All ones is the same arithmetic as empty,
+    /// bit for bit (`x·1.0 = x`, `Σ1.0 = n`).
+    pub point_weights: Arc<[f64]>,
+}
+
+impl MeritTarget {
+    /// The point weight at `i` (1 when the target has none).
+    #[inline]
+    pub fn point_weight(&self, i: usize) -> f64 {
+        self.point_weights.get(i).copied().unwrap_or(1.0)
+    }
 }
 
 /// Flat, immutable, Send+Sync target description.
@@ -802,6 +921,23 @@ impl MeritSpec {
                 ));
             }
         }
+        if target.retardance {
+            let curve = self.keys[target.key_idx as usize].curve;
+            if !target.phase {
+                return Err("retardance without phase: retardance demands are phase-only".into());
+            }
+            if target.differential_passes.is_some() {
+                return Err(
+                    "retardance with differential_passes: the reference cancels in p - s".into(),
+                );
+            }
+            if curve.retardance_partner().is_none() {
+                return Err(format!(
+                    "retardance demand on {curve:?}: the key must be a p amplitude \
+                     (Rp, Tp, RBp, TBp)"
+                ));
+            }
+        }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
         if !target.weight.is_finite() || target.weight < 0.0 {
@@ -820,8 +956,75 @@ impl MeritSpec {
         if target.integral && target.count_norm.is_some() {
             return Err("integral targets reject count_norm (the mean already is one)".into());
         }
+        if !target.point_weights.is_empty() {
+            super::weights::check_point_weights(&target.point_weights, n, "MeritTarget")?;
+        }
         self.targets.push(target);
         Ok(())
+    }
+
+    /// True if the analytic Jacobian cannot cover this spec: a color demand
+    /// (rows [`Self::curve_sensitivity`] leaves uncovered). Known up front,
+    /// with no simulation; the evaluator sizes its thread pool for a
+    /// differenced Jacobian on it.
+    pub(crate) fn sensitivity_incomplete(&self) -> bool {
+        !self.color.is_empty()
+    }
+
+    /// The rows this spec reads, as a [`CurveSet`]: what an evaluator must
+    /// fill (rows outside it can be skipped, which keeps intensity-only
+    /// specs on the exact pre-W2 sweep). Absorption demands read their
+    /// companion rows; colour demands read their key's intensity row. An
+    /// unpolarized demand also reads its s and p rows: the needle fold
+    /// shares its residual between the two branches.
+    pub fn required_rows(&self) -> CurveSet {
+        let mut set = CurveSet::default();
+        let rows_of = |curve: CurveId| -> Vec<CurveId> {
+            match curve.absorption_companions() {
+                Some((rc, tc)) => vec![rc, tc],
+                None => vec![curve],
+            }
+        };
+        for t in &self.targets {
+            let curve = self.keys[t.key_idx as usize].curve;
+            if t.phase {
+                set = set.with_complex(&[curve]);
+                if let Some(s) = retardance_partner(t, curve) {
+                    set = set.with_complex(&[s]);
+                }
+                continue;
+            }
+            let mut rows = rows_of(curve);
+            for c in rows.clone() {
+                if let Some((cs, cp)) = c.unpolarized_parts() {
+                    rows.extend([cs, cp]);
+                }
+            }
+            set = set.with_intensity(&rows);
+        }
+        for d in &self.color {
+            set = set.with_intensity(&[self.keys[d.key_idx as usize].curve]);
+        }
+        set
+    }
+
+    /// `[lo, hi]` of every back-incidence demand's wavelengths, or `None`
+    /// when the spec has none. The evaluator checks the exit medium over
+    /// this span (incidence from inside an absorber is refused).
+    pub fn back_demand_span(&self) -> Option<(f64, f64)> {
+        let mut span: Option<(f64, f64)> = None;
+        let wls = self
+            .targets
+            .iter()
+            .filter(|t| self.keys[t.key_idx as usize].curve.is_back())
+            .flat_map(|t| t.wavelengths.iter().copied());
+        for w in wls {
+            span = Some(match span {
+                None => (w, w),
+                Some((lo, hi)) => (lo.min(w), hi.max(w)),
+            });
+        }
+        span
     }
 
     /// True if any demand samples complex amplitudes (phase or
@@ -832,10 +1035,139 @@ impl MeritSpec {
         self.targets.iter().any(|t| t.phase)
     }
 
+    /// `uses_phase`, for the demands of environment `env` alone (D4): a
+    /// joint run builds complex rows only where they are read.
+    pub fn uses_phase_in(&self, env: usize) -> bool {
+        self.targets
+            .iter()
+            .any(|t| t.phase && t.env_idx as usize == env)
+    }
+
+    /// D4: remove the phase demands of every environment `lose_phase`
+    /// marks, and return them. The key groups stay registered; a group
+    /// left with no demand scores nothing (`residuals_into` filters by
+    /// demand), so dropping cannot shift another demand's residuals.
+    pub fn drop_phase_demands(&mut self, lose_phase: &[bool]) -> Vec<MeritTarget> {
+        self.drop_targets(|t, _| {
+            t.phase && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false)
+        })
+    }
+
+    /// Remove every demand `drop(target, its curve)` selects, and return
+    /// them. Same contract as [`Self::drop_phase_demands`]: keys stay
+    /// registered, the other demands' residuals do not move. The run doors'
+    /// one-time feasibility pass uses it; nothing inside a loop does.
+    pub fn drop_targets(
+        &mut self,
+        mut drop: impl FnMut(&MeritTarget, CurveId) -> bool,
+    ) -> Vec<MeritTarget> {
+        let keys = &self.keys;
+        let (dropped, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.targets)
+            .into_iter()
+            .partition(|t| drop(t, keys[t.key_idx as usize].curve));
+        self.targets = kept;
+        dropped
+    }
+
+    /// True while the spec asks for anything: a spectral or a color demand.
+    pub fn has_demands(&self) -> bool {
+        !self.targets.is_empty() || !self.color.is_empty()
+    }
+
     /// True if any demand subtracts the equivalent-medium reference.
     /// Gates the (trivial but non-zero) stack-metadata computation.
     pub fn uses_differential(&self) -> bool {
         self.targets.iter().any(|t| t.differential_passes.is_some())
+    }
+
+    /// Refuse a spec that demands rows `provides` lacks (W3).
+    ///
+    /// Without this, a demand on a row the context never fills reaches
+    /// `merit()` as the missing-curve penalty on every call (the run
+    /// "converges" on a constant) and the LM as a mid-run error. Every
+    /// offending demand is named once per (environment, curve, row kind)
+    /// with the angles it sits at, so an angular target over 90 angles is
+    /// one line, not 90.
+    pub fn check_supported(&self, provides: &CurveSet) -> Result<(), String> {
+        // (env, curve, what, angles in degrees)
+        let mut bad: Vec<(u32, CurveId, &'static str, Vec<f64>)> = Vec::new();
+        let mut note = |env: u32, curve: CurveId, what: &'static str, angle: Radians| {
+            let deg = angle.to_degrees();
+            match bad
+                .iter_mut()
+                .find(|b| b.0 == env && b.1 == curve && b.2 == what)
+            {
+                Some(b) => {
+                    if !b.3.iter().any(|&d| d.to_bits() == deg.to_bits()) {
+                        b.3.push(deg);
+                    }
+                }
+                None => bad.push((env, curve, what, vec![deg])),
+            }
+        };
+        for t in &self.targets {
+            let key = &self.keys[t.key_idx as usize];
+            let ok = if t.phase {
+                provides.has_complex(key.curve)
+                    && retardance_partner(t, key.curve).is_none_or(|s| provides.has_complex(s))
+            } else if let Some((rc, tc)) = key.curve.absorption_companions() {
+                provides.has_intensity(rc) && provides.has_intensity(tc)
+            } else {
+                provides.has_intensity(key.curve)
+            };
+            if !ok {
+                let what = if t.differential_passes.is_some() {
+                    "differential phase"
+                } else if t.retardance {
+                    "retardance"
+                } else if t.phase {
+                    "phase"
+                } else {
+                    "intensity"
+                };
+                note(t.env_idx, key.curve, what, key.angle);
+            }
+        }
+        for d in &self.color {
+            let key = &self.keys[d.key_idx as usize];
+            if !provides.has_intensity(key.curve) {
+                note(d.env_idx, key.curve, "colour", key.angle);
+            }
+        }
+        if bad.is_empty() {
+            return Ok(());
+        }
+        let fmt_deg = |d: f64| {
+            let s = format!("{d:.3}");
+            let s = s.trim_end_matches('0').trim_end_matches('.');
+            format!("{s} deg")
+        };
+        let lines: Vec<String> = bad
+            .iter()
+            .map(|(env, curve, what, angles)| {
+                let at = angles
+                    .iter()
+                    .map(|&d| fmt_deg(d))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let env_s = if self.n_envs > 1 {
+                    match self.env_names.get(*env as usize) {
+                        Some(name) => format!(" in environment '{name}'"),
+                        None => format!(" in environment {env}"),
+                    }
+                } else {
+                    String::new()
+                };
+                format!("  {curve:?} {what} at {at}{env_s}")
+            })
+            .collect();
+        Err(format!(
+            "synthesis cannot score {} demand(s): the evaluator produces only {}; \
+             not yet supported:\n{}",
+            lines.len(),
+            provides.describe(),
+            lines.join("\n")
+        ))
     }
 
     /// Which reference sides the spec's differential demands actually
@@ -964,6 +1296,31 @@ impl MeritSpec {
         total
     }
 
+    /// `merit_multi` with no penalty (D2): a missing curve is `Err`, naming
+    /// it. Same loop and accumulation order, so a run that misses nothing
+    /// scores bit for bit what `merit_multi` would.
+    ///
+    /// The synthesis evaluator scores through this. Since W3 a missing row
+    /// can only come from a spec/evaluator mismatch - a bug - and the old
+    /// silent 1e6 made such a run "converge" on a constant.
+    ///
+    /// # Panics
+    ///
+    /// As `merit_multi`.
+    pub fn try_merit_multi(&self, sims: &[SimCurves]) -> Result<f64, CurveId> {
+        self.check_sims(sims, "try_merit_multi");
+        let mut total = 0.0;
+        let mut buf: Vec<f64> = Vec::new();
+        for (e, sim) in sims.iter().enumerate() {
+            for k in 0..self.keys.len() {
+                buf.clear();
+                self.residuals_into(sim, k, e as u32, &mut buf)?;
+                total += buf.iter().map(|r| r * r).sum::<f64>();
+            }
+        }
+        Ok(total)
+    }
+
     /// Fixed-length residual vector (zeros where constraints are inactive).
     ///
     /// Returns `Err(missing CurveId)` if a demanded curve was not supplied.
@@ -1079,17 +1436,21 @@ impl MeritSpec {
                 Intensity(&'a [f64]),
                 Absorption(&'a [f64], &'a [f64]),
                 Phase(&'a [Complex64]),
+                Retardance(&'a [Complex64], &'a [Complex64]),
             }
-            let input: TargetInput = if t.phase {
-                let crow = if key.curve.is_back() {
-                    sim.complex_back_curve(key.curve)
+            let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
+                let arc = if id.is_back() {
+                    sim.complex_back_curve(id)
                 } else {
-                    sim.complex_curve(key.curve)
+                    sim.complex_curve(id)
                 };
-                match crow {
-                    Some(c) => TargetInput::Phase(&c[ang_row * n_wav..(ang_row + 1) * n_wav]),
-                    None => return Err(key.curve),
-                }
+                arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
+                    .ok_or(key.curve)
+            };
+            let input: TargetInput = if let Some(s) = retardance_partner(t, key.curve) {
+                TargetInput::Retardance(crow(key.curve)?, crow(s)?)
+            } else if t.phase {
+                TargetInput::Phase(crow(key.curve)?)
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 TargetInput::Absorption(irow(rc)?, irow(tc)?)
             } else {
@@ -1206,8 +1567,7 @@ impl MeritSpec {
             };
             // Differential-phase reference for this key (front/back medium
             // + total thickness from the sim metadata; None = absolute).
-            // `key.angle` is degrees (converter convention); the reference
-            // helper converts internally. The medium lookup stays INSIDE
+            // The medium lookup stays INSIDE
             // the `if let` below so non-differential keys pay nothing.
             let diff_passes = t.differential_passes;
             // Weight + count normalization at the residual level (once per
@@ -1218,6 +1578,7 @@ impl MeritSpec {
             let mut acc_d = 0.0;
             let mut acc_tol = 0.0;
             let mut acc_bw = 0.0;
+            let mut acc_w = 0.0;
             for i in 0..t_wl.len() {
                 let sim_raw = match &input {
                     TargetInput::Intensity(row) => sample(row, i, &mut sim_idx),
@@ -1247,6 +1608,13 @@ impl MeritSpec {
                         }
                         a
                     }
+                    TargetInput::Retardance(prow, srow) => {
+                        // Both rows walk the same bracket: the second call
+                        // finds the shared two-pointer already in place.
+                        let p = sample_c(prow, i, &mut sim_idx);
+                        let s = sample_c(srow, i, &mut sim_idx);
+                        (p * s.conj()).arg()
+                    }
                 };
 
                 let target_scaled = t.normalized_targets[i];
@@ -1266,24 +1634,26 @@ impl MeritSpec {
 
                 let tol = t.tolerances[i];
                 let bw = t.band.get(i).copied().unwrap_or(0.0);
+                let pw = t.point_weight(i);
 
                 if t.integral {
                     // Mean branch: accumulate raw ingredients; the kind
-                    // applies ONCE to the mean after the loop.
-                    acc_d += scaled_diff;
-                    acc_tol += tol;
-                    acc_bw += bw;
+                    // applies ONCE to the (point-weighted) mean after the
+                    // loop.
+                    acc_d += pw * scaled_diff;
+                    acc_tol += pw * tol;
+                    acc_bw += pw * bw;
+                    acc_w += pw;
                 } else {
-                    out.push(kind_residual(t.kind, scaled_diff, tol, bw) * rscale);
+                    out.push(kind_residual(t.kind, scaled_diff, tol, bw) * rscale * pw.sqrt());
                 }
             }
             if t.integral {
                 // Single mean residual R = mean(d)/mean(tol); kinds
                 // constrain the MEAN (integral-`a` = lower bound on the
                 // average). Weight multiplies (count rejected at intake).
-                let n = t_wl.len() as f64;
-                let tol_bar = (acc_tol / n).max(1e-300);
-                out.push(kind_residual(t.kind, acc_d / n, tol_bar, acc_bw / n) * rscale);
+                let tol_bar = (acc_tol / acc_w).max(1e-300);
+                out.push(kind_residual(t.kind, acc_d / acc_w, tol_bar, acc_bw / acc_w) * rscale);
             }
         }
         // Color demands of this key group, in demand insertion order
@@ -1329,10 +1699,27 @@ impl MeritSpec {
 // Row-wise curve sensitivity (R4.5, work item i)
 // ---------------------------------------------------------------------------
 
+/// Which quantity a [`CurveTerm`] differentiates against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TermPart {
+    /// The intensity curve value itself.
+    Value,
+    /// The real part of the curve's complex amplitude (phase demands).
+    Re,
+    /// The imaginary part of the curve's complex amplitude (phase demands).
+    Im,
+    /// The coating's total thickness D, which a differential-phase
+    /// reference reads directly. ∂D/∂(film thickness) is 1 for every film,
+    /// so the term ignores `angle_row`/`wavelength`.
+    TotalThickness,
+}
+
 /// How one residual row depends on one simulated curve value.
 ///
 /// `curve`/`angle_row`/`wavelength` address a single entry of `SimCurves`
-/// (`curve[angle_row * n_wav + wavelength]`); `d_residual` is ∂r/∂(that
+/// (`curve[angle_row * n_wav + wavelength]`), and `part` says which
+/// quantity at that entry: the intensity, or the real or imaginary part of
+/// the complex amplitude a phase demand reads; `d_residual` is ∂r/∂(that
 /// value). A row with an empty term list does not move when the curves move
 /// — an inactive constraint, a target grid that misses the simulation, or a
 /// kind sitting in its dead zone.
@@ -1342,6 +1729,7 @@ pub struct CurveTerm {
     pub angle_row: usize,
     pub wavelength: usize,
     pub d_residual: f64,
+    pub part: TermPart,
 }
 
 /// ∂r/∂(simulated curve) for every residual row, in `residuals()` order.
@@ -1497,11 +1885,13 @@ impl MeritSpec {
     ///
     /// Mirrors `residuals()` exactly in row order and count, so the two index
     /// together. Covered: pointwise and integral targets over intensity and
-    /// absorption curves, every constraint kind and every real transform.
-    /// **Not** covered, and listed in `uncovered`: phase targets (`arg()` of a
-    /// complex row, plus a differential reference that depends on the stack's
-    /// total thickness directly rather than through any curve) and color
-    /// demands (a spectrum-wide integral through the CIE chain —
+    /// absorption curves (front and back), every constraint kind and every
+    /// real transform, and phase targets: `arg()` of a complex row, through
+    /// the real and imaginary parts of that row
+    /// ([`TermPart::Re`]/[`TermPart::Im`]), plus a differential reference
+    /// through the stack's total thickness ([`TermPart::TotalThickness`]).
+    /// **Not** covered, and listed in `uncovered`: color demands (a
+    /// spectrum-wide integral through the CIE chain —
     /// `build_needle_targets` already emits *that* derivative, in the
     /// per-solver-point shape the needle pass wants rather than per row).
     ///
@@ -1514,12 +1904,11 @@ impl MeritSpec {
     /// `sensitivity_is_a_finite_difference_of_residuals`, which differences
     /// `residuals()` itself: any drift between them fails it.
     pub fn curve_sensitivity(&self, sim: &SimCurves) -> Result<MeritSensitivity, CurveId> {
-        // No reference-row-length guard here, unlike `merit`/`residuals`,
-        // and that is deliberate, not an oversight (review PD G4): the
-        // reference is additive and independent of the curve, so it drops
-        // out of d(residual)/d(curve) — `curve_sensitivity_into` never
-        // reads `n_front_re`/`n_back_re`, so a malformed length cannot
-        // hurt this path.
+        // No reference-row-length guard here, unlike `merit`/`residuals`
+        // (review PD G4): the reference is additive and independent of the
+        // curve, so it drops out of d(residual)/d(curve). Its wavenumber
+        // does scale the d(residual)/dD term, and a malformed `n_front_re`
+        // there turns the phase rows uncovered rather than misread.
         let mut s = MeritSensitivity {
             rows: Vec::with_capacity(self.n_residuals()),
             uncovered: Vec::new(),
@@ -1581,12 +1970,14 @@ impl MeritSpec {
                 // before it pushes anything, so a spec that cannot be
                 // evaluated at all must not come back as a tidy list of
                 // empty rows.
-                let have = if key.curve.is_back() {
-                    sim.complex_back_curve(key.curve).is_some()
-                } else {
-                    sim.complex_curve(key.curve).is_some()
+                let have = |id: CurveId| {
+                    if id.is_back() {
+                        sim.complex_back_curve(id).is_some()
+                    } else {
+                        sim.complex_curve(id).is_some()
+                    }
                 };
-                if !have {
+                if !have(key.curve) || !retardance_partner(t, key.curve).is_none_or(have) {
                     return Err(key.curve);
                 }
                 (0.0, Vec::new())
@@ -1606,13 +1997,23 @@ impl MeritSpec {
             {
                 continue;
             }
-            // A phase target occupies its rows like any other; they are just
-            // unexplained. Reported as uncovered rather than left empty, so a
-            // phase demand is never quietly read as covered-and-constant.
+            // A phase target has its own chain (`phase_rows_into`). One whose
+            // reference row is malformed is reported uncovered rather than
+            // left empty, so it is never quietly read as covered-and-constant.
             if t.phase {
-                for _ in 0..n_rows {
-                    out.uncovered.push(out.rows.len());
-                    out.rows.push(Vec::new());
+                let n_ref_ok = |row: &[f64]| row.len() == 1 || row.len() == n_wav;
+                let n_ref: &[f64] = if key.curve.is_back() {
+                    &sim.n_back_re
+                } else {
+                    &sim.n_front_re
+                };
+                if t.differential_passes.is_some() && !n_ref_ok(n_ref) {
+                    for _ in 0..n_rows {
+                        out.uncovered.push(out.rows.len());
+                        out.rows.push(Vec::new());
+                    }
+                } else {
+                    phase_rows_into(sim, key, ang_row, t, out);
                 }
                 continue;
             }
@@ -1649,14 +2050,11 @@ impl MeritSpec {
                 diffs.push(diff);
             }
 
-            let n = t_wl.len() as f64;
             if t.integral {
                 // One row over the mean: ∂R/∂value = rscale · kind'(mean)
-                //                        · (1/n) · transform'(raw_i) · channel
-                //                        · sample weight.
-                let mean_d = diffs.iter().sum::<f64>() / n;
-                let mean_tol = (t.tolerances.iter().take(t_wl.len()).sum::<f64>() / n).max(1e-300);
-                let mean_bw = t.band.iter().take(t_wl.len()).sum::<f64>() / n;
+                //                        · (w_i/Σw) · transform'(raw_i)
+                //                        · channel · sample weight.
+                let (mean_d, mean_tol, mean_bw, w_sum) = weighted_means(t, &diffs);
                 let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
                 let mut terms: Vec<CurveTerm> = Vec::new();
                 for i in 0..t_wl.len() {
@@ -1666,7 +2064,7 @@ impl MeritSpec {
                         &channels,
                         ang_row,
                         &refs[i],
-                        rscale * dk * dt / n,
+                        rscale * dk * dt * t.point_weight(i) / w_sum,
                     );
                 }
                 out.rows.push(terms);
@@ -1677,7 +2075,13 @@ impl MeritSpec {
                     let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
                     let dt = d_transform(t.transform, raws[i], t.norm_factor);
                     let mut terms: Vec<CurveTerm> = Vec::new();
-                    push_terms(&mut terms, &channels, ang_row, &refs[i], rscale * dk * dt);
+                    push_terms(
+                        &mut terms,
+                        &channels,
+                        ang_row,
+                        &refs[i],
+                        rscale * t.point_weight(i).sqrt() * dk * dt,
+                    );
                     out.rows.push(terms);
                 }
             }
@@ -1709,24 +2113,233 @@ fn push_terms(
         return;
     }
     for &(curve, _, sgn) in channels {
-        let mut emit = |wavelength: usize, w: f64| {
-            if w != 0.0 {
-                terms.push(CurveTerm {
-                    curve,
-                    angle_row,
-                    wavelength,
-                    d_residual: w,
-                });
-            }
-        };
-        match *r {
-            SampleRef::Direct(i) => emit(i, scale * sgn),
-            SampleRef::Interp(i, f) => {
-                emit(i, scale * sgn * (1.0 - f));
-                emit(i + 1, scale * sgn * f);
-            }
+        push_part_terms(terms, curve, TermPart::Value, angle_row, r, scale * sgn);
+    }
+}
+
+/// [`push_terms`] for one curve and part: `scale` spread over the simulated
+/// points the sample reads, by its interpolation weights.
+fn push_part_terms(
+    terms: &mut Vec<CurveTerm>,
+    curve: CurveId,
+    part: TermPart,
+    angle_row: usize,
+    r: &SampleRef,
+    scale: f64,
+) {
+    let mut emit = |wavelength: usize, w: f64| {
+        if w != 0.0 {
+            terms.push(CurveTerm {
+                curve,
+                angle_row,
+                wavelength,
+                d_residual: w,
+                part,
+            });
+        }
+    };
+    match *r {
+        SampleRef::Direct(i) => emit(i, scale),
+        SampleRef::Interp(i, f) => {
+            emit(i, scale * (1.0 - f));
+            emit(i + 1, scale * f);
         }
     }
+}
+
+/// The s curve a retardance target on `curve` reads besides its own p row;
+/// `None` for every other target (registration guarantees the partner
+/// exists when `t.retardance` is set).
+pub(crate) fn retardance_partner(t: &MeritTarget, curve: CurveId) -> Option<CurveId> {
+    if t.retardance {
+        curve.retardance_partner()
+    } else {
+        None
+    }
+}
+
+/// The rows of one phase target, in `residuals_into`'s order. A back
+/// target reads the back complex row and the exit medium's index.
+///
+/// The residual reads `arg(z) − ref` with `z` the complex row sampled at the
+/// target wavelength (`(1−f)·z₀ + f·z₁` between grid points) and, for a
+/// differential demand, `ref = passes · k(λ, n, θ) · D`. With `c = conj(z)/|z|²`,
+///
+/// ```text
+///     ∂arg z / ∂Re z = Im c        ∂arg z / ∂Im z = Re c
+///     ∂ref / ∂D      = passes · k
+/// ```
+///
+/// so each row is linear in the real and imaginary parts of the grid
+/// amplitudes it reads, plus one total-thickness term. The wrap of the
+/// residual to [−π, π] is piecewise the identity. `z = 0` has no phase and
+/// no derivative; its terms are zero.
+///
+/// A retardance target reads `arg(z_p · conj(z_s)) = arg z_p − arg z_s`
+/// (mod 2π), so the same coefficients land on the p row with `+` and on the
+/// s row with `−`, each from its own amplitude's `c`. Either amplitude at
+/// zero leaves the product without a phase; both rows' terms are zero then.
+fn phase_rows_into(
+    sim: &SimCurves,
+    key: &MeritKey,
+    ang_row: usize,
+    t: &MeritTarget,
+    out: &mut MeritSensitivity,
+) {
+    let sim_wl: &[f64] = &sim.wavelengths;
+    let n_wav = sim_wl.len();
+    let t_wl: &[f64] = &t.wavelengths;
+    // The caller checked that the rows exist before it pushed anything.
+    let n_ref: &[f64] = if key.curve.is_back() {
+        &sim.n_back_re
+    } else {
+        &sim.n_front_re
+    };
+    let crow = |id: CurveId| {
+        let full = if id.is_back() {
+            sim.complex_back_curve(id)
+        } else {
+            sim.complex_curve(id)
+        };
+        let full = full.expect("phase_rows_into: complex row checked by the caller");
+        &full[ang_row * n_wav..(ang_row + 1) * n_wav]
+    };
+    let prow = crow(key.curve);
+    let partner = retardance_partner(t, key.curve).map(|s| (s, crow(s)));
+    let (aligned, offset) = alignment(t_wl, sim_wl);
+    let rscale = (t.weight / t.count_norm.unwrap_or(1.0)).sqrt();
+    let sample = |row: &[Complex64], r: &SampleRef| match *r {
+        SampleRef::Direct(j) => row[j],
+        SampleRef::Interp(j, f) => row[j] + (row[j + 1] - row[j]) * f,
+    };
+    // ∂arg z / ∂(Re z, Im z) = (Im c, Re c), c = conj(z)/|z|².
+    let d_arg = |z: Complex64| {
+        let c = z.conj() / z.norm_sqr();
+        (c.im, c.re)
+    };
+
+    // Per point: where it reads, the Re/Im coefficients of ∂raw (the key
+    // row's, then the retardance partner's), the reference's ∂raw/∂D, and
+    // the values the kind derivative needs.
+    let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
+    let mut coef: Vec<(f64, f64, f64, f64, f64)> = Vec::with_capacity(t_wl.len());
+    let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut sim_idx = 0usize;
+    for i in 0..t_wl.len() {
+        let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
+        let zp = sample(prow, &r);
+        let zs = partner.map(|(_, srow)| sample(srow, &r));
+        let z = match zs {
+            Some(zs) => zp * zs.conj(),
+            None => zp,
+        };
+        let mut raw = z.arg();
+        let mut d_ref = 0.0;
+        if let Some(passes) = t.differential_passes {
+            let n = if n_ref.len() == 1 {
+                n_ref[0]
+            } else {
+                r.read(n_ref)
+            };
+            let k =
+                passes * crate::smatrix::optics_core::reference_wavenumber(t_wl[i], n, key.angle);
+            raw -= k * sim.total_d;
+            d_ref = -k;
+        }
+        let ((d_re, d_im), (s_re, s_im)) = if z.norm_sqr() > 0.0 {
+            let (s_re, s_im) = zs.map_or((0.0, 0.0), d_arg);
+            (d_arg(zp), (-s_re, -s_im))
+        } else {
+            ((0.0, 0.0), (0.0, 0.0))
+        };
+        let target_scaled = t.normalized_targets[i];
+        let diff = match t.transform {
+            SimTransform::Phase => {
+                let d = raw - target_scaled;
+                d - std::f64::consts::TAU * (d / std::f64::consts::TAU).round()
+            }
+            SimTransform::Log => raw.max(1e-12).log10() * t.norm_factor - target_scaled,
+            SimTransform::Linear | SimTransform::Complex => raw * t.norm_factor - target_scaled,
+        };
+        refs.push(r);
+        coef.push((d_re, d_im, s_re, s_im, d_ref));
+        raws.push(raw);
+        diffs.push(diff);
+    }
+
+    let push_point = |terms: &mut Vec<CurveTerm>, i: usize, scale: f64| {
+        if scale == 0.0 {
+            return;
+        }
+        let (d_re, d_im, s_re, s_im, d_ref) = coef[i];
+        push_part_terms(
+            terms,
+            key.curve,
+            TermPart::Re,
+            ang_row,
+            &refs[i],
+            scale * d_re,
+        );
+        push_part_terms(
+            terms,
+            key.curve,
+            TermPart::Im,
+            ang_row,
+            &refs[i],
+            scale * d_im,
+        );
+        if let Some((s, _)) = partner {
+            push_part_terms(terms, s, TermPart::Re, ang_row, &refs[i], scale * s_re);
+            push_part_terms(terms, s, TermPart::Im, ang_row, &refs[i], scale * s_im);
+        }
+        let w = scale * d_ref;
+        if w != 0.0 {
+            terms.push(CurveTerm {
+                curve: key.curve,
+                angle_row: ang_row,
+                wavelength: 0,
+                d_residual: w,
+                part: TermPart::TotalThickness,
+            });
+        }
+    };
+
+    if t.integral {
+        let (mean_d, mean_tol, mean_bw, w_sum) = weighted_means(t, &diffs);
+        let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
+        let mut terms: Vec<CurveTerm> = Vec::new();
+        for i in 0..t_wl.len() {
+            let dt = d_transform(t.transform, raws[i], t.norm_factor);
+            push_point(&mut terms, i, rscale * dk * dt * t.point_weight(i) / w_sum);
+        }
+        out.rows.push(terms);
+    } else {
+        for i in 0..t_wl.len() {
+            let tol = t.tolerances[i];
+            let bw = t.band.get(i).copied().unwrap_or(0.0);
+            let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
+            let dt = d_transform(t.transform, raws[i], t.norm_factor);
+            let mut terms: Vec<CurveTerm> = Vec::new();
+            push_point(&mut terms, i, rscale * t.point_weight(i).sqrt() * dk * dt);
+            out.rows.push(terms);
+        }
+    }
+}
+
+/// An integral target's point-weighted means of its diffs, tolerances and
+/// band, and the weight sum: the residual pass's accumulation, in the same
+/// order, so the derivative rows see the values the residual saw.
+fn weighted_means(t: &MeritTarget, diffs: &[f64]) -> (f64, f64, f64, f64) {
+    let (mut d, mut tol, mut bw, mut w) = (0.0, 0.0, 0.0, 0.0);
+    for (i, &di) in diffs.iter().enumerate() {
+        let pw = t.point_weight(i);
+        d += pw * di;
+        tol += pw * t.tolerances[i];
+        bw += pw * t.band.get(i).copied().unwrap_or(0.0);
+        w += pw;
+    }
+    (d / w, (tol / w).max(1e-300), bw / w, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -1743,12 +2356,13 @@ fn push_terms(
 /// kernel when the row is constant — same `f64` operand, same order.
 pub fn reference_rotation(
     wavelengths: &[f64],
-    angle_deg: f64,
+    angle: Radians,
     n_inc: &[f64],
     total_d: f64,
     passes: f64,
 ) -> Result<Vec<num_complex::Complex64>, String> {
     use std::f64::consts::PI;
+    let cos_t = angle.cos();
     if n_inc.is_empty() {
         return Err("reference_rotation: n_inc is empty - supply length 1 \
              (constant medium) or one value per wavelength"
@@ -1763,7 +2377,6 @@ pub fn reference_rotation(
             wavelengths.len()
         ));
     }
-    let cos_t = angle_deg.to_radians().cos();
     Ok(wavelengths
         .iter()
         .enumerate()
@@ -1797,13 +2410,15 @@ pub fn rotate_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
 
     const NW: usize = 5;
 
     /// Sim grid 400..800 step 100 nm, single angle row, R_s supplied.
     fn sim_one_angle(vals: &[f64; NW]) -> SimCurves {
         SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -1870,6 +2485,8 @@ mod tests {
             band: band.into(),
             phase: false,
             differential_passes: None,
+            retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1897,6 +2514,8 @@ mod tests {
             band: Vec::new().into(),
             phase: true,
             differential_passes: None,
+            retardance: false,
+            point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
             count_norm: None,
@@ -1909,7 +2528,7 @@ mod tests {
         // (broadcast); anything else is a refusal naming both numbers.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry(
@@ -1966,7 +2585,7 @@ mod tests {
         // targets [0.5, 1.0]: avg = 0.75 → nf = 4/3 (register_metadata math)
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let nf = 1.0 / 0.75;
@@ -1989,7 +2608,7 @@ mod tests {
     fn exact_residual_hand_computed() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2013,7 +2632,7 @@ mod tests {
         let mk = |kind| {
             let mut s = MeritSpec::new();
             let k = s.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             s.add_target(entry(
@@ -2044,7 +2663,7 @@ mod tests {
     fn residual_vector_zeros_inactive_but_fixed_length() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2076,7 +2695,7 @@ mod tests {
 
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2102,7 +2721,7 @@ mod tests {
     fn phase_wrap_no_trig() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2126,7 +2745,7 @@ mod tests {
         // Coarse target grid over a fine sim ramp — linear interp hits exactly.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2147,7 +2766,7 @@ mod tests {
     fn extrapolation_clamps_and_overlap_skips() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         // Below sim range → overlap holds (sim covers [400,800]) → clamps to first val 0.3.
@@ -2183,7 +2802,7 @@ mod tests {
     fn missing_curve_penalty_once_per_key() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Tp,
         }); // not supplied
         spec.add_target(entry(
@@ -2207,7 +2826,7 @@ mod tests {
         ))
         .unwrap();
         let k2 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }); // supplied
         spec.add_target(entry(
@@ -2228,12 +2847,46 @@ mod tests {
             spec.residuals(&sim, &mut Vec::new()),
             Err(CurveId::Tp)
         ));
+        // D2: the strict door names the curve instead of charging for it.
+        assert_eq!(
+            spec.try_merit_multi(std::slice::from_ref(&sim)),
+            Err(CurveId::Tp)
+        );
+    }
+
+    /// D2: with nothing missing, the strict door is `merit` bit for bit.
+    #[test]
+    fn try_merit_multi_is_merit_when_nothing_is_missing() {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        spec.add_target(entry(
+            k as u32,
+            vec![400.0, 450.0, 500.0],
+            vec![0.1, 0.2, 0.3],
+            vec![0.03, 0.05, 0.07],
+            ConstraintKind::Exact,
+            SimTransform::Linear,
+            1.0,
+        ))
+        .unwrap();
+        let sim = sim_one_angle(&[0.11, 0.37, 0.02, 0.5, 0.9]);
+        let m = spec.merit(&sim, 1e6);
+        assert!(m > 0.0);
+        assert_eq!(
+            spec.try_merit_multi(std::slice::from_ref(&sim))
+                .unwrap()
+                .to_bits(),
+            m.to_bits()
+        );
     }
 
     #[test]
     fn angle_row_argmin_semantics() {
         let mut sim = SimCurves {
-            angles: vec![0.0, 30.0, 60.0].into(),
+            angles: degs(&[0.0, 30.0, 60.0]).into(),
             wavelengths: vec![500.0].into(),
             curves: [None, None, None, None, None, None, None, None, None],
             back: [None, None, None, None, None, None],
@@ -2245,7 +2898,7 @@ mod tests {
 
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 25.0,
+            angle: deg(25.0),
             curve: CurveId::Ru,
         }); // → row 30°
         spec.add_target(entry(
@@ -2272,7 +2925,7 @@ mod tests {
         // Aligned: target wl exactly on the sim grid (bit-equal).
         let mut spec_a = MeritSpec::new();
         let ka = spec_a.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec_a
@@ -2308,7 +2961,7 @@ mod tests {
         };
         let mut spec_u = MeritSpec::new();
         let ku = spec_u.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec_u
@@ -2349,7 +3002,7 @@ mod tests {
         let mk = |band: Vec<f64>| {
             let mut s = MeritSpec::new();
             let k = s.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             s.add_target(entry_banded(
@@ -2389,7 +3042,7 @@ mod tests {
         let mk = |band: Vec<f64>| {
             let mut s = MeritSpec::new();
             let k = s.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             s.add_target(entry_banded(
@@ -2424,7 +3077,7 @@ mod tests {
         // over-counting every key after the first.
         let mut spec = MeritSpec::new();
         let k0 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2438,7 +3091,7 @@ mod tests {
         ))
         .unwrap();
         let k1 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp,
         });
         spec.add_target(entry(
@@ -2462,7 +3115,7 @@ mod tests {
         // R row 0.6, T row 0.3 → A = 0.1; demand A = 0.1, tol 0.05 → 0.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::As,
         });
         spec.add_target(entry(
@@ -2476,7 +3129,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2504,7 +3157,7 @@ mod tests {
         // Unpolarized demand derives from the Ru/Tu companions the same way.
         let mut spec_u = MeritSpec::new();
         let ku = spec_u.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Au,
         });
         spec_u
@@ -2533,7 +3186,7 @@ mod tests {
         // Complex row 0.5·e^{i·0.3}; demand phase 0.3 (nf=1) → zero.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry_phase(
@@ -2547,7 +3200,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2580,7 +3233,7 @@ mod tests {
         // Sim phase 0.3 + 2π − 0.01 vs target 0.3: wrapped diff −0.01.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry_phase(
@@ -2594,7 +3247,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2616,11 +3269,89 @@ mod tests {
         assert!((spec.merit(&sim, 1e6) - 0.04).abs() < 1e-12);
     }
 
+    /// W8a: a retardance demand reads `arg(r_p · conj(r_s))` and wraps its
+    /// residual the short way: Ret = 3.1 against −3.1 is 0.083 off, not
+    /// 6.2. Missing either row fails the demand on its p key; the flag is
+    /// refused off a p key, without phase and with a differential.
+    #[test]
+    fn retardance_demand_reads_p_minus_s_and_wraps_short() {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rp,
+        });
+        let mut t = entry_phase(
+            k as u32,
+            vec![400.0],
+            vec![-3.1],
+            vec![0.05],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        );
+        t.retardance = true;
+        spec.add_target(t.clone()).unwrap();
+        let mut sim = SimCurves {
+            angles: vec![Radians::ZERO].into(),
+            wavelengths: (0..NW)
+                .map(|i| 400.0 + 100.0 * i as f64)
+                .collect::<Vec<_>>()
+                .into(),
+            ..Default::default()
+        };
+        let zero = Complex64::new(0.0, 0.0);
+        let row = |z: Complex64| -> Arc<[Complex64]> { Arc::from(vec![z, zero, zero, zero, zero]) };
+        sim.set_complex(CurveId::Rp, row(Complex64::from_polar(0.5, 3.0)))
+            .unwrap();
+        sim.set_complex(CurveId::Rs, row(Complex64::from_polar(0.8, -0.1)))
+            .unwrap();
+        let d = 3.1 + 3.1 - std::f64::consts::TAU;
+        let want = (d / 0.05) * (d / 0.05);
+        assert!((spec.merit(&sim, 1e6) - want).abs() < 1e-9 * want);
+
+        sim.cplx[CurveId::Rs.index()] = None;
+        assert!(matches!(
+            spec.residuals(&sim, &mut Vec::new()),
+            Err(CurveId::Rp)
+        ));
+        let mut provides = CurveSet::default().with_complex(&[CurveId::Rp]);
+        let err = spec.check_supported(&provides).unwrap_err();
+        assert!(err.contains("Rp retardance"), "{err}");
+        provides = provides.with_complex(&[CurveId::Rs]);
+        spec.check_supported(&provides).unwrap();
+
+        let mut on_s = spec.clone();
+        let ks = on_s.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        let mut bad = t.clone();
+        bad.key_idx = ks as u32;
+        assert!(on_s.add_target(bad).unwrap_err().contains("p amplitude"));
+        let mut bad = t.clone();
+        bad.phase = false;
+        bad.transform = SimTransform::Linear;
+        assert!(
+            spec.clone()
+                .add_target(bad)
+                .unwrap_err()
+                .contains("phase-only")
+        );
+        let mut bad = t;
+        bad.differential_passes = Some(1.0);
+        assert!(
+            spec.clone()
+                .add_target(bad)
+                .unwrap_err()
+                .contains("cancels")
+        );
+    }
+
     #[test]
     fn phase_on_absorption_rejected() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::As,
         });
         let mut tgt = entry_phase(
@@ -2635,7 +3366,7 @@ mod tests {
         tgt.key_idx = k as u32;
         assert!(spec.add_target(tgt).is_err());
         let k2 = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ru,
         });
         let tgt2 = entry_phase(
@@ -2668,7 +3399,7 @@ mod tests {
         // One angle (0°), NW wavelengths from 400 nm; Ts complex row
         // 0.7·e^{i·0.3} at 400 nm; stack D = 100 nm of air (n = 1).
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -2697,7 +3428,7 @@ mod tests {
         // Δφ = 0.3 − π/2; demanding exactly that with tol 0.05 → zero.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let delta = 0.3 - std::f64::consts::PI / 2.0;
@@ -2716,7 +3447,7 @@ mod tests {
         // (−π/2/0.05)² ≈ 986.96 — the reference is doing the work.
         let mut abs_spec = MeritSpec::new();
         let ka = abs_spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         abs_spec
@@ -2743,7 +3474,7 @@ mod tests {
         // D = 0 kills the reference: differential ≡ absolute bit-for-bit.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry_pd(
@@ -2765,7 +3496,7 @@ mod tests {
         // passes = 2 doubles the subtracted reference (round-trip).
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let delta = 0.3 - std::f64::consts::PI; // 2 × π/2
@@ -2786,7 +3517,7 @@ mod tests {
         // Without phase → Err; negative/NaN passes → Err.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         let mut t = entry(
@@ -2820,7 +3551,7 @@ mod tests {
         // r = ±1/point → merit 2.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry(
@@ -2838,7 +3569,7 @@ mod tests {
         // weight 2 → merit 4 (residuals scale by √2).
         let mut sw = MeritSpec::new();
         let kw = sw.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tw = entry(
@@ -2859,7 +3590,7 @@ mod tests {
         // count 2 → merit 1 (mean, not sum).
         let mut sc = MeritSpec::new();
         let kc = sc.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tc = entry(
@@ -2877,7 +3608,7 @@ mod tests {
         // weight 3 + count 2 → 3.
         let mut sb = MeritSpec::new();
         let kb = sb.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tb = entry(
@@ -2902,7 +3633,7 @@ mod tests {
         ] {
             let mut sx = MeritSpec::new();
             let kx = sx.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let mut tx = entry(
@@ -2924,6 +3655,104 @@ mod tests {
     // --- F2.2: the multi-environment doors -----------------------------
 
     /// `Rs = 0.5 ± 0.1` on one point, at environment `env`.
+    /// W3: the front s/p evaluator set (intensities + complex t).
+    fn front_sp() -> CurveSet {
+        CurveSet::default()
+            .with_intensity(&[CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp])
+            .with_complex(&[CurveId::Ts, CurveId::Tp])
+    }
+
+    #[test]
+    fn check_supported_accepts_what_is_produced() {
+        let mut spec = MeritSpec::new();
+        for curve in [CurveId::Rs, CurveId::Tp, CurveId::As, CurveId::Ap] {
+            let k = spec.add_key(MeritKey {
+                angle: deg(45.0),
+                curve,
+            }) as u32;
+            spec.add_target(env_entry(k, 0)).unwrap();
+        }
+        let k = spec.add_key(MeritKey {
+            angle: deg(45.0),
+            curve: CurveId::Ts,
+        }) as u32;
+        spec.add_target(entry_phase(
+            k,
+            vec![400.0],
+            vec![0.5],
+            vec![0.1],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        ))
+        .unwrap();
+        spec.check_supported(&front_sp()).unwrap();
+    }
+
+    #[test]
+    fn check_supported_names_each_missing_row_once() {
+        let mut spec = MeritSpec::new();
+        // Ru at three angles, twice at 45° (one line, angles deduped).
+        for a in [0.0, 45.0, 45.0, 60.0] {
+            let k = spec.add_key(MeritKey {
+                angle: deg(a),
+                curve: CurveId::Ru,
+            }) as u32;
+            spec.add_target(env_entry(k, 0)).unwrap();
+        }
+        // Au derives from Ru/Tu: refused. RBs: refused. Rs phase: refused
+        // (no complex r_f). Rs intensity: fine.
+        for curve in [CurveId::Au, CurveId::RBs, CurveId::Rs] {
+            let k = spec.add_key(MeritKey {
+                angle: deg(10.0),
+                curve,
+            }) as u32;
+            spec.add_target(env_entry(k, 0)).unwrap();
+        }
+        let k = spec.add_key(MeritKey {
+            angle: deg(10.0),
+            curve: CurveId::Rs,
+        }) as u32;
+        spec.add_target(entry_phase(
+            k,
+            vec![400.0],
+            vec![0.5],
+            vec![0.1],
+            ConstraintKind::Exact,
+            SimTransform::Phase,
+            1.0,
+        ))
+        .unwrap();
+        let err = spec.check_supported(&front_sp()).unwrap_err();
+        assert!(err.contains("cannot score 4 demand(s)"), "{err}");
+        assert!(
+            err.contains("Ru intensity at 0 deg, 45 deg, 60 deg"),
+            "{err}"
+        );
+        assert!(err.contains("Au intensity at 10 deg"), "{err}");
+        assert!(err.contains("RBs intensity at 10 deg"), "{err}");
+        assert!(err.contains("Rs phase at 10 deg"), "{err}");
+        assert!(!err.contains("Rs intensity"), "{err}");
+        assert!(err.contains("Rs, Rp, Ts, Tp; complex Ts, Tp"), "{err}");
+    }
+
+    #[test]
+    fn check_supported_names_the_environment() {
+        let mut spec = MeritSpec::new();
+        spec.set_env_roster(&["air".to_string(), "water".to_string()])
+            .unwrap();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Tu,
+        }) as u32;
+        spec.add_target(env_entry(k, 1)).unwrap();
+        let err = spec.check_supported(&front_sp()).unwrap_err();
+        assert!(
+            err.contains("Tu intensity at 0 deg in environment 'water'"),
+            "{err}"
+        );
+    }
+
     fn env_entry(key_idx: u32, env: u32) -> MeritTarget {
         let mut t = entry(
             key_idx,
@@ -2946,7 +3775,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(2).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         // Two demands in env 0 (so insertion order is observable), one in
@@ -2977,7 +3806,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(2).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp, // sim_one_angle fills Rs only
         }) as u32;
         spec.add_target(env_entry(k, 0)).unwrap();
@@ -2990,11 +3819,11 @@ mod tests {
         let mut half = MeritSpec::new();
         half.set_n_envs(2).unwrap();
         let ok = half.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         let bad = half.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rp,
         }) as u32;
         half.add_target(env_entry(ok, 0)).unwrap();
@@ -3017,7 +3846,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(3).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         spec.add_target(env_entry(k, 1)).unwrap();
@@ -3035,7 +3864,7 @@ mod tests {
     fn the_single_environment_doors_delegate() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         spec.add_target(env_entry(k, 0)).unwrap();
@@ -3059,7 +3888,7 @@ mod tests {
         let mut spec = MeritSpec::new();
         spec.set_n_envs(2).unwrap();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         spec.add_target(env_entry(k, 1)).unwrap();
@@ -3086,7 +3915,7 @@ mod tests {
         // Sim [0.6, 0.5, 0.4] vs 0.5: mean diff 0 → merit 0, ONE residual.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry_integral(k as u32, ConstraintKind::Exact))
@@ -3101,12 +3930,113 @@ mod tests {
         assert!((spec.merit(&sim2, 1e6) - 1.0).abs() < 1e-12);
     }
 
+    /// W4: one Rs key with `t` on it.
+    fn spec_with(t: impl FnOnce(u32) -> MeritTarget) -> MeritSpec {
+        let mut spec = MeritSpec::new();
+        let k = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        spec.add_target(t(k as u32)).unwrap();
+        spec
+    }
+
+    #[test]
+    fn point_weights_of_one_are_no_weights_bit_for_bit() {
+        let sim = sim_one_angle(&[0.71, 0.63, 0.52, 0.0, 0.0]);
+        for integral in [false, true] {
+            for kind in [ConstraintKind::Exact, ConstraintKind::Above] {
+                let plain = spec_with(|k| {
+                    let mut t = entry_integral(k, kind);
+                    t.integral = integral;
+                    t
+                });
+                let ones = spec_with(|k| {
+                    let mut t = entry_integral(k, kind);
+                    t.integral = integral;
+                    t.point_weights = vec![1.0; 3].into();
+                    t
+                });
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                plain.residuals(&sim, &mut a).unwrap();
+                ones.residuals(&sim, &mut b).unwrap();
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a), bits(&b), "integral={integral} {kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_point_weight_is_a_tolerance_rescaling_for_exact() {
+        // Pointwise Exact: (d/tol)²·w = (d/(tol/√w))².
+        let sim = sim_one_angle(&[0.71, 0.63, 0.52, 0.0, 0.0]);
+        let w = [4.0, 0.25, 9.0];
+        let weighted = spec_with(|k| {
+            let mut t = entry_integral(k, ConstraintKind::Exact);
+            t.integral = false;
+            t.point_weights = w.to_vec().into();
+            t
+        });
+        let rescaled = spec_with(|k| {
+            let mut t = entry_integral(k, ConstraintKind::Exact);
+            t.integral = false;
+            t.tolerances = w
+                .iter()
+                .map(|wi| 0.1 / wi.sqrt())
+                .collect::<Vec<_>>()
+                .into();
+            t
+        });
+        let (a, b) = (weighted.merit(&sim, 1e6), rescaled.merit(&sim, 1e6));
+        assert!((a - b).abs() <= 1e-12 * b, "{a} vs {b}");
+    }
+
+    #[test]
+    fn an_integral_takes_the_weighted_mean() {
+        // Sim [0.7, 0.5, 0.4] vs 0.5, weights [3, 1, 0] and tolerances
+        // [0.1, 0.3, 0.9]: mean d = (3·0.2 + 0)/4 = 0.15, mean tol =
+        // (3·0.1 + 0.3)/4 = 0.15, so R = 1; the zero-weight point (d = −0.1,
+        // tol 0.9) does not count.
+        let sim = sim_one_angle(&[0.7, 0.5, 0.4, 0.0, 0.0]);
+        let spec = spec_with(|k| {
+            let mut t = entry_integral(k, ConstraintKind::Exact);
+            t.tolerances = vec![0.1, 0.3, 0.9].into();
+            t.point_weights = vec![3.0, 1.0, 0.0].into();
+            t.weight = 2.0;
+            t
+        });
+        let mut r = Vec::new();
+        spec.residuals(&sim, &mut r).unwrap();
+        assert_eq!(r.len(), 1);
+        assert!((r[0] - 2f64.sqrt()).abs() < 1e-12, "{}", r[0]);
+    }
+
+    #[test]
+    fn point_weights_refuse_bad_shapes_at_add_target() {
+        for (w, want) in [
+            (vec![1.0, 1.0], "shape"),
+            (vec![1.0, -1.0, 1.0], ">= 0"),
+            (vec![0.0, 0.0, 0.0], "all zero"),
+            (vec![1.0, f64::NAN, 1.0], ">= 0"),
+        ] {
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rs,
+            });
+            let mut t = entry_integral(k as u32, ConstraintKind::Exact);
+            t.point_weights = w.into();
+            let e = spec.add_target(t).unwrap_err();
+            assert!(e.contains(want), "{e}");
+        }
+    }
+
     #[test]
     fn integral_kinds_mask_the_mean() {
         // Above: mean above target → silent; mean below → active.
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_target(entry_integral(k as u32, ConstraintKind::Above))
@@ -3120,7 +4050,7 @@ mod tests {
         // Range with band 0.05 (raw, nf = 1): mean inside → 0.
         let mut spec_r = MeritSpec::new();
         let kr = spec_r.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut tr = entry_integral(kr as u32, ConstraintKind::Range);
@@ -3137,7 +4067,7 @@ mod tests {
     fn integral_rejects_count_norm() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         let mut t = entry_integral(k as u32, ConstraintKind::Exact);
@@ -3150,7 +4080,7 @@ mod tests {
         // RBs row 0.4, TBs row 0.5: R demand 0.4 → 0; ABs demand 0.1 → 0.
         let mut spec = MeritSpec::new();
         let kr = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::RBs,
         });
         spec.add_target(entry(
@@ -3164,7 +4094,7 @@ mod tests {
         ))
         .unwrap();
         let ka = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::ABs,
         });
         spec.add_target(entry(
@@ -3178,7 +4108,7 @@ mod tests {
         ))
         .unwrap();
         let mut sim = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -3198,7 +4128,7 @@ mod tests {
     fn band_length_mismatch_rejected() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         assert!(
@@ -3219,7 +4149,7 @@ mod tests {
     #[test]
     fn rotation_kernel_values() {
         // λ=1000, θ=0, n=1, d=250, passes=1: ref = 2π·250/1000 = π/2.
-        let rot = super::reference_rotation(&[1000.0], 0.0, &[1.0], 250.0, 1.0).unwrap();
+        let rot = super::reference_rotation(&[1000.0], Radians::ZERO, &[1.0], 250.0, 1.0).unwrap();
         assert!((rot[0].re - 0.0).abs() < 1e-15);
         assert!((rot[0].im + 1.0).abs() < 1e-15);
         let mut rows = vec![num_complex::Complex64::new(1.0, 0.0); 3];
@@ -3228,7 +4158,8 @@ mod tests {
         assert!(super::rotate_rows(&mut rows[..2], &rot).is_ok());
         let mut bad = vec![num_complex::Complex64::new(1.0, 0.0); 2];
         let rot2 =
-            super::reference_rotation(&[1000.0, 500.0, 250.0], 0.0, &[1.0], 0.0, 1.0).unwrap();
+            super::reference_rotation(&[1000.0, 500.0, 250.0], Radians::ZERO, &[1.0], 0.0, 1.0)
+                .unwrap();
         assert!(super::rotate_rows(&mut bad, &rot2).is_err());
     }
 
@@ -3241,8 +4172,9 @@ mod tests {
         let n_col = [1.5_f64, 1.7, 1.9];
         // Broadcast (length 1) == the pre-PD2 scalar kernel, bitwise:
         // identical f64 operand, identical order (exp(-i*r) itself).
-        let rot_b = super::reference_rotation(&wls, 0.0, &[1.7], 100.0, 1.0).unwrap();
-        let rot_x = super::reference_rotation(&wls, 0.0, &[1.7, 1.7, 1.7], 100.0, 1.0).unwrap();
+        let rot_b = super::reference_rotation(&wls, Radians::ZERO, &[1.7], 100.0, 1.0).unwrap();
+        let rot_x =
+            super::reference_rotation(&wls, Radians::ZERO, &[1.7, 1.7, 1.7], 100.0, 1.0).unwrap();
         assert_eq!(rot_b.to_vec(), rot_x);
         // Hand: arg(exp(-i*r)) = -r (wrapped to (-pi, pi]).
         let wrapped = |x: f64| x - TAU * (x / TAU + 0.5).floor();
@@ -3253,7 +4185,7 @@ mod tests {
             rot_b[0]
         );
         // Dispersive row: per-lambda values.
-        let rot_d = super::reference_rotation(&wls, 0.0, &n_col, 200.0, 1.0).unwrap();
+        let rot_d = super::reference_rotation(&wls, Radians::ZERO, &n_col, 200.0, 1.0).unwrap();
         let expect_args: Vec<f64> = n_col
             .iter()
             .zip(wls)
@@ -3263,12 +4195,13 @@ mod tests {
             assert!((r.arg() - e).abs() < 1e-12, "arg={r:?} expect={e}");
         }
         // Refusals: length 2 against a 3-wavelength grid (both named), empty.
-        let err = super::reference_rotation(&wls, 0.0, &[1.5, 1.7], 200.0, 1.0).unwrap_err();
+        let err =
+            super::reference_rotation(&wls, Radians::ZERO, &[1.5, 1.7], 200.0, 1.0).unwrap_err();
         assert!(
             err.contains("length 2") && err.contains("3 wavelengths"),
             "err={err}"
         );
-        let err = super::reference_rotation(&wls, 0.0, &[], 200.0, 1.0).unwrap_err();
+        let err = super::reference_rotation(&wls, Radians::ZERO, &[], 200.0, 1.0).unwrap_err();
         assert!(err.contains("empty"), "err={err}");
     }
 
@@ -3281,7 +4214,7 @@ mod tests {
     fn demanded_reference_sides_tracks_the_labels() {
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec.add_target(entry_pd(
@@ -3297,7 +4230,7 @@ mod tests {
         // A back curve (hypothetical label, decision 6) flips the side.
         let mut spec_b = MeritSpec::new();
         let kb = spec_b.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::TBs,
         });
         spec_b
@@ -3314,7 +4247,7 @@ mod tests {
         // A non-differential spec demands nothing.
         let mut spec_p = MeritSpec::new();
         let kp = spec_p.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Ts,
         });
         spec_p
@@ -3336,7 +4269,7 @@ mod tests {
         use super::{CurveId, SimCurves};
         use std::sync::Arc;
         let mut sim = SimCurves {
-            angles: Arc::from([0.0]),
+            angles: Arc::from([Radians::ZERO]),
             wavelengths: Arc::from([500.0, 600.0]),
             total_d: 0.0,
             n_front_re: Arc::from([1.0_f64]),
@@ -3369,7 +4302,7 @@ mod tests {
     fn length_mismatch_and_bad_key_rejected() {
         let mut spec = MeritSpec::new();
         let _k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         assert!(
@@ -3433,7 +4366,7 @@ mod tests {
         let s = white[0] + white[1] + white[2];
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         });
         spec.add_color_demand(
@@ -3479,7 +4412,7 @@ mod tests {
         assert!(spec.residuals(&full, &mut out).is_ok());
         assert_eq!(out.len(), 2);
         let empty = SimCurves {
-            angles: vec![0.0].into(),
+            angles: vec![Radians::ZERO].into(),
             wavelengths: (0..NW)
                 .map(|i| 400.0 + 100.0 * i as f64)
                 .collect::<Vec<_>>()
@@ -3532,6 +4465,8 @@ mod tests {
 
     mod sensitivity {
         use super::*;
+        #[allow(unused_imports)]
+        use crate::smatrix::angle::{Radians, deg, degs};
         use std::sync::Arc;
 
         const NW: usize = 9;
@@ -3544,7 +4479,7 @@ mod tests {
         /// Two angle rows of smooth, distinguishable curves.
         fn sim_of(rs: &[f64], ts: &[f64]) -> SimCurves {
             let mut s = SimCurves {
-                angles: vec![0.0, 30.0].into(),
+                angles: degs(&[0.0, 30.0]).into(),
                 wavelengths: wl().into(),
                 total_d: 400.0,
                 n_front_re: Arc::from([1.0_f64]),
@@ -3587,6 +4522,8 @@ mod tests {
                 band: vec![0.01; n].into(),
                 phase: false,
                 differential_passes: None,
+                retardance: false,
+                point_weights: Vec::new().into(),
                 integral,
                 weight,
                 count_norm: None,
@@ -3632,7 +4569,11 @@ mod tests {
                 .map(|terms| {
                     terms
                         .iter()
-                        .filter(|t| t.curve == curve && t.angle_row * n_wav + t.wavelength == flat)
+                        .filter(|t| {
+                            t.part == TermPart::Value
+                                && t.curve == curve
+                                && t.angle_row * n_wav + t.wavelength == flat
+                        })
                         .map(|t| t.d_residual)
                         .sum()
                 })
@@ -3687,7 +4628,7 @@ mod tests {
                 for transform in [SimTransform::Linear, SimTransform::Log] {
                     let mut spec = MeritSpec::new();
                     let k = spec.add_key(MeritKey {
-                        angle: 30.0,
+                        angle: deg(30.0),
                         curve: CurveId::Rs,
                     });
                     let mut t = target(k as u32, wl(), kind, transform, false, 1.7);
@@ -3713,7 +4654,7 @@ mod tests {
             // 1/n, and the kind applies once, to the mean.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_target(target(
@@ -3730,13 +4671,57 @@ mod tests {
         }
 
         #[test]
+        fn point_weights_ride_through_every_kind() {
+            // W4: non-uniform point weights, pointwise (√w_i on each row)
+            // and integral (w_i/Σw on the one row), every kind, both
+            // transforms, against residuals() differenced.
+            let pw: Vec<f64> = (0..NW).map(|i| 0.25 + 0.5 * i as f64).collect();
+            for kind in [
+                ConstraintKind::Exact,
+                ConstraintKind::Above,
+                ConstraintKind::Below,
+                ConstraintKind::Range,
+                ConstraintKind::CenterBand,
+            ] {
+                for transform in [SimTransform::Linear, SimTransform::Log] {
+                    for integral in [false, true] {
+                        let mut spec = MeritSpec::new();
+                        let k = spec.add_key(MeritKey {
+                            angle: deg(30.0),
+                            curve: CurveId::Rs,
+                        });
+                        let mut t = target(k as u32, wl(), kind, transform, integral, 1.7);
+                        let level = if transform == SimTransform::Log {
+                            0.08f64.log10()
+                        } else {
+                            0.08
+                        };
+                        // Integral kinds act on the mean: put it off the
+                        // curve's mean so one-sided kinds are active.
+                        let level = if integral { level * 1.5 } else { level };
+                        t.normalized_targets = vec![level; NW].into();
+                        t.point_weights = pw.clone().into();
+                        spec.add_target(t).unwrap();
+                        let label = format!("weighted {kind:?}/{transform:?}/integral={integral}");
+                        // An inactive integral kind has no row terms at all.
+                        let mut r = Vec::new();
+                        spec.residuals(&base_sim(), &mut r).unwrap();
+                        if r.iter().any(|v| *v != 0.0) {
+                            compare(&spec, &base_sim(), 1e-6, &label);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
         fn sensitivity_covers_absorption_through_both_companions() {
             // A = 1 − R − T: the row must depend on BOTH curves, each with the
             // opposite sign of an R row. A one-channel bug would still pass a
             // single-curve check.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 30.0,
+                angle: deg(30.0),
                 curve: CurveId::As,
             });
             spec.add_target(target(
@@ -3779,7 +4764,7 @@ mod tests {
             for transform in [SimTransform::Linear, SimTransform::Log] {
                 let mut spec = MeritSpec::new();
                 let k = spec.add_key(MeritKey {
-                    angle: 0.0,
+                    angle: Radians::ZERO,
                     curve: CurveId::Rs,
                 });
                 let mut t = target(
@@ -3811,11 +4796,11 @@ mod tests {
             // would still be elementwise correct on any single-target spec.
             let mut spec = MeritSpec::new();
             let k0 = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let k1 = spec.add_key(MeritKey {
-                angle: 30.0,
+                angle: deg(30.0),
                 curve: CurveId::Ts,
             });
             spec.add_target(target(
@@ -3855,7 +4840,7 @@ mod tests {
             // misaligned — silently, since the values would all still be finite.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             spec.add_target(target(
@@ -3884,48 +4869,239 @@ mod tests {
             compare(&spec, &sim, 1e-6, "grid-miss");
         }
 
-        #[test]
-        fn a_phase_target_is_reported_uncovered_not_zero() {
-            // The whole point of `uncovered`: a caller must fall back to a finite
-            // difference, not conclude that the phase rows are constant.
-            let mut spec = MeritSpec::new();
-            let k = spec.add_key(MeritKey {
-                angle: 0.0,
-                curve: CurveId::Rs,
-            });
-            let mut t = target(
-                k as u32,
-                wl(),
-                ConstraintKind::Exact,
-                SimTransform::Phase,
-                false,
-                1.0,
-            );
-            t.phase = true;
-            spec.add_target(t).unwrap();
-
+        /// Smooth complex rows that stay well away from 0 and from the
+        /// branch cut, so a central difference of `arg` is clean.
+        fn phase_sim(curve: CurveId, bump: Option<(TermPart, usize, f64)>) -> SimCurves {
             let mut sim = base_sim();
-            let cplx: Vec<Complex64> = (0..NA * NW)
+            let mut c: Vec<Complex64> = (0..NA * NW)
                 .map(|k| {
-                    Complex64::new(
-                        0.3 * ((k as f64) * 0.3).cos(),
-                        0.2 * ((k as f64) * 0.5).sin(),
-                    )
+                    let a = 0.4 + 0.35 * ((k as f64) * 0.3).sin();
+                    Complex64::from_polar(0.7 + 0.1 * (k as f64 * 0.5).cos(), a)
                 })
                 .collect();
-            sim.set_complex(CurveId::Rs, Arc::from(cplx)).unwrap();
+            match bump {
+                Some((TermPart::Re, flat, h)) => c[flat].re += h,
+                Some((TermPart::Im, flat, h)) => c[flat].im += h,
+                Some((TermPart::TotalThickness, _, h)) => sim.total_d += h,
+                Some((TermPart::Value, ..)) | None => {}
+            }
+            sim.set_complex(curve, Arc::from(c)).unwrap();
+            sim
+        }
+
+        #[test]
+        fn phase_rows_are_a_finite_difference_of_the_complex_rows_and_d() {
+            check_phase_rows(CurveId::Ts);
+        }
+
+        /// A p row and its s partner whose phases put `arg(p·conj(s))`
+        /// across ±π at some points, so the wrap of the product and of the
+        /// residual are both exercised. `bump` moves one part of one row.
+        fn ret_sim(p: CurveId, bump: Option<(CurveId, TermPart, usize, f64)>) -> SimCurves {
+            let s = p.retardance_partner().unwrap();
+            let mut sim = base_sim();
+            for (id, phase0, amp0) in [(p, 0.4, 0.7), (s, -2.5, 0.5)] {
+                let mut c: Vec<Complex64> = (0..NA * NW)
+                    .map(|k| {
+                        let a = phase0 + 0.35 * ((k as f64) * 0.3 + amp0).sin();
+                        Complex64::from_polar(amp0 + 0.1 * (k as f64 * 0.5).cos(), a)
+                    })
+                    .collect();
+                match bump {
+                    Some((b, TermPart::Re, flat, h)) if b == id => c[flat].re += h,
+                    Some((b, TermPart::Im, flat, h)) if b == id => c[flat].im += h,
+                    _ => {}
+                }
+                sim.set_complex(id, Arc::from(c)).unwrap();
+            }
+            sim
+        }
+
+        /// W8a: retardance rows land on both rows, `+` on p and `−` on s,
+        /// against `residuals()` differenced in Re/Im of every grid
+        /// amplitude of either row. Aligned and off-grid, pointwise and
+        /// integral, two kinds, both angles, a target near the wrap.
+        fn check_retardance_rows(p: CurveId) {
+            let s_id = p.retardance_partner().unwrap();
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            let mut spec = MeritSpec::new();
+            for angle in [Radians::ZERO, deg(30.0)] {
+                let k = spec.add_key(MeritKey { angle, curve: p });
+                for (grid, integral, kind, tgt) in [
+                    (wl(), false, ConstraintKind::Exact, 0.1),
+                    (off.clone(), false, ConstraintKind::Exact, -3.1),
+                    (wl(), true, ConstraintKind::Exact, 3.0),
+                    (off.clone(), false, ConstraintKind::CenterBand, 2.9),
+                ] {
+                    let n = grid.len();
+                    let mut t = target(k as u32, grid, kind, SimTransform::Phase, integral, 1.3);
+                    t.phase = true;
+                    t.retardance = true;
+                    t.normalized_targets = vec![tgt; n].into();
+                    // W4 point weights ride on the phase rows too.
+                    t.point_weights = (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                    spec.add_target(t).unwrap();
+                }
+            }
+            let need = spec.required_rows();
+            assert!(need.has_complex(p) && need.has_complex(s_id));
+
+            let sim = ret_sim(p, None);
             let s = spec.curve_sensitivity(&sim).unwrap();
-            assert!(!s.is_complete());
-            assert_eq!(s.uncovered.len(), NW);
-            assert_eq!(s.rows.len(), spec.n_residuals());
-            assert!(s.rows.iter().all(|r| r.is_empty()));
+            assert!(s.is_complete(), "uncovered {:?}", s.uncovered);
+            let column = |curve: CurveId, part: TermPart, flat: usize| -> Vec<f64> {
+                s.rows
+                    .iter()
+                    .map(|terms| {
+                        terms
+                            .iter()
+                            .filter(|t| {
+                                t.curve == curve
+                                    && t.part == part
+                                    && t.angle_row * NW + t.wavelength == flat
+                            })
+                            .map(|t| t.d_residual)
+                            .sum()
+                    })
+                    .collect()
+            };
+            let h = 1e-7;
+            let mut live = 0usize;
+            let mut worst = 0.0f64;
+            for curve in [p, s_id] {
+                for part in [TermPart::Re, TermPart::Im] {
+                    for flat in 0..NA * NW {
+                        let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                        spec.residuals(&ret_sim(p, Some((curve, part, flat, h))), &mut rp)
+                            .unwrap();
+                        spec.residuals(&ret_sim(p, Some((curve, part, flat, -h))), &mut rm)
+                            .unwrap();
+                        let a = column(curve, part, flat);
+                        for (i, ((x, u), v)) in a.iter().zip(&rp).zip(&rm).enumerate() {
+                            let y = (u - v) / (2.0 * h);
+                            let dev = (x - y).abs() / y.abs().max(1.0);
+                            worst = worst.max(dev);
+                            assert!(
+                                dev < 1e-6,
+                                "row {i}, {curve:?} {part:?}[{flat}]: {x} vs {y}"
+                            );
+                            if y.abs() > 1e-9 {
+                                live += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(live > 200, "only {live} live entries");
+            println!("  retardance rows: {live} live entries, worst rel dev {worst:.3e}");
+        }
+
+        #[test]
+        fn retardance_rows_are_a_finite_difference_of_both_complex_rows() {
+            check_retardance_rows(CurveId::Rp);
+            check_retardance_rows(CurveId::TBp);
+        }
+
+        #[test]
+        fn back_phase_rows_are_a_finite_difference_of_the_complex_rows_and_d() {
+            // The back row and the exit medium's reference index: the same
+            // chain as a front one, read from the other side.
+            check_phase_rows(CurveId::TBs);
+            check_phase_rows(CurveId::RBp);
+        }
+
+        /// arg() of an interpolated complex row, minus a differential
+        /// reference through D: every row against `residuals()` differenced
+        /// in Re z, Im z and D. Aligned and off-grid targets, absolute and
+        /// differential, pointwise and integral, two kinds, both angles.
+        fn check_phase_rows(curve: CurveId) {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            let mut spec = MeritSpec::new();
+            for (ai, angle) in [Radians::ZERO, deg(30.0)].into_iter().enumerate() {
+                let k = spec.add_key(MeritKey { angle, curve });
+                for (grid, passes, integral, kind) in [
+                    (wl(), None, false, ConstraintKind::Exact),
+                    (
+                        off.clone(),
+                        Some(1.0 + ai as f64),
+                        false,
+                        ConstraintKind::Exact,
+                    ),
+                    (wl(), Some(2.0), true, ConstraintKind::Exact),
+                    (off.clone(), None, false, ConstraintKind::CenterBand),
+                ] {
+                    let n = grid.len();
+                    let mut t = target(k as u32, grid, kind, SimTransform::Phase, integral, 1.3);
+                    t.phase = true;
+                    t.differential_passes = passes;
+                    t.normalized_targets = vec![0.1; n].into();
+                    spec.add_target(t).unwrap();
+                }
+            }
+
+            assert!(!spec.sensitivity_incomplete());
+            let sim = phase_sim(curve, None);
+            let s = spec.curve_sensitivity(&sim).unwrap();
+            assert!(s.is_complete(), "uncovered {:?}", s.uncovered);
+            let mut r0 = Vec::new();
+            spec.residuals(&sim, &mut r0).unwrap();
+            assert_eq!(s.rows.len(), r0.len());
+
+            let column = |part: TermPart, flat: usize| -> Vec<f64> {
+                s.rows
+                    .iter()
+                    .map(|terms| {
+                        terms
+                            .iter()
+                            .filter(|t| {
+                                t.part == part
+                                    && (part == TermPart::TotalThickness
+                                        || t.angle_row * NW + t.wavelength == flat)
+                            })
+                            .map(|t| t.d_residual)
+                            .sum()
+                    })
+                    .collect()
+            };
+            let fd = |part: TermPart, flat: usize, h: f64| -> Vec<f64> {
+                let (mut p, mut m) = (Vec::new(), Vec::new());
+                spec.residuals(&phase_sim(curve, Some((part, flat, h))), &mut p)
+                    .unwrap();
+                spec.residuals(&phase_sim(curve, Some((part, flat, -h))), &mut m)
+                    .unwrap();
+                p.iter().zip(&m).map(|(a, b)| (a - b) / (2.0 * h)).collect()
+            };
+
+            let mut probes: Vec<(TermPart, usize, f64)> = Vec::new();
+            for flat in 0..NA * NW {
+                probes.push((TermPart::Re, flat, 1e-7));
+                probes.push((TermPart::Im, flat, 1e-7));
+            }
+            probes.push((TermPart::TotalThickness, 0, 1e-4));
+            let mut live = 0usize;
+            let mut worst = 0.0f64;
+            for (part, flat, h) in probes {
+                let f = fd(part, flat, h);
+                let a = column(part, flat);
+                let scale = f.iter().fold(1.0f64, |acc, v| acc.max(v.abs()));
+                for (i, (x, y)) in a.iter().zip(&f).enumerate() {
+                    let dev = (x - y).abs() / scale;
+                    worst = worst.max(dev);
+                    assert!(dev < 1e-6, "row {i}, {part:?}[{flat}]: {x} vs {y}");
+                    if y.abs() > 1e-9 {
+                        live += 1;
+                    }
+                }
+            }
+            assert!(live > 100, "only {live} live entries");
+            println!("  phase rows: {live} live entries, worst rel dev {worst:.3e}");
         }
 
         #[test]
         fn a_missing_curve_errors_where_the_residual_pass_errors() {
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rp,
             });
             spec.add_target(target(
@@ -3951,7 +5127,7 @@ mod tests {
             let build = |weight: f64, count: Option<f64>| {
                 let mut spec = MeritSpec::new();
                 let k = spec.add_key(MeritKey {
-                    angle: 0.0,
+                    angle: Radians::ZERO,
                     curve: CurveId::Rs,
                 });
                 let mut t = target(
@@ -3991,7 +5167,7 @@ mod tests {
             // assembling J does no work for them.
             let mut spec = MeritSpec::new();
             let k = spec.add_key(MeritKey {
-                angle: 0.0,
+                angle: Radians::ZERO,
                 curve: CurveId::Rs,
             });
             let mut t = target(

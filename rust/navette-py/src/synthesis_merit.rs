@@ -15,6 +15,8 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
+use crate::structure::WarnOnce;
+
 use navette::smatrix::synthesis::merit::{
     ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves, SimTransform,
 };
@@ -98,21 +100,24 @@ impl PySimCurves {
 #[pymethods]
 impl PySimCurves {
     #[new]
-    #[pyo3(signature = (angles, wavelengths, total_d=0.0, n_front=None, n_back=None))]
+    #[pyo3(signature = (wavelengths, total_d=0.0, n_front=None, n_back=None, *, angles_deg=None, angles_rad=None))]
     /// Empty rows on the given axes; fill with `set_curve`/`set_complex`.
+    /// The rows are labelled by `angles_deg=` or `angles_rad=` (exactly
+    /// one), held in radians.
     /// `total_d`/`n_front`/`n_back` are the stack metadata for
     /// differential-phase (`PDts`/`PDtp`) demands (defaults zero the
     /// reference, i.e. differential ≡ absolute). `n_front`/`n_back` take a
     /// float (length-1 broadcast row) or a per-wavelength float array
     /// (PD2) - length 1 or `len(wavelengths)`, anything else refuses.
     fn new(
-        angles: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
         total_d: f64,
         n_front: Option<&Bound<'_, PyAny>>,
         n_back: Option<&Bound<'_, PyAny>>,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<Self> {
-        let a = angles.as_slice()?;
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let w = wavelengths.as_slice()?;
         let nf = reference_row(n_front, 1.0)?;
         let nb = reference_row(n_back, 1.0)?;
@@ -162,6 +167,8 @@ impl PySimCurves {
 /// Flat optimization targets (see `MeritSpec` in the core).
 pub struct PyMeritSpec {
     inner: MeritSpec,
+    /// The scalar-reference warning, once per distinct message.
+    warned: WarnOnce,
 }
 
 impl PyMeritSpec {
@@ -170,48 +177,72 @@ impl PyMeritSpec {
     }
 
     pub(crate) fn from_inner(inner: MeritSpec) -> Self {
-        PyMeritSpec { inner }
+        PyMeritSpec {
+            inner,
+            warned: WarnOnce::default(),
+        }
     }
 }
 
 /// Compile a target set (JSON) into a native `MeritSpec` (thin over
 /// `targets::compile_merit_spec`): the `build_merit_spec` path.
 #[pyfunction]
-pub(crate) fn compile_merit_spec(request_json: &str) -> PyResult<PyMeritSpec> {
-    let set: navette::smatrix::synthesis::targets::TargetSet = serde_json::from_str(request_json)
-        .map_err(|e| {
-        PyValueError::new_err(format!("compile_merit_spec: invalid request: {e}"))
-    })?;
-    navette::smatrix::synthesis::targets::compile_merit_spec(&set)
+pub(crate) fn compile_merit_spec(py: Python<'_>, request_json: &str) -> PyResult<PyMeritSpec> {
+    let set = navette::smatrix::synthesis::targets::TargetSet::from_json(request_json)
+        .map_err(|e| PyValueError::new_err(format!("compile_merit_spec: invalid request: {e}")))?;
+    let spec = navette::smatrix::synthesis::targets::compile_merit_spec(&set)
         .map(PyMeritSpec::from_inner)
-        .map_err(PyValueError::new_err)
+        .map_err(PyValueError::new_err)?;
+    // Warned, not refused (W8a): a retardance demand at 0 deg only is
+    // unreachable, not malformed.
+    let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+    for msg in navette::smatrix::synthesis::targets::retardance_warnings(&set) {
+        PyErr::warn(
+            py,
+            &user_warning,
+            std::ffi::CString::new(msg)?.as_c_str(),
+            1,
+        )?;
+    }
+    Ok(spec)
 }
 
 #[pymethods]
 impl PyMeritSpec {
     #[new]
     fn new() -> Self {
-        PyMeritSpec {
-            inner: MeritSpec::new(),
-        }
+        PyMeritSpec::from_inner(MeritSpec::new())
     }
 
     /// Register a `(angle, curve)` demand group; returns its key index.
-    fn add_key(&mut self, angle: f64, curve_id: String) -> PyResult<usize> {
+    /// The angle is `angle_deg=` or `angle_rad=` (exactly one).
+    #[pyo3(signature = (curve_id, *, angle_deg=None, angle_rad=None))]
+    fn add_key(
+        &mut self,
+        curve_id: String,
+        angle_deg: Option<f64>,
+        angle_rad: Option<f64>,
+    ) -> PyResult<usize> {
         let id = parse_curve(&curve_id)?;
+        let angle = crate::angles::pick_one("angle", angle_deg, angle_rad)?;
         Ok(self.inner.add_key(MeritKey { angle, curve: id }))
     }
 
     #[pyo3(signature = (key_idx, wavelengths, normalized, tolerances, kind, transform,
                         norm_factor, band=None, phase=false, differential_passes=None,
-                        weight=1.0, count_norm=None, integral=false))]
+                        weight=1.0, count_norm=None, integral=false, retardance=false,
+                        point_weights=None))]
     /// Append one target frame. Arrays are per-point values on `wavelengths`.
     /// `differential_passes` (None = absolute phase; 1.0 = `PDts`/`PDtp`
     /// transmitted) subtracts the equivalent-medium reference (see
-    /// `SimCurves` metadata); requires `phase=true`.
+    /// `SimCurves` metadata); requires `phase=true`. `retardance` samples
+    /// `arg(z_p · conj(z_s))` on a p key (`Rp`/`Tp`/`RBp`/`TBp`); requires
+    /// `phase=true` and no `differential_passes`.
     /// `weight` scales the frame's merit sum; `count_norm` (target-level
     /// point count, resolved by the converter) divides it. `integral`
     /// constrains the mean of the scaled diffs (single residual).
+    /// `point_weights` (one per point, None = all ones) multiply `weight`
+    /// point by point; an integral target takes their weighted mean.
     #[allow(clippy::too_many_arguments)]
     fn add_target(
         &mut self,
@@ -228,7 +259,13 @@ impl PyMeritSpec {
         weight: f64,
         count_norm: Option<f64>,
         integral: bool,
+        retardance: bool,
+        point_weights: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
+        let pw: Vec<f64> = match point_weights {
+            Some(a) => a.as_slice()?.to_vec(),
+            None => Vec::new(),
+        };
         let wl = wavelengths.as_slice()?;
         let nt = normalized.as_slice()?;
         let tol = tolerances.as_slice()?;
@@ -253,16 +290,18 @@ impl PyMeritSpec {
                 band: Arc::from(b.as_slice()),
                 phase,
                 differential_passes,
+                retardance,
                 weight,
                 count_norm,
                 integral,
+                point_weights: Arc::from(pw),
             })
             .map_err(PyValueError::new_err)
     }
 
     /// Scalar merit: Σ residual² + `missing_penalty` per missing key group.
     fn merit(&self, py: Python<'_>, sim: &PySimCurves, missing_penalty: f64) -> PyResult<f64> {
-        warn_scalar_reference(py, &self.inner, &sim.inner)?;
+        warn_scalar_reference(py, self, &sim.inner)?;
         let inner = &self.inner;
         let sim_inner = &sim.inner;
         Ok(py.detach(move || inner.merit(sim_inner, missing_penalty)))
@@ -274,7 +313,7 @@ impl PyMeritSpec {
         py: Python<'_>,
         sim: &PySimCurves,
     ) -> PyResult<Py<PyArray<f64, numpy::Ix1>>> {
-        warn_scalar_reference(py, &self.inner, &sim.inner)?;
+        warn_scalar_reference(py, self, &sim.inner)?;
         let mut out = Vec::new();
         self.inner
             .residuals(&sim.inner, &mut out)
@@ -293,18 +332,21 @@ impl PyMeritSpec {
 /// (length-1 broadcast) or a per-wavelength float array (PD2); a scalar
 /// index on a differential rotation warns (ground rule 6 - announced,
 /// never silent; the engine cannot know the medium it was not given),
-/// once per call site via Python's warning dedup.
+/// once per call site via Python's warning dedup. The angle is
+/// `angle_deg=` or `angle_rad=` (exactly one).
 #[pyfunction]
-#[pyo3(signature = (wavelengths, angle_deg, n_inc=None, total_d=0.0, passes=1.0))]
+#[pyo3(signature = (wavelengths, n_inc=None, total_d=0.0, passes=1.0, *, angle_deg=None, angle_rad=None))]
 pub fn reference_rotation(
     py: Python<'_>,
     wavelengths: PyReadonlyArray1<'_, f64>,
-    angle_deg: f64,
     n_inc: Option<&Bound<'_, PyAny>>,
     total_d: f64,
     passes: f64,
+    angle_deg: Option<f64>,
+    angle_rad: Option<f64>,
 ) -> PyResult<Py<PyArray1<Complex64>>> {
     use navette::smatrix::synthesis::merit::reference_rotation as core_rot;
+    let angle = crate::angles::pick_one("angle", angle_deg, angle_rad)?;
     let row = reference_row(n_inc, 1.0)?;
     let n_wl = wavelengths.as_slice()?.len();
     if passes != 0.0 {
@@ -332,7 +374,7 @@ dispersive, pass the per-wavelength array (length {})",
             }
         }
     }
-    let rot = core_rot(wavelengths.as_slice()?, angle_deg, &row, total_d, passes)
+    let rot = core_rot(wavelengths.as_slice()?, angle, &row, total_d, passes)
         .map_err(PyValueError::new_err)?;
     Ok(PyArray::from_vec(py, rot).into())
 }
@@ -354,9 +396,11 @@ pub(crate) fn rotate_rows(rows: Vec<Complex64>, rot: Vec<Complex64>) -> PyResult
 /// medium is a hand-built `SimCurves` with a scalar row. The door cannot
 /// know the stack it was not given - whether a constant medium is really
 /// air - so this is a warning, never silent and never a refusal (ground
-/// rule 6; air stays a legitimate scalar). Python's warning registry
-/// dedupes per call site, so an LM loop sees it once.
-fn warn_scalar_reference(py: Python<'_>, spec: &MeritSpec, sim: &SimCurves) -> PyResult<()> {
+/// rule 6; air stays a legitimate scalar). The spec remembers what it
+/// said ([`WarnOnce`]), so an LM loop hears it once even under an
+/// "always" filter.
+fn warn_scalar_reference(py: Python<'_>, owner: &PyMeritSpec, sim: &SimCurves) -> PyResult<()> {
+    let spec = &owner.inner;
     if !spec.uses_differential() {
         return Ok(());
     }
@@ -386,6 +430,9 @@ per-wavelength array (SimCurves n_front/n_back or \
 apply_reference_rotation)",
         sides
     );
+    if !owner.warned.fresh(std::slice::from_ref(&msg)) {
+        return Ok(());
+    }
     let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
     PyErr::warn(
         py,
@@ -395,29 +442,34 @@ apply_reference_rotation)",
     )
 }
 
-/// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major).
-/// Returns a dict with `r/t/a/rb/tb/ab` pairs plus `phi0..phi3` (one pair
+/// Fold a spec into per-quantity `(targets, weights)` pairs (angle-major),
+/// one set per polarization branch. Returns `{"s": {...}, "p": {...}}`;
+/// each branch dict has `r/t/a/rb/tb/ab` pairs plus `phi0..phi3` (one pair
 /// per S-matrix channel — emit one `P_PHI` call per used channel), plus
 /// `grads_r`/`grads_t`: the Option-B color buckets (`dF/dcurve` per
-/// angle-major point, weight/residual/U-curve-half already folded in).
-/// They are NOT a target/weight pair — pass them straight to
-/// `needle_gradient`'s `grads_r`/`grads_t`, which deposits them into the
-/// `P` / `P_T` channels. All-zero when the spec has no color demands.
-/// Omitting them is what made the documented Python fold →
-/// `needle_gradient` flow return a silent-zero color gradient (R4.2).
+/// angle-major point, weight/residual already folded in). They are NOT a
+/// target/weight pair — pass them straight to `needle_gradient`'s
+/// `grads_r`/`grads_t`, which deposits them into the `P` / `P_T` channels.
+/// All-zero when the spec has no color demands. Omitting them is what made
+/// the documented Python fold → `needle_gradient` flow return a
+/// silent-zero color gradient (R4.2). Feed branch `"s"` to
+/// `needle_gradient(pol="s")` and `"p"` to `pol="p"`: the two results sum
+/// to the merit's slope. The grid is `angles_deg=` or `angles_rad=`
+/// (exactly one); it is matched against the spec's keys in radians.
 #[pyfunction]
-#[pyo3(signature = (spec, angles, wavelengths, sim=None))]
+#[pyo3(signature = (spec, wavelengths, sim=None, *, angles_deg=None, angles_rad=None))]
 pub fn build_needle_targets(
     py: Python<'_>,
     spec: &PyMeritSpec,
-    angles: PyReadonlyArray1<'_, f64>,
     wavelengths: PyReadonlyArray1<'_, f64>,
     sim: Option<&PySimCurves>,
+    angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+    angles_rad: Option<PyReadonlyArray1<'_, f64>>,
 ) -> PyResult<Py<PyDict>> {
-    let a = angles.as_slice()?.to_vec();
+    let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let w = wavelengths.as_slice()?.to_vec();
     if let Some(s) = sim {
-        warn_scalar_reference(py, &spec.inner, &s.inner)?;
+        warn_scalar_reference(py, spec, &s.inner)?;
     }
     let nt = py
         .detach({
@@ -427,30 +479,42 @@ pub fn build_needle_targets(
         })
         .map_err(PyValueError::new_err)?;
     let d = PyDict::new(py);
-    let pair = |py: Python<'_>, name: &str, p: (Vec<f64>, Vec<f64>)| -> PyResult<()> {
+    d.set_item("s", branch_dict(py, nt.s)?)?;
+    d.set_item("p", branch_dict(py, nt.p)?)?;
+    Ok(d.unbind())
+}
+
+/// One polarization branch of a fold as the dict `build_needle_targets`
+/// documents.
+fn branch_dict(
+    py: Python<'_>,
+    f: navette::smatrix::synthesis::needle_pass::PolFold,
+) -> PyResult<Bound<'_, PyDict>> {
+    let d = PyDict::new(py);
+    let pair = |name: &str, p: (Vec<f64>, Vec<f64>)| -> PyResult<()> {
         let inner = PyDict::new(py);
         inner.set_item("targets", PyArray::from_vec(py, p.0))?;
         inner.set_item("weights", PyArray::from_vec(py, p.1))?;
         d.set_item(name, inner)?;
         Ok(())
     };
-    pair(py, "r", nt.r)?;
-    pair(py, "t", nt.t)?;
-    pair(py, "a", nt.a)?;
-    pair(py, "rb", nt.rb)?;
-    pair(py, "tb", nt.tb)?;
-    pair(py, "ab", nt.ab)?;
-    d.set_item("grads_r", PyArray::from_vec(py, nt.grad_r))?;
-    d.set_item("grads_t", PyArray::from_vec(py, nt.grad_t))?;
-    for (i, p) in nt.phi.into_iter().enumerate() {
+    pair("r", f.r)?;
+    pair("t", f.t)?;
+    pair("a", f.a)?;
+    pair("rb", f.rb)?;
+    pair("tb", f.tb)?;
+    pair("ab", f.ab)?;
+    d.set_item("grads_r", PyArray::from_vec(py, f.grad_r))?;
+    d.set_item("grads_t", PyArray::from_vec(py, f.grad_t))?;
+    for (i, p) in f.phi.into_iter().enumerate() {
         // Exact dM/dD correction for differential demands (0.0 otherwise):
         // subtract from the assembled P_PHI gradient (see `needle_gradient`
         // `gain_shift_phi`). Uniform in z — the needle site never moves.
         let inner = PyDict::new(py);
         inner.set_item("targets", PyArray::from_vec(py, p.0))?;
         inner.set_item("weights", PyArray::from_vec(py, p.1))?;
-        inner.set_item("gain_shift", nt.phi_gain_shift[i])?;
+        inner.set_item("gain_shift", f.phi_gain_shift[i])?;
         d.set_item(format!("phi{i}"), inner)?;
     }
-    Ok(d.unbind())
+    Ok(d)
 }

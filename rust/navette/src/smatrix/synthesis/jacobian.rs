@@ -23,13 +23,34 @@
 //! over its own row's terms in a fixed order: no cross-point reduction, no
 //! parallel accumulation, nothing whose order depends on scheduling (§13).
 
-use crate::smatrix::synthesis::merit::{CurveId, MeritSensitivity};
+use crate::smatrix::synthesis::merit::{CurveId, CurveTerm, MeritSensitivity, TermPart};
 
 /// The four front intensity channels the coherent sweep produces, in the
-/// order [`CurveDeposits`] stores them. Everything else is either derived
-/// from these (absorption: A = 1 − R − T) or not simulated at all, in which
-/// case the residual pass has already failed on the missing curve.
+/// order [`CurveDeposits`] stores them. Absorption (A = 1 − R − T) reads
+/// them through its companions and the unpolarized curves through their
+/// s/p halves ([`CurveId::unpolarized_parts`], split at assembly). Back
+/// curves have their own block, [`BACK_DEPOSIT_CHANNELS`].
 pub const DEPOSIT_CHANNELS: [CurveId; 4] = [CurveId::Rs, CurveId::Rp, CurveId::Ts, CurveId::Tp];
+
+/// The complex amplitudes a phase demand reads, whose real and imaginary
+/// parts follow the intensity channels when the spec asks for phase:
+/// slots 4, 5 (Re, Im of `Ts`), 6, 7 (`Tp`), 8, 9 (`Rs`) and 10, 11 (`Rp`).
+pub const PHASE_DEPOSIT_CHANNELS: [CurveId; 4] =
+    [CurveId::Ts, CurveId::Tp, CurveId::Rs, CurveId::Rp];
+
+/// The back-incidence curves, present when the spec reads any: their
+/// intensities in slots 12-15, then the Re, Im of their complex amplitudes
+/// in slots 16-23 (16, 17 for `RBs`, …, 22, 23 for `TBp`). The front phase
+/// slots before them are always filled when these are.
+pub const BACK_DEPOSIT_CHANNELS: [CurveId; 4] =
+    [CurveId::RBs, CurveId::RBp, CurveId::TBs, CurveId::TBp];
+
+/// First slot of the back intensities; the back amplitudes follow at
+/// `BACK_SLOT + 4`.
+pub const BACK_SLOT: usize = 4 + 2 * PHASE_DEPOSIT_CHANNELS.len();
+
+/// Slot count of a sweep that carries the back channels.
+pub const ALL_SLOTS: usize = BACK_SLOT + 3 * BACK_DEPOSIT_CHANNELS.len();
 
 /// Storage slot for a curve, or `None` when this pass carries no deposits
 /// for it.
@@ -39,7 +60,33 @@ pub fn deposit_channel(id: CurveId) -> Option<usize> {
         CurveId::Rp => Some(1),
         CurveId::Ts => Some(2),
         CurveId::Tp => Some(3),
-        _ => None,
+        _ => BACK_DEPOSIT_CHANNELS
+            .iter()
+            .position(|&c| c == id)
+            .map(|k| BACK_SLOT + k),
+    }
+}
+
+/// First slot of a curve's complex amplitude (Re; Im follows), or `None`.
+fn amplitude_channel(id: CurveId) -> Option<usize> {
+    match PHASE_DEPOSIT_CHANNELS.iter().position(|&c| c == id) {
+        Some(k) => Some(4 + 2 * k),
+        None => BACK_DEPOSIT_CHANNELS
+            .iter()
+            .position(|&c| c == id)
+            .map(|k| BACK_SLOT + 4 + 2 * k),
+    }
+}
+
+/// Storage slot for one sensitivity term, or `None` when no deposits exist
+/// for it. A [`TermPart::TotalThickness`] term has no slot: ∂D/∂d is 1 for
+/// every film and the assembly adds it directly.
+pub(crate) fn term_channel(term: &CurveTerm) -> Option<usize> {
+    match term.part {
+        TermPart::Value => deposit_channel(term.curve),
+        TermPart::Re => amplitude_channel(term.curve),
+        TermPart::Im => amplitude_channel(term.curve).map(|c| c + 1),
+        TermPart::TotalThickness => None,
     }
 }
 
@@ -49,32 +96,47 @@ pub fn deposit_channel(id: CurveId) -> Option<usize> {
 /// A "grid point" is the flat angle-major index the curves themselves use,
 /// `point = angle_row · n_wav + wavelength`; a "parameter" is a position in
 /// the optimizer's parameter vector, i.e. the k-th optimize-flagged film.
+///
+/// Four channels ([`DEPOSIT_CHANNELS`]) for an intensity-only spec, twelve
+/// when the amplitudes of [`PHASE_DEPOSIT_CHANNELS`] follow, and
+/// [`ALL_SLOTS`] when the spec reads a back curve
+/// ([`BACK_DEPOSIT_CHANNELS`]).
 #[derive(Clone, Debug)]
 pub struct CurveDeposits {
     n_points: usize,
     n_par: usize,
-    /// `data[channel][point · n_par + par]`, channels as [`DEPOSIT_CHANNELS`].
-    data: [Vec<f64>; 4],
+    /// `data[channel][point · n_par + par]`, channels as [`term_channel`].
+    data: Vec<Vec<f64>>,
 }
 
 impl CurveDeposits {
     /// Build from one row per grid point, each row laid out
-    /// `[channel · n_par + par]` (4·n_par entries) — the shape the parallel
-    /// sweep collects.
+    /// `[channel · n_par + par]` (4·n_par entries, 4 + 2k channels with
+    /// the first k of [`PHASE_DEPOSIT_CHANNELS`], or [`ALL_SLOTS`]) — the
+    /// shape the parallel sweep collects.
     pub fn from_point_rows(rows: Vec<Vec<f64>>, n_par: usize) -> Result<Self, String> {
         let n_points = rows.len();
-        let stride = 4 * n_par;
+        let max_ch = 4 + 2 * PHASE_DEPOSIT_CHANNELS.len();
+        let n_ch = match rows.first() {
+            Some(r)
+                if n_par > 0
+                    && r.len() % n_par == 0
+                    && (4..=max_ch)
+                        .step_by(2)
+                        .chain([ALL_SLOTS])
+                        .any(|c| c * n_par == r.len()) =>
+            {
+                r.len() / n_par
+            }
+            _ => 4,
+        };
+        let stride = n_ch * n_par;
         if rows.iter().any(|r| r.len() != stride) {
             return Err(format!(
-                "curve deposits: every point row must hold 4·n_par = {stride} entries"
+                "curve deposits: every point row must hold {n_ch}·n_par = {stride} entries"
             ));
         }
-        let mut data = [
-            vec![0.0; n_points * n_par],
-            vec![0.0; n_points * n_par],
-            vec![0.0; n_points * n_par],
-            vec![0.0; n_points * n_par],
-        ];
+        let mut data = vec![vec![0.0; n_points * n_par]; n_ch];
         for (p, row) in rows.iter().enumerate() {
             for (c, block) in data.iter_mut().enumerate() {
                 block[p * n_par..(p + 1) * n_par].copy_from_slice(&row[c * n_par..(c + 1) * n_par]);
@@ -95,6 +157,86 @@ impl CurveDeposits {
         self.n_par
     }
 
+    /// 4 (intensities), or more with the phase amplitudes and the back
+    /// channels after them.
+    pub fn n_channels(&self) -> usize {
+        self.data.len()
+    }
+
+    /// True when every term of `sens` has a deposit channel here (after
+    /// the unpolarized split). A false answer is a decline, not an error:
+    /// the caller differences that iteration.
+    pub fn covers(&self, sens: &MeritSensitivity) -> bool {
+        let has = |t: &CurveTerm| term_channel(t).is_some_and(|c| c < self.data.len());
+        sens.rows.iter().flatten().all(|t| {
+            t.part == TermPart::TotalThickness
+                || match (t.part, t.curve.unpolarized_parts()) {
+                    (TermPart::Value, Some((a, b))) => {
+                        has(&CurveTerm { curve: a, ..*t }) && has(&CurveTerm { curve: b, ..*t })
+                    }
+                    _ => has(t),
+                }
+        })
+    }
+
+    /// `out += d_residual · ∂(curve)/∂θ` for one non-thickness term. An
+    /// unpolarized intensity is `½(X_s + X_p)` by the evaluator's contract,
+    /// so its column is the half-sum of the two polarized columns.
+    fn add_term(
+        &self,
+        out: &mut [f64],
+        term: &CurveTerm,
+        row: usize,
+        n_wav: usize,
+    ) -> Result<(), String> {
+        let d = term.d_residual;
+        match (term.part, term.curve.unpolarized_parts()) {
+            (TermPart::Value, Some((a, b))) => {
+                let half = 0.5 * d;
+                for part in [a, b] {
+                    let col = self.term_column(
+                        &CurveTerm {
+                            curve: part,
+                            ..*term
+                        },
+                        row,
+                        n_wav,
+                    )?;
+                    for (o, &g) in out.iter_mut().zip(col) {
+                        *o += half * g;
+                    }
+                }
+            }
+            _ => {
+                for (o, &g) in out.iter_mut().zip(self.term_column(term, row, n_wav)?) {
+                    *o += d * g;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The deposit column a term reads, or the reason there is none.
+    fn term_column(&self, term: &CurveTerm, row: usize, n_wav: usize) -> Result<&[f64], String> {
+        let channel = term_channel(term)
+            .filter(|&c| c < self.data.len())
+            .ok_or_else(|| {
+                format!(
+                    "analytic jacobian: no deposits for {:?} of curve {:?} (row {row})",
+                    term.part, term.curve
+                )
+            })?;
+        let point = term.angle_row * n_wav + term.wavelength;
+        if point >= self.n_points {
+            return Err(format!(
+                "analytic jacobian: row {row} reads grid point {point}, but the \
+                 deposits cover {} points",
+                self.n_points
+            ));
+        }
+        Ok(self.column(channel, point))
+    }
+
     /// ∂(curve value at `point`)/∂(thickness of parameter `par`).
     pub fn get(&self, channel: usize, point: usize, par: usize) -> f64 {
         self.data[channel][point * self.n_par + par]
@@ -113,8 +255,8 @@ impl CurveDeposits {
 /// sensitivity's `(angle_row, wavelength)` addresses flatten by, the same one
 /// `SimCurves` uses.
 ///
-/// Refuses rather than guesses: a spec with an uncovered row (a phase target
-/// or a color demand) has no analytic Jacobian here and must go to the
+/// Refuses rather than guesses: a spec with an uncovered row (a color
+/// demand) has no analytic Jacobian here and must go to the
 /// finite-difference path. Ask with [`MeritSensitivity::is_complete`] first —
 /// the error is for a caller that did not.
 pub fn assemble_jacobian(
@@ -126,7 +268,7 @@ pub fn assemble_jacobian(
     if let Some(&row) = sens.uncovered.first() {
         return Err(format!(
             "analytic jacobian: residual row {row} has no curve sensitivity \
-             (phase target or color demand) — use the finite-difference path"
+             (color demand) — use the finite-difference path"
         ));
     }
     let m = sens.rows.len();
@@ -136,24 +278,15 @@ pub fn assemble_jacobian(
     for (i, row) in sens.rows.iter().enumerate() {
         let out = &mut jac[i * n..(i + 1) * n];
         for term in row {
-            let channel = deposit_channel(term.curve).ok_or_else(|| {
-                format!(
-                    "analytic jacobian: no deposits for curve {:?} (row {i})",
-                    term.curve
-                )
-            })?;
-            let point = term.angle_row * n_wav + term.wavelength;
-            if point >= dep.n_points() {
-                return Err(format!(
-                    "analytic jacobian: row {i} reads grid point {point}, but the \
-                     deposits cover {} points",
-                    dep.n_points()
-                ));
-            }
             let d = term.d_residual;
-            for (o, &g) in out.iter_mut().zip(dep.column(channel, point)) {
-                *o += d * g;
+            if term.part == TermPart::TotalThickness {
+                // ∂D/∂d = 1 for every film.
+                for o in out.iter_mut() {
+                    *o += d;
+                }
+                continue;
             }
+            dep.add_term(out, term, i, n_wav)?;
         }
     }
     Ok(())
@@ -184,7 +317,7 @@ pub(crate) fn assemble_jacobian_mapped(
     if let Some(&row) = sens.uncovered.first() {
         return Err(format!(
             "analytic jacobian: residual row {row} has no curve sensitivity \
-             (phase target or color demand) — use the finite-difference path"
+             (color demand) — use the finite-difference path"
         ));
     }
     let m = sens.rows.len();
@@ -220,24 +353,16 @@ pub(crate) fn assemble_jacobian_mapped(
             *v = 0.0;
         }
         for term in row {
-            let channel = deposit_channel(term.curve).ok_or_else(|| {
-                format!(
-                    "analytic jacobian: no deposits for curve {:?} (row {i})",
-                    term.curve
-                )
-            })?;
-            let point = term.angle_row * n_wav + term.wavelength;
-            if point >= dep.n_points() {
-                return Err(format!(
-                    "analytic jacobian: row {i} reads grid point {point}, but the \
-                     deposits cover {} points",
-                    dep.n_points()
-                ));
-            }
             let d = term.d_residual;
-            for (s, &g) in scratch.iter_mut().zip(dep.column(channel, point)) {
-                *s += d * g;
+            if term.part == TermPart::TotalThickness {
+                // ∂D/∂(row thickness) = 1 for every film row; a span's
+                // fractions then sum it to 1 per span parameter.
+                for s in scratch.iter_mut() {
+                    *s += d;
+                }
+                continue;
             }
+            dep.add_term(&mut scratch, term, i, n_wav)?;
         }
         let out = &mut jac[i * n_out..(i + 1) * n_out];
         for (p, par) in params.iter().enumerate() {

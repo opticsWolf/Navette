@@ -39,7 +39,7 @@ def _energy(nsub, sigma, rtype, theta):
     rt = np.array([0, int(rtype)], dtype=np.int32)
     rv = np.array([0.0, float(sigma)])
     out = ScatterMatrix(
-        n, d, wavelengths=_LAM, angles=[theta],
+        n, d, wavelengths=_LAM, angles_deg=[theta],
         roughness_types=rt, roughness_values=rv,
     ).compute(_REQ)
     rs, rp, ts, tp = (float(out[k][0]) for k in ("Rs", "Rp", "Ts", "Tp"))
@@ -118,7 +118,7 @@ def test_rtype5_matches_nevot_croce_closed_form(nsub, sigma):
     n = np.array([1.0 + 0j, complex(nsub, 0.0)])
     d = np.array([0.0, 0.0])
     out = ScatterMatrix(
-        n, d, wavelengths=_LAM, angles=[0.0],
+        n, d, wavelengths=_LAM, angles_deg=[0.0],
         roughness_types=np.array([0, 5], dtype=np.int32),
         roughness_values=np.array([0.0, sigma]),
     ).compute(Request.RS | Request.TS)

@@ -182,55 +182,68 @@ $("#data-version").textContent = v;
 // --- needle synthesis ----------------------------------------------------------
 {
   const N = data.needle;
-  // Log axis: the design sits two decades under bare glass. Zeros of R are
-  // floored to the axis minimum rather than dropped.
+  // Log axis, 0.001-100 %: the NIR band sits three decades under bare
+  // silica. Zeros of R are floored to the axis minimum rather than dropped.
   const toPct = (a) => a.map((x) => Math.max(1e-3, x * 100));
+  const P = (v, d) => (v * 100).toFixed(d);
   lineChart($("#needle-spectrum"), {
-    x: { min: 380, max: 780, label: "Wavelength (nm)" },
-    y: { min: 1e-3, max: 50, log: true, label: "Reflectance (%)", fmt: (t) => (t >= 1 ? t.toFixed(0) : +t.toPrecision(1) + "") },
-    bands: [{ x0: N.band[0], x1: N.band[1], fill: "var(--hi-film)" }],
+    x: { min: 380, max: 1150, label: "Wavelength (nm)" },
+    y: { min: 1e-3, max: 100, log: true, label: "Reflectance (%)", fmt: (t) => (t >= 1 ? t.toFixed(0) : +t.toPrecision(1) + "") },
+    bands: [
+      { x0: N.bands[0][0], x1: N.bands[0][1], fill: "var(--hi-film)", label: `VIS · ${P(N.tol[0], 1)} %` },
+      { x0: N.bands[1][0], x1: N.bands[1][1], fill: "var(--hi-film)", label: `NIR · ${P(N.tol[1], 1)} %` },
+    ],
     series: [
-      { name: "Bare glass, n = 1.52", x: N.wl, y: toPct(N.R_bare), color: "var(--s5)", width: 1.6, dash: "6 4" },
+      { name: "Bare fused silica", x: N.wl, y: toPct(N.R_bare), color: "var(--s5)", width: 1.6, dash: "6 4" },
       { name: `Needle design, ${N.layers.length} films`, x: N.wl, y: toPct(N.R), spectral: true, width: 2.8 },
     ],
-    spectrumStrip: true, tipX: nm, tipY: (t) => t.toFixed(3) + " %",
+    spectrumStrip: true, tipX: nm, tipY: (t) => t.toPrecision(2) + " %",
   });
   // Late needle passes can end worse than they began (an insertion the
   // re-optimization cannot use), and cleanup's merge usually takes it back.
-  // The run ends with one more optimization of every thickness; that final
-  // design sits one step past the last cycle, so the chart ends where the
-  // spectrum and stack come from.
+  // Synthesis ends with one more optimization of every thickness (`final`);
+  // the floor stage then re-optimizes with every film at 10 nm or more, and
+  // that design is the one in the spectrum and the stack.
   const H = N.history;
-  const last = H[H.length - 1].cycle, fin = last + 1;
+  const last = H[H.length - 1].cycle, fin = last + 1, flo = last + 2;
   const cyc = H.map((h) => h.cycle);
+  const floorLabel = `${N.floor_nm} nm floor`;
   lineChart($("#needle-merit"), {
     x: {
-      min: 0, max: fin, label: "Macro cycle",
-      ticks: [...cyc.filter((c) => c % 2 === 0 && c < last), last, fin],
-      fmt: (c) => (c === fin ? "final" : String(c)),
+      min: 0, max: flo, label: "Macro cycle",
+      ticks: [...cyc.filter((c) => c % 2 === 0 && c < last), last, fin, flo],
+      fmt: (c) => (c === fin ? "final" : c === flo ? "floor" : String(c)),
     },
-    y: { min: 1, max: 1e6, log: true, label: "Merit" },
+    y: { min: 1, max: 1e5, log: true, label: "Merit" },
     series: [
       { name: "after needle pass", x: cyc, y: H.map((h) => h.needle), color: "var(--s5)", width: 1.5, dash: "4 3" },
       { name: "after cleanup", x: cyc, y: H.map((h) => h.merit), color: "var(--s1)", width: 2.2, points: 3.2 },
-      { name: "final design", x: [last, fin], y: [H[H.length - 1].merit, N.final.merit], color: "var(--s2)", width: 1.5, dash: "2 3", points: 4.5 },
+      { name: "final, then the floor", x: [last, fin, flo], y: [H[H.length - 1].merit, N.final.merit, N.floor.merit], color: "var(--s2)", width: 1.5, dash: "2 3", points: 4.5 },
     ],
-    tipX: (c) => (c === fin ? `final optimization · ${N.final.layers} films` : `cycle ${c} · ${H[c].layers} films`),
+    tipX: (c) => (c === fin ? `final optimization · ${N.final.layers} films`
+      : c === flo ? `${floorLabel} · ${N.floor.layers} films` : `cycle ${c} · ${H[c].layers} films`),
     tipY: (t) => t.toPrecision(4),
   });
-  $("#needle-rms").textContent = (N.rms_in_band * 100).toFixed(2);
+  $("#needle-vis").textContent = P(N.vis_mean, 2);
+  $("#needle-nir").textContent = P(N.nir_R, 3);
+  $("#needle-nir-nm").textContent = N.nir_center;
+  $("#needle-thin").textContent = N.final.thinnest.toFixed(1);
+  $("#needle-floor").textContent = N.floor_nm;
+  $("#needle-floor-thin").textContent = N.floor.thinnest.toFixed(1);
   const box = $("#needle-stack");
   const total = N.layers.reduce((s, l) => s + l.d, 0);
+  const cls = { SiO2: "lo", Al2O3: "mid", HfO2: "hi" };
+  const label = { SiO2: "SiO₂", Al2O3: "Al₂O₃", HfO2: "HfO₂" };
   for (const l of N.layers) {
     const div = document.createElement("div");
-    div.className = l.n > 2 ? "hi" : "lo";
+    div.className = cls[l.m];
     div.style.flex = `${l.d / total} 0 0`;
-    div.title = `${l.n > 2 ? "TiO₂" : "SiO₂"} · ${l.d.toFixed(1)} nm`;
+    div.title = `${label[l.m]} · ${l.d.toFixed(1)} nm`;
     box.appendChild(div);
   }
   const sub = document.createElement("div");
   sub.className = "sub";
-  sub.title = "glass substrate";
+  sub.title = "fused silica substrate";
   box.appendChild(sub);
   $("#stack-sub").textContent = `${N.layers.length} films · ${total.toFixed(0)} nm · ambient on the left`;
 }
@@ -238,14 +251,20 @@ $("#data-version").textContent = v;
 // --- rugate --------------------------------------------------------------------
 {
   const G = data.rugate;
-  $("#rugate-rows").textContent = G.rows_graded;
-  $("#rugate-rows-s").textContent = G.rows_stepped;
+  const P = (v) => (v * 100).toFixed(v < 0.1 ? 1 : 0);
+  $("#rugate-periods").textContent = G.periods;
+  $("#rugate-spans").textContent = G.rugate.spans;
+  $("#rugate-third").textContent = P(G.stepped.third);
+  $("#rugate-worst").textContent = P(G.rugate.worst);
+  $("#rugate-sine").textContent = P(G.sinusoid.worst);
+  $("#rugate-rows").textContent = G.rugate.rows;
+  $("#rugate-rows-s").textContent = G.stepped.rows;
   lineChart($("#rugate-chart"), {
-    x: { min: 450, max: 780, label: "Wavelength (nm)" },
+    x: { min: 450, max: 1700, label: "Wavelength (nm)" },
     y: { min: 0, max: 1, label: "Reflectance", fmt: (t) => t.toFixed(1) },
     series: [
-      { name: `Stepped, ${G.rows_stepped} films`, x: G.wl, y: G.stepped, color: "var(--s2)", width: 1.6 },
-      { name: `Graded, ${G.rows_graded} rows`, x: G.wl, y: G.graded, color: "var(--s1)", width: 2.6 },
+      { name: `Stepped, ${G.stepped.rows} films`, x: G.wl, y: G.stepped.R, color: "var(--s2)", width: 1.4 },
+      { name: `Rugate, ${G.rugate.rows} rows`, x: G.wl, y: G.rugate.R, color: "var(--s1)", width: 2.4 },
     ],
     spectrumStrip: true, tipX: nm, tipY: pct,
   });

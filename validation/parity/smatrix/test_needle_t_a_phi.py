@@ -28,7 +28,7 @@ def base_stack(absorbing=False):
     n_sio2 = (1.8 + 0.4j) if absorbing else (1.45 + 0j)
     idx = np.array([1.0 + 0j, 2.35 + 0j, n_sio2, 2.35 + 0j, 1.52 + 0j])
     thick = np.array([0.0, 40.0, 80.0, 30.0, 0.0])
-    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles=ANGLES)
+    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles_deg=ANGLES)
 
 
 def needle_stack(xi, absorbing=False):
@@ -36,7 +36,7 @@ def needle_stack(xi, absorbing=False):
     n_sio2 = (1.8 + 0.4j) if absorbing else (1.45 + 0j)
     idx = np.array([1.0 + 0j, 2.35 + 0j, n_sio2, N_NEEDLE, n_sio2, 2.35 + 0j, 1.52 + 0j])
     thick = np.array([0.0, 40.0, xi, DELTA, 80.0 - xi, 30.0, 0.0])
-    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles=ANGLES)
+    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles_deg=ANGLES)
 
 
 XI = 30.0
@@ -108,7 +108,7 @@ def incoh_stack(needle_xi=None, absorbing=False):
         thick = np.array([0.0, 40.0, 60.0, needle_xi, DELTA,
                           50.0 - needle_xi, 0.0])
         flags = [0, 0, 1, 0, 0, 0, 0]
-    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles=ANGLES,
+    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles_deg=ANGLES,
                          incoherent_flags=flags)
 
 
@@ -169,7 +169,7 @@ def membrane(absorbing=False, incoherent=False, needle_delta=None):
                         n_mid, 2.35 + 0j, 1.0 + 0j])
         thick = np.array([0.0, 40.0, 40.0, h, h, 40.0, 40.0, 0.0])
         flags = [0, 0, 1 if incoherent else 0, 0, 0, 0, 0, 0]
-    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles=ANGLES,
+    return ScatterMatrix(idx, thick, wavelengths=WAVLS, angles_deg=ANGLES,
                          incoherent_flags=flags)
 
 

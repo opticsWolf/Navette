@@ -156,11 +156,10 @@ pub struct PySolver {
 #[pymethods]
 impl PySolver {
     #[new]
-    #[pyo3(signature = (wavelengths, angles, indices, n_layers, thicknesses=None, incoherent_flags=None, roughness_types=None, roughness_values=None, coherence_mode=0, angles_in_radians=false))]
+    #[pyo3(signature = (wavelengths, indices, n_layers, thicknesses=None, incoherent_flags=None, roughness_types=None, roughness_values=None, coherence_mode=0, roughness_cap=navette::smatrix::optics_core::ROUGHNESS_CAP_RATIO, *, angles_deg=None, angles_rad=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         wavelengths: PyReadonlyArray1<f64>,
-        angles: PyReadonlyArray1<f64>,
         indices: PyReadonlyArray1<Complex64>,
         n_layers: usize,
         thicknesses: Option<PyReadonlyArray1<f64>>,
@@ -168,7 +167,9 @@ impl PySolver {
         roughness_types: Option<PyReadonlyArray1<i32>>,
         roughness_values: Option<PyReadonlyArray1<f64>>,
         coherence_mode: i32,
-        angles_in_radians: bool,
+        roughness_cap: f64,
+        angles_deg: Option<PyReadonlyArray1<f64>>,
+        angles_rad: Option<PyReadonlyArray1<f64>>,
     ) -> PyResult<Self> {
         let opt_f =
             |o: &Option<PyReadonlyArray1<f64>>| o.as_ref().map(|a| a.as_slice().unwrap().to_vec());
@@ -178,10 +179,10 @@ impl PySolver {
         let cf = opt_i(&incoherent_flags);
         let rt = opt_i(&roughness_types);
         let rv = opt_f(&roughness_values);
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         navette::smatrix::solver::Solver::from_raw(
             wavelengths.as_slice()?,
-            angles.as_slice()?,
-            angles_in_radians,
+            &a,
             indices.as_slice()?,
             n_layers,
             tf.as_deref(),
@@ -190,8 +191,20 @@ impl PySolver {
             rv.as_deref(),
             coherence_mode,
         )
-        .map(|inner| PySolver { inner })
+        .and_then(|mut inner| {
+            if roughness_cap != inner.roughness_cap() {
+                inner.set_roughness_cap(roughness_cap)?;
+            }
+            Ok(PySolver { inner })
+        })
         .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off.
+    #[getter]
+    fn roughness_cap(&self) -> f64 {
+        self.inner.roughness_cap()
     }
 
     fn solve(&self, py: Python<'_>, requested: u64) -> PyResult<Py<PyDict>> {
@@ -204,6 +217,12 @@ impl PySolver {
     #[getter]
     fn n_angles(&self) -> usize {
         self.inner.n_angles()
+    }
+
+    /// The sines of the incidence grid, exactly as the solve uses them.
+    #[getter]
+    fn sin_theta<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
+        numpy::PyArray1::from_slice(py, self.inner.sin_theta())
     }
 
     #[getter]
@@ -852,6 +871,7 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(needle_engine, m)?)?;
     m.add_class::<crate::synthesis_merit::PySimCurves>()?;
     m.add_class::<crate::synthesis_merit::PyMeritSpec>()?;
+    m.add_class::<crate::synthesis_weights::PyWeightProfile>()?;
     m.add_function(wrap_pyfunction!(
         crate::synthesis_merit::build_needle_targets,
         m

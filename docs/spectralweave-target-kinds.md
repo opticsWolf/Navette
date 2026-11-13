@@ -15,6 +15,77 @@ Target semantics live in two Rust mirrors that must stay in lockstep:
 Python surface: `src/navette/spectralweave/target.py`
 (`SpectralTarget`, `AngularTarget`, `TargetCollection`).
 
+## What synthesis can target
+
+The needle run (`run_needle`, `run_design`) compiles a `TargetCollection`
+through `build_merit_spec`; a label outside this table raises
+`ValueError` there, and a demand the evaluator cannot produce is refused
+before any solve (`SmatrixContext::check_spec`), naming it. The table
+is measured, not written: `tools/check_target_matrix.py` scores every
+label on a coherent stack, a stack with a plate and an absorbing exit,
+and CI fails when the table and the code disagree (`--write`
+regenerates it).
+
+<!-- target-matrix:begin -->
+| demand | labels (`spectral`, pol.) | coherent stack | stack with a plate |
+|---|---|---|---|
+| intensity, front | `R`, `T` × s/p/u | yes | yes |
+| intensity, back (light from the exit side) | `RB`, `TB` × s/p/u | yes¹ | yes¹ |
+| absorptance, front | `A` × s/p/u | yes | yes |
+| absorptance, back | `AB` × s/p/u | yes¹ | yes¹ |
+| phase of one element, front | `R`, `T` × s/p, `phase=True` | yes | no² |
+| phase of one element, back | `RB`, `TB` × s/p, `phase=True` | yes¹ | no² |
+| retardance | `RetR`, `RetT`, `DeltaR`, `DeltaT`, u, `phase=True` | yes | no² |
+| differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
+| colour (`ColorTarget`) | front `R` / `T` | yes | yes |
+<!-- target-matrix:end -->
+
+Every row but colour accepts every kind (`e`/`a`/`b`/`r`/`c`), `band`,
+point weights and `integral`; intensity rows take linear or log
+normalization, phase rows linear or phase. Colour is `Exact` and linear
+only (*Color demands*). Not available in synthesis (the engine computes
+them, the merit does not): differential phase in reflection (`PDrs`,
+`PDrp`), Ψ, group delay and higher dispersion orders, degree of
+polarization and Stokes parameters, ratio and extinction targets, and
+the `complex` transform.
+
+1. Not computable when the exit medium absorbs over the demand's
+   wavelengths: light coming from inside an absorbing half-space has no
+   defined incident flux. A run drops the demand (from each environment
+   whose exit absorbs) with one `UserWarning` at setup; a bare
+   `SmatrixContext` raises a `ValueError` instead.
+2. Phase is not defined across an incoherent layer. A run drops the
+   demand from each environment whose stack holds a plate, with one
+   `UserWarning` at setup naming them, and keeps it in the coherent
+   ones. Phases that live inside one coherent block (front `r` of the
+   front coating) are dropped too, for now.
+
+Targets belong to the whole design. Both checks run once per run, before
+the pipeline starts, against each environment's complete stack; nothing
+inside the optimization loops checks or warns. A run refuses only when
+the drops leave no demand at all.
+
+### A coating on a plate
+
+A plate is a film with `coherent=False`, `optimize=False` and
+`needle=False` (construction refuses an incoherent film that is free or
+a needle host). Films before it coat the front face, films after it the
+back face, and the run's substrate is the medium behind the plate.
+
+- **Seed each face you want coated.** The plate never hosts a needle and
+  a site with no coherent film above it gets no gradient, so a face that
+  starts bare stays bare. Whether a seeded face keeps its films is the
+  optimizer's call: it may drive them to zero if that lowers the merit.
+- **Thickness is the coating's.** `max_total_thickness_nm` and the run
+  results' `final_coating_thickness_nm` / per-phase
+  `coating_thickness_nm` count coherent films only;
+  `DesignStack.coating_thickness()` reads the same sum and
+  `total_thickness()` adds the plate.
+- **Phase alongside a plate** takes two environments: the same design
+  segment once in coherent surroundings (on a semi-infinite substrate),
+  carrying the phase demands, and once on the plate, carrying the
+  intensity demands (see *Environments*).
+
 ## Normalization strategy (verified)
 
 Each target curve is self-normalized at ingestion so heterogeneous
@@ -88,6 +159,46 @@ terms), gradients superpose exactly across overlapping integral frames,
 and the PD gain-shift formula needs no changes (it lands on
 $−2W(\bar m−T)\overline{k_z}$ automatically).
 
+### Point weights (`weights`, `weight_profile`)
+
+`weight` is one number per target. Point weights put emphasis *along*
+the target, one weight $w_i \ge 0$ per point, multiplying `weight`:
+
+- pointwise: residual $r_i \cdot \sqrt{w_i}$, so the frame contributes
+  `weight × Σ w_i r_i² / count`;
+- integral: the weighted mean, $R = \frac{\Sigma w_i d_i/\Sigma w_i}
+  {\Sigma w_i tol_i/\Sigma w_i}$;
+- the needle fold multiplies each emitted pair's weight by $w_i$
+  (integral: $W w_j/(\Sigma w \cdot N)$ with the gap $N G$ unchanged), so
+  it stays the merit's slope (pinned by the needle oracle).
+
+Give them as an array (`weights=`, one per point), as a
+`WeightProfile` (`constant`, `ramp`, `gaussian`, `bands`, `table`
+(pchip | linear, held flat past the ends), `product` of those), or as the
+name of a profile in `TargetCollection.weight_profiles` — at most one of
+the two keywords. A profile is evaluated on the target's own axis:
+**wavelength in nm** for `SpectralTarget`, **angle in degrees** for
+`AngularTarget`. Everything resolves to point weights when the merit spec
+compiles; validation is native (finite, ≥ 0, right length, not all zero —
+mute a target with `weight=0` instead). All ones is bit-identical to no
+weights.
+
+Tolerance and weight now say different things. The tolerance is the
+**scale** of a point (and the band's companion); the weight is how much
+that point **matters**. For an Exact pointwise point the two are
+interchangeable — $w_i$ is exactly $tol_i \to tol_i/\sqrt{w_i}$ (pinned
+by test) — which is the old way to emphasise a region (shrink the
+tolerance there by $\sqrt{w}$). That trick is superseded: it also moves
+the band of `r`/`c` kinds and the scale of an integral's mean tolerance,
+where a weight leaves both alone.
+
+Limits: weights on an **integral angular** target are refused (each
+angle is its own single-point frame, so they would do nothing); colour
+demands take none (a weight inside the colour integral would change the
+colour); and the `TargetWeaver` path (`build_weaver` /
+`calculate_merit`) refuses targets that carry them — they are read by
+`build_merit_spec` only.
+
 ## Kinds (per point, merit space)
 
 Scaled residual `d = sim_scaled − target_scaled`, floored tolerance `tol`,
@@ -150,8 +261,28 @@ conservatively (exact at centre).
 
 Phase demands fold to one `(targets, weights)` pair per S-matrix channel
 (`phi[0..=3]` → one `P_PHI` call each). Intensity/absorption demands
-require linear normalization; phase demands accept linear or phase
-(wrapped residuals mirror the evaluator); anything else is an `Err`.
+accept linear or log normalization; phase demands accept linear or phase
+(wrapped residuals mirror the evaluator); anything else (`complex`) is an
+`Err`.
+
+**Log demands** fold the tangent of their residual. In log mode
+$d = \log_{10}(s)\cdot nf - t$; the kind table runs on that $d$ and gives
+a centre or edge $c$ (in $\log_{10}$ units) and a weight $w$. With
+$q = 1/(s_{op}\ln 10)$, the slope of $\log_{10}$ at the operating point,
+the demand emits the linear pair
+
+$$t_k = s_{op} - (\log_{10} s_{op} - c)/q, \qquad w_k = w\,q^2,$$
+
+which has the log residual's value and slope at $s_{op}$, so the needle
+gradient is the merit's (pinned by the oracle for every kind, U, A, the
+back side and the integral). An integral Log demand does the same per
+point: its centre gap is the mean residual $\bar d/nf$ and point $j$
+takes $q_j$ (gap $\div q_j$, weight $\times q_j^2$). Two differences from
+a linear demand: before the first simulation there is no operating point,
+so a Log demand **folds nothing** (no conservative centre form), and at
+or below the merit's $10^{-12}$ clamp it folds nothing either (the merit
+is flat there). `"auto"` resolves to log for any curve spanning 100× or
+more, so this is what makes such targets usable in needle runs at all.
 Phase demands must carry raw values with `norm_factor == 1` (the phase
 arm scales nothing — the converter unscales the resolved triple).
 
@@ -169,8 +300,8 @@ surface, under a laminate, behind a cover glass; each of those is an
 name:
 
 ```python
-tc.add(SpectralTarget(wl, R_bare,  tol, 0.0, "s", "R", environment="bare"))
-tc.add(SpectralTarget(wl, R_lam,   tol, 0.0, "s", "R", environment="laminated"))
+tc.add(SpectralTarget(wl, R_bare, tol, "s", "R", angle_deg=0.0, environment="bare"))
+tc.add(SpectralTarget(wl, R_lam,  tol, "s", "R", angle_deg=0.0, environment="laminated"))
 spec = build_merit_spec(tc, environments=["bare", "laminated"])
 ```
 
@@ -327,13 +458,16 @@ Evaluation points (all in solver convention — see the sign note below):
   (`uses_phase()` gates complex-row assembly, `uses_differential()` the
   metadata; intensity-only LM loops pay zero extra allocations).
   `total_d = 0` reproduces absolute phase bit-for-bit.
-- The merit Phase arm subtracts the reference before wrapping; the fold
-  passes PD demands to the `phi` buckets unchanged (same channel as the
-  absolute element) and additionally accumulates the exact `dM/dD`
-  correction `phi_gain_shift[ch] = Σ −2·kz·w·(s−rt)` (`kz =
-  passes·reference_wavenumber`). Subtract it from the assembled `P_PHI`
-  (`needle_gradient(…, gain_shift_phi=…)`); it is uniform in z, so the
-  needle site (`argmax`) never moves — only predicted-gain bookkeeping.
+- The merit Phase arm subtracts the reference before wrapping. The needle
+  kernel scores the absolute phase, so the fold hands it the target plus
+  the reference, `rt + ref(λ)` (same channel as the absolute element),
+  and additionally accumulates the exact `dM/dD` correction
+  `phi_gain_shift[ch] = Σ −2·kz·w·wrap(s−rt)` (`kz =
+  passes·reference_wavenumber`) on the demand's branch. Add it to the
+  assembled `P_PHI` (`needle_gradient(…, gain_shift_phi=…)` spreads it
+  over the points, so their sum carries it once); it is uniform in z, so
+  the needle site (`argmax`) never moves — only predicted-gain
+  bookkeeping.
 - Manual-sim recipe (zero core involvement, doubles as test oracle):
   `apply_reference_rotation` multiplies complex rows by `e^{−i·ref}`;
   an absolute-phase demand on rotated rows is exactly a differential

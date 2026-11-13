@@ -10,36 +10,44 @@ the thickness optimizer and the needle fold), and builds native
     from navette.synthesis import build_merit_spec, sim_curves_from_arrays
 
     spec = build_merit_spec(collection)          # MeritSpec (native)
-    sim = sim_curves_from_arrays(angles, wl,    # SimCurves (native)
-                                 {"Rs": rs, "Ts": ts})
+    sim = sim_curves_from_arrays(wl, {"Rs": rs, "Ts": ts},
+                                 angles_deg=angles)   # SimCurves (native)
     merit = spec.merit(sim, 1e6)
-    folded = build_needle_targets(spec, angles, wl, sim)  # needle inputs
+    folded = build_needle_targets(spec, wl, sim,
+                                  angles_deg=angles)  # needle inputs
 
-``folded`` carries one ``{"targets", "weights"}`` pair per quantity
-(``r``/``t``/``a``/``rb``/``tb``/``ab``, plus ``phi0..phi3`` with a
-``gain_shift``), which feed ``needle_gradient``'s matching keywords::
+``folded`` holds one branch per polarization, ``folded["s"]`` and
+``folded["p"]``. Each carries one ``{"targets", "weights"}`` pair per
+quantity (``r``/``t``/``a``/``rb``/``tb``/``ab``, plus ``phi0..phi3`` with
+a ``gain_shift``), which feed ``needle_gradient``'s matching keywords on
+that polarization::
 
     from navette.smatrix.needle import needle_gradient, NeedleRequest
 
-    g = needle_gradient(stack, needle_n, z_grid, NeedleRequest.P,
-                        targets_r=folded["r"]["targets"],
-                        weights_r=folded["r"]["weights"])
+    s = folded["s"]
+    g = needle_gradient(stack, needle_n, z_grid, NeedleRequest.P, pol="s",
+                        targets_r=s["r"]["targets"],
+                        weights_r=s["r"]["weights"])
+
+The two branches' results summed over the spectral points are the merit's
+slope ``dM/dδ`` for a needle at each depth, at any angle: an s or p demand
+sits on its own branch, an unpolarized one on both.
 
 **Color demands take one extra step.** A color demand (Lab/DE2000, White,
 Yellow, dominant wavelength, ...) integrates the whole spectrum into a
 single residual, so it has no per-point target — it folds instead to
-``folded["grads_r"]`` / ``folded["grads_t"]``, the analytic ``dF/dcurve``
-per solver point. Those are separate keyword arguments, and leaving them
-out yields a gradient with the color contribution silently missing::
+``grads_r`` / ``grads_t``, the analytic ``dF/dcurve`` per solver point.
+Those are separate keyword arguments, and leaving them out yields a
+gradient with the color contribution silently missing::
 
     g = needle_gradient(stack, needle_n, z_grid,
-                        NeedleRequest.P | NeedleRequest.P_T,
-                        targets_r=folded["r"]["targets"],
-                        weights_r=folded["r"]["weights"],
-                        targets_t=folded["t"]["targets"],
-                        weights_t=folded["t"]["weights"],
-                        grads_r=folded["grads_r"],     # <- color, R channel
-                        grads_t=folded["grads_t"])     # <- color, T channel
+                        NeedleRequest.P | NeedleRequest.P_T, pol="s",
+                        targets_r=s["r"]["targets"],
+                        weights_r=s["r"]["weights"],
+                        targets_t=s["t"]["targets"],
+                        weights_t=s["t"]["weights"],
+                        grads_r=s["grads_r"],     # <- color, R channel
+                        grads_t=s["grads_t"])     # <- color, T channel
 
 The deposits land in ``P_*`` and ``P_T_*`` respectively, so the returned
 arrays are the complete gradient of the pointwise **and** color demands —
@@ -77,6 +85,22 @@ raises) plus the reference subtraction; ingestion forces phase
 normalization (raw radians, ``nf = 1``). See
 ``docs/spectralweave-target-kinds.md`` for conventions (solver
 forward-propagation sign, needle gain shift).
+
+Retardance labels (``polarization="u"``, ``phase=True`` required):
+
+============  ====================================================
+label         meaning
+============  ====================================================
+``"RetR"``    arg(r_p · conj(r_s)), the engine's ``Retardance_R``
+``"RetT"``    arg(t_p · conj(t_s)), the engine's ``Retardance_T``
+``"DeltaR"``  ``RetR − π`` wrapped, the engine's ``Delta_R``
+``"DeltaT"``  ``RetT``, the engine's ``Delta_T``
+============  ====================================================
+
+They key on the p curve (``Rp``/``Tp``) and read its s partner too; a
+Delta target is compiled as the retardance target shifted by its offset,
+so one forward and one needle fold serve all four. At normal incidence the
+retardance is identically 0: a demand at 0° only compiles with a warning.
 
 Any other label raises ``ValueError`` — the synthesis side speaks this fixed
 vocabulary (the weaver itself accepts anything). Targets with
@@ -137,6 +161,13 @@ DIFFERENTIAL_PASSES: Dict[str, float] = {
 }
 
 
+def _grid(angles):
+    """An angle grid as the native doors take it; ``None`` stays ``None``."""
+    if angles is None:
+        return None
+    return np.ascontiguousarray(np.asarray(angles, dtype=np.float64)).ravel()
+
+
 def build_merit_spec(collection: TargetCollection,
                      cache_size: int = 128,
                      tolerance_floor: float = 1e-12,
@@ -169,18 +200,25 @@ def build_merit_spec(collection: TargetCollection,
     }
     if environments:
         doc["environments"] = [str(n) for n in environments]
+    if collection.weight_profiles:
+        doc["weight_profiles"] = {str(name): _json.loads(p.to_json())
+                                  for name, p in collection.weight_profiles.items()}
     return _compile(_json.dumps(doc))
 
-def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
+def apply_reference_rotation(cplx, wavelengths,
                              n_inc: float | np.ndarray = 1.0,
                              total_d: float = 0.0,
-                             passes: float = 1.0):
+                             passes: float = 1.0,
+                             *,
+                             angle_deg: float | None = None,
+                             angle_rad: float | None = None):
     """Rotate complex amplitudes into differential-phase space.
 
     Multiplies by ``exp(-i·ref)`` with
     ``ref = passes · 2π · n_inc · total_d · cosθ / λ`` (``wavelengths`` and
-    ``total_d`` share units; ``angle_deg`` is degrees in the incidence
-    medium), so ``arg()`` of the result is the differential phase
+    ``total_d`` share units; the angle in the incidence medium is
+    ``angle_deg=`` or ``angle_rad=``, exactly one),
+    so ``arg()`` of the result is the differential phase
     ``Δφ = arg(a) − ref``. Last axis is wavelength; leading axes (angles)
     broadcast. ``n_inc`` is a float (constant medium) or a per-wavelength
     float array (a dispersive medium; PD2) — the native kernel broadcasts
@@ -200,23 +238,26 @@ def apply_reference_rotation(cplx, wavelengths, angle_deg: float,
         raise ValueError(
             f"last axis {a.shape[-1]} != {wl.size} wavelengths."
         )
-    if np.ndim(n_inc) == 0:
-        rot = np.asarray(_ref_rot(wl, float(angle_deg), float(n_inc),
-                                  float(total_d), float(passes)))
-    else:
-        n = np.ascontiguousarray(np.asarray(n_inc, dtype=np.float64).ravel())
-        rot = np.asarray(_ref_rot(wl, float(angle_deg), n,
-                                  float(total_d), float(passes)))
+    n = (float(n_inc) if np.ndim(n_inc) == 0
+         else np.ascontiguousarray(np.asarray(n_inc, dtype=np.float64).ravel()))
+    rot = np.asarray(_ref_rot(wl, n, float(total_d), float(passes),
+                              angle_deg=angle_deg, angle_rad=angle_rad))
     return a * rot.reshape((1,) * (a.ndim - 1) + (-1,))
 
 
-def sim_curves_from_arrays(angles, wavelengths,
+def sim_curves_from_arrays(wavelengths,
                            curves: Dict[str, np.ndarray],
                            complex_curves: Dict[str, np.ndarray] | None = None,
                            total_d: float = 0.0,
                            n_front: float | np.ndarray = 1.0,
-                           n_back: float | np.ndarray = 1.0):
+                           n_back: float | np.ndarray = 1.0,
+                           *,
+                           angles_deg=None,
+                           angles_rad=None):
     """Build a native ``SimCurves`` from row-major ``[n_angles, n_wavs]`` maps.
+
+    The rows are labelled by ``angles_deg=`` or ``angles_rad=`` (exactly
+    one), held in radians.
 
     ``curves`` maps CurveId codes (``"Rs"``…``"ABu"``) to float rows;
     ``complex_curves`` maps ``Rs/Rp/Ts/Tp/RBs/RBp/TBs/TBp`` to complex rows
@@ -230,10 +271,9 @@ def sim_curves_from_arrays(angles, wavelengths,
     the reference.
     """
     # Thin: lengths + key rules validated natively in set_curve/set_complex.
-    angles = np.ascontiguousarray(np.asarray(angles, dtype=np.float64)).ravel()
     wavelengths = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64)).ravel()
-    sim = _NativeSimCurves(angles, wavelengths, float(total_d),
-                            n_front, n_back)
+    sim = _NativeSimCurves(wavelengths, float(total_d), n_front, n_back,
+                           angles_deg=_grid(angles_deg), angles_rad=_grid(angles_rad))
     for code, arr in curves.items():
         sim.set_curve(code, np.ascontiguousarray(
             np.asarray(arr, dtype=np.float64)).ravel())

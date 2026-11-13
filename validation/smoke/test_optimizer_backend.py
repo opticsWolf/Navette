@@ -57,8 +57,8 @@ def _layers(thicknesses):
 
 
 def _ctx(spec, **lm):
-    return SmatrixContext(spec, _ANGLES, _WL, _NO_REMOVAL_MIN, _CLAMP_MAX,
-                          LmConfig(**lm))
+    return SmatrixContext(spec, _WL, _NO_REMOVAL_MIN, _CLAMP_MAX,
+                          LmConfig(**lm), angles_deg=_ANGLES)
 
 
 @pytest.fixture(scope="module")
@@ -66,15 +66,15 @@ def interior():
     """An R target the reference stack hits exactly: optimum interior, merit 0."""
     flat = TargetCollection()
     flat.add(SpectralTarget(_WL, np.zeros(_WL.size), np.ones(_WL.size),
-                            0.0, "s", "R", kind="e"))
+                            "s", "R", kind="e", angle_deg=0.0))
     flat_spec = build_merit_spec(flat)
     ref, _ = stack_from_layers(_layers(_REFERENCE), _WL, {}, names=_NAMES)
     rs = np.asarray(flat_spec.residuals(_ctx(flat_spec).simulate(ref)),
                     dtype=float)
 
     tc = TargetCollection()
-    tc.add(SpectralTarget(_WL, rs, np.full(_WL.size, 0.02), 0.0, "s", "R",
-                          kind="e"))
+    tc.add(SpectralTarget(_WL, rs, np.full(_WL.size, 0.02), "s", "R",
+                          kind="e", angle_deg=0.0))
     return build_merit_spec(tc)
 
 
@@ -146,12 +146,12 @@ def test_trf_reaches_a_bound_active_optimum_without_landing_on_the_bound():
     clamp = 50.0
     tc = TargetCollection()
     tc.add(SpectralTarget(_WL, np.zeros(_WL.size), np.full(_WL.size, 0.01),
-                          0.0, "s", "R", kind="e"))
+                          "s", "R", kind="e", angle_deg=0.0))
     spec = build_merit_spec(tc)
 
     def run(optimizer):
-        ctx = SmatrixContext(spec, _ANGLES, _WL, _NO_REMOVAL_MIN, clamp,
-                             LmConfig(optimizer=optimizer, max_iterations=2000))
+        ctx = SmatrixContext(spec, _WL, _NO_REMOVAL_MIN, clamp,
+                             LmConfig(optimizer=optimizer, max_iterations=2000), angles_deg=_ANGLES)
         layers = [(MaterialSpec("Konstant", dict(n=1.38)), 10.0)]
         stack, _ = stack_from_layers(layers, _WL, {}, names=["L"])
         mf, _ = ctx.optimize_thicknesses_report(stack)
@@ -211,12 +211,12 @@ def test_basin_interior_optimum_and_report(interior, backend, jacobian):
 def test_basin_trf_active_bounds_and_film_removal(jacobian, index, clamp, remaining):
     tc = TargetCollection()
     tc.add(SpectralTarget(_WL, np.zeros(_WL.size), np.full(_WL.size, 0.01),
-                          0.0, "s", "R", kind="e"))
+                          "s", "R", kind="e", angle_deg=0.0))
     spec = build_merit_spec(tc)
     costs = []
     for backend in ["trf", "basin_trf"]:
-        ctx = SmatrixContext(spec, _ANGLES, _WL, 2.0, clamp,
-                             LmConfig(optimizer=backend, jacobian=jacobian))
+        ctx = SmatrixContext(spec, _WL, 2.0, clamp,
+                             LmConfig(optimizer=backend, jacobian=jacobian), angles_deg=_ANGLES)
         stack, _ = stack_from_layers([(MaterialSpec("Konstant", dict(n=index)), 10.0)],
                                      _WL, {}, names=["L"])
         cost, report = ctx.optimize_thicknesses_report(stack)

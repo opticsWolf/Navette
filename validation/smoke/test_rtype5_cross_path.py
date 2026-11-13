@@ -57,7 +57,7 @@ def _matched_stack(rtype, sigma):
     rt[2] = int(rtype)      # the index-matched interface, and only it
     rv[2] = float(sigma)
     return ScatterMatrix(_MATCHED_N, _MATCHED_D, wavelengths=_WLS,
-                         angles=_ANGLES, roughness_types=rt,
+                         angles_deg=_ANGLES, roughness_types=rt,
                          roughness_values=rv)
 
 
@@ -123,7 +123,7 @@ def _fd_stack(d, rtype, sigma):
     rt[0] = 0
     rv[0] = 0.0
     return ScatterMatrix(_FD_N, np.asarray(d, float), wavelengths=_WLS,
-                         angles=[0.0, 30.0], roughness_types=rt,
+                         angles_deg=[0.0, 30.0], roughness_types=rt,
                          roughness_values=rv)
 
 

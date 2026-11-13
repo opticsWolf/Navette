@@ -58,10 +58,10 @@ def _manual_sublayers(t_nm, f_start, f_end, host, incl, model="Bruggeman"):
 def _merit_ctx():
   from navette._smatrix import MeritSpec, SmatrixContext
   spec = MeritSpec()
-  k = spec.add_key(0.0, "Rs")
+  k = spec.add_key("Rs", angle_deg=0.0)
   spec.add_target(k, WL.copy(), np.zeros(len(WL)),
                   np.full(len(WL), 0.01), "e", "linear", 1.0)
-  return SmatrixContext(spec, np.array([0.0]), WL)
+  return SmatrixContext(spec, WL, angles_deg=np.array([0.0]))
 
 
 def test_gradient_background_rows_match_manual_stack():

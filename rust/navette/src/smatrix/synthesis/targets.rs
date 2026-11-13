@@ -13,7 +13,10 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use super::color_merit::{ColorDemand, ColorDistance, ColorQuantity, ColorReference};
-use super::merit::{ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimTransform};
+use super::merit::{
+    ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimTransform,
+};
+use super::weights::{ProfileRef, WeightProfile, check_point_weights};
 use crate::color::tables::default_tables;
 use crate::spectralweave::opticalweaver::{OpticalKey, SpectralData};
 use crate::spectralweave::targetweaver::{TargetKind, TargetWeaver};
@@ -33,7 +36,10 @@ pub struct SpectralTarget {
     pub wavelengths: Vec<f64>,
     pub values: Vec<f64>,
     pub tolerances: Vec<f64>,
-    pub angle: f64,
+    /// JSON `"angle_deg"` or `"angle_rad"` (see [`TargetSet::from_value`]),
+    /// held in radians.
+    #[serde(rename = "angle_rad", with = "crate::smatrix::angle::serde_radians")]
+    pub angle: Radians,
     pub polarization: String,
     pub spectral: String,
     #[serde(default = "d_kind")]
@@ -58,6 +64,14 @@ pub struct SpectralTarget {
     /// and look like a physics result.
     #[serde(default)]
     pub environment: Option<String>,
+    /// W4: one weight per wavelength, multiplying `weight` point by point
+    /// (see [`super::weights`]). Exclusive with `weight_profile`.
+    #[serde(default)]
+    pub weights: Option<Vec<f64>>,
+    /// W4: a weight profile over wavelength (nm), inline or by name from
+    /// the set's `weight_profiles`. Exclusive with `weights`.
+    #[serde(default)]
+    pub weight_profile: Option<ProfileRef>,
 }
 
 /// One angular constraint curve (value vs angle at fixed wavelength).
@@ -65,7 +79,13 @@ pub struct SpectralTarget {
 #[serde(deny_unknown_fields)]
 pub struct AngularTarget {
     pub wavelength: f64,
-    pub angles: Vec<f64>,
+    /// JSON `"angles_deg"` or `"angles_rad"` (see [`TargetSet::from_value`]),
+    /// held in radians.
+    #[serde(
+        rename = "angles_rad",
+        with = "crate::smatrix::angle::serde_radians_vec"
+    )]
+    pub angles: Vec<Radians>,
     pub values: Vec<f64>,
     pub tolerances: Vec<f64>,
     pub polarization: String,
@@ -92,6 +112,14 @@ pub struct AngularTarget {
     /// and look like a physics result.
     #[serde(default)]
     pub environment: Option<String>,
+    /// W4: one weight per angle, multiplying `weight` point by point (see
+    /// [`super::weights`]). Exclusive with `weight_profile`.
+    #[serde(default)]
+    pub weights: Option<Vec<f64>>,
+    /// W4: a weight profile over the angle **in degrees**, inline or by
+    /// name from the set's `weight_profiles`. Exclusive with `weights`.
+    #[serde(default)]
+    pub weight_profile: Option<ProfileRef>,
 }
 
 /// Scalar (broadcast) or per-point band half-widths.
@@ -158,7 +186,10 @@ pub enum ReferenceJson {
 #[serde(deny_unknown_fields)]
 pub struct ColorTargetJson {
     pub curve: String,
-    pub angle: f64,
+    /// JSON `"angle_deg"` or `"angle_rad"` (see [`TargetSet::from_value`]),
+    /// held in radians.
+    #[serde(rename = "angle_rad", with = "crate::smatrix::angle::serde_radians")]
+    pub angle: Radians,
     pub illuminant: IllumJson,
     pub observer: CmfJson,
     pub quantity: String,
@@ -237,6 +268,79 @@ pub struct TargetSet {
     /// read is a tag that is not checked at all.
     #[serde(default)]
     pub environments: Vec<String>,
+    /// W4: named weight profiles a target's `weight_profile` may name, so
+    /// one emphasis is defined once and shared.
+    #[serde(default)]
+    pub weight_profiles: BTreeMap<String, WeightProfile>,
+}
+
+impl TargetSet {
+    /// Parse a target-set document (JSON text). See [`TargetSet::from_value`].
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        Self::from_value(doc)
+    }
+
+    /// Parse a target-set document. Every spectral and color target names
+    /// its angle in exactly one unit, `"angle_deg"` or `"angle_rad"`, and
+    /// every angular target its grid, `"angles_deg"` or `"angles_rad"`.
+    /// Both, neither, or the old unit-less `"angle"` / `"angles"` key is an
+    /// error naming the two keys. Degrees convert here, through
+    /// `Radians::from_degrees`, the one degree formula in the crate.
+    pub fn from_value(mut doc: serde_json::Value) -> Result<Self, String> {
+        resolve_angle_keys(&mut doc)?;
+        serde_json::from_value(doc).map_err(|e| e.to_string())
+    }
+}
+
+/// Rewrite each target's `*_deg` / `*_rad` angle key to the `*_rad` key
+/// the structs read. Radians pass through; the struct's adapter checks
+/// their range.
+fn resolve_angle_keys(doc: &mut serde_json::Value) -> Result<(), String> {
+    use crate::smatrix::angle::{Radians, degrees_slice};
+    use serde_json::Value;
+    for (section, stem) in [
+        ("spectral", "angle"),
+        ("color", "angle"),
+        ("angular", "angles"),
+    ] {
+        let Some(items) = doc.get_mut(section).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for (i, item) in items.iter_mut().enumerate() {
+            let Some(obj) = item.as_object_mut() else {
+                continue;
+            };
+            let (deg_key, rad_key) = (format!("{stem}_deg"), format!("{stem}_rad"));
+            let pair = format!("\"{deg_key}\" or \"{rad_key}\"");
+            if obj.contains_key(stem) {
+                return Err(format!(
+                    "{section}[{i}]: the key \"{stem}\" is no longer read; give {pair}"
+                ));
+            }
+            match (obj.remove(&deg_key), obj.contains_key(&rad_key)) {
+                (Some(_), true) => {
+                    return Err(format!(
+                        "{section}[{i}]: give exactly one of {pair}, not both"
+                    ));
+                }
+                (None, false) => return Err(format!("{section}[{i}]: give exactly one of {pair}")),
+                (None, true) => {}
+                (Some(deg), false) => {
+                    let bad = || format!("{section}[{i}].{deg_key}: expected a number");
+                    let rad = if stem == "angle" {
+                        let d = deg.as_f64().ok_or_else(bad)?;
+                        Value::from(Radians::from_degrees(d)?.get())
+                    } else {
+                        let d: Vec<f64> = serde_json::from_value(deg).map_err(|_| bad())?;
+                        degrees_slice(&d)?.iter().map(|a| a.get()).collect()
+                    };
+                    obj.insert(rad_key, rad);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn d_cache() -> usize {
@@ -267,6 +371,47 @@ fn check_integral(integral: bool, normalize_count: bool, label: &str) -> Result<
         ));
     }
     Ok(())
+}
+
+/// W4: a target's point weights on its own axis `x` (nm, or degrees for an
+/// angular target); empty when it gives neither `weights` nor
+/// `weight_profile`, which is the all-ones path, bit for bit. `profiles` is
+/// the set's named registry; `None` (the per-target validation hook, which
+/// has no registry) leaves a named reference for the compile to resolve.
+pub fn resolve_point_weights(
+    weights: &Option<Vec<f64>>,
+    profile: &Option<ProfileRef>,
+    x: &[f64],
+    profiles: Option<&BTreeMap<String, WeightProfile>>,
+    label: &str,
+) -> Result<Vec<f64>, String> {
+    let w = match (weights, profile) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "{label}: give weights or weight_profile, not both."
+            ));
+        }
+        (None, None) => return Ok(Vec::new()),
+        (Some(w), None) => w.clone(),
+        (None, Some(ProfileRef::Inline(p))) => p
+            .evaluate(x)
+            .map_err(|e| format!("{label}: weight_profile: {e}"))?,
+        (None, Some(ProfileRef::Name(name))) => {
+            let Some(registry) = profiles else {
+                return Ok(Vec::new());
+            };
+            let p = registry.get(name).ok_or_else(|| {
+                format!(
+                    "{label}: weight_profile {name:?} is not in weight_profiles (known: {:?})",
+                    registry.keys().collect::<Vec<_>>()
+                )
+            })?;
+            p.evaluate(x)
+                .map_err(|e| format!("{label}: weight_profile {name:?}: {e}"))?
+        }
+    };
+    check_point_weights(&w, x.len(), label)?;
+    Ok(w)
 }
 
 fn resolve_band(band: &Option<Band>, n: usize, label: &str) -> Result<Vec<f64>, String> {
@@ -300,6 +445,15 @@ fn curve_id(spectral: &str, polarization: &str) -> Result<String, String> {
             return Err(format!(
                 "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
          {spectral:?} is {pol}-polarized (label encodes polarization)."
+            ));
+        }
+        return Ok(curve.to_string());
+    }
+    if let Some((curve, _)) = retardance(spectral) {
+        if polarization != "u" {
+            return Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} is a p-minus-s phase difference; pass polarization=\"u\"."
             ));
         }
         return Ok(curve.to_string());
@@ -341,6 +495,29 @@ fn differential(spectral: &str) -> Option<(&'static str, &'static str, f64)> {
     }
 }
 
+/// Retardance labels: spectral → (host p CurveId, offset added to the
+/// targets). `RetR`/`RetT` are `arg(z_p · conj(z_s))` of r_f / t_f, the
+/// engine's `Retardance_R`/`Retardance_T`. `DeltaR = RetR − π` and
+/// `DeltaT = RetT` (the engine's `Delta_R`/`Delta_T`), so a Delta target
+/// `t` is the retardance target `t + offset`, wrapped: one forward and one
+/// fold serve all four labels.
+fn retardance(spectral: &str) -> Option<(&'static str, f64)> {
+    match spectral {
+        "RetR" => Some(("Rp", 0.0)),
+        "RetT" => Some(("Tp", 0.0)),
+        "DeltaR" => Some(("Rp", std::f64::consts::PI)),
+        "DeltaT" => Some(("Tp", 0.0)),
+        _ => None,
+    }
+}
+
+/// Labels that are phase quantities by definition: ingestion forces phase
+/// normalization (raw radians, nf = 1) and compilation requires
+/// `phase=True`.
+fn phase_only(spectral: &str) -> bool {
+    differential(spectral).is_some() || retardance(spectral).is_some()
+}
+
 fn allclose(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len()
         && a.iter()
@@ -355,7 +532,7 @@ fn allclose(a: &[f64], b: &[f64]) -> bool {
 /// Ingested entry with its grid (native mirror of one export dict).
 struct Exported {
     uid: usize,
-    angle: f64,
+    angle: Radians,
     polarization: String,
     spectral: String,
     wavelengths: Vec<f64>,
@@ -379,12 +556,12 @@ fn ingest_spectral(weaver: &TargetWeaver, t: &SpectralTarget) -> Result<(), Stri
     let band = resolve_band(&t.band, n, "SpectralTarget")?;
     let kind = TargetKind::from_str(&t.kind)
         .ok_or_else(|| "Invalid kind (use 'e', 'a', 'b', 'r', or 'c')".to_string())?;
-    let mode = if t.spectral == "PDts" || t.spectral == "PDtp" {
+    let mode = if phase_only(&t.spectral) {
         "phase"
     } else {
         t.normalization_mode.as_str()
     };
-    let key = OpticalKey::from((t.angle, t.polarization.clone(), t.spectral.clone()));
+    let key = OpticalKey::from((t.angle.get(), t.polarization.clone(), t.spectral.clone()));
     let frame = weaver.create_dedicated_frame(&t.wavelengths)?;
     frame.set_data(
         key.clone(),
@@ -418,7 +595,7 @@ fn ingest_angular(weaver: &TargetWeaver, t: &AngularTarget) -> Result<(), String
     let band = resolve_band(&t.band, n, "AngularTarget")?;
     let kind = TargetKind::from_str(&t.kind)
         .ok_or_else(|| "Invalid kind (use 'e', 'a', 'b', 'r', or 'c')".to_string())?;
-    let mode = if t.spectral == "PDts" || t.spectral == "PDtp" {
+    let mode = if phase_only(&t.spectral) {
         "phase"
     } else {
         t.normalization_mode.as_str()
@@ -428,7 +605,11 @@ fn ingest_angular(weaver: &TargetWeaver, t: &AngularTarget) -> Result<(), String
     let wl_point = vec![t.wavelength];
     let frame = weaver.create_dedicated_frame(&wl_point)?;
     for i in 0..n {
-        let key = OpticalKey::from((t.angles[i], t.polarization.clone(), t.spectral.clone()));
+        let key = OpticalKey::from((
+            t.angles[i].get(),
+            t.polarization.clone(),
+            t.spectral.clone(),
+        ));
         frame.set_data(
             key.clone(),
             SpectralData::from_arc(Arc::from([t.values[i]].as_slice())),
@@ -475,7 +656,7 @@ fn export_all(weaver: &TargetWeaver) -> Vec<Exported> {
             let (angle, polarization, spectral) = key.as_tuple();
             out.push(Exported {
                 uid: frame.uid,
-                angle,
+                angle: Radians::new(angle).expect("weaver key written from a checked angle"),
                 polarization,
                 spectral,
                 wavelengths: wl.clone(),
@@ -618,6 +799,33 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
     )
 }
 
+/// One line per retardance demand whose every angle is normal incidence,
+/// where s and p coincide and the retardance is identically 0: the demand
+/// compiles (it is not wrong, only unreachable) and the caller warns.
+pub fn retardance_warnings(set: &TargetSet) -> Vec<String> {
+    let flat = |spectral: &str, angles: &[Radians]| {
+        retardance(spectral).is_some() && angles.iter().all(|a| a.get() == 0.0)
+    };
+    let mut out = Vec::new();
+    let line = |what: String, spectral: &str| {
+        format!(
+            "{what}: {spectral} at normal incidence only - s and p coincide there, \
+             so the retardance is identically 0 and the demand cannot move"
+        )
+    };
+    for (i, t) in set.spectral.iter().enumerate() {
+        if flat(&t.spectral, &[t.angle]) {
+            out.push(line(format!("spectral[{i}]"), &t.spectral));
+        }
+    }
+    for (i, t) in set.angular.iter().enumerate() {
+        if flat(&t.spectral, &t.angles) {
+            out.push(line(format!("angular[{i}]"), &t.spectral));
+        }
+    }
+    out
+}
+
 /// Compile a [`TargetSet`] into a native `MeritSpec`.
 pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     // F2.1: the roster first, so every demand's tag resolves against a
@@ -639,6 +847,49 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
     } else {
         set.environments.clone()
     };
+    for (name, p) in &set.weight_profiles {
+        p.validate()
+            .map_err(|e| format!("weight_profiles[{name:?}]: {e}"))?;
+    }
+    // W4: point weights per target, in the target's own point order.
+    let spectral_pw: Vec<Vec<f64>> = set
+        .spectral
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            resolve_point_weights(
+                &t.weights,
+                &t.weight_profile,
+                &t.wavelengths,
+                Some(&set.weight_profiles),
+                &format!("spectral[{i}]"),
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let angular_pw: Vec<Vec<f64>> = set
+        .angular
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let label = format!("angular[{i}]");
+            // An angular target compiles to one single-point frame per
+            // angle, so an integral one has no mean across angles for a
+            // weight to act on.
+            if t.integral && (t.weights.is_some() || t.weight_profile.is_some()) {
+                return Err(format!(
+                    "{label}: point weights on an integral angular target have no \
+                     effect (each angle is its own frame); drop them or integral."
+                ));
+            }
+            resolve_point_weights(
+                &t.weights,
+                &t.weight_profile,
+                &crate::smatrix::angle::to_degrees_vec(&t.angles),
+                Some(&set.weight_profiles),
+                &label,
+            )
+        })
+        .collect::<Result<_, _>>()?;
     let weaver = TargetWeaver::new(set.cache_size, set.tolerance_floor);
     for t in &set.spectral {
         ingest_spectral(&weaver, t)?;
@@ -696,9 +947,9 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             if idxs.len() != t.angles.len() {
                 continue;
             }
-            let mut got: Vec<f64> = idxs.iter().map(|i| entries[*i].angle).collect();
+            let mut got: Vec<f64> = idxs.iter().map(|i| entries[*i].angle.get()).collect();
             got.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let mut want = t.angles.clone();
+            let mut want: Vec<f64> = t.angles.iter().map(|a| a.get()).collect();
             want.sort_by(|a, b| a.partial_cmp(b).unwrap());
             if !allclose(&got, &want) {
                 continue;
@@ -741,8 +992,8 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         spec.set_env_roster(&roster)?;
     }
     let mut keys: BTreeMap<(u64, String), u32> = BTreeMap::new();
-    let mut get_key = |spec: &mut MeritSpec, angle: f64, curve: &str| -> u32 {
-        let k = (angle.to_bits(), curve.to_string());
+    let mut get_key = |spec: &mut MeritSpec, angle: Radians, curve: &str| -> u32 {
+        let k = (angle.get().to_bits(), curve.to_string());
         if let Some(idx) = keys.get(&k) {
             return *idx;
         }
@@ -788,16 +1039,29 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         let ki = get_key(&mut spec, e.angle, &curve);
         let mut nf = e.norm_factor;
         let diff = differential(t.0);
-        if diff.is_some() && !t.2 {
-            return Err(format!(
-                "spectral={:?} is differential-phase: pass phase=True.",
-                t.0
-            ));
+        let ret = retardance(t.0);
+        if !t.2 && phase_only(t.0) {
+            let what = if diff.is_some() {
+                "differential-phase"
+            } else {
+                "a retardance"
+            };
+            return Err(format!("spectral={:?} is {what}: pass phase=True.", t.0));
         }
+        // Delta labels are a constant offset of retardance, folded into the
+        // targets and wrapped back to [-pi, pi] (the residual's own wrap).
+        let offset = ret.map_or(0.0, |(_, o)| o);
+        let shift = |x: f64| {
+            if offset == 0.0 {
+                return x;
+            }
+            let y = x + offset;
+            y - std::f64::consts::TAU * (y / std::f64::consts::TAU).round()
+        };
         let (norm, band, mode, out_nf) = if t.2 {
             nf = nf.max(1e-300);
             (
-                e.targets.iter().map(|x| x / nf).collect(),
+                e.targets.iter().map(|x| shift(x / nf)).collect(),
                 e.band.iter().map(|x| x / nf).collect(),
                 "phase".to_string(),
                 1.0,
@@ -809,6 +1073,25 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             .ok_or_else(|| format!("Invalid kind {:?}", e.kind))?;
         let transform =
             SimTransform::from_str(&mode).ok_or_else(|| format!("Invalid transform {mode:?}"))?;
+        // W4: the entry's point weights. A spectral entry has the target's
+        // grid in the target's order (the join above checked it point by
+        // point); an angular entry is one angle of its target.
+        let point_weights: Vec<f64> = if ti & 0x8000_0000 == 0 {
+            spectral_pw[ti].clone()
+        } else {
+            let ai = ti & 0x7fff_ffff;
+            let pw = &angular_pw[ai];
+            if pw.is_empty() {
+                Vec::new()
+            } else {
+                let j = set.angular[ai]
+                    .angles
+                    .iter()
+                    .position(|a| *a == e.angle)
+                    .expect("an angular entry is keyed by one of its target's angles");
+                vec![pw[j]]
+            }
+        };
         spec.add_target(MeritTarget {
             key_idx: ki,
             env_idx,
@@ -821,6 +1104,8 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             band: Arc::from(band),
             phase: t.2,
             differential_passes: diff.map(|(_, _, p)| p),
+            retardance: ret.is_some(),
+            point_weights: Arc::from(point_weights),
             weight: t.3,
             count_norm: e.count_norm,
             integral: e.integral,
@@ -849,6 +1134,8 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::smatrix::angle::{Radians, deg, degs};
 
     /// Empty target set - the tests above spread it and state only the
     /// fields they actually vary.
@@ -860,6 +1147,7 @@ mod tests {
             color: vec![],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         }
     }
 
@@ -869,7 +1157,7 @@ mod tests {
             wavelengths: vec![500.0, 600.0],
             values: vec![0.05, 0.05],
             tolerances: vec![0.01, 0.01],
-            angle: 0.0,
+            angle: Radians::ZERO,
             polarization: "s".to_string(),
             spectral: "R".to_string(),
             kind: "e".to_string(),
@@ -878,6 +1166,8 @@ mod tests {
             phase: false,
             weight: 1.0,
             normalize_count: false,
+            weights: None,
+            weight_profile: None,
             integral: false,
         }
     }
@@ -889,7 +1179,7 @@ mod tests {
     fn demand_environment_tags_resolve_and_refuse() {
         let tagged = |env: Option<&str>, angle: f64| SpectralTarget {
             environment: env.map(str::to_string),
-            angle,
+            angle: deg(angle),
             ..spec_target()
         };
 
@@ -929,7 +1219,12 @@ mod tests {
         let by_angle: Vec<(f64, u32)> = spec
             .targets()
             .iter()
-            .map(|t| (spec.keys()[t.key_idx as usize].angle, t.env_idx))
+            .map(|t| {
+                (
+                    spec.keys()[t.key_idx as usize].angle.to_degrees(),
+                    t.env_idx,
+                )
+            })
             .collect();
         assert!(by_angle.contains(&(0.0, 1)), "{by_angle:?}");
         assert!(by_angle.contains(&(10.0, 0)), "{by_angle:?}");
@@ -974,7 +1269,7 @@ mod tests {
     fn a_demand_cannot_outlive_its_environment() {
         let mut spec = MeritSpec::new();
         let ki = spec.add_key(MeritKey {
-            angle: 0.0,
+            angle: Radians::ZERO,
             curve: CurveId::Rs,
         }) as u32;
         let mut t = MeritTarget {
@@ -989,6 +1284,8 @@ mod tests {
             band: Arc::from([].as_slice()),
             phase: false,
             differential_passes: None,
+            retardance: false,
+            point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
             integral: false,
@@ -1079,6 +1376,7 @@ mod tests {
             color: vec![],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         };
         let spec = compile_merit_spec(&set).unwrap();
         assert_eq!(spec.key_count(), 1);
@@ -1094,6 +1392,7 @@ mod tests {
             color: vec![],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         };
         set.spectral[0].weight = -1.0;
         assert!(compile_merit_spec(&set).is_err());
@@ -1113,13 +1412,175 @@ mod tests {
         assert_eq!(curve_id("PDts", "s").unwrap(), "Ts");
         assert!(curve_id("PDts", "p").is_err());
         assert!(curve_id("Nope", "s").is_err());
+        for (label, host) in [
+            ("RetR", "Rp"),
+            ("DeltaR", "Rp"),
+            ("RetT", "Tp"),
+            ("DeltaT", "Tp"),
+        ] {
+            assert_eq!(curve_id(label, "u").unwrap(), host);
+            assert!(
+                curve_id(label, "p")
+                    .unwrap_err()
+                    .contains("polarization=\"u\"")
+            );
+        }
+    }
+
+    /// W8a: the four retardance labels compile onto their p host with the
+    /// retardance flag, raw radians, and the Delta offset folded into the
+    /// targets (DeltaR = RetR - pi, wrapped; DeltaT = RetT). Without
+    /// `phase=True` they refuse.
+    /// W4: explicit weights, an inline profile and a named one all land as
+    /// the same point weights; angular profiles read degrees; bad
+    /// combinations refuse naming the target.
+    #[test]
+    fn point_weights_compile_from_every_source() {
+        use serde_json::json;
+        let wl = vec![400.0, 500.0, 600.0];
+        let spectral = |extra: serde_json::Value| {
+            let mut t = json!({
+                "wavelengths": wl, "values": [0.1, 0.1, 0.1],
+                "tolerances": [0.01, 0.01, 0.01], "angle_deg": 0.0,
+                "polarization": "s", "spectral": "R",
+            });
+            t.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            t
+        };
+        let ramp = json!({"kind": "ramp", "lo": 400, "hi": 600, "w_lo": 1, "w_hi": 3});
+        let compile =
+            |doc: serde_json::Value| compile_merit_spec(&TargetSet::from_value(doc).unwrap());
+        let pw = |doc| compile(doc).unwrap().targets()[0].point_weights.to_vec();
+        let want = vec![1.0, 2.0, 3.0];
+        assert_eq!(
+            pw(json!({"spectral": [spectral(json!({"weights": want}))]})),
+            want
+        );
+        assert_eq!(
+            pw(json!({"spectral": [spectral(json!({"weight_profile": ramp}))]})),
+            want
+        );
+        assert_eq!(
+            pw(json!({
+                "weight_profiles": {"emph": ramp},
+                "spectral": [spectral(json!({"weight_profile": "emph"}))],
+            })),
+            want
+        );
+        assert!(pw(json!({"spectral": [spectral(json!({}))]})).is_empty());
+
+        // An angular target evaluates its profile in degrees, one point
+        // weight per single-angle frame.
+        let angular = json!({"angular": [{
+            "wavelength": 550.0, "angles_deg": [0.0, 30.0, 60.0],
+            "values": [0.1, 0.1, 0.1], "tolerances": [0.01, 0.01, 0.01],
+            "polarization": "s", "spectral": "R",
+            "weight_profile": {"kind": "ramp", "lo": 0, "hi": 60, "w_lo": 1, "w_hi": 3},
+        }]});
+        let spec = compile(angular.clone()).unwrap();
+        let mut got: Vec<(f64, f64)> = spec
+            .targets()
+            .iter()
+            .map(|t| {
+                (
+                    spec.keys()[t.key_idx as usize].angle.to_degrees(),
+                    t.point_weights[0],
+                )
+            })
+            .collect();
+        got.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for ((a, w), (wa, ww)) in got.iter().zip([(0.0, 1.0), (30.0, 2.0), (60.0, 3.0)]) {
+            assert!((a - wa).abs() < 1e-9 && (w - ww).abs() < 1e-12, "{got:?}");
+        }
+        let mut integral = angular;
+        integral["angular"][0]["integral"] = json!(true);
+        assert!(compile(integral).unwrap_err().contains("integral angular"));
+
+        for (doc, want) in [
+            (
+                json!({"spectral": [spectral(json!({"weights": want, "weight_profile": ramp}))]}),
+                "not both",
+            ),
+            (
+                json!({"spectral": [spectral(json!({"weight_profile": "nope"}))]}),
+                "\"nope\" is not in weight_profiles",
+            ),
+            (
+                json!({"spectral": [spectral(json!({"weights": [1.0, 2.0]}))]}),
+                "shape",
+            ),
+            (
+                json!({"spectral": [spectral(json!({"weights": [0.0, 0.0, 0.0]}))]}),
+                "all zero",
+            ),
+            (
+                json!({"weight_profiles": {"bad": {"kind": "constant", "value": -1}},
+                       "spectral": []}),
+                "weight_profiles[\"bad\"]",
+            ),
+        ] {
+            let e = compile(doc).unwrap_err();
+            assert!(e.contains(want), "{e}");
+        }
+    }
+
+    #[test]
+    fn retardance_labels_compile() {
+        use std::f64::consts::PI;
+        let target = |label: &str, value: f64| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: "u".to_string(),
+            values: vec![value, value],
+            phase: true,
+            angle: deg(45.0),
+            ..spec_target()
+        };
+        let cases = [
+            ("RetR", 0.5, CurveId::Rp, 0.5),
+            ("RetT", -1.0, CurveId::Tp, -1.0),
+            ("DeltaT", 2.0, CurveId::Tp, 2.0),
+            ("DeltaR", 0.5, CurveId::Rp, 0.5 - PI),
+            ("DeltaR", -0.5, CurveId::Rp, PI - 0.5),
+        ];
+        for (label, value, host, want) in cases {
+            let spec = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, value)],
+                ..base_set()
+            })
+            .unwrap();
+            let t = &spec.targets()[0];
+            assert_eq!(spec.keys()[t.key_idx as usize].curve, host, "{label}");
+            assert!(t.retardance && t.phase && t.differential_passes.is_none());
+            assert_eq!(t.transform, SimTransform::Phase);
+            assert_eq!(t.norm_factor, 1.0);
+            for &got in t.normalized_targets.iter() {
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "{label} {value}: {got} vs {want}"
+                );
+            }
+        }
+        let err = compile_merit_spec(&TargetSet {
+            spectral: vec![SpectralTarget {
+                phase: false,
+                ..target("RetT", 0.1)
+            }],
+            ..base_set()
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("retardance") && err.contains("phase=True"),
+            "{err}"
+        );
     }
 
     fn color_target() -> ColorTargetJson {
         ColorTargetJson {
             environment: None,
             curve: "Ru".to_string(),
-            angle: 0.0,
+            angle: Radians::ZERO,
             illuminant: IllumJson::Table(IllumTable {
                 wavelengths: vec![500.0, 600.0],
                 values: vec![1.0, 1.0],
@@ -1152,6 +1613,7 @@ mod tests {
             color: vec![color_target()],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         }
     }
 
@@ -1331,12 +1793,7 @@ mod tests {
         // field; domain refusals like lo<hi above carry the names).
         let mut v = serde_json::to_value(color_set()).unwrap();
         v["color"][0]["wavelength_range"] = serde_json::json!([500.0, 520.0, 540.0]);
-        assert!(
-            serde_json::from_value::<TargetSet>(v)
-                .unwrap_err()
-                .to_string()
-                .contains("length")
-        );
+        assert!(TargetSet::from_value(v).unwrap_err().contains("length"));
     }
 
     #[test]
@@ -1388,13 +1845,13 @@ mod tests {
         let doc = serde_json::json!({
           "spectral": [], "angular": [],
           "color": [{
-            "curve": "Rs", "angle": 0.0,
+            "curve": "Rs", "angle_deg": 0.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "DomWl", "reference": [550.0, 0.9],
             "distance": "Channels",
           }],
         });
-        let set: TargetSet = serde_json::from_value(doc).unwrap();
+        let set = TargetSet::from_value(doc).unwrap();
         let spec = compile_merit_spec(&set).unwrap();
         assert_eq!(spec.color_demands().len(), 1);
         assert_eq!(spec.n_residuals(), 1);
@@ -1407,13 +1864,13 @@ mod tests {
         let doc = serde_json::json!({
           "spectral": [], "angular": [],
           "color": [{
-            "curve": "Ru", "angle": 0.0,
+            "curve": "Ru", "angle_deg": 0.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "Lab", "reference": [1.0, 2.0],
             "distance": "DeltaE2000",
           }],
         });
-        let set: TargetSet = serde_json::from_value(doc).unwrap();
+        let set = TargetSet::from_value(doc).unwrap();
         // A 2-array is a Pair (DomWl shape) — refused here by the shape gate.
         assert!(
             compile_merit_spec(&set)
@@ -1424,23 +1881,20 @@ mod tests {
         let doc4 = serde_json::json!({
           "spectral": [], "angular": [],
           "color": [{
-            "curve": "Ru", "angle": 0.0,
+            "curve": "Ru", "angle_deg": 0.0,
             "illuminant": "D65", "observer": "1931_2deg",
             "quantity": "Lab", "reference": [1.0, 2.0, 3.0, 4.0],
             "distance": "DeltaE2000",
           }],
         });
-        let set4: TargetSet = serde_json::from_value(doc4).unwrap();
+        let set4 = TargetSet::from_value(doc4).unwrap();
         assert!(
             compile_merit_spec(&set4)
                 .unwrap_err()
                 .contains("[3] triple")
         );
         // Unknown top-level keys still denied.
-        assert!(
-            serde_json::from_value::<TargetSet>(serde_json::json!({"color": [], "bogus": 1}))
-                .is_err()
-        );
+        assert!(TargetSet::from_value(serde_json::json!({"color": [], "bogus": 1})).is_err());
     }
 
     #[test]
@@ -1456,6 +1910,7 @@ mod tests {
             color: vec![t],
             cache_size: 128,
             tolerance_floor: 1e-12,
+            weight_profiles: BTreeMap::new(),
         };
         let spec = compile_merit_spec(&set).unwrap();
         let d = &spec.color_demands()[0];
@@ -1477,12 +1932,70 @@ mod tests {
     }
 
     #[test]
+    fn target_json_names_the_angle_unit() {
+        let spectral = |angle: serde_json::Value| {
+            let mut t = serde_json::json!({
+                "wavelengths": [500.0], "values": [0.5], "tolerances": [0.1],
+                "polarization": "s", "spectral": "R",
+            });
+            for (k, v) in angle.as_object().unwrap() {
+                t[k] = v.clone();
+            }
+            TargetSet::from_value(serde_json::json!({"spectral": [t]}))
+        };
+        let d = spectral(serde_json::json!({"angle_deg": 37.3})).unwrap();
+        let r = spectral(serde_json::json!({"angle_rad": 37.3f64.to_radians()})).unwrap();
+        assert_eq!(d.spectral[0].angle, Radians::from_degrees(37.3).unwrap());
+        assert_eq!(d.spectral[0].angle, r.spectral[0].angle);
+        for (doc, needle) in [
+            (serde_json::json!({"angle": 30.0}), "no longer read"),
+            (
+                serde_json::json!({"angle_deg": 30.0, "angle_rad": 0.5}),
+                "not both",
+            ),
+            (
+                serde_json::json!({}),
+                "exactly one of \"angle_deg\" or \"angle_rad\"",
+            ),
+            (serde_json::json!({"angle_rad": 30.0}), "30 rad"),
+            (serde_json::json!({"angle_deg": 91.0}), "91 deg"),
+        ] {
+            let err = spectral(doc).unwrap_err();
+            assert!(err.contains(needle), "{err}");
+        }
+        let ang = |grid: serde_json::Value| {
+            let mut t = serde_json::json!({
+                "wavelength": 500.0, "values": [0.5, 0.5], "tolerances": [0.1, 0.1],
+                "polarization": "s", "spectral": "R",
+            });
+            for (k, v) in grid.as_object().unwrap() {
+                t[k] = v.clone();
+            }
+            TargetSet::from_value(serde_json::json!({"angular": [t]}))
+        };
+        let a = ang(serde_json::json!({"angles_deg": [0.0, 45.0]})).unwrap();
+        assert_eq!(a.angular[0].angles[1], Radians::from_degrees(45.0).unwrap());
+        assert!(
+            ang(serde_json::json!({"angles": [0.0]}))
+                .unwrap_err()
+                .contains("no longer read")
+        );
+        // Serialized sets carry radians and parse back unchanged.
+        let text = serde_json::to_string(&d).unwrap();
+        assert!(text.contains("\"angle_rad\""), "{text}");
+        assert_eq!(
+            TargetSet::from_json(&text).unwrap().spectral[0].angle,
+            d.spectral[0].angle
+        );
+    }
+
+    #[test]
     fn color_target_set_json_roundtrips() {
         // Serialize -> parse -> compile: same demands, same white (schema v1
         // carries color demands without loss).
         let set = color_set();
         let text = serde_json::to_string(&set).unwrap();
-        let back: TargetSet = serde_json::from_str(&text).unwrap();
+        let back = TargetSet::from_json(&text).unwrap();
         assert_eq!(back.color.len(), 1);
         let a = compile_merit_spec(&set).unwrap();
         let b = compile_merit_spec(&back).unwrap();

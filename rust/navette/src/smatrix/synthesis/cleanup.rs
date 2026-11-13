@@ -58,12 +58,17 @@ pub fn remove_thin_layers<C: DesignContext + ?Sized>(
         //    free (F1.6's scalable spans), because removing ONE sublayer
         //    of a profile is corruption the same way. The span rule rides
         //    alongside the flag filter; it does not replace it.
+        //    Edge materials: an edge layer whose removal would expose a
+        //    disallowed layer is no candidate either.
         let candidates: Vec<usize> = stack
             .films()
             .iter()
             .enumerate()
             .filter(|(i, l)| {
-                l.optimize && l.d_nm < threshold && stack.span_of_row(*i).is_singleton_bulk()
+                l.optimize
+                    && l.d_nm < threshold
+                    && stack.span_of_row(*i).is_singleton_bulk()
+                    && stack.removal_keeps_edges(stack.span_index_of_row(*i))
             })
             .map(|(i, _)| i)
             .collect();
@@ -196,8 +201,11 @@ mod tests {
         }
     }
 
+    /// A film whose index follows its name (layers merge by index, so two
+    /// names must mean two indices).
     fn film(name: &str, d: f64) -> LayerSpec {
-        LayerSpec::constant(name, 2.0, 0.0, d, NW)
+        let n = 2.0 + name.bytes().map(f64::from).sum::<f64>() * 1e-3;
+        LayerSpec::constant(name, n, 0.0, d, NW)
     }
 
     #[test]
@@ -229,6 +237,34 @@ mod tests {
         assert_eq!(fs[1].material.as_ref(), "H");
         assert!((fs[0].d_nm - 30.0).abs() < 1e-12); // re-opt pulled to targets
         assert!((fs[1].d_nm - 30.0).abs() < 1e-12);
+    }
+
+    /// The same problem with the outer edge held to H: dropping idx0 would
+    /// put L outside, so idx0 is no candidate and idx2 goes instead.
+    #[test]
+    fn a_held_edge_is_never_a_candidate() {
+        use crate::smatrix::synthesis::structure::EdgeMaterials;
+        let mut stack = DesignStack::with_films(
+            air(),
+            sub(),
+            vec![film("H", 1.0), film("L", 50.0), film("H", 2.0)],
+        )
+        .unwrap();
+        let hk = film("H", 0.0);
+        stack
+            .set_edge_materials(EdgeMaterials {
+                outer: Some(vec![(hk.material.clone(), hk.nk.clone())]),
+                inner: None,
+            })
+            .unwrap();
+        let mut ctx = MockCtx {
+            targets: vec![1.0, 30.0, 40.0],
+            n_opt_calls: 0,
+        };
+        let removed = remove_thin_layers(&mut ctx, &mut stack, Some(3.0), None).unwrap();
+        assert_eq!(removed, 1);
+        let names: Vec<&str> = stack.films().iter().map(|l| l.material.as_ref()).collect();
+        assert_eq!(names, ["H", "L"]);
     }
 
     #[test]
@@ -356,7 +392,7 @@ mod tests {
         assert_eq!(stack.films().len(), 11);
         // Force every row free: the flag filter alone would take them all.
         for r in 0..11 {
-            stack.set_row_optimize_for_test(r, true);
+            stack.set_row_optimize(r, true);
         }
         let mut ctx = MockCtx {
             targets: vec![1.0; 11],

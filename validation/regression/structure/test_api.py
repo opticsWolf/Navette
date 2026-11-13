@@ -411,7 +411,7 @@ def test_bridge_grid_match_solves_silently():
   with warnings.catch_warnings():
     warnings.simplefilter("error")  # no warning on exact grid match
     out = solve_structure(
-      _three_layer(DictMaterialProvider(dict(MATS3), wavelength=WL3)), WL3, 0.0)
+      _three_layer(DictMaterialProvider(dict(MATS3), wavelength=WL3)), WL3, angles_deg=0.0)
   assert out["Rs"].shape == (3,)
 
 
@@ -420,13 +420,13 @@ def test_bridge_grid_value_mismatch_refused():
   from navette.structure.materials import DictMaterialProvider
   bad = DictMaterialProvider(dict(MATS3), wavelength=np.array([800., 900., 1000.]))
   with pytest.raises(ValueError):
-    solve_structure(_three_layer(bad), WL3, 0.0)  # same length, other values
+    solve_structure(_three_layer(bad), WL3, angles_deg=0.0)  # same length, other values
 
 
 def test_bridge_gridless_warns_and_solves():
   from navette.structure import solve_structure
   with pytest.warns(UserWarning, match="grid unknown"):
-    out = solve_structure(_three_layer(dict(MATS3)), WL3, 0.0)
+    out = solve_structure(_three_layer(dict(MATS3)), WL3, angles_deg=0.0)
   assert out["Rs"].shape == (3,)
 
 
@@ -438,7 +438,7 @@ def test_bridge_spec_grid_mismatch_refused():
            "TiO2": MaterialSpec("Konstant", {"n": 2.35, "k": 0.01})}
   prov = MaterialObjectProvider(dict(specs), np.array([700., 750., 800.]))
   with pytest.raises(ValueError):
-    solve_structure(_three_layer(prov), WL3, 0.0)
+    solve_structure(_three_layer(prov), WL3, angles_deg=0.0)
 
 
 def test_dict_provider_refresh_swaps_atomically():
@@ -553,6 +553,18 @@ def test_orphan_group_is_warning_and_solves():
   assert len(issues) == 1 and is_warning(issues[0])
   with pytest.warns(UserWarning):
     assert st.get_solver_inputs().thicknesses.tolist() == [50.0]
+
+
+def test_input_doors_warn_once_in_a_loop():
+  # A Monte-Carlo loop calls the input doors per sample: the structure
+  # remembers what it said, so the warning comes once, even under "always".
+  st = Navette_Structure([Layer(50.0, "TiO2")], {"Nobody": Group("Nobody")}, MATS)
+  with warnings.catch_warnings(record=True) as seen:
+    warnings.simplefilter("always")
+    for seed in range(5):
+      st.get_error_solver_inputs(rng=seed)
+      st.get_solver_inputs()
+  assert sum("Nobody" in str(w.message) for w in seen) == 1, [str(w.message) for w in seen]
 
 
 def test_errors_still_block():

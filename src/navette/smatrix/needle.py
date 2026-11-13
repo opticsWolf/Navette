@@ -27,7 +27,9 @@ Conventions
   The T/A siblings follow the same convention with flux-corrected
   ``T = |t_fwd|²·f`` and ``A = 1 − R − T`` (front incidence); the phase
   channel is the full gradient ``2·w·wrap(φ − φ_t)·Q`` (phase is not an
-  intensity, so no half factor applies).
+  intensity, so no half factor applies). ``build_needle_targets`` folds a
+  polarized intensity demand at twice its merit weight to make up the
+  half, so ``P`` from its branches is the full merit slope ``dM/dδ``.
 * ``Pmb`` covers R/T/A through the intensity cascade (``P_MB``/``P_MB_T``/
   ``P_MB_A``); only phase gradients are coherent-path only.
 * Results are returned as ``(n_angles, n_wavs, n_depths)`` float64 arrays.
@@ -165,12 +167,14 @@ def needle_gradient(
     targets_ab / weights_ab : same layout, for ``P_AB``/``P_MB_AB``
         (back-absorptance ``1 − Rb − Tb``).
     grads_r / grads_t : None, scalar, or (n_angles·n_wavs,) array
-        Option-B **color** buckets, taken verbatim from
-        ``build_needle_targets``' ``"grads_r"`` / ``"grads_t"`` entries.
-        Unlike every pair above these are not (target, weight): each entry
-        is the chain-rule factor ``g = dF/dcurve`` for one solver point,
-        already carrying the demand's weight, its current residual and the
-        U-curve half. They are added into the ``P`` and ``P_T`` outputs
+        Option-B **color** buckets, taken verbatim from the
+        ``"grads_r"`` / ``"grads_t"`` entries of one ``build_needle_targets``
+        branch (``"s"`` or ``"p"``, matching ``pol``). Unlike every pair
+        above these are not (target, weight): each entry is the chain-rule
+        factor for one solver point, already carrying the demand's weight,
+        its current residual and the branch's share (``2·dF/dcurve`` on an
+        s or p curve, ``dF/dcurve`` on each branch for a U curve; the kernel
+        halves it). They are added into the ``P`` and ``P_T`` outputs
         respectively — the same single accumulation the native pipeline
         performs — so ``P_s`` from a color fold is the full color gradient,
         not an R-target gradient with the color part missing.
@@ -191,13 +195,15 @@ def needle_gradient(
     host_mask : (n_layers,) bool array, optional
         Restricts admissible hosts for the multiblock path.
     gain_shift_phi : float
-        Uniform correction subtracted from ``P_PHI`` outputs for
+        Uniform correction added to ``P_PHI`` outputs for
         differential-phase (``PDts``/``PDtp``) demands: inserting thickness
         ``δ`` anywhere grows the equivalent-medium reference by the same
-        ``δ``, contributing ``dM/dD = Σ −2·kz·w·Δ/tol²``. Take it from the
-        folded ``phi{ch}["gain_shift"]`` (``build_needle_targets``); it is
-        z-independent, so the needle site (``argmax``) never moves — only
-        predicted-gain bookkeeping shifts. Default 0 (absolute phase).
+        ``δ``, contributing ``dM/dD = Σ −2·kz·w·wrap(Δ − Δ_t)``. Take it
+        from the folded ``phi{ch}["gain_shift"]`` of the branch matching
+        ``pol``. It is spread evenly over the spectral points, so ``P_PHI``
+        summed over them carries it once. It is z-independent, so the
+        needle site (``argmax``) never moves — only predicted-gain
+        bookkeeping shifts. Default 0 (absolute phase).
 
     Returns
     -------

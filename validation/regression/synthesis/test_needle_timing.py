@@ -25,12 +25,12 @@ def _run(record_timing):
     hi, lo = np.full(WL.shape, 2.35 + 0j), np.full(WL.shape, 1.46 + 0j)
     tc = TargetCollection()
     tc.add(SpectralTarget(WL, np.zeros_like(WL), np.full_like(WL, 0.005),
-                          0.0, "s", "R"))
+                          "s", "R", angle_deg=0.0))
     cfg = PipelineConfig(max_macro_cycles=3, needles_per_cycle=2)
     nc = NeedleCycleConfig(record_timing=record_timing)
-    return run_needle([(lo, 200.0), (hi, 100.0)], tc, [0.0], WL,
+    return run_needle([(lo, 200.0), (hi, 100.0)], tc, WL,
                       {0: hi, 1: lo}, pipeline_config=cfg, needle_config=nc,
-                      substrate=(np.full(WL.shape, 1.52 + 0j), "sub"))
+                      substrate=(np.full(WL.shape, 1.52 + 0j), "sub"), angles_deg=[0.0])
 
 
 def _records(res):

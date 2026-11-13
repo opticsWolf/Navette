@@ -10,7 +10,7 @@
 //! ```python
 //! spec = build_merit_spec(collection)          # full target options
 //! stack = DesignStack(ambient, substrate, films)
-//! pipe = NeedlePipeline(stack, spec, angles, wavls, contrast={...})
+//! pipe = NeedlePipeline(stack, spec, angles, wavls)  # pool: the layers' own
 //! result = pipe.run()                          # dict + final "stack"
 //! ```
 
@@ -25,7 +25,10 @@ use pyo3::types::{IntoPyDict, PyAny, PyDict};
 
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
-use navette::smatrix::synthesis::cycle::{ContrastMap, NeedleCycleConfig};
+use navette::smatrix::synthesis::cycle::{
+    label_pool, pool_entry, pool_from_layers, InsertRules, Insertion, NeedleCycleConfig,
+    NeedleRules,
+};
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::optimizer::OptimizerBackend;
@@ -34,13 +37,6 @@ use navette::smatrix::synthesis::structure::{ClampReport, DesignStack, LayerSpec
 use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
-
-fn deg_to_sin(angles_deg: &[f64]) -> Vec<f64> {
-    angles_deg
-        .iter()
-        .map(|a| (a * std::f64::consts::PI / 180.0).sin())
-        .collect()
-}
 
 // ---------------------------------------------------------------------------
 // LayerSpec / DesignStack
@@ -66,11 +62,13 @@ impl PyLayerSpec {
 #[pymethods]
 impl PyLayerSpec {
     #[new]
-    #[pyo3(signature = (material, nk, thickness, coherent=true, rough_type=0, rough_val=0.0, optimize=true, needle=true))]
+    #[pyo3(signature = (material, nk, thickness, coherent=true, rough_type=0, rough_val=0.0, optimize=true, needle=true, label=None))]
     /// `nk`: complex array, one entry per simulation wavelength.
     /// Ambient/substrate entries are fixed by construction (never
     /// optimized, removed, or hosting — pass `optimize=False,
-    /// needle=False` for them).
+    /// needle=False` for them). `label`: the pool material this film is
+    /// made of (a pool label); without one the film is matched to the
+    /// pool by its index.
     #[allow(clippy::too_many_arguments)]
     fn new(
         material: String,
@@ -81,6 +79,7 @@ impl PyLayerSpec {
         rough_val: f64,
         optimize: bool,
         needle: bool,
+        label: Option<String>,
     ) -> PyResult<Self> {
         let n = nk.as_slice()?;
         if n.is_empty() {
@@ -101,6 +100,7 @@ impl PyLayerSpec {
                 rough_val,
                 optimize,
                 needle,
+                label: label.map(Arc::from),
             },
         })
     }
@@ -145,6 +145,12 @@ impl PyLayerSpec {
         self.inner.needle
     }
 
+    /// The pool material this film is made of, or `None`.
+    #[getter]
+    fn label(&self) -> Option<String> {
+        self.inner.label.as_deref().map(str::to_string)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "LayerSpec(material={:?}, d={:.3}nm, optimize={}, needle={})",
@@ -166,6 +172,7 @@ fn layer_dict<'a>(py: Python<'a>, l: &'a LayerSpec) -> PyResult<Bound<'a, PyDict
     d.set_item("rough_val", l.rough_val)?;
     d.set_item("optimize", l.optimize)?;
     d.set_item("needle", l.needle)?;
+    d.set_item("label", l.label.as_deref())?;
     Ok(d)
 }
 
@@ -378,9 +385,11 @@ fn gradient_json(g: PyGradientInput) -> navette::structure::gradient::GradientJs
 
 /// Assemble evaluated arrays into an expanded stack (thin over
 /// `driver::assemble_stack`): the `stack_from_layers` path without the run.
-/// Returns `(stack, contrast_map)`; warnings re-emit as Python warnings.
+/// Returns `(stack, pool)`: the needle material pool as `LayerSpec`s,
+/// `materials` (label, nk) deduplicated by index, or the layers' own
+/// materials when `None`. Warnings re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, seeds, wavelengths))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble_design(
     py: Python<'_>,
@@ -390,9 +399,9 @@ pub(crate) fn assemble_design(
     substrate_name: String,
     films: Vec<PyFilmInput<'_>>,
     groups: std::collections::HashMap<String, Py<crate::structure::PyGroup>>,
-    seeds: Vec<(String, String, Vec<Complex64>)>,
+    materials: Option<Vec<(String, Vec<Complex64>)>>,
     wavelengths: PyReadonlyArray1<'_, f64>,
-) -> PyResult<(Py<PyDesignStack>, Py<PyDict>)> {
+) -> PyResult<(Py<PyDesignStack>, Vec<PyLayerSpec>)> {
     use navette::smatrix::synthesis::driver::{assemble_stack, ArrayFilm};
     let w = wavelengths.as_slice()?;
     let af: Vec<ArrayFilm> = films
@@ -417,29 +426,17 @@ pub(crate) fn assemble_design(
         .iter()
         .map(|(k, g)| (k.clone(), g.bind(py).borrow().inner_clone()))
         .collect();
-    let mut cmap = navette::smatrix::synthesis::cycle::ContrastMap::new();
-    for (host, seed_name, nk) in &seeds {
-        if nk.len() != w.len() {
-            return Err(PyValueError::new_err(format!(
-                "contrast '{}': nk length {} != {} wavelengths",
-                host,
-                nk.len(),
-                w.len()
-            )));
+    if let Some(ms) = &materials {
+        for (name, nk) in ms {
+            if nk.len() != w.len() {
+                return Err(PyValueError::new_err(format!(
+                    "needle material '{}': nk length {} != {} wavelengths",
+                    name,
+                    nk.len(),
+                    w.len()
+                )));
+            }
         }
-        cmap.insert(
-            std::sync::Arc::from(host.as_str()),
-            navette::smatrix::synthesis::structure::LayerSpec {
-                material: std::sync::Arc::from(seed_name.as_str()),
-                nk: std::sync::Arc::from(nk.as_slice()),
-                d_nm: 0.0,
-                coherent: true,
-                rough_type: 0,
-                rough_val: 0.0,
-                optimize: true,
-                needle: true,
-            },
-        );
     }
     let (stack, warnings) = assemble_stack(
         &ambient_name,
@@ -452,21 +449,30 @@ pub(crate) fn assemble_design(
     )
     .map_err(PyValueError::new_err)?;
     crate::structure::emit_warnings(py, "assemble_design", &warnings)?;
-    let dict = PyDict::new(py);
-    for (k, v) in &cmap {
-        dict.set_item(k.to_string(), PyLayerSpec::from_inner(v.clone()))?;
+    let pool = match materials {
+        None => pool_from_layers(&stack, |_| true),
+        Some(ms) => label_pool(
+            ms.into_iter()
+                .map(|(name, nk)| pool_entry(&name, std::sync::Arc::from(nk))),
+        ),
     }
-    Ok((Py::new(py, PyDesignStack::from_inner(stack))?, dict.into()))
+    .map_err(PyValueError::new_err)?;
+    let pool = pool.iter().cloned().map(PyLayerSpec::from_inner).collect();
+    Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
 }
 
 /// End-to-end design run over evaluated arrays (thin over
 /// `driver::run_design`): assemble once, fold demands, macro-loop.
 /// `callback(macro_cycle, phase_dict)` aborts on raise (`USER_ABORT`).
-/// Returns the full report dict including the final `stack`; assembly
-/// warnings (dropped ambient absorption, homogenized graded film) re-emit
-/// as Python warnings.
+/// `materials` is the needle pool as (label, nk); `None` takes the layers'
+/// own materials. `insert_rules` ({host label: [needle labels]}), `outer`
+/// and `inner` (allowed edge materials) are the `NeedleRules`, in pool
+/// labels; `seed_edges` (nm) seeds an edge off its list. Returns the
+/// full report dict including the final
+/// `stack`; assembly warnings (dropped ambient absorption, homogenized
+/// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, seeds, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None, *, angles_deg=None, angles_rad=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -476,18 +482,29 @@ pub(crate) fn run_design(
     substrate_name: String,
     films: Vec<PyFilmInput<'_>>,
     groups: std::collections::HashMap<String, Py<crate::structure::PyGroup>>,
-    seeds: Vec<(String, String, Vec<Complex64>)>,
+    materials: Option<Vec<(String, Vec<Complex64>)>>,
     wavelengths: PyReadonlyArray1<'_, f64>,
-    angles_deg: PyReadonlyArray1<'_, f64>,
     spec: &crate::synthesis_merit::PyMeritSpec,
     pipeline_config: Option<Py<PyPipelineConfig>>,
     needle_config: Option<Py<PyNeedleCycleConfig>>,
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
+    insert_rules: Option<InsertRules>,
+    outer: Option<Vec<String>>,
+    inner: Option<Vec<String>>,
+    seed_edges: Option<f64>,
+    angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+    angles_rad: Option<PyReadonlyArray1<'_, f64>>,
 ) -> PyResult<Py<PyDict>> {
-    use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArraySeed};
+    use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
+    let rules = NeedleRules {
+        insert: insert_rules,
+        outer,
+        inner,
+        seed_edges,
+    };
     let w = wavelengths.as_slice()?.to_vec();
-    let a = angles_deg.as_slice()?.to_vec();
+    let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let cfg = pipeline_config
         .map(|c| c.bind(py).borrow().inner.clone())
         .unwrap_or_default();
@@ -519,14 +536,11 @@ pub(crate) fn run_design(
         .iter()
         .map(|(k, g)| (k.clone(), g.bind(py).borrow().inner_clone()))
         .collect();
-    let sd: Vec<ArraySeed> = seeds
-        .into_iter()
-        .map(|(host, seed_name, nk)| ArraySeed {
-            host,
-            seed_name,
-            nk,
-        })
-        .collect();
+    let pool: Option<Vec<ArrayMaterial>> = materials.map(|ms| {
+        ms.into_iter()
+            .map(|(name, nk)| ArrayMaterial { name, nk })
+            .collect()
+    });
     let (res, stack, warnings) = py
         .detach({
             let spec_inner = spec.inner().clone();
@@ -538,7 +552,8 @@ pub(crate) fn run_design(
                     substrate_nk,
                     &af,
                     &gm,
-                    &sd,
+                    pool.as_deref(),
+                    &rules,
                     &w,
                     &a,
                     &spec_inner,
@@ -586,18 +601,19 @@ pub(crate) fn run_design(
 /// 0's assembly, which IS the shared design object); assembly warnings
 /// re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (request_json, wavelengths, angles_deg, spec, pipeline_config=None, needle_config=None, lm=None, callback=None))]
+#[pyo3(signature = (request_json, wavelengths, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, *, angles_deg=None, angles_rad=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design_environments(
     py: Python<'_>,
     request_json: &str,
     wavelengths: PyReadonlyArray1<'_, f64>,
-    angles_deg: PyReadonlyArray1<'_, f64>,
     spec: &crate::synthesis_merit::PyMeritSpec,
     pipeline_config: Option<Py<PyPipelineConfig>>,
     needle_config: Option<Py<PyNeedleCycleConfig>>,
     lm: Option<Py<PyLmConfig>>,
     callback: Option<Py<PyAny>>,
+    angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+    angles_rad: Option<PyReadonlyArray1<'_, f64>>,
 ) -> PyResult<Py<PyDict>> {
     use navette::smatrix::synthesis::driver::run_environments as core_run;
     use navette::smatrix::synthesis::environments::build_environments;
@@ -606,7 +622,7 @@ pub(crate) fn run_design_environments(
         PyValueError::new_err(format!("run_design_environments: invalid request: {e}"))
     })?;
     let w = wavelengths.as_slice()?.to_vec();
-    let a = angles_deg.as_slice()?.to_vec();
+    let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let cfg = pipeline_config
         .map(|c| c.bind(py).borrow().inner.clone())
         .unwrap_or_default();
@@ -617,7 +633,7 @@ pub(crate) fn run_design_environments(
         .map(|l| l.bind(py).borrow().inner.clone())
         .unwrap_or_default();
 
-    let (envs, cmap, build_warnings) =
+    let (envs, pool, build_warnings) =
         build_environments(&req, &w).map_err(PyValueError::new_err)?;
     crate::structure::emit_warnings(py, "run_design_environments", &build_warnings)?;
 
@@ -627,7 +643,7 @@ pub(crate) fn run_design_environments(
             move || {
                 core_run(
                     envs,
-                    cmap,
+                    pool,
                     &w,
                     &a,
                     &spec_inner,
@@ -661,7 +677,7 @@ fn result_to_dict(
     d.set_item("termination", res.termination.name())?;
     d.set_item("final_mf", res.final_mf)?;
     d.set_item("final_layer_count", res.final_layer_count)?;
-    d.set_item("final_total_thickness_nm", res.final_total_thickness_nm)?;
+    d.set_item("final_coating_thickness_nm", res.final_coating_thickness_nm)?;
     d.set_item("stagnation_detail", res.stagnation_detail.clone())?;
     let mut phases = Vec::with_capacity(res.phases.len());
     for p in &res.phases {
@@ -749,9 +765,11 @@ impl PyDesignStack {
             .collect();
         let bg: std::collections::HashSet<String> =
             background.unwrap_or_default().into_iter().collect();
-        let (stack, warnings) =
+        let (mut stack, warnings) =
             DesignStack::from_design(a, s, &design, &nk_map, &gm, wavelengths.as_slice()?, &bg)
                 .map_err(PyValueError::new_err)?;
+        // W7: film names here are free, not material labels.
+        stack.clear_labels();
         if !warnings.is_empty() {
             let mod_warn = py.import("warnings")?;
             for w in &warnings {
@@ -764,28 +782,25 @@ impl PyDesignStack {
     /// Rust-first assembly from a typed design request (JSON).
     ///
     /// `request_json` is a serialized `DesignRequest` (structure +
-    /// material library + contrast + flags); assembly — material
+    /// material library + needle materials + flags); assembly — material
     /// evaluation, film/group construction, one `from_design` — runs
-    /// entirely in the core. Returns `(stack, contrast_map)`; core
-    /// warnings re-emit as Python warnings.
+    /// entirely in the core. Returns `(stack, pool)`, the needle material
+    /// pool as `LayerSpec`s; core warnings re-emit as Python warnings.
     #[staticmethod]
     #[pyo3(signature = (request_json, wavelengths))]
     fn design_from_config(
         py: Python<'_>,
         request_json: &str,
         wavelengths: PyReadonlyArray1<f64>,
-    ) -> PyResult<(Py<PyDesignStack>, Py<PyDict>)> {
+    ) -> PyResult<(Py<PyDesignStack>, Vec<PyLayerSpec>)> {
         let req: DesignRequest = serde_json::from_str(request_json).map_err(|e| {
             PyValueError::new_err(format!("design_from_config: invalid request: {e}"))
         })?;
-        let (stack, cmap, warnings) =
+        let (stack, pool, warnings) =
             build_design(&req, wavelengths.as_slice()?).map_err(PyValueError::new_err)?;
         crate::structure::emit_warnings(py, "design_from_config", &warnings)?;
-        let dict = PyDict::new(py);
-        for (k, v) in &cmap {
-            dict.set_item(k.to_string(), PyLayerSpec::from_inner(v.clone()))?;
-        }
-        Ok((Py::new(py, PyDesignStack::from_inner(stack))?, dict.into()))
+        let pool = pool.iter().cloned().map(PyLayerSpec::from_inner).collect();
+        Ok((Py::new(py, PyDesignStack::from_inner(stack))?, pool))
     }
 
     /// Number of films (excludes ambient + substrate).
@@ -793,9 +808,17 @@ impl PyDesignStack {
         self.inner.films().len()
     }
 
-    /// Total film thickness (nm, excludes ambient + substrate).
+    /// Total film thickness (nm, excludes ambient + substrate), incoherent
+    /// plates included.
     fn total_thickness(&self) -> f64 {
         self.inner.total_thickness_nm()
+    }
+
+    /// Coating thickness (nm): the coherent films only, which is what the
+    /// thickness budget and the run report count. Equal to
+    /// `total_thickness()` on a stack with no incoherent film.
+    fn coating_thickness(&self) -> f64 {
+        self.inner.coating_thickness_nm()
     }
 
     /// Films as a list of dicts (ambient/substrate excluded); round-trips
@@ -836,6 +859,34 @@ impl PyDesignStack {
         let s = seed.bind(py).borrow().inner.clone();
         self.inner
             .insert_needle_seed(film_idx, depth_into_layer_nm, s)
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Insert `film` as a new layer on the span boundary above row `row`
+    /// (`row == len(films)`: on the substrate); nothing is split.
+    fn insert_film_at_boundary(
+        &mut self,
+        py: Python<'_>,
+        row: usize,
+        film: Py<PyLayerSpec>,
+    ) -> PyResult<()> {
+        let f = film.bind(py).borrow().inner.clone();
+        self.inner
+            .insert_film_at_boundary(row, f)
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Ratio of the roughness cap: each interface is solved with
+    /// `min(sigma, d / ratio)` over the films touching it; 0 is off.
+    #[getter]
+    fn roughness_cap(&self) -> f64 {
+        self.inner.roughness_cap()
+    }
+
+    #[setter]
+    fn set_roughness_cap(&mut self, ratio: f64) -> PyResult<()> {
+        self.inner
+            .set_roughness_cap(ratio)
             .map_err(PyValueError::new_err)
     }
 
@@ -1173,7 +1224,8 @@ impl PyNeedleCycleConfig {
     #[new]
     #[pyo3(signature = (max_needles=10, convergence_threshold=1e-4,
                         needle_seed_thickness_nm=5.0, scan_step_nm=2.0,
-                        refold_per_cycle=true, record_timing=false))]
+                        refold_per_cycle=true, record_timing=false,
+                        boundary_needles=false))]
     fn new(
         max_needles: usize,
         convergence_threshold: f64,
@@ -1181,6 +1233,7 @@ impl PyNeedleCycleConfig {
         scan_step_nm: f64,
         refold_per_cycle: bool,
         record_timing: bool,
+        boundary_needles: bool,
     ) -> PyResult<Self> {
         if scan_step_nm <= 0.0 || !scan_step_nm.is_finite() {
             return Err(PyValueError::new_err("scan_step_nm must be finite and > 0"));
@@ -1198,18 +1251,21 @@ impl PyNeedleCycleConfig {
                 scan_step_nm,
                 refold_per_cycle,
                 record_timing,
+                boundary_needles,
             },
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "NeedleCycleConfig(max_needles={}, seed={}nm, step={}nm, refold={}, timing={})",
+            "NeedleCycleConfig(max_needles={}, seed={}nm, step={}nm, refold={}, timing={}, \
+             boundary={})",
             self.inner.max_needles,
             self.inner.needle_seed_thickness_nm,
             self.inner.scan_step_nm,
             self.inner.refold_per_cycle,
             self.inner.record_timing,
+            self.inner.boundary_needles,
         )
     }
 }
@@ -1229,22 +1285,23 @@ pub struct PySmatrixContext {
 #[pymethods]
 impl PySmatrixContext {
     #[new]
-    #[pyo3(signature = (spec, angles_deg, wavelengths, clamp_min=2.0, clamp_max=1000.0,
-                        lm=None, thin_layer_policy="remove"))]
-    /// `angles_deg`: degrees (spec-key convention); converted to sines.
+    #[pyo3(signature = (spec, wavelengths, clamp_min=2.0, clamp_max=1000.0,
+                        lm=None, thin_layer_policy="remove", *, angles_deg=None, angles_rad=None))]
+    /// The grid is `angles_deg=` or `angles_rad=` (exactly one).
     /// `thin_layer_policy`: 'remove' (default), 'clamp_up_final' or
     /// 'clamp_up_always' (F0.3; the last one moves the LM lower bound).
     fn new(
         spec: &PyMeritSpec,
-        angles_deg: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
         clamp_min: f64,
         clamp_max: f64,
         lm: Option<Py<PyLmConfig>>,
         thin_layer_policy: &str,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
         py: Python<'_>,
     ) -> PyResult<Self> {
-        let a = angles_deg.as_slice()?;
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
             return Err(PyValueError::new_err(
@@ -1254,10 +1311,11 @@ impl PySmatrixContext {
         if !(clamp_min >= 0.0) || !(clamp_max > clamp_min) {
             return Err(PyValueError::new_err("need 0 <= clamp_min < clamp_max"));
         }
+        SmatrixContext::check_spec(spec.inner()).map_err(PyValueError::new_err)?;
         Ok(PySmatrixContext {
             inner: SmatrixContext {
                 wavls: w.to_vec(),
-                sin_theta: deg_to_sin(a),
+                sin_theta: navette::smatrix::angle::sines(&a),
                 spec: spec.inner().clone(),
                 clamp_min_nm: clamp_min,
                 clamp_max_nm: clamp_max,
@@ -1349,16 +1407,13 @@ impl PySmatrixContext {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-fn insertion_dict(
-    py: Python<'_>,
-    film_idx: usize,
-    depth_nm: f64,
-    material: &str,
-) -> PyResult<Py<PyDict>> {
+fn insertion_dict(py: Python<'_>, ins: &Insertion) -> PyResult<Py<PyDict>> {
     let d = PyDict::new(py);
-    d.set_item("film_idx", film_idx)?;
-    d.set_item("depth_into_layer_nm", depth_nm)?;
-    d.set_item("material", material)?;
+    d.set_item("film_idx", ins.film_idx)?;
+    d.set_item("depth_into_layer_nm", ins.depth_into_layer_nm)?;
+    d.set_item("material", ins.material.as_ref())?;
+    d.set_item("boundary", ins.boundary)?;
+    d.set_item("seed_nm", ins.seed_nm)?;
     Ok(d.unbind())
 }
 
@@ -1368,6 +1423,8 @@ fn clamp_report_dict<'a>(py: Python<'a>, rep: &'a ClampReport) -> PyResult<Bound
     d.set_item("spans_removed", spans)?;
     d.set_item("spans_capped", rep.spans_capped)?;
     d.set_item("rows_removed", rep.rows_removed)?;
+    let held: Vec<&str> = rep.edges_held.iter().map(|s| s.as_str()).collect();
+    d.set_item("edges_held", held)?;
     Ok(d)
 }
 
@@ -1379,7 +1436,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
     d.set_item("mf_after_inflate", phase.mf_after_inflate)?;
     d.set_item("mf_end", phase.mf_end)?;
     d.set_item("layer_count", phase.layer_count)?;
-    d.set_item("total_thickness_nm", phase.total_thickness_nm)?;
+    d.set_item("coating_thickness_nm", phase.coating_thickness_nm)?;
     let mut cycles = Vec::with_capacity(phase.needle_results.len());
     for r in &phase.needle_results {
         let rd = PyDict::new(py);
@@ -1390,15 +1447,7 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
         rd.set_item("predicted_improvement", r.predicted_improvement)?;
         rd.set_item("layer_count", r.layer_count)?;
         match &r.insertion {
-            Some(ins) => rd.set_item(
-                "insertion",
-                insertion_dict(
-                    py,
-                    ins.film_idx,
-                    ins.depth_into_layer_nm,
-                    ins.material.as_ref(),
-                )?,
-            )?,
+            Some(ins) => rd.set_item("insertion", insertion_dict(py, ins)?)?,
             None => rd.set_item("insertion", py.None())?,
         }
         // Only a `record_timing` run has the key: an untimed record is
@@ -1433,8 +1482,8 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
             let id = PyDict::new(py);
             id.set_item("merit_before", r.merit_before)?;
             id.set_item("merit_after", r.merit_after)?;
-            id.set_item("total_thickness_before", r.total_thickness_before)?;
-            id.set_item("total_thickness_after", r.total_thickness_after)?;
+            id.set_item("coating_thickness_before", r.coating_thickness_before)?;
+            id.set_item("coating_thickness_after", r.coating_thickness_after)?;
             id.set_item("layer_count", r.layer_count)?;
             id.set_item("addon_qwot", r.addon_qwot)?;
             id.set_item("reference_wavelength", r.reference_wavelength)?;
@@ -1455,8 +1504,12 @@ fn phase_dict<'a>(py: Python<'a>, phase: &'a PipelinePhaseResult) -> PyResult<Bo
 /// core). Construct from a `DesignStack` + `MeritSpec` + grid; the needle
 /// demands fold internally (`SpectralInputs::from_spec`, conservative
 /// form — all quantities: R/T/A, back siblings, per-channel phase).
-/// `contrast` maps host material → seed `LayerSpec` template (its nk on
-/// the grid; thickness/flags ignored — the seed is built fresh).
+/// `materials` is the needle material pool as `LayerSpec`s (label = its
+/// `material`, nk on the grid; thickness/flags ignored — each needle is
+/// built fresh). `None` takes the stack's layers' own materials.
+/// `insert_rules` ({host label: [needle labels]}), `outer` and `inner`
+/// (allowed edge materials) are the `NeedleRules`, in pool labels; the
+/// stack's current edges must comply, or `seed_edges` (nm) seeds them.
 pub struct PyNeedlePipeline {
     inner: NeedlePipeline,
     spec: navette::smatrix::synthesis::merit::MeritSpec,
@@ -1470,21 +1523,28 @@ pub struct PyNeedlePipeline {
 #[pymethods]
 impl PyNeedlePipeline {
     #[new]
-    #[pyo3(signature = (stack, spec, angles_deg, wavelengths, contrast,
-                        pipeline_config=None, needle_config=None, lm=None))]
+    #[pyo3(signature = (stack, spec, wavelengths, materials=None,
+                        pipeline_config=None, needle_config=None, lm=None,
+                        insert_rules=None, outer=None, inner=None, seed_edges=None,
+                        *, angles_deg=None, angles_rad=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         stack: &PyDesignStack,
         spec: &PyMeritSpec,
-        angles_deg: PyReadonlyArray1<'_, f64>,
         wavelengths: PyReadonlyArray1<'_, f64>,
-        contrast: HashMap<String, Py<PyLayerSpec>>,
+        materials: Option<Vec<Py<PyLayerSpec>>>,
         pipeline_config: Option<Py<PyPipelineConfig>>,
         needle_config: Option<Py<PyNeedleCycleConfig>>,
         lm: Option<Py<PyLmConfig>>,
+        insert_rules: Option<InsertRules>,
+        outer: Option<Vec<String>>,
+        inner: Option<Vec<String>>,
+        seed_edges: Option<f64>,
+        angles_deg: Option<PyReadonlyArray1<'_, f64>>,
+        angles_rad: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<Self> {
-        let a = angles_deg.as_slice()?;
+        let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
         let w = wavelengths.as_slice()?;
         if a.is_empty() || w.is_empty() {
             return Err(PyValueError::new_err(
@@ -1508,32 +1568,50 @@ impl PyNeedlePipeline {
         let lm_cfg = lm
             .map(|l| l.bind(py).borrow().inner.clone())
             .unwrap_or_default();
-        let mut cmap = ContrastMap::new();
-        for (mat, tmpl) in &contrast {
-            let t = tmpl.bind(py).borrow().inner.clone();
-            if t.nk.len() != nw {
-                return Err(PyValueError::new_err(format!(
-                    "contrast '{mat}': nk length {} != {} wavelengths",
-                    t.nk.len(),
-                    nw
-                )));
+        let pool = match materials {
+            None => pool_from_layers(&stack.inner, |_| true).map_err(PyValueError::new_err)?,
+            Some(ms) => {
+                let mut entries = Vec::with_capacity(ms.len());
+                for m in &ms {
+                    let t = m.bind(py).borrow().inner.clone();
+                    if t.nk.len() != nw {
+                        return Err(PyValueError::new_err(format!(
+                            "needle material '{}': nk length {} != {} wavelengths",
+                            t.material,
+                            t.nk.len(),
+                            nw
+                        )));
+                    }
+                    entries.push(pool_entry(&t.material, t.nk));
+                }
+                label_pool(entries).map_err(PyValueError::new_err)?
             }
-            cmap.insert(Arc::from(mat.as_str()), t);
+        };
+        let mut design = stack.inner.clone();
+        let pool = NeedleRules {
+            insert: insert_rules,
+            outer,
+            inner,
+            seed_edges,
         }
+        .apply(&mut design, pool)
+        .map_err(PyValueError::new_err)?;
+        SmatrixContext::check_spec(spec.inner()).map_err(PyValueError::new_err)?;
         let spectral =
-            SpectralInputs::from_spec(spec.inner(), a, w).map_err(PyValueError::new_err)?;
+            SpectralInputs::from_spec(spec.inner(), &a, w).map_err(PyValueError::new_err)?;
+        let spectral_sines = spectral.sin_theta.clone();
         let inner = NeedlePipeline::new(
-            stack.inner.clone(),
+            design,
             spectral,
             cfg.clone().validated().map_err(PyValueError::new_err)?,
             needle_cfg,
-            cmap,
+            pool,
         )
         .map_err(PyValueError::new_err)?;
         Ok(PyNeedlePipeline {
             inner,
             spec: spec.inner().clone(),
-            sin_theta: deg_to_sin(a),
+            sin_theta: spectral_sines,
             wavls: w.to_vec(),
             clamp_min: cfg.clamp_min_nm,
             clamp_max: cfg.clamp_max_nm,
@@ -1544,7 +1622,7 @@ impl PyNeedlePipeline {
     /// Execute the macro-loop. `callback(macro_cycle, phase_dict)` runs
     /// after each cycle; raising inside it aborts as `USER_ABORT`.
     /// Returns a dict: `termination`, `final_mf`, `final_layer_count`,
-    /// `final_total_thickness_nm`, `stagnation_detail`, `phases`, and the
+    /// `final_coating_thickness_nm`, `stagnation_detail`, `phases`, and the
     /// final `stack` (`DesignStack`).
     #[pyo3(signature = (callback=None))]
     fn run(&mut self, py: Python<'_>, callback: Option<Py<PyAny>>) -> PyResult<Py<PyDict>> {
