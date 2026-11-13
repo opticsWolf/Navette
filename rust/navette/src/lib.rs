@@ -46,6 +46,8 @@ pub mod color;
 pub mod config;
 /// Univariate interpolation (linear / pchip / makima).
 pub mod interpolate;
+/// Least-squares solvers (LM, TRF, backends) and their thread pool.
+pub mod lsq;
 /// Optical dispersion models (Cauchy … UBF, tables, EMA, KK).
 pub mod materials;
 /// S-matrix thin-film engine + needle synthesis pipeline.

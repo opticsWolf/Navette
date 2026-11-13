@@ -106,7 +106,7 @@ def test_a_stokes_target_takes_the_analytic_path_to_the_reference(label):
     spec = _spec(label, _WL, value, 0.01, 60.0)
     for jacobian in ("analytic", "fd"):
         st = _stack(_START, _WL)
-        mf, report = _ctx(spec, _WL, jacobian).optimize_thicknesses_report(st)
+        mf, report = _ctx(spec, _WL, jacobian).refine_thicknesses_report(st)
         assert (report["analytic_jacobians"] > 0) == (jacobian == "analytic")
         assert mf < 1e-10, (jacobian, mf)
         for got, want in zip([f["thickness"] for f in st.films()], _REFERENCE):

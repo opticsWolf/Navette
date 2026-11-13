@@ -143,7 +143,7 @@ impl ClampReport {
     }
 
     /// One phase can run several clamp passes (post-cleanup, post-inflate,
-    /// plus every `optimize_thicknesses` sweep in between) - the phase's
+    /// plus every `refine_thicknesses` sweep in between) - the phase's
     /// report is their aggregate (the evaluator site accumulates rather
     /// than reporting per call).
     pub fn merge(&mut self, other: ClampReport) {
@@ -1792,7 +1792,7 @@ impl DesignStack {
     ///
     /// Row count may change HERE and only here, so
     /// `assert_spans_partition` runs immediately after, and the F1.6
-    /// `fractions` are re-captured on the next `optimize_thicknesses`
+    /// `fractions` are re-captured on the next `refine_thicknesses`
     /// call rather than carried across a refresh. The per-span legality
     /// (re-emitting span k cannot disturb span k-1) rests on the design
     /// path's `inv = false` emission - the debug assert below records
@@ -2138,7 +2138,7 @@ pub struct SolverArrays {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smatrix::synthesis::evaluator::{apply_params, build_params};
+    use crate::smatrix::synthesis::thickness_refine::{apply_thickness_params, thickness_params};
     use std::collections::{HashMap, HashSet};
 
     const NW: usize = 8; // simulation wavelengths
@@ -3754,9 +3754,9 @@ mod tests {
         assert_eq!(slice_d, 5.0);
 
         // The 40% move through the writeback: only bulk rows scale.
-        let params = build_params(&stack);
+        let params = thickness_params(&stack);
         assert_eq!(params.len(), 1);
-        apply_params(&mut stack, &params, &[1.4 * 95.0]).unwrap();
+        apply_thickness_params(&mut stack, &params, &[1.4 * 95.0]).unwrap();
         assert_eq!(stack.films()[slice_row].d_nm, slice_d, "slice unchanged");
         let bulk_d: f64 = (sp.bulk_start..sp.end).map(|r| stack.films()[r].d_nm).sum();
         assert!((bulk_d - 1.4 * 95.0).abs() < 1e-9, "the bulk total moved");

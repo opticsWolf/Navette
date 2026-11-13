@@ -7,6 +7,32 @@ All notable changes to Navette are recorded here. Work items reference
 
 ## [Unreleased]
 
+Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
+
+### Changed (breaking)
+
+- **The least-squares solvers move out of synthesis, into `navette::lsq`**
+  (fit plan phase 0). They never knew what a parameter means, and the fit
+  engine will drive them too. No behaviour changes: the bench fingerprint
+  and the needle digests are unchanged. No aliases are kept.
+
+  | Before | After |
+  |---|---|
+  | `smatrix::synthesis::thick_opt` | `lsq::lm` |
+  | `smatrix::synthesis::trf` | `lsq::trf` |
+  | `smatrix::synthesis::optimizer` | `lsq::backends` |
+  | `OptimizerBackend`, `OptimizerResult`, `run_optimizer` | `LsqBackend`, `LsqResult`, `solve_least_squares` |
+  | the LM thread pool in `evaluator` | `lsq::pool` |
+  | `evaluator::{Param, build_params, apply_params, DepositJacobian}` | `synthesis::thickness_refine::{ThicknessParam, thickness_params, apply_thickness_params, ThicknessJacobian}` |
+  | `smatrix::synthesis::jacobian` | `smatrix::synthesis::thickness_jacobian` |
+  | `SmatrixContext::optimize_thicknesses[_report]` | `refine_thicknesses[_report]` |
+  | `smatrix::optimizer` (eigenmode landscape) | `smatrix::eigenmodes` |
+
+  Python: `SmatrixContext.optimize_thicknesses[_report]` is
+  `refine_thicknesses[_report]`, `LmConfig(optimizer=...)` is
+  `LmConfig(backend=...)` (its repr follows), and `available_optimizers()`
+  is `available_lsq_backends()`.
+
 ## [0.9.0] - synthesis targets belong to the whole design
 
 Needle synthesis draws from a material pool, runs through incoherent

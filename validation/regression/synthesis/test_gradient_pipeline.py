@@ -166,7 +166,7 @@ def test_gradient_span_survives_merge_and_optimizer():
   assert [s for s in snapshot(st) if s[0] == "graded"] == graded_before
   ctx = _merit_ctx()
   m0 = ctx.evaluate_merit(st)
-  ctx.optimize_thicknesses(st)
+  ctx.refine_thicknesses(st)
   # The gradient span is pinned: its rows are byte-identical after the
   # pass (the optimizable H film is free to move - that is its job).
   assert [s for s in snapshot(st) if s[0] == "graded"] == graded_before

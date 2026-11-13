@@ -96,7 +96,7 @@ def test_retardance_takes_the_analytic_path_to_the_reference(label):
     spec = _spec(label, _WL, ret, 0.05, 45.0)
     for jacobian in ("analytic", "fd"):
         st = _stack(_START, _WL)
-        mf, report = _ctx(spec, _WL, jacobian).optimize_thicknesses_report(st)
+        mf, report = _ctx(spec, _WL, jacobian).refine_thicknesses_report(st)
         assert (report["analytic_jacobians"] > 0) == (jacobian == "analytic")
         assert mf < 1e-10, (jacobian, mf)
         for got, want in zip([f["thickness"] for f in st.films()], _REFERENCE):
@@ -115,7 +115,7 @@ def test_a_quarter_wave_retarder_in_reflection():
     best = (np.inf, None)
     for _ in range(12):
         st = _stack(list(rng.uniform(20.0, 250.0, 8)), wl)
-        mf, _ = ctx.optimize_thicknesses_report(st)
+        mf, _ = ctx.refine_thicknesses_report(st)
         if mf < best[0]:
             best = (mf, st)
     assert best[0] < 1e-12

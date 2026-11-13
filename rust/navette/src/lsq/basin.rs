@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //! Basin adapters. See docs/basin-backends.md for tolerance and budget semantics.
 
-use super::{IntervalMap, MappedJacobian, OptimizerBackend, OptimizerResult};
-use crate::smatrix::synthesis::thick_opt::{
-    JacobianSource, LmConfig, LmTermination, build_jacobian,
-};
+use super::backends::{IntervalMap, LsqBackend, LsqResult, MappedJacobian};
+use crate::lsq::lm::{JacobianSource, LmConfig, LmTermination, build_jacobian};
 use basin::{
     BoundedFiniteDiff, BoxConstraints, CostFunction, DenseMatrix, Executor, Jacobian,
     LevenbergMarquardtQr, Method, NativeConvergenceTest, Residual, TerminationReason,
@@ -218,7 +216,7 @@ fn validate(x0: &[f64], lb: &[f64], ub: &[f64], cfg: &LmConfig) -> Result<(), St
                 "invalid parameter or finite bounds at coordinate {i}"
             ));
         }
-        if cfg.backend == OptimizerBackend::BasinTrf && (x < lower || x > upper) {
+        if cfg.backend == LsqBackend::BasinTrf && (x < lower || x > upper) {
             return Err(format!("initial parameter {i} is outside its bounds"));
         }
     }
@@ -227,7 +225,7 @@ fn validate(x0: &[f64], lb: &[f64], ub: &[f64], cfg: &LmConfig) -> Result<(), St
             return Err(format!("{name} must be finite and nonnegative"));
         }
     }
-    if cfg.backend == OptimizerBackend::BasinLmQr
+    if cfg.backend == LsqBackend::BasinLmQr
         && (!cfg.lambda_init.is_finite() || cfg.lambda_init <= 0.0)
     {
         return Err("lambda_init must be finite and positive".into());
@@ -242,12 +240,12 @@ pub(super) fn run<F, J>(
     lb: &[f64],
     ub: &[f64],
     cfg: &LmConfig,
-) -> Result<OptimizerResult, String>
+) -> Result<LsqResult, String>
 where
     F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
     J: JacobianSource + ?Sized,
 {
-    let execute = || -> Result<OptimizerResult, String> {
+    let execute = || -> Result<LsqResult, String> {
         validate(x0, lb, ub, cfg)?;
         let counts = Arc::new(Counts::default());
         let budget_counts = Arc::clone(&counts);
@@ -259,7 +257,7 @@ where
                 .then_some(TerminationReason::MaxEvaluations)
         };
 
-        let (result, x, termination) = if cfg.backend == OptimizerBackend::BasinLmQr {
+        let (result, x, termination) = if cfg.backend == LsqBackend::BasinLmQr {
             let map = IntervalMap::new(lb, ub)?;
             let mapped_r = |u: &[f64], out: &mut Vec<f64>| residuals(&map.to_bounded(u), out);
             let mapped_j = jacobian.map(|inner| MappedJacobian { inner, map: &map });
@@ -309,7 +307,7 @@ where
         if !cost.is_finite() || x.iter().any(|v| !v.is_finite()) {
             return Err("non-finite solver result".into());
         }
-        Ok(OptimizerResult {
+        Ok(LsqResult {
             x,
             cost,
             iterations: result.iter() as usize,

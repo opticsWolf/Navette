@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette -- Rust Rewrite of Numba-optimized thin-film optical solver
 //!
-//! synthesis::thick_opt — bounded Levenberg–Marquardt for film thicknesses.
+//! lsq::lm — bounded Levenberg–Marquardt for film thicknesses.
 //!
 //! Replaces scipy `least_squares(method="trf")` from needle_synthesis.py /
-//! ClampedNeedleSynthesizer.optimize_thicknesses. The residual system is
+//! ClampedNeedleSynthesizer.refine_thicknesses. The residual system is
 //! injected as a closure, so this module is solver-agnostic and unit-testable
 //! standalone; the synthesis wiring supplies residuals via core_engine +
 //! MeritSpec (Phase 4+).
@@ -60,7 +60,7 @@ pub struct LmConfig {
     /// Budget for residual evaluations, including the ones finite-difference
     /// Jacobians spend. Reached → [`LmTermination::MaxEvaluations`]. Some
     /// external backends check it only between iterations and may overshoot;
-    /// see the [`OptimizerBackend`](super::optimizer::OptimizerBackend)
+    /// see the [`LsqBackend`](super::backends::LsqBackend)
     /// variant.
     pub max_evals: usize,
     /// Terminate when relative cost decrease falls below this.
@@ -89,15 +89,15 @@ pub struct LmConfig {
     /// finite-difference regardless.
     pub jacobian: JacobianMode,
     /// Which solver runs. `BuiltinLm` is this module; the others live behind
-    /// cargo features and are dispatched by `synthesis::optimizer`.
+    /// cargo features and are dispatched by `lsq::backends`.
     ///
     /// The field sits here rather than on a parallel `OptimizerConfig`
     /// because every other knob in this struct is one the alternatives take
     /// too (ftol/xtol/gtol/max_evals are MINPACK's own names), and two
     /// structs that must agree field for field are a synchronization bug
     /// waiting to be written. `levenberg_marquardt_with` ignores it — it *is*
-    /// the built-in — so only `optimizer::run_optimizer` reads it.
-    pub backend: crate::smatrix::synthesis::optimizer::OptimizerBackend,
+    /// the built-in — so only `backends::solve_least_squares` reads it.
+    pub backend: crate::lsq::backends::LsqBackend,
 }
 
 /// Which Jacobian the thickness optimizer should use.
@@ -143,7 +143,7 @@ impl Default for LmConfig {
             damping: LmDamping::GainRatio,
             gtol_scale_invariant: true,
             jacobian: JacobianMode::Analytic,
-            backend: crate::smatrix::synthesis::optimizer::OptimizerBackend::BuiltinLm,
+            backend: crate::lsq::backends::LsqBackend::BuiltinLm,
         }
     }
 }
@@ -190,7 +190,7 @@ impl JacobianSource for NoJacobian {
 ///   known to be stationary.
 ///
 /// The exact form of each test differs between backends (see each
-/// [`OptimizerBackend`](super::optimizer::OptimizerBackend) variant); the
+/// [`LsqBackend`](super::backends::LsqBackend) variant); the
 /// meaning of each variant does not.
 ///
 /// `#[non_exhaustive]`: reasons may be added in a minor release, so a `match`
@@ -221,7 +221,7 @@ pub enum LmTermination {
     /// accepted, or further cost reductions round to zero. Typical of a
     /// numerically degenerate system or a floating-point cost floor.
     Stalled,
-    /// An interval-mapped backend ([`IntervalMap`](super::optimizer::IntervalMap))
+    /// An interval-mapped backend ([`IntervalMap`](super::backends::IntervalMap))
     /// stopped with a coordinate saturated at a bound **while moving that
     /// coordinate back inside lowers the cost**.
     ///

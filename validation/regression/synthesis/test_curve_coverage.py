@@ -76,7 +76,7 @@ def test_every_target_type_scores_optimizes_and_folds(name):
   stack = _stack()
   m = ctx.evaluate_merit(stack)
   assert np.isfinite(m) and m != 1e6, m
-  m_opt = ctx.optimize_thicknesses(stack)
+  m_opt = ctx.refine_thicknesses(stack)
   assert np.isfinite(m_opt) and m_opt <= m * (1 + 1e-12), (m, m_opt)
   S.build_needle_targets(spec, WL, ctx.simulate(stack), angles_deg=ANG)
 

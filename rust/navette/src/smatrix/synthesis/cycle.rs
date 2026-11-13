@@ -1023,7 +1023,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 
     // Initial optimization.
     let t0 = tick(cfg.record_timing);
-    ctx.optimize_thicknesses(stack)?;
+    ctx.refine_thicknesses(stack)?;
     let initial_lm_s = tock(t0);
 
     for cycle in 0..cfg.max_needles {
@@ -1263,7 +1263,7 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
 
                 // 5. Re-optimize.
                 let t0 = tick(cfg.record_timing);
-                let new_mf = ctx.optimize_thicknesses(stack)?;
+                let new_mf = ctx.refine_thicknesses(stack)?;
                 t.lm_s = tock(t0);
 
                 NeedleCycleResult {
@@ -1428,7 +1428,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
     };
 
     let t0 = tick(cfg.record_timing);
-    let new_mf = ctx.optimize_thicknesses(stack)?;
+    let new_mf = ctx.refine_thicknesses(stack)?;
     t.lm_s = tock(t0);
     history.push(NeedleCycleResult {
         cycle: cycle + 1,
@@ -1468,7 +1468,7 @@ mod tests {
         fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
             Err("mock context has no simulator".into())
         }
-        fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+        fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
             self.evaluate_merit(s)
         }
     }
@@ -1531,7 +1531,7 @@ mod tests {
             fn has_simulator(&self) -> bool {
                 true
             }
-            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+            fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
                 self.evaluate_merit(s)
             }
         }
@@ -1805,7 +1805,7 @@ mod tests {
         fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
             Err("mock context has no simulator".into())
         }
-        fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+        fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
             self.evaluate_merit(s)
         }
     }
@@ -2066,9 +2066,9 @@ mod tests {
         crate::smatrix::synthesis::evaluator::SmatrixContext,
         SpectralInputs,
     ) {
+        use crate::lsq::lm::LmConfig;
         use crate::smatrix::synthesis::evaluator::SmatrixContext;
         use crate::smatrix::synthesis::merit::{MeritKey, MeritTarget, SimTransform};
-        use crate::smatrix::synthesis::thick_opt::LmConfig;
 
         let mut spec = MeritSpec::new();
         let k = spec.add_key(MeritKey {

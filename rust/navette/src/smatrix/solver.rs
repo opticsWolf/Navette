@@ -16,13 +16,13 @@ use rayon::prelude::*;
 use super::angle::Radians;
 
 use super::core_engine::*;
+use super::eigenmodes::{char_func, char_func_xy, n_eff_bound};
 use super::needle_engine::*;
 use super::needle_operator::*;
 use super::optics_core::C_NM_PER_FS;
 use super::optics_core::{
     nevot_croce_factors, redheffer_product_complex_field_inner, w_function_inner,
 };
-use super::optimizer::{char_func, char_func_xy, n_eff_bound};
 
 // ---------------------------------------------------------------------------
 // Solver

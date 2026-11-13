@@ -125,7 +125,7 @@ jobs:
         run: python -m pip install -e ".[dev]" --config-settings=build-args=--features=opt-basin
       - name: Verify feature and Python integration
         run: |
-          python -c 'from navette._smatrix import available_optimizers; assert {"basin_lm_qr", "basin_trf"} <= set(available_optimizers())'
+          python -c 'from navette._smatrix import available_lsq_backends; assert {"basin_lm_qr", "basin_trf"} <= set(available_lsq_backends())'
           python -m pytest validation/smoke/test_optimizer_backend.py
       - name: Compare with SciPy
         env:

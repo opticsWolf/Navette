@@ -7,7 +7,7 @@ property of how it was built. That makes two things testable everywhere, and
 one only where the feature is on:
 
 * **everywhere** — the build can be *asked* what it has
-  (``available_optimizers()``), every name it reports actually constructs, and
+  (``available_lsq_backends()``), every name it reports actually constructs, and
   a name it does not have is refused with the command that would supply it.
   Refusing is the contract: a missing backend must never fall back to a
   different solver, because then a comparison against "the reference LM" would
@@ -30,7 +30,7 @@ optimum is interior for every backend.
 import numpy as np
 import pytest
 
-from navette._smatrix import LmConfig, SmatrixContext, available_optimizers
+from navette._smatrix import LmConfig, SmatrixContext, available_lsq_backends
 from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
 from navette.synthesis import build_merit_spec
@@ -48,7 +48,7 @@ _REFERENCE = [118.0, 203.0, 64.0]
 _START = [122.0, 198.0, 67.0]
 _NAMES = ["H", "L", "H2"]
 
-_HAVE_MINPACK = "minpack_lm" in available_optimizers()
+_HAVE_MINPACK = "minpack_lm" in available_lsq_backends()
 
 
 def _layers(thicknesses):
@@ -78,27 +78,27 @@ def interior():
     return build_merit_spec(tc)
 
 
-def _run(spec, optimizer, jacobian="analytic"):
-    ctx = _ctx(spec, optimizer=optimizer, jacobian=jacobian)
+def _run(spec, backend, jacobian="analytic"):
+    ctx = _ctx(spec, backend=backend, jacobian=jacobian)
     stack, _ = stack_from_layers(_layers(_START), _WL, {}, names=_NAMES)
-    mf, report = ctx.optimize_thicknesses_report(stack)
+    mf, report = ctx.refine_thicknesses_report(stack)
     return mf, report, [f["thickness"] for f in stack.films()]
 
 
 def test_the_build_can_be_asked_what_it_has():
-    names = available_optimizers()
+    names = available_lsq_backends()
     assert "builtin" in names
     for n in names:
-        assert repr(LmConfig(optimizer=n))
+        assert repr(LmConfig(backend=n))
 
 
 def test_the_builtin_backend_is_the_default():
-    assert 'optimizer="builtin"' in repr(LmConfig())
+    assert 'backend="builtin"' in repr(LmConfig())
 
 
 def test_an_unknown_backend_is_refused_and_says_what_exists():
     with pytest.raises(ValueError, match="minpack_lm"):
-        LmConfig(optimizer="scipy")
+        LmConfig(backend="scipy")
 
 
 @pytest.mark.skipif(_HAVE_MINPACK,
@@ -107,7 +107,7 @@ def test_a_backend_this_build_lacks_is_refused_with_the_rebuild_command():
     # Not a fallback. A wheel that silently ran the built-in here would make
     # every "reference LM" comparison a comparison with itself.
     with pytest.raises(ValueError, match="opt-minpack-lm"):
-        LmConfig(optimizer="minpack_lm")
+        LmConfig(backend="minpack_lm")
 
 
 def test_the_report_says_which_backend_ran(interior):
@@ -118,8 +118,8 @@ def test_the_report_says_which_backend_ran(interior):
 def test_trf_needs_no_feature_to_be_selectable():
     # Hand-rolled, so a standard wheel has it. If this ever starts skipping,
     # something moved it behind a cargo feature and the docs are now wrong.
-    assert "trf" in available_optimizers()
-    assert 'optimizer="trf"' in repr(LmConfig(optimizer="trf"))
+    assert "trf" in available_lsq_backends()
+    assert 'backend="trf"' in repr(LmConfig(backend="trf"))
 
 
 def test_trf_finds_the_same_interior_optimum(interior):
@@ -149,12 +149,12 @@ def test_trf_reaches_a_bound_active_optimum_without_landing_on_the_bound():
                           "s", "R", kind="e", angle_deg=0.0))
     spec = build_merit_spec(tc)
 
-    def run(optimizer):
+    def run(backend):
         ctx = SmatrixContext(spec, _WL, _NO_REMOVAL_MIN, clamp,
-                             LmConfig(optimizer=optimizer, max_iterations=2000), angles_deg=_ANGLES)
+                             LmConfig(backend=backend, max_iterations=2000), angles_deg=_ANGLES)
         layers = [(MaterialSpec("Konstant", dict(n=1.38)), 10.0)]
         stack, _ = stack_from_layers(layers, _WL, {}, names=["L"])
-        mf, _ = ctx.optimize_thicknesses_report(stack)
+        mf, _ = ctx.refine_thicknesses_report(stack)
         return mf, [f["thickness"] for f in stack.films()]
 
     mf_b, d_b = run("builtin")
@@ -183,17 +183,17 @@ def test_the_reference_lm_finds_the_same_interior_optimum(interior):
 
 @pytest.mark.parametrize("backend", ["basin_lm_qr", "basin_trf"])
 def test_basin_feature_discovery_or_rebuild_hint(backend):
-    if backend in available_optimizers():
-        assert backend in repr(LmConfig(optimizer=backend))
+    if backend in available_lsq_backends():
+        assert backend in repr(LmConfig(backend=backend))
     else:
         with pytest.raises(ValueError, match="--features opt-basin"):
-            LmConfig(optimizer=backend)
+            LmConfig(backend=backend)
 
 
 @pytest.mark.parametrize("backend", ["basin_lm_qr", "basin_trf"])
 @pytest.mark.parametrize("jacobian", ["analytic", "fd"])
 def test_basin_interior_optimum_and_report(interior, backend, jacobian):
-    if backend not in available_optimizers():
+    if backend not in available_lsq_backends():
         pytest.skip("needs opt-basin")
     mf, report, thicknesses = _run(interior, backend, jacobian)
     assert report["backend"] == backend
@@ -205,7 +205,7 @@ def test_basin_interior_optimum_and_report(interior, backend, jacobian):
     assert np.isnan(report["gain_ratio"])
 
 
-@pytest.mark.skipif("basin_trf" not in available_optimizers(), reason="needs opt-basin")
+@pytest.mark.skipif("basin_trf" not in available_lsq_backends(), reason="needs opt-basin")
 @pytest.mark.parametrize("jacobian", ["analytic", "fd"])
 @pytest.mark.parametrize("index,clamp,remaining", [(1.38, 50.0, 1), (2.35, 50.0, 0)])
 def test_basin_trf_active_bounds_and_film_removal(jacobian, index, clamp, remaining):
@@ -216,10 +216,10 @@ def test_basin_trf_active_bounds_and_film_removal(jacobian, index, clamp, remain
     costs = []
     for backend in ["trf", "basin_trf"]:
         ctx = SmatrixContext(spec, _WL, 2.0, clamp,
-                             LmConfig(optimizer=backend, jacobian=jacobian), angles_deg=_ANGLES)
+                             LmConfig(backend=backend, jacobian=jacobian), angles_deg=_ANGLES)
         stack, _ = stack_from_layers([(MaterialSpec("Konstant", dict(n=index)), 10.0)],
                                      _WL, {}, names=["L"])
-        cost, report = ctx.optimize_thicknesses_report(stack)
+        cost, report = ctx.refine_thicknesses_report(stack)
         films = stack.films()
         assert len(films) == remaining
         assert report["backend"] == backend

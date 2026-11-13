@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette -- Rust Rewrite of Numba-optimized thin-film optical solver
 //!
-//! synthesis::jacobian — the analytic Jacobian of the thickness optimizer.
+//! synthesis::thickness_jacobian — the analytic Jacobian of the thickness optimizer.
 //!
 //! ```text
 //!     J[i,k] = Σ_terms  ∂r_i/∂(curve value) · ∂(curve value)/∂d_k
@@ -293,7 +293,7 @@ pub fn assemble_jacobian(
 }
 
 /// F1.6: the parameter-map assembly. `params` is the same list
-/// `optimize_thicknesses_report` built (each entry either one row or one
+/// `refine_thicknesses_report` built (each entry either one row or one
 /// scalable span's bulk rows with frozen fractions); the deposits are per
 /// FILM ROW, laid out in parameter order, so the assembly contracts each
 /// residual's per-row columns into per-parameter columns.
@@ -311,7 +311,7 @@ pub(crate) fn assemble_jacobian_mapped(
     sens: &MeritSensitivity,
     dep: &CurveDeposits,
     n_wav: usize,
-    params: &[crate::smatrix::synthesis::evaluator::Param],
+    params: &[crate::smatrix::synthesis::thickness_refine::ThicknessParam],
     jac: &mut Vec<f64>,
 ) -> Result<(), String> {
     if let Some(&row) = sens.uncovered.first() {
@@ -331,8 +331,10 @@ pub(crate) fn assemble_jacobian_mapped(
     for p in params {
         bases.push(run);
         match p {
-            crate::smatrix::synthesis::evaluator::Param::Row(_) => run += 1,
-            crate::smatrix::synthesis::evaluator::Param::Span { rows, .. } => run += rows.len(),
+            crate::smatrix::synthesis::thickness_refine::ThicknessParam::Row(_) => run += 1,
+            crate::smatrix::synthesis::thickness_refine::ThicknessParam::Span { rows, .. } => {
+                run += rows.len()
+            }
         }
     }
     if run != n_flat {
@@ -367,8 +369,13 @@ pub(crate) fn assemble_jacobian_mapped(
         let out = &mut jac[i * n_out..(i + 1) * n_out];
         for (p, par) in params.iter().enumerate() {
             match par {
-                crate::smatrix::synthesis::evaluator::Param::Row(_) => out[p] = scratch[bases[p]],
-                crate::smatrix::synthesis::evaluator::Param::Span { rows, fractions } => {
+                crate::smatrix::synthesis::thickness_refine::ThicknessParam::Row(_) => {
+                    out[p] = scratch[bases[p]]
+                }
+                crate::smatrix::synthesis::thickness_refine::ThicknessParam::Span {
+                    rows,
+                    fractions,
+                } => {
                     let mut acc = 0.0f64;
                     for (k, &w) in fractions.iter().enumerate() {
                         acc += w * scratch[bases[p] + k];

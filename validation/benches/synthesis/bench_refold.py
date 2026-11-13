@@ -113,7 +113,7 @@ def main():
     # fresh stack for the optimize timing (LM cost depends on start point).
     stack2, _ = stack_from_layers(layers, WL, {}, names=["L"])
     t0 = time.perf_counter()
-    ctx.optimize_thicknesses(stack2)
+    ctx.refine_thicknesses(stack2)
     dt_opt = time.perf_counter() - t0
     print(f"  simulate:      {dt_sim * 1e3:8.3f} ms")
     print(f"  fold(w/ sim):  {dt_fold * 1e3:8.3f} ms")
@@ -143,7 +143,7 @@ def main():
             c = SmatrixContext(spec2, WL,
                                lm=LmConfig(jacobian=mode, max_iterations=60), angles_deg=ANGS)
             t0 = time.perf_counter()
-            mf, rep = c.optimize_thicknesses_report(st)
+            mf, rep = c.refine_thicknesses_report(st)
             dt = time.perf_counter() - t0
             if dt < best:
                 best, rep_best, mf_best = dt, rep, mf

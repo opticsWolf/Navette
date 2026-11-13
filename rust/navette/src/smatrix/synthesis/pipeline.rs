@@ -48,7 +48,7 @@ pub struct PipelinePhaseResult {
     pub inflate_result: Option<InflateResult>,
     /// F0.2: every clamp pass this phase ran - the pipeline's own
     /// post-cleanup / post-inflate sweeps plus the clamps inside each
-    /// `optimize_thicknesses`, drained from the context at record time.
+    /// `refine_thicknesses`, drained from the context at record time.
     /// `None` when nothing was removed and nothing was capped (B4), so a
     /// no-span run's phase dicts are byte-identical.
     pub clamp_report: Option<ClampReport>,
@@ -204,7 +204,7 @@ impl NeedlePipeline {
             }
 
             // F0.2: this phase's clamp aggregate - the context's
-            // accumulator (clamps inside every optimize_thicknesses) plus
+            // accumulator (clamps inside every refine_thicknesses) plus
             // the pipeline's own sweeps below, merged at record time.
             let mut clamp_report = ctx.take_clamp_report().unwrap_or_default();
 
@@ -360,7 +360,7 @@ impl NeedlePipeline {
         }
 
         // ── Final optimisation + clamp sweep ──
-        ctx.optimize_thicknesses(&mut self.stack)?;
+        ctx.refine_thicknesses(&mut self.stack)?;
         // F0.3: the final pass substitutes clamping for removal under
         // both clamp-up policies; the reported merit is evaluated AFTER
         // this sweep (the B7 ordering pin asserts it). F1.6: scalable
@@ -489,7 +489,7 @@ mod tests {
         fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
             Err("mock context has no simulator".into())
         }
-        fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+        fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
             self.evaluate_merit(s)
         }
     }
@@ -596,7 +596,7 @@ mod tests {
             fn simulate(&self, _: &DesignStack) -> Result<SimCurves, String> {
                 Err("mock context has no simulator".into())
             }
-            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+            fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
                 self.opt_calls += 1;
                 s.set_thickness(0, 5000.0)?;
                 self.evaluate_merit(s)
@@ -866,7 +866,7 @@ mod tests {
             fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
                 Err("mock context has no simulator".into())
             }
-            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+            fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
                 // Move every free row so the rate span's total (and with
                 // it its stale profile) actually changes per cycle.
                 for r in 0..s.films().len() {
@@ -945,7 +945,7 @@ mod tests {
             fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
                 Err("mock context has no simulator".into())
             }
-            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+            fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
                 for r in 0..s.films().len() {
                     if s.films()[r].optimize {
                         let d = s.films()[r].d_nm * 1.02;
@@ -1074,7 +1074,7 @@ mod tests {
             fn simulate(&self, _s: &DesignStack) -> Result<SimCurves, String> {
                 Err("mock context has no simulator".into())
             }
-            fn optimize_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
+            fn refine_thicknesses(&mut self, s: &mut DesignStack) -> Result<f64, String> {
                 s.set_thickness(0, 0.8)?;
                 self.evaluate_merit(s)
             }

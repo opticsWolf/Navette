@@ -75,7 +75,7 @@ def interior():
 def _run(spec, jacobian, start=_START):
     ctx = _ctx(spec, jacobian)
     stack, _ = stack_from_layers(_layers(start), _WL, {}, names=_NAMES)
-    mf, report = ctx.optimize_thicknesses_report(stack)
+    mf, report = ctx.refine_thicknesses_report(stack)
     d = [f["thickness"] for f in stack.films()]
     return mf, report, d
 

@@ -4,20 +4,20 @@
 """The scipy parity the plan docs have been claiming (R4.4, review §18.2).
 
 `docs/` has asserted "scipy parity" for the bounded Levenberg-Marquardt in
-`synthesis/thick_opt.rs` since it replaced `least_squares(method="trf")`. The
+`lsq/lm.rs` since it replaced `least_squares(method="trf")`. The
 review could not find anywhere it had been reproduced. This is that check,
 run for the first time, against the hardened solver of 0.6.7 (QR step,
 gain-ratio damping, MINPACK ftol/gtol).
 
 Checks:
 
-  A. **The thin-film case.** `SmatrixContext.optimize_thicknesses` drives the
+  A. **The thin-film case.** `SmatrixContext.refine_thicknesses` drives the
      engine LM over film thicknesses. The same residual system --
      `MeritSpec.residuals` on the same stack, same bounds [0, clamp_max] -- is
      handed to `scipy.optimize.least_squares(method="trf")`. Final costs must
      agree; where the optimum is interior, so must the thicknesses.
 
-  B. **The analytic problems the cargo tests pin.** `thick_opt.rs`'s unit
+  B. **The analytic problems the cargo tests pin.** `lsq/lm.rs`'s unit
      tests assert specific optima for eight bounded least-squares problems.
      Those constants were written by hand. Here scipy recomputes each one, so
      a wrong pin cannot hide behind a solver that agrees with it.
@@ -34,7 +34,7 @@ Checks:
 
   D. **The TRF backend against scipy TRF** (R4.6). Parts A-C compare two
      *different* algorithms and can only ask for the same optimum.
-     `optimizer="trf"` is the same algorithm as the oracle -- same Coleman-Li
+     `backend="trf"` is the same algorithm as the oracle -- same Coleman-Li
      scaling, same three candidate steps, same More subproblem -- so D asks
      for more: the same *optimum*, not merely the same merit, from the same
      start, including on a problem whose optimum sits on a bound. This is the
@@ -90,7 +90,7 @@ from navette.materials import MaterialSpec
 from navette.spectralweave.target import SpectralTarget, TargetCollection
 from navette.synthesis import build_merit_spec
 from navette.synthesis.pipeline import stack_from_layers
-from navette._smatrix import LmConfig, SmatrixContext, available_optimizers
+from navette._smatrix import LmConfig, SmatrixContext, available_lsq_backends
 
 # The engine's own defaults for a thickness optimization.
 CLAMP_MIN = 2.0
@@ -163,13 +163,13 @@ def run_scipy(spec, wl, angles, layers, names, x0, clamp_max):
 
 
 def run_engine(spec, wl, angles, layers, names, x0, clamp_max,
-               max_iterations=200, optimizer="builtin", jacobian="analytic"):
+               max_iterations=200, backend="builtin", jacobian="analytic"):
     ctx = SmatrixContext(spec, wl, NO_REMOVAL_MIN, clamp_max,
                          LmConfig(max_iterations=max_iterations,
-                                  optimizer=optimizer, jacobian=jacobian), angles_deg=angles)
+                                  backend=backend, jacobian=jacobian), angles_deg=angles)
     stack, _ = stack_from_layers(
         [(m, float(d)) for (m, _), d in zip(layers, x0)], wl, {}, names=names)
-    cost, report = ctx.optimize_thicknesses_report(stack)
+    cost, report = ctx.refine_thicknesses_report(stack)
     return (np.array([f["thickness"] for f in stack.films()]), float(cost),
             report)
 
@@ -340,9 +340,9 @@ def part_c():
     ctx = SmatrixContext(spec, wl, CLAMP_MIN, CLAMP_MAX, angles_deg=angles)
     stack, _ = stack_from_layers(layers, wl, {}, names=["A", "B"])
     before = ctx.evaluate_merit(stack)
-    after = ctx.optimize_thicknesses(stack)
+    after = ctx.refine_thicknesses(stack)
 
-    check("C: optimize_thicknesses returns the post-optimization merit",
+    check("C: refine_thicknesses returns the post-optimization merit",
           close(after, ctx.evaluate_merit(stack), rel=1e-12),
           f"{after:.12g}")
     check("C: the merit never gets worse", after <= before + 1e-12,
@@ -350,7 +350,7 @@ def part_c():
 
     # Re-running from the optimum must not move: a solver that keeps stepping
     # at a stationary point is not converged, it is oscillating.
-    again = ctx.optimize_thicknesses(stack)
+    again = ctx.refine_thicknesses(stack)
     check("C: re-optimizing from the optimum is a fixed point",
           close(again, after, rel=1e-9, abs_=1e-12), f"{after:.10g} -> {again:.10g}")
 
@@ -360,10 +360,10 @@ def part_c():
 # ---------------------------------------------------------------------------
 
 def part_d():
-    print("--- D. optimizer='trf' vs scipy least_squares(method='trf') ---")
-    if "trf" not in available_optimizers():
+    print("--- D. backend='trf' vs scipy least_squares(method='trf') ---")
+    if "trf" not in available_lsq_backends():
         check("D: the trf backend is compiled in", False,
-              f"available: {available_optimizers()}")
+              f"available: {available_lsq_backends()}")
         return
     print("  Same algorithm on both sides, so the bar is the optimum itself")
     print("  and not merely the merit. Both solvers start from the same point")
@@ -395,7 +395,7 @@ def part_d():
         ex, ecost, erep = run_engine(spec, wl, angles, layers, names,
                                      perturbed, CLAMP_MAX,
                                      max_iterations=FAR_ITERS,
-                                     optimizer="trf")
+                                     backend="trf")
         print(f"    [{label}]  from {np.round(perturbed, 3)}")
         print(f"       trf   : cost {ecost:.12g}  x {np.round(ex, 8)}"
               f"  [{erep['backend']}, {erep['termination']},"
@@ -428,7 +428,7 @@ def part_d():
         sx, scost, _ = run_scipy(spec, wl, angles, layers, names, [start], clamp)
         ex, ecost, erep = run_engine(spec, wl, angles, layers, names, [start],
                                      clamp, max_iterations=FAR_ITERS,
-                                     optimizer="trf")
+                                     backend="trf")
         if ex.size != 1:
             check(f"D2/{label}: the film survived the removal sweep", False,
                   f"{ex.size} films back from the engine")
@@ -455,7 +455,7 @@ def part_d():
     bx, bcost, _ = run_engine(spec, wl, angles, layers, ["L"], [10.0], 50.0,
                               max_iterations=FAR_ITERS)
     tx, tcost, _ = run_engine(spec, wl, angles, layers, ["L"], [10.0], 50.0,
-                              max_iterations=FAR_ITERS, optimizer="trf")
+                              max_iterations=FAR_ITERS, backend="trf")
     print(f"    builtin {bx[0]:.12f}   trf {tx[0]:.12f}   clamp 50.0")
     check("D3: both backends find the same boundary optimum",
           abs(bx[0] - tx[0]) < 1e-4, f"|dx| = {abs(bx[0] - tx[0]):.3e} nm")
@@ -481,7 +481,7 @@ ARGMIN_CASES = [
 
 def part_e():
     print("--- E. the argmin backends (R4.4c-argmin) ---")
-    have = available_optimizers()
+    have = available_lsq_backends()
     if "argmin_trust_region" not in have:
         print("  opt-argmin not compiled in -- skipping "
               "(rebuild with `--features opt-argmin` to run part E)")
@@ -510,11 +510,11 @@ def part_e():
         start = list(np.clip(anchor + np.array(kick), NO_REMOVAL_MIN, CLAMP_MAX))
 
         tx, tcost, trep = run_engine(spec, wl, angles, layers, names, start,
-                                     CLAMP_MAX, optimizer="trf")
+                                     CLAMP_MAX, backend="trf")
 
         # E1/E2/E3 -- the trust region.
         ax, acost, arep = run_engine(spec, wl, angles, layers, names, start,
-                                     CLAMP_MAX, optimizer="argmin_trust_region")
+                                     CLAMP_MAX, backend="argmin_trust_region")
         print(f"  {label}: scipy {scost:.10g} | trf {tcost:.10g} "
               f"({trep['evals']} evals) | argmin_tr {acost:.10g} "
               f"({arep['evals']} evals, {arep['termination']})")
@@ -532,7 +532,7 @@ def part_e():
         # did not reach.
         try:
             gx, gcost, grep = run_engine(spec, wl, angles, layers, names, start,
-                                         CLAMP_MAX, optimizer="argmin_gauss_newton")
+                                         CLAMP_MAX, backend="argmin_gauss_newton")
         except ValueError as e:
             gn_refusals += 1
             msg = str(e)
@@ -589,7 +589,7 @@ def case_arguments(case):
 def part_f():
     print("--- F. Basin QR LM and full TRF (issue #2) ---")
     backends = [name for name in ("basin_lm_qr", "basin_trf")
-                if name in available_optimizers()]
+                if name in available_lsq_backends()]
     if not backends:
         print("  opt-basin not compiled in -- skipping")
         return
@@ -604,7 +604,7 @@ def part_f():
             for jacobian in ("analytic", "fd"):
                 label = f"F/{case['label']}/{backend}/{jacobian}"
                 try:
-                    x, cost, report = run_engine(**args, optimizer=backend,
+                    x, cost, report = run_engine(**args, backend=backend,
                                                 jacobian=jacobian, max_iterations=FAR_ITERS)
                 except ValueError as error:
                     check(label, False, str(error))

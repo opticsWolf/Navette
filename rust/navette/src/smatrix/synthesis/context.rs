@@ -7,7 +7,7 @@
 //!
 //! The algorithms in cleanup.rs / inflate.rs / pipeline.rs are written
 //! against this trait so they are unit-testable with analytic mock
-//! evaluators today, and wired to core_engine + thick_opt in the pyo3 shell
+//! evaluators today, and wired to core_engine + lsq::lm in the pyo3 shell
 //! tomorrow without touching their decision logic (which must stay
 //! byte-comparable to needle_synthesis.py).
 
@@ -45,10 +45,10 @@ pub trait DesignContext {
 
     /// Bounded thickness re-optimization IN PLACE.
     ///
-    /// Mirrors `ClampedNeedleSynthesizer.optimize_thicknesses`: optimizes
+    /// Mirrors `ClampedNeedleSynthesizer.refine_thicknesses`: optimizes
     /// all films flagged `optimize`, enforces bounds, removes films driven
     /// below the minimum. Returns the post-optimization merit.
-    fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String>;
+    fn refine_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String>;
 
     /// F0.2: clamp reports accumulated since the last drain, or `None`
     /// when the sweeps removed and capped nothing. The pipeline drains

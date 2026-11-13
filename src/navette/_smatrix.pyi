@@ -524,8 +524,8 @@ class DesignStack:
     def roughness_cap(self, ratio: float) -> None: ...
 
 class LmConfig:
-    """Levenberg-Marquardt settings. `optimizer` selects the backend;
-    `available_optimizers()` lists what this build carries. `opt-basin` adds
+    """Levenberg-Marquardt settings. `backend` selects the solver;
+    `available_lsq_backends()` lists what this build carries. `opt-basin` adds
     `basin_lm_qr` and `basin_trf`.
 
     A report's `termination` is one of: converged -- `Gradient`, `Step`,
@@ -546,7 +546,7 @@ class LmConfig:
         damping: str = ...,
         gtol_scale_invariant: bool = ...,
         jacobian: str = ...,
-        optimizer: str = ...,
+        backend: str = ...,
     ) -> None: ...
 
 class PipelineConfig:
@@ -627,8 +627,8 @@ class SmatrixContext:
     ) -> None: ...
     def simulate(self, stack: DesignStack) -> SimCurves: ...
     def evaluate_merit(self, stack: DesignStack) -> float: ...
-    def optimize_thicknesses(self, stack: DesignStack) -> float: ...
-    def optimize_thicknesses_report(
+    def refine_thicknesses(self, stack: DesignStack) -> float: ...
+    def refine_thicknesses_report(
         self, stack: DesignStack
     ) -> tuple[float, dict[str, Any] | None]: ...
 
@@ -659,7 +659,7 @@ class NeedlePipeline:
     ) -> None: ...
     def run(self, callback: Callable[..., Any] | None = ...) -> dict[str, Any]: ...
 
-def available_optimizers() -> list[str]:
+def available_lsq_backends() -> list[str]:
     """Backends this build carries: always `builtin` and `trf`, plus
     `minpack_lm` / `argmin_*` when their cargo features are on."""
     ...

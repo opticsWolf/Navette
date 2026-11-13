@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-use navette::smatrix::synthesis::optimizer::{OptimizerBackend, available_backends};
+use navette::lsq::backends::{LsqBackend, available_backends};
 
 #[test]
 fn basin_names_and_feature_discovery() {
     for name in ["basin_lm_qr", "basin_trf"] {
-        let backend = OptimizerBackend::parse(name).unwrap();
+        let backend = LsqBackend::parse(name).unwrap();
         assert_eq!(backend.as_str(), name);
         assert_eq!(backend.feature(), Some("opt-basin"));
         assert_eq!(backend.is_available(), cfg!(feature = "opt-basin"));
@@ -17,13 +17,13 @@ fn basin_names_and_feature_discovery() {
 #[cfg(not(feature = "opt-basin"))]
 #[test]
 fn missing_basin_reports_the_build_feature() {
-    use navette::smatrix::synthesis::{optimizer::run_optimizer, thick_opt::*};
+    use navette::lsq::{backends::solve_least_squares, lm::*};
     for name in ["basin_lm_qr", "basin_trf"] {
         let cfg = LmConfig {
-            backend: OptimizerBackend::parse(name).unwrap(),
+            backend: LsqBackend::parse(name).unwrap(),
             ..Default::default()
         };
-        let err = run_optimizer(
+        let err = solve_least_squares(
             &|_, r| {
                 *r = vec![1.0];
                 Ok(())
@@ -42,7 +42,7 @@ fn missing_basin_reports_the_build_feature() {
 #[cfg(feature = "opt-basin")]
 mod enabled {
     use super::*;
-    use navette::smatrix::synthesis::{optimizer::run_optimizer, thick_opt::*};
+    use navette::lsq::{backends::solve_least_squares, lm::*};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Jac<F>(F);
@@ -56,7 +56,7 @@ mod enabled {
 
     fn config(name: &str) -> LmConfig {
         LmConfig {
-            backend: OptimizerBackend::parse(name).unwrap(),
+            backend: LsqBackend::parse(name).unwrap(),
             ..Default::default()
         }
     }
@@ -78,7 +78,7 @@ mod enabled {
                     *j = vec![1.0, 0.0, 0.0, 2.0, 0.0, 0.0];
                     Ok(Some(3))
                 });
-                let result = run_optimizer(
+                let result = solve_least_squares(
                     &residual,
                     (mode != 0).then_some(&jac),
                     &[0.0, 0.0],
@@ -128,7 +128,7 @@ mod enabled {
                     *j = vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
                     Ok(Some(3))
                 });
-                let result = run_optimizer(
+                let result = solve_least_squares(
                     &residual,
                     analytic.then_some(&jac),
                     &start,
@@ -156,7 +156,7 @@ mod enabled {
                 panic!("fixed problem needs no Jacobian")
             },
         );
-        let result = run_optimizer(
+        let result = solve_least_squares(
             &|_, r| {
                 *r = vec![2.0];
                 Ok(())
@@ -182,7 +182,7 @@ mod enabled {
                     *j = vec![1.0, 1.0, 0.0, 2.0, 2.0, 0.0];
                     Ok(Some(2))
                 });
-                let result = run_optimizer(
+                let result = solve_least_squares(
                     &|x, r| {
                         *r = vec![x[0] + x[1] - 3.0, 2.0 * (x[0] + x[1] - 3.0)];
                         Ok(())
@@ -212,7 +212,7 @@ mod enabled {
                     *j = vec![1.0, 1.0, 0.0, 2.0, 2.0, 0.0];
                     Ok(Some(2))
                 });
-                let result = run_optimizer(
+                let result = solve_least_squares(
                     &|x, r| {
                         *r = vec![x[0] + x[1] - 4.0, 2.0 * (x[0] + x[1] - 4.0)];
                         Ok(())
@@ -243,7 +243,7 @@ mod enabled {
             Ok(Some(3))
         });
         for analytic in [false, true] {
-            let result = run_optimizer(
+            let result = solve_least_squares(
                 &residual,
                 analytic.then_some(&jac),
                 &[0.0, 1.0],
@@ -268,7 +268,7 @@ mod enabled {
                     *j = vec![1.0, 0.0];
                     Ok(Some(2))
                 });
-                let result = run_optimizer(
+                let result = solve_least_squares(
                     &|x, r| {
                         *r = vec![x[0], 2.0];
                         Ok(())
@@ -301,7 +301,7 @@ mod enabled {
             cfg.gtol = 0.0;
             cfg.ftol = ftol;
             cfg.xtol = xtol;
-            let result = run_optimizer(
+            let result = solve_least_squares(
                 &|x, r| {
                     *r = vec![x[0] - 0.3, 2.0];
                     Ok(())
@@ -327,7 +327,7 @@ mod enabled {
             *r = vec![x[0] - 0.3, 2.0];
             Ok(())
         };
-        let lm = run_optimizer(
+        let lm = solve_least_squares(
             &residual,
             None::<&NoJacobian>,
             &[1.0],
@@ -340,7 +340,7 @@ mod enabled {
         assert!(!lm.termination.is_converged());
         assert!((lm.x[0] - 1.0).abs() < 1e-6, "{lm:?}");
 
-        let trf = run_optimizer(
+        let trf = solve_least_squares(
             &residual,
             None::<&NoJacobian>,
             &[1.0],
@@ -357,7 +357,7 @@ mod enabled {
     fn lm_at_a_bound_the_physics_wants_keeps_its_convergence_reason() {
         // Same start, but the unconstrained optimum is outside the box, so
         // the bound is a genuine constrained optimum.
-        let result = run_optimizer(
+        let result = solve_least_squares(
             &|x: &[f64], r: &mut Vec<f64>| {
                 *r = vec![x[0] - 2.0, 2.0];
                 Ok(())
@@ -383,7 +383,7 @@ mod enabled {
             let mut cfg = config(name);
             cfg.max_evals = 1;
             let result =
-                run_optimizer(&residual, None::<&NoJacobian>, &[0.1], &[0.0], &[5.0], &cfg)
+                solve_least_squares(&residual, None::<&NoJacobian>, &[0.1], &[0.0], &[5.0], &cfg)
                     .unwrap();
             assert_eq!(result.termination, LmTermination::MaxEvaluations);
             assert_eq!(result.iterations, 0);
@@ -392,7 +392,7 @@ mod enabled {
             cfg.max_evals = 100_000;
             cfg.max_iterations = 1;
             let result =
-                run_optimizer(&residual, None::<&NoJacobian>, &[0.1], &[0.0], &[5.0], &cfg)
+                solve_least_squares(&residual, None::<&NoJacobian>, &[0.1], &[0.0], &[5.0], &cfg)
                     .unwrap();
             assert_eq!(result.termination, LmTermination::MaxIterations);
             assert_eq!(result.iterations, 1);
@@ -412,7 +412,7 @@ mod enabled {
                 (vec![0.5], vec![1.0], vec![0.0]),
                 (vec![0.5], vec![0.0], vec![f64::INFINITY]),
             ] {
-                let err = run_optimizer(
+                let err = solve_least_squares(
                     &residual,
                     None::<&NoJacobian>,
                     &x,
@@ -427,14 +427,21 @@ mod enabled {
                 let mut cfg = config(name);
                 cfg.ftol = tolerance;
                 assert!(
-                    run_optimizer(&residual, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg)
-                        .unwrap_err()
-                        .contains("ftol")
+                    solve_least_squares(
+                        &residual,
+                        None::<&NoJacobian>,
+                        &[0.5],
+                        &[0.0],
+                        &[1.0],
+                        &cfg
+                    )
+                    .unwrap_err()
+                    .contains("ftol")
                 );
             }
         }
         assert!(
-            run_optimizer(
+            solve_least_squares(
                 &residual,
                 None::<&NoJacobian>,
                 &[2.0],
@@ -456,7 +463,7 @@ mod enabled {
                 Ok(())
             };
             assert!(
-                run_optimizer(
+                solve_least_squares(
                     &residual,
                     None::<&NoJacobian>,
                     &[0.5],
@@ -472,7 +479,7 @@ mod enabled {
                 Ok(Some(1))
             });
             assert!(
-                run_optimizer(
+                solve_least_squares(
                     &|x, r| {
                         *r = vec![x[0]];
                         Ok(())
@@ -493,7 +500,7 @@ mod enabled {
     fn callback_errors_and_invalid_shapes_are_errors_not_panics() {
         for name in ["basin_lm_qr", "basin_trf"] {
             let cfg = config(name);
-            let err = run_optimizer(
+            let err = solve_least_squares(
                 &|_, _| Err("sentinel residual".into()),
                 None::<&NoJacobian>,
                 &[0.5],
@@ -511,7 +518,7 @@ mod enabled {
                     j.clear();
                     Ok(rows)
                 });
-                let err = run_optimizer(
+                let err = solve_least_squares(
                     &|x, r| {
                         *r = vec![x[0]];
                         Ok(())
@@ -525,7 +532,7 @@ mod enabled {
                 .unwrap_err();
                 assert!(err.contains("Jacobian"), "{err}");
             }
-            let err = run_optimizer(
+            let err = solve_least_squares(
                 &|_, r| {
                     r.clear();
                     Ok(())
@@ -539,7 +546,7 @@ mod enabled {
             .unwrap_err();
             assert!(err.contains("empty residual"), "{err}");
             let jac = Jac(|_: &[f64], _: &mut Vec<f64>| Err("sentinel Jacobian".into()));
-            let err = run_optimizer(
+            let err = solve_least_squares(
                 &|x, r| {
                     *r = vec![x[0]];
                     Ok(())

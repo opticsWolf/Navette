@@ -18,7 +18,7 @@ Cost per iteration (the main table):
     Python, so it carries a few microseconds of call overhead the LM's
     internal evals do not: `eval%` is an upper bound.
 ``lm``
-    `optimize_thicknesses_report` with the analytic Jacobian at the
+    `refine_thicknesses_report` with the analytic Jacobian at the
     default budget: wall, iterations, evals, Jacobian builds. `rest%` is
     the wall not spent in evals, i.e. the Jacobian builds plus the linear
     algebra; `rest/it` is that per iteration in units of `t_eval`.
@@ -155,7 +155,7 @@ def lm_run(c, spec, wl, repeats, **lm):
         stack = build(c)[0]
         ctx = context(c, spec, wl, **lm)
         t0 = time.perf_counter()
-        mf, r = ctx.optimize_thicknesses_report(stack)
+        mf, r = ctx.refine_thicknesses_report(stack)
         dt = time.perf_counter() - t0
         if dt < best:
             best, rep = dt, dict(r, merit=mf)

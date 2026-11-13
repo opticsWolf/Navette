@@ -37,7 +37,7 @@ import tomllib
 import numpy as np
 import scipy
 
-from navette._smatrix import available_optimizers
+from navette._smatrix import available_lsq_backends
 
 
 def summarize_ms(samples):
@@ -94,7 +94,7 @@ def main():
                     ("RAYON_NUM_THREADS", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")},
         "solver_versions": {p["name"]: p["version"] for p in lock["package"]
                             if p["name"] in {"basin", "argmin", "levenberg-marquardt"}},
-        "backends": available_optimizers(),
+        "backends": available_lsq_backends(),
         "warmups": args.warmups, "repetitions": args.repetitions,
         "timing": "wall ms per fresh-stack run: n, min, q1, median, q3, max "
                   "(inclusive quartiles), 4 significant figures",
@@ -104,16 +104,16 @@ def main():
     rows = []
     for case in basin_cases():
         for jacobian in ("analytic", "fd"):
-            for backend in available_optimizers():
+            for backend in available_lsq_backends():
                 row = {"case": case["label"], "backend": backend, "jacobian": jacobian,
                        "start_nm": case["x0"].tolist(), "bounds_nm": [0.0, case["clamp_max"]]}
                 try:
                     for _ in range(args.warmups):
-                        run_engine(**case_arguments(case), optimizer=backend, jacobian=jacobian)
+                        run_engine(**case_arguments(case), backend=backend, jacobian=jacobian)
                     samples = []
                     for _ in range(args.repetitions):
                         start = time.perf_counter()
-                        x, cost, report = run_engine(**case_arguments(case), optimizer=backend,
+                        x, cost, report = run_engine(**case_arguments(case), backend=backend,
                                                     jacobian=jacobian)
                         samples.append(time.perf_counter() - start)
                     ms = summarize_ms(samples)
