@@ -20,6 +20,9 @@
 #                                   the section or plan item that asked for
 #                                   it, and none imports the loom reference
 #                                   they exist to be independent of)
+#   * tools/check_target_matrix.py (the supported-target table in
+#                                   docs/spectralweave-target-kinds.md is
+#                                   re-measured against the built extension)
 #   * dependency floors               (R4.1: a floor with no wheel is fiction)
 #   * build_profile() == "release"    (R2.1: PEP 517 builds must be optimized)
 #   * cargo clippy -D warnings        (R2.3a: zero findings as of 0.6.6)
@@ -179,6 +182,9 @@ jobs:
 
       - name: review harnesses are documented and loom-free
         run: python tools/check_review_docs.py
+
+      - name: supported-target matrix matches the code
+        run: python tools/check_target_matrix.py
 
   dependency-floors:
     # A declared floor is a promise: "this package works with at least this

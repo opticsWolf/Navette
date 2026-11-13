@@ -20,17 +20,25 @@ Python surface: `src/navette/spectralweave/target.py`
 The needle run (`run_needle`, `run_design`) compiles a `TargetCollection`
 through `build_merit_spec`; a label outside this table raises
 `ValueError` there, and a demand the evaluator cannot produce is refused
-before any solve (`SmatrixContext::check_spec`), naming it.
+before any solve (`SmatrixContext::check_spec`), naming it. The table
+is measured, not written: `tools/check_target_matrix.py` scores every
+label on a coherent stack, a stack with a plate and an absorbing exit,
+and CI fails when the table and the code disagree (`--write`
+regenerates it).
 
+<!-- target-matrix:begin -->
 | demand | labels (`spectral`, pol.) | coherent stack | stack with a plate |
 |---|---|---|---|
 | intensity, front | `R`, `T` × s/p/u | yes | yes |
 | intensity, back (light from the exit side) | `RB`, `TB` × s/p/u | yes¹ | yes¹ |
-| absorptance | `A`, `AB` × s/p/u | yes | yes |
-| phase of one element | `R`, `T`, `RB`, `TB` × s/p, `phase=True` | yes | no² |
+| absorptance, front | `A` × s/p/u | yes | yes |
+| absorptance, back | `AB` × s/p/u | yes¹ | yes¹ |
+| phase of one element, front | `R`, `T` × s/p, `phase=True` | yes | no² |
+| phase of one element, back | `RB`, `TB` × s/p, `phase=True` | yes¹ | no² |
 | retardance | `RetR`, `RetT`, `DeltaR`, `DeltaT`, u, `phase=True` | yes | no² |
 | differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
 | colour (`ColorTarget`) | front `R` / `T` | yes | yes |
+<!-- target-matrix:end -->
 
 Every row but colour accepts every kind (`e`/`a`/`b`/`r`/`c`), `band`,
 point weights and `integral`; intensity rows take linear or log

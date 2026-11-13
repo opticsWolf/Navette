@@ -7,6 +7,17 @@ All notable changes to Navette are recorded here. Work items reference
 
 ## [Unreleased]
 
+### Added
+
+- **The supported-target matrix is measured, not written.**
+  `tools/check_target_matrix.py` compiles and scores every label on a
+  coherent stack, a stack with a plate and an absorbing exit, and
+  rewrites the table in `docs/spectralweave-target-kinds.md`
+  (`--write`). CI fails when the table and the code disagree, or when a
+  label compiles that no row lists. The table now shows that `AB` and
+  back-side phase are dropped on an absorbing exit, like `RB`/`TB`
+  intensity.
+
 ### Changed
 
 - **Doors called in a loop warn once.** `Navette_Structure` and

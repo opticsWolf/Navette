@@ -94,8 +94,13 @@ deferred with D3. 1.4 matters only if D3 lands.
 - §6 follow-ups (target-kinds doc, needle docs with a generated
   supported-target matrix) have not been done for any workstream.
   2026-11-12: the matrix is in the target-kinds doc, written by hand
-  from `SmatrixContext::provides` and the converter's label tables;
-  generating it is still open.
+  from `SmatrixContext::provides` and the converter's label tables.
+  2026-11-13: generated. `tools/check_target_matrix.py` scores every
+  label on a coherent stack, a plate stack and an absorbing exit and
+  rewrites the table (`--write`); CI fails on drift, and a label that
+  starts compiling without a row fails too. Measuring it split the
+  absorptance and one-element phase rows into front and back: `AB` and
+  back phase are dropped on an absorbing exit like `RB`/`TB` intensity.
 
 ### 1.6 A doc comment sits on the wrong item (fixed)
 
