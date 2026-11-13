@@ -178,6 +178,8 @@ pub struct StageReport {
     pub chi2_start: f64,
     /// Least-squares runs: repeats, multi-start starts.
     pub runs: usize,
+    /// Model evaluations over every run and scan point.
+    pub evals: usize,
     /// `false` when `IfBetter` rolled the stage back.
     pub accepted: bool,
     /// The kept run's report (on the stage's data).
@@ -192,6 +194,8 @@ pub struct StrategyReport {
     /// Every dataset at the end state, with the covariance of every
     /// parameter some stage freed.
     pub report: FitReport,
+    /// Model evaluations over every stage.
+    pub evals: usize,
 }
 
 /// Run `strategy` on `problem`. `sets` are the user parameter sets
@@ -232,6 +236,7 @@ pub fn run_strategy(
     end.model = model;
     Ok(StrategyReport {
         name: strategy.name.clone(),
+        evals: stages.iter().map(|s| s.evals).sum(),
         stages,
         report: evaluate(&end)?,
     })
@@ -270,8 +275,12 @@ fn run_stage(
         .map(|(p, _)| p.addr.to_string())
         .collect();
 
-    let (mut best, mut runs) = match &stage.kind {
-        StageKind::Lsq => (fit(&sp)?, 1),
+    let (mut best, mut runs, mut evals) = match &stage.kind {
+        StageKind::Lsq => {
+            let r = fit(&sp)?;
+            let e = r.evals;
+            (r, 1, e)
+        }
         StageKind::Scan { param, points } => {
             let pick = select(std::slice::from_ref(param), &sp.parameters, sets)?;
             let hits: Vec<usize> = (0..pick.len()).filter(|&i| pick[i] && free[i]).collect();
@@ -305,7 +314,9 @@ fn run_stage(
                 .collect();
             let i = argmin(&chi2).ok_or("every scan point failed to evaluate")?;
             sp.parameters[j].value = Some(lb + (ub - lb) * i as f64 / (*points - 1) as f64);
-            (fit(&sp)?, 1)
+            let r = fit(&sp)?;
+            let e = r.evals + points;
+            (r, 1, e)
         }
         StageKind::MultiStart {
             starts,
@@ -347,7 +358,8 @@ fn run_stage(
                 .collect();
             let i = argmin(&chi2).ok_or("every start failed")?;
             let n = reports.len();
-            (reports.into_iter().nth(i).flatten().unwrap(), n)
+            let e = reports.iter().flatten().map(|r| r.evals).sum();
+            (reports.into_iter().nth(i).flatten().unwrap(), n, e)
         }
     };
 
@@ -362,6 +374,7 @@ fn run_stage(
             }
             let next = fit(&again)?;
             runs += 1;
+            evals += next.evals;
             runs_here += 1;
             let gain = (best.chi2 - next.chi2) / best.chi2.max(f64::MIN_POSITIVE);
             let keep = next.chi2 < best.chi2;
@@ -386,6 +399,7 @@ fn run_stage(
         free: addrs,
         chi2_start: start.chi2,
         runs,
+        evals,
         accepted,
         report: best,
     })

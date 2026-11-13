@@ -89,6 +89,19 @@ Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
   named presets live in `conventions.json`. Each converted dataset
   records how it was read (`SpectrumData::source`), and the fit report
   carries it (`DatasetFit::source`). tan Ψ/cos Δ cannot carry Δ's sign.
+- **Which strategy works best** (fit plan phase 4, `fit::explore`).
+  `generate` turns parameter sets into strategies: every ordering of the
+  sets (sampled with a note above 24 orders), regroupings into blocks, or
+  cumulative release, each named after its arrangement
+  (`groups > thicknesses | polish`). `tournament` runs strategies on one
+  problem in parallel and ranks them by χ². `draw_truth` draws a known
+  truth from the groups' own error laws (a layer's thickness, roughness,
+  interface or grading as `expand` draws it; group factors and summands
+  from the law's relative and absolute parts) and simulates the datasets
+  with noise; `benchmark` runs every strategy on a truth per seed and
+  ranks them by recovery of the truth. Deterministic per seed. The
+  `fit_tournament` example ranks seven strategies on a 20-layer coating.
+  Stage and strategy reports count their model evaluations (`evals`).
 
 ### Changed (breaking)
 

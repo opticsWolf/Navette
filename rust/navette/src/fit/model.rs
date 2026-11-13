@@ -505,6 +505,16 @@ impl FitModel {
         Ok(target)
     }
 
+    /// The group governing a resolved target, if the model has one: a
+    /// layer's material's group, or the named group.
+    pub(crate) fn group_of(&self, target: &Target) -> Option<&Group> {
+        match target {
+            Target::Layer { entries, .. } => self.groups.get(&self.entries[entries[0]].0.material),
+            Target::Group { group, .. } => self.groups.get(group),
+            Target::Material { .. } => None,
+        }
+    }
+
     pub(crate) fn read(&self, target: &Target) -> Result<f64, String> {
         match target {
             Target::Layer { entries, field } => {

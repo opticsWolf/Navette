@@ -134,6 +134,8 @@ ALLOWLIST = {
     # Strategies, selectors and the instrument converter (fit plan phase
     # 3): bound in phase 5 with the rest; remove them here when they are.
     "select", "run_strategy", "to_solver", "from_solver",
+    # Tournament and benchmark (fit plan phase 4), likewise.
+    "generate", "tournament", "draw_truth", "benchmark",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

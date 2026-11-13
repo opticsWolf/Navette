@@ -28,6 +28,7 @@
 pub mod convert;
 pub mod data;
 pub mod dispersion;
+pub mod explore;
 pub mod forward;
 pub mod model;
 pub mod params;
@@ -43,6 +44,10 @@ pub use convert::{
 };
 pub use data::{NkColumn, NkData, NkQuantity, SpectrumData, channel_request};
 pub use dispersion::{CandidateFit, fit_dispersion, table_to_model};
+pub use explore::{
+    BenchmarkEntry, BenchmarkReport, DEFAULT_ORDERING_CAP, Generated, RunScore, StrategyGen,
+    TournamentEntry, Truth, benchmark, draw_truth, generate, tournament,
+};
 pub use forward::{DispersionForward, StackForward};
 pub use model::{DEFAULT_ENV, FitModel, Segment};
 pub use params::{ParamAddr, ParamKind, Parameter, Tie, Transform};

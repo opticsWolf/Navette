@@ -12,7 +12,8 @@ change). Work branch: `dev_fit`.
 | 1 parameters, `StackForward`, one stage | done (`dev_fit`) |
 | 2 dispersion fitting | done (`dev_fit`) |
 | 3 strategies, environments, ties, priors, converter | done (`dev_fit`) |
-| 4-7 | not started |
+| 4 tournament, generated strategies, truth draws, benchmark | done (`dev_fit`) |
+| 5-7 | not started |
 
 Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
 (`FitModel`: the architect's traversal with each entry's structure row,
@@ -62,6 +63,32 @@ plain `FitReport`. Choices made here:
 Deferred from phase 3: declaring parameters by selector (enumerating a
 model's scalars for `{"select": ...}`), the `OptMask` default selection,
 and a per-environment `coherence_mode` (one mode for the problem today).
+
+Phase 4 (`fit::explore`) drew its truths in **parameter space**, not
+through `expand` with errors on: `expand` perturbs every traversal entry,
+each layer's index included, and most of that has no address, so a
+recovery score would have measured the model's blind spots instead of
+the strategy. A free parameter is drawn from its group's law (a layer
+channel as `expand` draws it; a group factor from the law's relative
+part, a summand from its absolute part); everything else holds. Choices
+made here:
+
+- `StrategyGen::Groupings` takes `variants` (one strategy each, a list of
+  blocks of sets) rather than one `blocks` list.
+- Rankings are deterministic: a benchmark ranks by failures, mean
+  recovery error (relative per parameter, RMS), evaluations, name; a
+  tournament by χ², evaluations, name. Wall times are reported, never
+  ranked on.
+- Budget (open question 2): orderings and cumulative orders run in full
+  up to 24 (`DEFAULT_ORDERING_CAP`) and are sampled with seed 0 above
+  that, with a note; seeds are the caller's choice.
+
+`cargo run --release -p navette --example fit_tournament` ranks seven
+strategies on four truths of a 20-layer chirped edge filter (22 free
+parameters) in about 4 s and checks a second run gives the same bits.
+Freeing the group factors first recovers the truth best (mean relative
+error 2e-3); freeing everything at once lands in a wrong minimum on one
+of the four truths.
 
 ## 0. Decisions (review of 2026-11-07)
 
@@ -883,5 +910,5 @@ decide when the phase gets there:
 
 1. **Converter presets** (phase 3): which instruments / file conventions
    to ship presets for first.
-2. **Generated-strategy budget** (phase 4): default cap on orderings and
-   seeds per tournament, given the run time of a 20-layer fit.
+2. ~~**Generated-strategy budget** (phase 4)~~: settled in phase 4, 24
+   orders before sampling, seeds left to the caller (see the status notes).
