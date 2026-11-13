@@ -9,7 +9,16 @@ change). Work branch: `dev_fit`.
 | Phase | State |
 |---|---|
 | 0 rename | done (`dev_fit`) |
-| 1-7 | not started |
+| 1 parameters, `StackForward`, one stage | done (`dev_fit`) |
+| 2-7 | not started |
+
+Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
+(`FitModel`: the architect's traversal with each entry's structure row,
+the merged groups, the material entries by value), and an evaluation
+clones it, writes the parameters, and expands. A layer address names a
+*structure* row, so a shared or repeated structure is one parameter.
+Recovery is calibrated: over 40 noise seeds, 118 of 120 fitted values
+of the three-parameter test land within 2σ, mean χ²_red 0.999.
 
 ## 0. Decisions (review of 2026-11-07)
 

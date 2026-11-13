@@ -44,6 +44,8 @@
 pub mod color;
 /// Program documents: versioned envelopes + section assembly.
 pub mod config;
+/// General fit engine: any model scalar against measured spectra.
+pub mod fit;
 /// Univariate interpolation (linear / pchip / makima).
 pub mod interpolate;
 /// Least-squares solvers (LM, TRF, backends) and their thread pool.

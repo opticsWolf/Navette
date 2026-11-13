@@ -252,6 +252,12 @@ impl SpecProvider {
         }
     }
 
+    /// The library as stored (arrays and specs, by name). The fit engine
+    /// copies it into its own model, whose specs it edits.
+    pub fn entries(&self) -> &HashMap<String, Entry> {
+        &self.entries
+    }
+
     /// Upsert one entry and drop its memoized curve.
     pub fn upsert(&mut self, name: String, entry: Entry) {
         self.entries.insert(name.clone(), entry);

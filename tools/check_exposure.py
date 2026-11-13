@@ -122,6 +122,11 @@ ALLOWLIST = {
     # arm of that dispatch, reachable from Python as
     # `LmConfig(backend="trf")`. It takes the same two Rust traits.
     "trust_region_reflective",
+    # General fit engine (fit plan phase 1): Rust first, decision 2. The
+    # Python door (`navette.fit`) binds the finished API in phase 5;
+    # `channel_request` will be reachable there through the dataset's
+    # channel name, never on its own.
+    "channel_request",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

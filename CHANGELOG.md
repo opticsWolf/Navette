@@ -9,6 +9,33 @@ All notable changes to Navette are recorded here. Work items reference
 
 Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
 
+### Added
+
+- **`navette::fit`: fit any model scalar against measured spectra**
+  (fit plan phase 1, Rust; the Python door is phase 5). A `FitProblem`
+  holds a `FitModel` (an architect, one structure or a loaded program,
+  mirrored as owned data so the Jacobian columns run in parallel), the
+  measured `SpectrumData` curves, and `Parameter`s named by address:
+  `layer[main:2].thickness`, `layer[main:#TiO2_1].inh_delta`,
+  `layer[...].gradient.f_end`, `group[SiO2].n_factor`,
+  `material[TiO2].A`, `material[porous].host.B1`. A material parameter is
+  any number in the spec's params, so every model is fittable with no
+  per-model code. Each parameter has bounds (defaulting to the gates
+  `Layer` and `Group` enforce), a scale, and an optional log transform;
+  the solver works in normalised coordinates, so FD steps suit a 1e-2
+  Sellmeier `C1` as well as a 100 nm thickness.
+- One evaluation runs `expand` and `solve_arrays` (every coherence mode,
+  groups, grading, gradients, roughness, inversion), once per evaluation
+  on the union of the datasets' wavelengths and angles. Any of the
+  solver's 37 scalar output maps can be a dataset channel (R, T, A, Psi,
+  Delta, Stokes, DOP, retardance, phases); Delta and phase residuals
+  wrap into (-pi, pi]. Materials no parameter reaches are evaluated once.
+- `fit()` runs one least-squares stage on any `LsqBackend` and returns a
+  `FitReport`: chi2, reduced chi2, per-dataset chi2 and RMS, the
+  covariance `(JᵀJ)⁻¹·chi2_red` from a QR of J, standard errors, the
+  correlation matrix, parameters at bounds, and the fitted model.
+- `SpecProvider::entries()` reads a provider's library.
+
 ### Changed (breaking)
 
 - **The least-squares solvers move out of synthesis, into `navette::lsq`**
