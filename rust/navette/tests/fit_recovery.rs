@@ -306,14 +306,18 @@ fn a_repeated_shared_structure_is_one_address() {
     )
     .unwrap();
     let model = FitModel::from_architect(&arch, HashMap::new()).unwrap();
-    assert_eq!(model.entries(), arch.iter_entries().as_slice());
+    assert_eq!(
+        model.entries("default").unwrap(),
+        arch.iter_entries().as_slice()
+    );
     assert_eq!(model.structure_names(), ["top", "pair", "bottom"]);
 
     let mut m = model.clone();
     let addr = navette::fit::ParamAddr::parse("layer[pair:#SiO2_1].thickness").unwrap();
     m.set(&addr, 140.0).unwrap();
     let sio2: Vec<f64> = m
-        .entries()
+        .entries("default")
+        .unwrap()
         .iter()
         .filter(|(l, _)| l.material == "SiO2")
         .map(|(l, _)| l.thickness)

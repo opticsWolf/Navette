@@ -14,14 +14,25 @@
 //! structure shared by several blocks, or repeated, is one address, and a
 //! write reaches every traversal entry it produced, as an edit through the
 //! shared handle would.
+//!
+//! **Environments** (several samples, one model, plan §3.6): the model
+//! holds one or more named chains. The architect's own chain is
+//! [`DEFAULT_ENV`]; [`FitModel::add_environment`] adds others built from
+//! the same structures and fixed surroundings (the bare substrate, a
+//! witness film on silicon). Structures, groups and materials are shared
+//! by construction, so a parameter is one value in every sample. Fixed
+//! rows are surroundings, not addresses; their materials and groups are
+//! still the model's.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 
 use serde_json::Value;
 
 use crate::config::LoadedProgram;
 use crate::structure::architect::{Architect, SharedStructure};
+use crate::structure::enums::LayerType;
 use crate::structure::gradient::{GradientMode, InhMode};
 use crate::structure::providers::Entry;
 use crate::structure::structure::Structure;
@@ -36,12 +47,43 @@ struct StructureRows {
     materials: Vec<String>,
 }
 
+/// The environment an architect's or structure's own chain is named.
+pub const DEFAULT_ENV: &str = "default";
+
+/// One piece of an environment's chain.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Segment {
+    /// Every row of a model structure, `repeat` times, reversed when
+    /// `inverted`; its rows stay addressable.
+    Structure {
+        name: String,
+        inverted: bool,
+        repeat: usize,
+    },
+    /// One fixed row (ambient, substrate, a cover): held, not addressable.
+    Fixed(Layer),
+}
+
+impl Segment {
+    /// A structure once, not inverted.
+    pub fn structure(name: impl Into<String>) -> Self {
+        Segment::Structure {
+            name: name.into(),
+            inverted: false,
+            repeat: 1,
+        }
+    }
+}
+
 /// Everything one evaluation reads; owned, `Send + Sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FitModel {
+    /// Every environment's chain, back to back.
     entries: Vec<(Layer, bool)>,
-    /// `(structure, row)` each entry came from.
-    origin: Vec<(usize, usize)>,
+    /// `(structure, row)` each entry came from; `None` for a fixed row.
+    origin: Vec<Option<(usize, usize)>>,
+    /// Name and range in `entries` of each environment.
+    envs: Vec<(String, Range<usize>)>,
     structures: Vec<StructureRows>,
     groups: HashMap<String, Group>,
     materials: HashMap<String, Entry>,
@@ -118,11 +160,12 @@ impl FitModel {
                 };
                 for i in rows {
                     entries.push((s.layers[i].clone(), block.inverted));
-                    origin.push((sid, i));
+                    origin.push(Some((sid, i)));
                 }
             }
         }
         Ok(Self {
+            envs: vec![(DEFAULT_ENV.to_string(), 0..entries.len())],
             entries,
             origin,
             structures,
@@ -148,7 +191,8 @@ impl FitModel {
                 .iter()
                 .map(|l| (l.clone(), false))
                 .collect(),
-            origin: (0..structure.layers.len()).map(|i| (0, i)).collect(),
+            origin: (0..structure.layers.len()).map(|i| Some((0, i))).collect(),
+            envs: vec![(DEFAULT_ENV.to_string(), 0..structure.layers.len())],
             structures: vec![StructureRows {
                 name: name.to_string(),
                 materials: structure
@@ -188,15 +232,109 @@ impl FitModel {
         Self {
             entries: Vec::new(),
             origin: Vec::new(),
+            envs: Vec::new(),
             structures: Vec::new(),
             groups: HashMap::new(),
             materials,
         }
     }
 
-    /// The chain as `expand` takes it.
-    pub fn entries(&self) -> &[(Layer, bool)] {
-        &self.entries
+    /// Add a sample configuration: its chain from the model's structures
+    /// and fixed rows, ambient first and substrate last.
+    pub fn add_environment(&mut self, name: &str, segments: Vec<Segment>) -> Result<(), String> {
+        let bad = |why: String| format!("environment {name:?}: {why}");
+        if self.envs.iter().any(|(n, _)| n == name) {
+            return Err(bad("the model already has it".into()));
+        }
+        let mut entries = Vec::new();
+        let mut origin = Vec::new();
+        for seg in segments {
+            match seg {
+                Segment::Fixed(layer) => {
+                    let label = format!("{name}:fixed {}", layer.material);
+                    if let Some(i) = layer.property_issues(&label).iter().find(|i| i.is_error()) {
+                        return Err(bad(i.message.clone()));
+                    }
+                    entries.push((layer, false));
+                    origin.push(None);
+                }
+                Segment::Structure {
+                    name: s,
+                    inverted,
+                    repeat,
+                } => {
+                    let sid = self
+                        .structures
+                        .iter()
+                        .position(|r| r.name == s)
+                        .ok_or_else(|| {
+                            bad(format!(
+                                "no structure {s:?}; the model has {:?}",
+                                self.structure_names()
+                            ))
+                        })?;
+                    let n = self.structures[sid].materials.len();
+                    // A row's current layer: the first entry it produced.
+                    let layer_of = |row: usize| {
+                        let e = self
+                            .origin
+                            .iter()
+                            .position(|o| *o == Some((sid, row)))
+                            .expect("every structure row is in the default chain");
+                        self.entries[e].0.clone()
+                    };
+                    for _ in 0..repeat {
+                        let rows: Box<dyn Iterator<Item = usize>> = if inverted {
+                            Box::new((0..n).rev())
+                        } else {
+                            Box::new(0..n)
+                        };
+                        for row in rows {
+                            entries.push((layer_of(row), inverted));
+                            origin.push(Some((sid, row)));
+                        }
+                    }
+                }
+            }
+        }
+        let roles: Vec<LayerType> = entries.iter().map(|(l, _)| l.layer_type).collect();
+        if roles.len() < 2
+            || roles[0] != LayerType::Ambient
+            || roles[roles.len() - 1] != LayerType::Substrate
+            || roles[1..roles.len() - 1]
+                .iter()
+                .any(|r| *r != LayerType::Film)
+        {
+            return Err(bad(
+                "the chain must run ambient, films, substrate (a bare sample is ambient, substrate)"
+                    .into(),
+            ));
+        }
+        let start = self.entries.len();
+        self.entries.extend(entries);
+        self.origin.extend(origin);
+        self.envs
+            .push((name.to_string(), start..self.entries.len()));
+        Ok(())
+    }
+
+    /// Environment names, the default first.
+    pub fn environment_names(&self) -> Vec<&str> {
+        self.envs.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// One environment's chain as `expand` takes it.
+    pub fn entries(&self, env: &str) -> Result<&[(Layer, bool)], String> {
+        self.envs
+            .iter()
+            .find(|(n, _)| n == env)
+            .map(|(_, r)| &self.entries[r.clone()])
+            .ok_or_else(|| {
+                format!(
+                    "no environment {env:?}; the model has {:?}",
+                    self.environment_names()
+                )
+            })
     }
 
     pub fn groups(&self) -> &HashMap<String, Group> {
@@ -229,7 +367,9 @@ impl FitModel {
     pub fn check(&self) -> Result<(), String> {
         let mut seen = HashSet::new();
         for (e, (layer, _)) in self.entries.iter().enumerate() {
-            let (sid, row) = self.origin[e];
+            let Some((sid, row)) = self.origin[e] else {
+                continue;
+            };
             if !seen.insert((sid, row)) {
                 continue;
             }
@@ -283,7 +423,7 @@ impl FitModel {
                         })?,
                 };
                 let entries: Vec<usize> = (0..self.origin.len())
-                    .filter(|e| self.origin[*e] == (sid, row))
+                    .filter(|e| self.origin[*e] == Some((sid, row)))
                     .collect();
                 if entries.is_empty() {
                     return Err(format!("{addr}: the row is not in the chain"));

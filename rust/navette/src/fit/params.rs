@@ -332,8 +332,12 @@ pub struct Parameter {
     pub transform: Transform,
     /// Written once, never varied.
     pub fixed: bool,
-    /// Free-form labels for selectors (phase 3).
+    /// Labels for selectors (`tag=H`).
     pub tags: Vec<String>,
+    /// `(p0, sigma)`: a residual row `(x - p0) / sigma` while the
+    /// parameter is free (plan §3.5.4), what stabilises a thickness ↔
+    /// index trade-off with outside knowledge.
+    pub prior: Option<(f64, f64)>,
 }
 
 impl Parameter {
@@ -347,6 +351,7 @@ impl Parameter {
             transform: Transform::Linear,
             fixed: false,
             tags: Vec::new(),
+            prior: None,
         }
     }
 
@@ -384,6 +389,48 @@ impl Parameter {
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
         self
+    }
+
+    pub fn prior(mut self, value: f64, sigma: f64) -> Self {
+        self.prior = Some((value, sigma));
+        self
+    }
+}
+
+/// `target = factor * driver + offset`, written after every parameter
+/// write (plan §3.3.3): the same thickness in two structures, one sample's
+/// substrate equal to another's. "All layers of a material scale
+/// together" is a group factor, not a tie.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tie {
+    pub driver: ParamAddr,
+    /// `(target, factor, offset)`.
+    pub targets: Vec<(ParamAddr, f64, f64)>,
+}
+
+impl Tie {
+    pub fn new(driver: ParamAddr) -> Self {
+        Self {
+            driver,
+            targets: Vec::new(),
+        }
+    }
+
+    /// [`Tie::new`] from the textual address.
+    pub fn parse(driver: &str) -> Result<Self, String> {
+        ParamAddr::parse(driver).map(Self::new)
+    }
+
+    /// `target = driver`.
+    pub fn equal(self, target: &str) -> Result<Self, String> {
+        self.follow(target, 1.0, 0.0)
+    }
+
+    /// `target = factor * driver + offset`.
+    pub fn follow(mut self, target: &str, factor: f64, offset: f64) -> Result<Self, String> {
+        self.targets
+            .push((ParamAddr::parse(target)?, factor, offset));
+        Ok(self)
     }
 }
 

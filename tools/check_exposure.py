@@ -131,6 +131,9 @@ ALLOWLIST = {
     # API in phase 5 as `navette.fit.fit_dispersion` / `table_to_model`;
     # remove them here when they are.
     "fit_dispersion", "table_to_model",
+    # Strategies, selectors and the instrument converter (fit plan phase
+    # 3): bound in phase 5 with the rest; remove them here when they are.
+    "select", "run_strategy", "to_solver", "from_solver",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

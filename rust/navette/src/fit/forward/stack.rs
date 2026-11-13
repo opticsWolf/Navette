@@ -7,14 +7,14 @@
 //! inversion and every coherence mode come with `expand` and the solver;
 //! nothing here re-implements them.
 //!
-//! **One solve per evaluation.** The grid is the sorted union of every
-//! dataset's (windowed) wavelengths and the angles are the union of their
-//! angles, so each dataset's points are grid points and no curve is ever
-//! interpolated; the request is every dataset's bit OR-ed.
+//! **One solve per environment per evaluation.** An environment's grid is
+//! the sorted union of its datasets' (windowed) wavelengths and its angles
+//! the union of their angles, so each dataset's points are grid points and
+//! no curve is ever interpolated; the request is their bits OR-ed.
 //!
-//! Materials no parameter can reach are evaluated once, here, and served
-//! as arrays; the rest are evaluated per evaluation, once each (a small
-//! per-evaluation cache: `expand` asks per row).
+//! Materials no parameter can reach are evaluated once per grid, here, and
+//! served as arrays; the rest are evaluated per evaluation, once each (a
+//! small per-evaluation cache: `expand` asks per row).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -29,25 +29,34 @@ use crate::structure::providers::{Entry, MaterialProvider};
 use crate::fit::data::{SpectrumData, channel_request};
 use crate::fit::model::FitModel;
 
-/// Where one dataset's points sit in a solution.
+/// Where one dataset's points sit in its environment's solution.
 #[derive(Debug, Clone)]
 struct Pick {
+    /// Index into `StackForward::solves`.
+    solve: usize,
     channel: String,
     angle: usize,
     /// Grid index of each kept point.
     wav: Vec<usize>,
 }
 
-/// The compiled forward model of one problem.
+/// One environment's solve.
 #[derive(Debug, Clone)]
-pub struct StackForward {
+struct EnvSolve {
+    env: String,
     grid: Vec<f64>,
     angles: Vec<Radians>,
     requested: u64,
-    coherence_mode: i32,
-    picks: Vec<Pick>,
     /// Materials no parameter reaches, evaluated on `grid`.
     frozen: HashMap<String, Vec<Complex64>>,
+}
+
+/// The compiled forward model of one problem.
+#[derive(Debug, Clone)]
+pub struct StackForward {
+    solves: Vec<EnvSolve>,
+    coherence_mode: i32,
+    picks: Vec<Pick>,
 }
 
 impl StackForward {
@@ -62,100 +71,131 @@ impl StackForward {
         if data.is_empty() {
             return Err("fit: no data".into());
         }
-        let mut grid: Vec<f64> = Vec::new();
-        let mut angles: Vec<Radians> = Vec::new();
-        let mut requested = 0u64;
+        let mut solves: Vec<EnvSolve> = Vec::new();
         for d in data {
             d.check()?;
-            requested |= channel_request(&d.channel)?;
-            grid.extend(d.kept().into_iter().map(|i| d.wavelengths[i]));
-            if !angles
+            model
+                .entries(&d.env)
+                .map_err(|e| format!("dataset {:?}: {e}", d.id))?;
+            let s = match solves.iter().position(|s| s.env == d.env) {
+                Some(s) => s,
+                None => {
+                    solves.push(EnvSolve {
+                        env: d.env.clone(),
+                        grid: Vec::new(),
+                        angles: Vec::new(),
+                        requested: 0,
+                        frozen: HashMap::new(),
+                    });
+                    solves.len() - 1
+                }
+            };
+            let s = &mut solves[s];
+            s.requested |= channel_request(&d.channel)?;
+            s.grid
+                .extend(d.kept().into_iter().map(|i| d.wavelengths[i]));
+            if !s
+                .angles
                 .iter()
                 .any(|a| a.get().to_bits() == d.angle.get().to_bits())
             {
-                angles.push(d.angle);
+                s.angles.push(d.angle);
             }
         }
-        grid.sort_by(f64::total_cmp);
-        grid.dedup_by(|a, b| a.to_bits() == b.to_bits());
+        for s in &mut solves {
+            s.grid.sort_by(f64::total_cmp);
+            s.grid.dedup_by(|a, b| a.to_bits() == b.to_bits());
+            // A material that cannot be evaluated on this grid is left
+            // live: it fails only if a row actually asks for it.
+            for (name, entry) in model.materials() {
+                if live.contains(name) {
+                    continue;
+                }
+                if let Ok(nk) = evaluate(entry, &s.grid) {
+                    s.frozen.insert(name.clone(), nk);
+                }
+            }
+        }
 
         let picks = data
             .iter()
-            .map(|d| Pick {
-                channel: d.channel.clone(),
-                angle: angles
-                    .iter()
-                    .position(|a| a.get().to_bits() == d.angle.get().to_bits())
-                    .unwrap(),
-                wav: d
-                    .kept()
-                    .into_iter()
-                    .map(|i| {
-                        grid.binary_search_by(|g| g.total_cmp(&d.wavelengths[i]))
-                            .unwrap()
-                    })
-                    .collect(),
+            .map(|d| {
+                let solve = solves.iter().position(|s| s.env == d.env).unwrap();
+                let s = &solves[solve];
+                Pick {
+                    solve,
+                    channel: d.channel.clone(),
+                    angle: s
+                        .angles
+                        .iter()
+                        .position(|a| a.get().to_bits() == d.angle.get().to_bits())
+                        .unwrap(),
+                    wav: d
+                        .kept()
+                        .into_iter()
+                        .map(|i| {
+                            s.grid
+                                .binary_search_by(|g| g.total_cmp(&d.wavelengths[i]))
+                                .unwrap()
+                        })
+                        .collect(),
+                }
             })
             .collect();
 
-        // A material that cannot be evaluated on this grid is left live: it
-        // fails only if a row actually asks for it.
-        let mut frozen = HashMap::new();
-        for (name, entry) in model.materials() {
-            if live.contains(name) {
-                continue;
-            }
-            if let Ok(nk) = evaluate(entry, &grid) {
-                frozen.insert(name.clone(), nk);
-            }
-        }
-
         Ok(Self {
-            grid,
-            angles,
-            requested,
+            solves,
             coherence_mode,
             picks,
-            frozen,
         })
     }
 
-    /// The solve grid (nm).
-    pub fn grid(&self) -> &[f64] {
-        &self.grid
+    /// The solve grid of environment `env` (nm), if a dataset uses it.
+    pub fn grid(&self, env: &str) -> Option<&[f64]> {
+        self.solves
+            .iter()
+            .find(|s| s.env == env)
+            .map(|s| s.grid.as_slice())
     }
 
     /// Simulated values, one vector per dataset, at its kept points.
     pub fn simulate(&self, model: &FitModel) -> Result<Vec<Vec<f64>>, String> {
-        let provider = FitProvider {
-            frozen: &self.frozen,
-            live: model.materials(),
-            grid: &self.grid,
-            cache: RefCell::new(HashMap::new()),
-        };
-        let (sa, _spans) = expand(
-            model.entries(),
-            &provider,
-            &self.grid,
-            model.groups(),
-            ExpandOptions::deterministic(),
-        )?;
-        let (sol, _warnings) = solve_arrays(
-            &sa.indices,
-            &sa.thicknesses,
-            &sa.incoherent,
-            &sa.rough_types,
-            &sa.rough_vals,
-            &self.grid,
-            &self.angles,
-            self.requested,
-            self.coherence_mode,
-        )?;
-        let n_w = self.grid.len();
+        let sols = self
+            .solves
+            .iter()
+            .map(|s| {
+                let provider = FitProvider {
+                    frozen: &s.frozen,
+                    live: model.materials(),
+                    grid: &s.grid,
+                    cache: RefCell::new(HashMap::new()),
+                };
+                let (sa, _spans) = expand(
+                    model.entries(&s.env)?,
+                    &provider,
+                    &s.grid,
+                    model.groups(),
+                    ExpandOptions::deterministic(),
+                )?;
+                let (sol, _warnings) = solve_arrays(
+                    &sa.indices,
+                    &sa.thicknesses,
+                    &sa.incoherent,
+                    &sa.rough_types,
+                    &sa.rough_vals,
+                    &s.grid,
+                    &s.angles,
+                    s.requested,
+                    self.coherence_mode,
+                )?;
+                Ok(sol)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         self.picks
             .iter()
             .map(|p| {
-                let map = sol
+                let n_w = self.solves[p.solve].grid.len();
+                let map = sols[p.solve]
                     .f64maps
                     .iter()
                     .find(|(k, _)| *k == p.channel)

@@ -56,6 +56,39 @@ Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
 - A trial step the forward model refuses (a Sellmeier pole moved into the
   range) is a rejected step, not a failed fit; the start and the solution
   are still evaluated strictly.
+- **Staged strategies** (fit plan phase 3, Rust). A `Strategy` is an
+  ordered list of `Stage`s, plain data that round-trips through JSON:
+  each frees a selection of the declared parameters (`*`, `kind=thickness`,
+  `tag=H`, `set:dispersion_H`, or a glob such as `group[*].n_factor`),
+  may restrict the scored datasets, rescale their weights, window the
+  wavelengths and override the solver settings, and runs as `lsq`,
+  `scan` (a 1-D grid over one parameter, best point kept, then `lsq`) or
+  `multi_start` (seeded uniform or Latin-hypercube starts, run in
+  parallel). `repeat: until_no_gain` reruns a stage while χ² drops;
+  `accept: if_better` rolls a stage back when it did not help.
+  `run_strategy` returns each stage's report and a final report with the
+  covariance of every parameter a stage freed. `ParamSet`s name unions of
+  selectors; built-in sets cover each kind and each material and group.
+- **Several samples in one fit.** `FitModel::add_environment` adds a
+  sample configuration built from the model's structures and fixed rows
+  (a bare substrate is ambient, substrate); a dataset names its sample
+  with `SpectrumData::on(env)`. Materials and groups are shared, so a
+  coating and its bare substrate fit one substrate. One solve per sample
+  per evaluation.
+- **Ties and priors.** A `Tie` makes scalars follow a driver
+  (`target = factor · driver + offset`), rewritten after every step; a
+  `Parameter::prior(value, sigma)` adds the row `(x − value)/σ`, reported
+  as the `prior` dataset. `fit::evaluate` reports a problem at its start
+  values without solving.
+- **The instrument converter** (`fit::convert`, decision 3). `to_solver`
+  reads a `RawDataset` written in an `InstrumentConvention` (wavelengths
+  in nm, µm, Å, eV or cm⁻¹; angles in degrees or radians; R/T as
+  fractions or percent; Δ in (−180°, 180°] or [0°, 360°) and either sign;
+  Ψ/Δ, tan Ψ/cos Δ or N/C/S) into solver-convention `SpectrumData`,
+  propagating σ through the map; `from_solver` is its inverse. Twelve
+  named presets live in `conventions.json`. Each converted dataset
+  records how it was read (`SpectrumData::source`), and the fit report
+  carries it (`DatasetFit::source`). tan Ψ/cos Δ cannot carry Δ's sign.
 
 ### Changed (breaking)
 

@@ -4,7 +4,7 @@
 //! Values are in the solver's conventions (decision 3): reflectances and
 //! transmittances as fractions, Psi, Delta and phases in radians with the
 //! solver's sign. Anything an instrument wrote is converted before it gets
-//! here (`fit::convert`, phase 3), never inside a residual.
+//! here ([`crate::fit::convert`]), never inside a residual.
 //!
 //! Every row is `sqrt(weight) * (sim - value) / sigma`. Angular channels
 //! (Delta, phases, differential phase) wrap `sim - value` into `(-pi, pi]`
@@ -92,6 +92,8 @@ pub(crate) fn wrap_angle(d: f64) -> f64 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpectrumData {
     pub id: String,
+    /// The model environment (sample) this curve was measured on.
+    pub env: String,
     /// A `Solution` map key: `Rs`, `Tp`, `R_avg`, `Psi_R`, `Delta_R`, `S1_R`, ...
     pub channel: String,
     pub angle: Radians,
@@ -103,10 +105,14 @@ pub struct SpectrumData {
     pub weight: f64,
     /// Keep only points with `lo <= wavelength <= hi` (nm).
     pub window: Option<(f64, f64)>,
+    /// How the values were read from the instrument's convention
+    /// (`fit::convert`); `None` for data built in solver conventions.
+    pub source: Option<String>,
 }
 
 impl SpectrumData {
-    /// A curve with one sigma for every point, weight 1, no window.
+    /// A curve on the default environment with one sigma for every point,
+    /// weight 1, no window.
     pub fn new(
         id: impl Into<String>,
         channel: impl Into<String>,
@@ -117,6 +123,7 @@ impl SpectrumData {
     ) -> Self {
         Self {
             id: id.into(),
+            env: crate::fit::model::DEFAULT_ENV.to_string(),
             channel: channel.into(),
             angle,
             wavelengths,
@@ -124,7 +131,14 @@ impl SpectrumData {
             sigma: vec![sigma],
             weight: 1.0,
             window: None,
+            source: None,
         }
+    }
+
+    /// The same curve on environment `env`.
+    pub fn on(mut self, env: impl Into<String>) -> Self {
+        self.env = env.into();
+        self
     }
 
     pub fn sigma_at(&self, i: usize) -> f64 {

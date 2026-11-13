@@ -25,20 +25,32 @@
 //! Phases 1-2 of `docs/plans/general_fit_plan.md`: one stage, FD Jacobian,
 //! one sample. Stages, ties, priors and several samples are phase 3.
 
+pub mod convert;
 pub mod data;
 pub mod dispersion;
 pub mod forward;
 pub mod model;
 pub mod params;
+pub mod sets;
 mod stats;
+pub mod strategy;
 
 use std::collections::HashSet;
 
+pub use convert::{
+    AngleUnit, DeltaRange, DeltaSign, EllForm, InstrumentConvention, RawDataset, RawQuantity, Side,
+    SigmaSource, ValueScale, WavelengthUnit, from_solver, to_solver,
+};
 pub use data::{NkColumn, NkData, NkQuantity, SpectrumData, channel_request};
 pub use dispersion::{CandidateFit, fit_dispersion, table_to_model};
 pub use forward::{DispersionForward, StackForward};
-pub use model::FitModel;
-pub use params::{ParamAddr, ParamKind, Parameter, Transform};
+pub use model::{DEFAULT_ENV, FitModel, Segment};
+pub use params::{ParamAddr, ParamKind, Parameter, Tie, Transform};
+pub use sets::{ParamSet, Selector, select};
+pub use strategy::{
+    Accept, Repeat, Sampler, Stage, StageKind, StageLsq, StageReport, Strategy, StrategyReport,
+    run_strategy,
+};
 
 use crate::lsq::backends::{LsqBackend, solve_least_squares};
 use crate::lsq::lm::{LmConfig, LmTermination, NoJacobian, build_jacobian};
@@ -56,6 +68,8 @@ pub struct FitProblem {
     pub nk_data: Vec<NkData>,
     /// Free and fixed parameters. A fixed one is written once and held.
     pub parameters: Vec<Parameter>,
+    /// Scalars that follow a driver; never parameters themselves.
+    pub ties: Vec<Tie>,
     /// `solve_arrays`' mode: 0 front block, 1 coherency matrix, 2 fully
     /// coherent.
     pub coherence_mode: i32,
@@ -70,6 +84,7 @@ impl FitProblem {
             data,
             nk_data: Vec::new(),
             parameters,
+            ties: Vec::new(),
             coherence_mode: 0,
             lsq: LmConfig::default(),
         }
@@ -112,6 +127,8 @@ pub struct FittedParameter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatasetFit {
     pub id: String,
+    /// How the data was read from the instrument (`SpectrumData::source`).
+    pub source: Option<String>,
     pub n_points: usize,
     /// This dataset's share of χ².
     pub chi2: f64,
@@ -166,6 +183,25 @@ struct Free {
     /// `t(x0)`.
     t0: f64,
     scale: f64,
+    /// `(p0, sigma)`.
+    prior: Option<(f64, f64)>,
+}
+
+/// A tie, resolved: `(target, factor, offset)` per follower.
+#[derive(Debug, Clone)]
+struct CompiledTie {
+    driver: Target,
+    targets: Vec<(Target, f64, f64)>,
+}
+
+fn apply_ties(model: &mut FitModel, ties: &[CompiledTie]) -> Result<(), String> {
+    for t in ties {
+        let x = model.read(&t.driver)?;
+        for (target, factor, offset) in &t.targets {
+            model.write(target, factor * x + offset)?;
+        }
+    }
+    Ok(())
 }
 
 impl Free {
@@ -194,10 +230,12 @@ struct Compiled {
     stack: Option<StackForward>,
     dispersion: Option<DispersionForward>,
     free: Vec<Free>,
+    ties: Vec<CompiledTie>,
     /// Per parameter (problem order): start, lb, ub, index into `free`.
     resolved: Vec<(f64, f64, f64, Option<usize>)>,
     /// Spectra, then nk datasets.
-    ids: Vec<String>,
+    /// Dataset id and source, data then nk data.
+    ids: Vec<(String, Option<String>)>,
     rows: Vec<Rows>,
 }
 
@@ -254,17 +292,60 @@ impl Compiled {
                         "{addr}: scale {scale} is not a positive finite number"
                     ));
                 }
+                if let Some((_, s)) = p.prior
+                    && !(s > 0.0 && s.is_finite())
+                {
+                    return Err(format!(
+                        "{addr}: prior sigma {s} is not a positive finite number"
+                    ));
+                }
                 free.push(Free {
                     target: target.clone(),
                     transform: p.transform,
                     t0: p.transform.forward(x0),
                     scale,
+                    prior: p.prior,
                 });
                 Some(free.len() - 1)
             };
             targets.push(target);
             resolved.push((x0, lb, ub, index));
         }
+        let mut followers: Vec<Target> = Vec::new();
+        let mut ties = Vec::new();
+        for tie in &problem.ties {
+            let driver = base.resolve(&tie.driver).map_err(|e| format!("tie: {e}"))?;
+            let mut compiled = Vec::new();
+            for (addr, factor, offset) in &tie.targets {
+                let target = base.resolve(addr).map_err(|e| format!("tie: {e}"))?;
+                if targets.contains(&target) {
+                    return Err(format!(
+                        "tie: {addr} is a parameter; a tied scalar follows its driver"
+                    ));
+                }
+                if followers.contains(&target) || target == driver {
+                    return Err(format!("tie: {addr} follows more than one driver"));
+                }
+                if !(factor.is_finite() && offset.is_finite()) {
+                    return Err(format!("tie: {addr}: factor and offset must be finite"));
+                }
+                if let Target::Material { material, .. } = &target {
+                    live.insert(material.clone());
+                }
+                followers.push(target.clone());
+                compiled.push((target, *factor, *offset));
+            }
+            ties.push(CompiledTie {
+                driver,
+                targets: compiled,
+            });
+        }
+        if ties.iter().any(|t| followers.contains(&t.driver)) {
+            return Err(
+                "tie: a driver is itself tied; tie the followers to the first driver".into(),
+            );
+        }
+        apply_ties(&mut base, &ties)?;
         base.check()?;
         if problem.data.is_empty() && problem.nk_data.is_empty() {
             return Err("fit: no data".into());
@@ -317,18 +398,32 @@ impl Compiled {
         let ids = problem
             .data
             .iter()
-            .map(|d| d.id.clone())
-            .chain(problem.nk_data.iter().map(|d| d.id.clone()))
+            .map(|d| (d.id.clone(), d.source.clone()))
+            .chain(problem.nk_data.iter().map(|d| (d.id.clone(), None)))
             .collect();
         Ok(Self {
             base,
             stack,
             dispersion,
             free,
+            ties,
             resolved,
             ids,
             rows,
         })
+    }
+
+    /// Prior rows `(x - p0) / sigma` of the free parameters that have one.
+    fn prior_rows(&self, u: &[f64], out: &mut Vec<f64>) {
+        for (f, &uj) in self.free.iter().zip(u) {
+            if let Some((p0, s)) = f.prior {
+                out.push((f.x(uj) - p0) / s);
+            }
+        }
+    }
+
+    fn n_priors(&self) -> usize {
+        self.free.iter().filter(|f| f.prior.is_some()).count()
     }
 
     /// Spectra, then nk datasets.
@@ -348,6 +443,7 @@ impl Compiled {
         for (f, &uj) in self.free.iter().zip(u) {
             model.write(&f.target, f.x(uj))?;
         }
+        apply_ties(&mut model, &self.ties)?;
         Ok(model)
     }
 
@@ -375,6 +471,7 @@ impl Compiled {
         for (d, rows) in dev.iter().zip(&self.rows) {
             out.extend(d.iter().zip(&rows.inv_sigma).map(|(d, w)| d * w));
         }
+        self.prior_rows(u, out);
         if let Some(r) = out.iter().find(|r| !r.is_finite()) {
             return Err(format!("fit: non-finite residual {r}"));
         }
@@ -382,12 +479,26 @@ impl Compiled {
     }
 }
 
+/// The [`DatasetFit`] id of the prior rows, when any parameter has one.
+pub const PRIOR_ID: &str = "prior";
+
 /// Every row of a trial point the forward model refuses: large enough
 /// that no step lands there, small enough that χ² stays finite.
 const REFUSED_RESIDUAL: f64 = 1e100;
 
 /// Fit the free parameters of `problem` in one least-squares stage.
 pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
+    run(problem, true)
+}
+
+/// The report at the start values, without moving: χ², per-dataset
+/// shares, and the covariance of the free parameters there. What a
+/// strategy reports at its end, over everything any stage freed.
+pub fn evaluate(problem: &FitProblem) -> Result<FitReport, String> {
+    run(problem, false)
+}
+
+fn run(problem: &FitProblem, solve: bool) -> Result<FitReport, String> {
     let c = Compiled::new(problem)?;
     let n = c.free.len();
     // The start is evaluated strictly: a model that cannot be evaluated
@@ -408,9 +519,9 @@ pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
     };
     let residuals = strict;
 
-    let (u, termination, iterations, evals, backend) = if n == 0 {
+    let (u, termination, iterations, evals, backend) = if n == 0 || !solve {
         (
-            Vec::new(),
+            vec![0.0; n],
             LmTermination::NoFreeParameters,
             0,
             0,
@@ -452,22 +563,35 @@ pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
 
     let dev = c.deviations(&model)?;
     let mut offset = 0;
-    let datasets = c
+    let mut datasets: Vec<DatasetFit> = c
         .ids
         .iter()
         .zip(&dev)
-        .map(|(id, dv)| {
+        .map(|((id, source), dv)| {
             let k = dv.len();
             let share = r[offset..offset + k].iter().map(|x| x * x).sum();
             offset += k;
             DatasetFit {
                 id: id.clone(),
+                source: source.clone(),
                 n_points: k,
                 chi2: share,
                 rms: (dv.iter().map(|x| x * x).sum::<f64>() / k as f64).sqrt(),
             }
         })
         .collect();
+    let k = c.n_priors();
+    if k > 0 {
+        // RMS in units of each prior's sigma: the rows themselves.
+        let rows = &r[offset..offset + k];
+        datasets.push(DatasetFit {
+            id: PRIOR_ID.to_string(),
+            source: None,
+            n_points: k,
+            chi2: rows.iter().map(|x| x * x).sum(),
+            rms: (rows.iter().map(|x| x * x).sum::<f64>() / k as f64).sqrt(),
+        });
+    }
 
     // Covariance in u, then x = t⁻¹(t0 + scale·u): dx/du = scale·t⁻¹'.
     let (covariance, covariance_note) = if n == 0 {

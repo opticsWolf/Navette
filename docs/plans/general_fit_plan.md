@@ -11,7 +11,8 @@ change). Work branch: `dev_fit`.
 | 0 rename | done (`dev_fit`) |
 | 1 parameters, `StackForward`, one stage | done (`dev_fit`) |
 | 2 dispersion fitting | done (`dev_fit`) |
-| 3-7 | not started |
+| 3 strategies, environments, ties, priors, converter | done (`dev_fit`) |
+| 4-7 | not started |
 
 Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
 (`FitModel`: the architect's traversal with each entry's structure row,
@@ -41,6 +42,26 @@ extra. Choices made here:
 Calibration over 200 seeds: Cauchy 564/600 and Tauc-Lorentz (ε data)
 950/1000 within 2σ, mean χ²_red 1.000. The Sellmeier test holds `C2`,
 because the two UV poles trade off almost exactly.
+
+Phase 3 kept every stage an ordinary `fit` of a copy of the problem:
+parameters outside the stage's selection are held at the model's current
+values, so a strategy adds no second solver and a stage's report is a
+plain `FitReport`. Choices made here:
+
+- Environments are named chains over one flat entry list; a structure
+  row keeps one address however many samples use it, fixed rows
+  (ambient, substrate, a cover) are held and not addressable, materials
+  and groups are shared.
+- A tie's follower is never a parameter, has one driver, and a driver
+  is never itself a follower. Priors are rows after the data, reported
+  as the `prior` dataset.
+- The converter presets are data (`fit/conventions.json`) with no vendor
+  names; σ defaults to unit weight and is set per call. tan Ψ/cos Δ
+  returns Δ in [0, π].
+
+Deferred from phase 3: declaring parameters by selector (enumerating a
+model's scalars for `{"select": ...}`), the `OptMask` default selection,
+and a per-environment `coherence_mode` (one mode for the problem today).
 
 ## 0. Decisions (review of 2026-11-07)
 
