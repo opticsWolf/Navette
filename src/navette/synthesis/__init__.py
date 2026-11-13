@@ -113,10 +113,13 @@ label           meaning
 ``"ExtT"``      ``Tp / Ts``
 ``"DiattR"``    ``(Rp − Rs)/(Rp + Rs)``, the engine's ``Diattenuation_R``
 ``"DiattT"``    ``(Tp − Ts)/(Tp + Ts)``, the engine's ``Diattenuation_T``
+``"PsiR"``      ``atan √(Rp/Rs)``, the engine's ``Psi_R`` (radians)
+``"PsiT"``      ``atan √(Tp/Ts)``, the engine's ``Psi_T``
 ==============  ==================================================
 
-They key on the p curve and read its s partner too; each denominator
-carries the engine's 1e-20 guard. The needle folds a ratio through its
+They key on the p curve and read its s partner too; each ratio's
+denominator carries the engine's 1e-20 guard, and Ψ is ``π/2`` (flat)
+below the engine's floor on Rs (1e-12) or Ts (1e-20). The needle folds a ratio through its
 tangent at the operating point, as it does the log transform. At normal
 incidence s and p are equal and the value cannot move: a demand at 0°
 only compiles with a warning.

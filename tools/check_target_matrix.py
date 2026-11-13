@@ -53,6 +53,8 @@ ROWS = [
      [(sp, "u", True) for sp in ("RetR", "RetT", "DeltaR", "DeltaT")]),
     ("intensity ratio", "`RatioR`, `RatioT`, `ExtR`, `ExtT`, `DiattR`, `DiattT`, u",
      [(sp, "u", False) for sp in ("RatioR", "RatioT", "ExtR", "ExtT", "DiattR", "DiattT")]),
+    ("ellipsometric Ψ", "`PsiR`, `PsiT`, u",
+     [(sp, "u", False) for sp in ("PsiR", "PsiT")]),
     ("differential phase", "`PDts`, `PDtp`, `phase=True`",
      [("PDts", "s", True), ("PDtp", "p", True)]),
 ]
@@ -63,7 +65,7 @@ COLOR_ROW = ("colour (`ColorTarget`)", "front `R` / `T`",
 #: Labels the engine knows that no row lists: each must stay refused.
 UNLISTED = [("A", "s", True), ("AB", "u", True), ("R", "u", True),
             ("PDrs", "s", True), ("PDrp", "p", True),
-            ("RatioR", "u", True), ("DiattT", "s", False)]
+            ("RatioR", "u", True), ("DiattT", "s", False), ("PsiR", "u", True)]
 
 WL = np.linspace(400.0, 700.0, 16)
 ANG = np.array([30.0])

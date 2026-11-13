@@ -51,7 +51,7 @@ fn parse_transform(s: &str) -> PyResult<SimTransform> {
 fn parse_ratio(s: &str) -> PyResult<IntensityRatio> {
     IntensityRatio::from_str(s).ok_or_else(|| {
         PyValueError::new_err(format!(
-            "Invalid ratio '{s}' (use 's/p', 'p/s' or 'diattenuation')"
+            "Invalid ratio '{s}' (use 's/p', 'p/s', 'diattenuation', 'psi_r' or 'psi_t')"
         ))
     })
 }

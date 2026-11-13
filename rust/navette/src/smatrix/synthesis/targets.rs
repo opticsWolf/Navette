@@ -533,6 +533,8 @@ fn ratio(spectral: &str) -> Option<(&'static str, IntensityRatio)> {
         "ExtT" => Some(("Tp", IntensityRatio::POverS)),
         "DiattR" => Some(("Rp", IntensityRatio::Diattenuation)),
         "DiattT" => Some(("Tp", IntensityRatio::Diattenuation)),
+        "PsiR" => Some(("Rp", IntensityRatio::PsiR)),
+        "PsiT" => Some(("Tp", IntensityRatio::PsiT)),
         _ => None,
     }
 }
@@ -827,7 +829,7 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
 
 /// One line per s-against-p demand (retardance, intensity ratio) whose
 /// every angle is normal incidence, where s and p coincide: a retardance
-/// is identically 0, a ratio 1 and a diattenuation 0. The demand compiles
+/// is identically 0, a ratio 1, a diattenuation 0 and Ψ π/4. The demand compiles
 /// (it is not wrong, only unreachable) and the caller warns.
 pub fn sp_contrast_warnings(set: &TargetSet) -> Vec<String> {
     let flat = |spectral: &str, angles: &[Radians]| {
@@ -1634,6 +1636,8 @@ mod tests {
             ("ExtT", CurveId::Tp, IntensityRatio::POverS),
             ("DiattR", CurveId::Rp, IntensityRatio::Diattenuation),
             ("DiattT", CurveId::Tp, IntensityRatio::Diattenuation),
+            ("PsiR", CurveId::Rp, IntensityRatio::PsiR),
+            ("PsiT", CurveId::Tp, IntensityRatio::PsiT),
         ];
         for (label, host, f) in cases {
             let spec = compile_merit_spec(&TargetSet {

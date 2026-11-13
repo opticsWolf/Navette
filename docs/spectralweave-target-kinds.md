@@ -37,6 +37,7 @@ regenerates it).
 | phase of one element, back | `RB`, `TB` × s/p, `phase=True` | yes¹ | no² |
 | retardance | `RetR`, `RetT`, `DeltaR`, `DeltaT`, u, `phase=True` | yes | no² |
 | intensity ratio | `RatioR`, `RatioT`, `ExtR`, `ExtT`, `DiattR`, `DiattT`, u | yes | yes |
+| ellipsometric Ψ | `PsiR`, `PsiT`, u | yes | yes |
 | differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
 | colour (`ColorTarget`) | front `R` / `T` | yes | yes |
 <!-- target-matrix:end -->
@@ -46,7 +47,7 @@ point weights and `integral`; intensity rows take linear or log
 normalization, phase rows linear or phase. Colour is `Exact` and linear
 only (*Color demands*). Not available in synthesis (the engine computes
 them, the merit does not): differential phase in reflection (`PDrs`,
-`PDrp`), Ψ, group delay and higher dispersion orders, degree of
+`PDrp`), group delay and higher dispersion orders, degree of
 polarization and Stokes parameters, and the `complex` transform.
 
 1. Not computable when the exit medium absorbs over the demand's
@@ -287,10 +288,15 @@ Phase demands must carry raw values with `norm_factor == 1` (the phase
 arm scales nothing — the converter unscales the resolved triple).
 
 **Intensity-ratio demands** (`RatioR/T` = s/p, `ExtR/T` = p/s,
-`DiattR/T` = $(p-s)/(p+s)$) read both front intensities $X_s, X_p$ of
-one quantity and score $f(X_s, X_p)$; each denominator carries the
-engine's $10^{-20}$ guard, so `DiattR` equals the engine's
-`Diattenuation_R` to rounding. The merit Jacobian takes the partials
+`DiattR/T` = $(p-s)/(p+s)$, `PsiR/T` = $\arctan\sqrt{p/s}$) read both
+front intensities $X_s, X_p$ of one quantity and score $f(X_s, X_p)$;
+each ratio's denominator carries the engine's $10^{-20}$ guard, so
+`DiattR` equals the engine's `Diattenuation_R` to rounding. Ψ is the
+engine's `Psi_R`/`Psi_T` (radians, not wrapped): it depends on the
+intensities only, so it needs no complex rows and scores through a
+plate. Below the engine's floor on $X_s$ ($10^{-12}$ for R,
+$10^{-20}$ for T) Ψ is $\pi/2$ and flat, and at $X_p = 0$ its
+partials are taken as 0. The merit Jacobian takes the partials
 $a_s = \partial f/\partial X_s$, $a_p = \partial f/\partial X_p$ per
 point. The needle fold is the log fold applied to each branch: with the
 kind table's centre or edge $c$ (in $f$ units, after $nf$) and weight

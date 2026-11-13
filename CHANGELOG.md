@@ -23,6 +23,13 @@ All notable changes to Navette are recorded here. Work items reference
   s and p coincide and the value cannot move, compiles with a warning.
   `MeritSpec.add_target` takes `ratio="s/p" | "p/s" | "diattenuation"`
   on a p intensity key.
+- **Ellipsometric Ψ targets: `PsiR`, `PsiT`** (W8.4). The engine's
+  `Psi_R`/`Psi_T`, `atan √(p/s)` of the front intensities in radians,
+  `π/2` and flat below its Rs (1e-12) or Ts (1e-20) floor. Ψ depends
+  on the intensities only, so it rides the intensity-ratio machinery
+  (merit partials, one tangent pair per branch) and scores through
+  incoherent plates. `MeritSpec.add_target` takes `ratio="psi_r"` on
+  `Rp`/`RBp` and `ratio="psi_t"` on `Tp`/`TBp`.
 
 ### Changed (breaking)
 

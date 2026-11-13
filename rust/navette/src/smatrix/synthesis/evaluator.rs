@@ -2543,7 +2543,7 @@ mod tests {
         #[test]
         fn intensity_ratios_follow_the_engine() {
             use crate::smatrix::core_engine::{
-                REQ_DIATT_R, REQ_DIATT_T, REQ_RP, REQ_RS, REQ_TP, REQ_TS,
+                REQ_DIATT_R, REQ_DIATT_T, REQ_PSI_R, REQ_PSI_T, REQ_RP, REQ_RS, REQ_TP, REQ_TS,
             };
             use crate::smatrix::synthesis::targets::{TargetSet, compile_merit_spec};
             use num_complex::Complex64;
@@ -2566,7 +2566,14 @@ mod tests {
                     &sa.rough_vals,
                     &WLS,
                     &[deg(angle_deg)],
-                    REQ_RS | REQ_RP | REQ_TS | REQ_TP | REQ_DIATT_R | REQ_DIATT_T,
+                    REQ_RS
+                        | REQ_RP
+                        | REQ_TS
+                        | REQ_TP
+                        | REQ_DIATT_R
+                        | REQ_DIATT_T
+                        | REQ_PSI_R
+                        | REQ_PSI_T,
                     2,
                 )
                 .unwrap();
@@ -2596,6 +2603,8 @@ mod tests {
                         (&ts, &tp),
                         Some("Diattenuation_T"),
                     ),
+                    ("PsiR", IntensityRatio::PsiR, (&rs, &rp), Some("Psi_R")),
+                    ("PsiT", IntensityRatio::PsiT, (&ts, &tp), Some("Psi_T")),
                 ] {
                     let (zeros, ones) = (vec![0.0; nw], vec![1.0; nw]);
                     let set = TargetSet::from_value(serde_json::json!({
@@ -4736,6 +4745,31 @@ mod needle_oracle {
                 }),
             ),
             ("RatioR + Rs + Ru", mixed),
+            ("PsiR", one(rat(Rp, PsiR, 0.6))),
+            ("PsiT", one(rat(Tp, PsiT, 0.8))),
+            ("PsiRB", one(rat(RBp, PsiR, 0.7))),
+            (
+                "PsiR log",
+                one(D {
+                    log: true,
+                    ..rat(Rp, PsiR, 0.6f64.log10())
+                }),
+            ),
+            (
+                "PsiT below",
+                one(D {
+                    kind: Below,
+                    ..rat(Tp, PsiT, 0.5)
+                }),
+            ),
+            (
+                "PsiR integral weighted",
+                one(D {
+                    integral: true,
+                    weighted: true,
+                    ..rat(Rp, PsiR, 0.6)
+                }),
+            ),
         ]
     }
 

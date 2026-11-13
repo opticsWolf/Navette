@@ -225,16 +225,18 @@ bucket (FD oracle, 0° and 30°); LM with the analytic Jacobian (item
 
 ### W8, new target types
 Done: W8a retardance (RetR/RetT, DeltaR/DeltaT); W8.3 intensity ratios
-(RatioR/T = s/p, ExtR/T = p/s, DiattR/T), tangent pair per branch.
+(RatioR/T = s/p, ExtR/T = p/s, DiattR/T), tangent pair per branch;
+W8.4 Psi (PsiR/PsiT). The engine's Psi is atan √(p/s) of the
+intensities, so it is one more ratio on the same tangent pair: the
+complex gradient operator the plan expected is not needed, and it
+scores through plates.
 Open, in plan order:
-1. Psi_R/Psi_T: needs a complex gradient operator
-   (`p_coherent_grad_c_from_fields`).
-2. DOP / Stokes for a given input state: needs an input-polarization
+1. DOP / Stokes for a given input state: needs an input-polarization
    field on the target.
-3. GD…FOD: port the engine's dispersion forward into `simulate_inner`,
+2. GD…FOD: port the engine's dispersion forward into `simulate_inner`,
    add curve ids, fold onto the existing Q-row sensitivities; LM by FD
    first.
-4. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+3. PDrs/PDrp: deferred (reference plane of the round trip, D3).
 
 ### Further gaps (plan §5)
 - Angle-cone and bandwidth-averaged targets (W4 point weights are the

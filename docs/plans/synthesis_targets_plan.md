@@ -3,8 +3,8 @@
 Status: **in progress.** W1, W2 (including the back-channel deposits,
 step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5, W7 and W8a
 are implemented (2026-11-10); W6 has a first cut, intensity-only
-(2026-11-11); the W8 intensity ratios are done (2026-11-13); the
-rest of W8 is open. Drafted 2026-11-09. Everything still open,
+(2026-11-11); the W8 intensity ratios and Psi are done (2026-11-13);
+the rest of W8 is open. Drafted 2026-11-09. Everything still open,
 the inconsistencies found on the way, and the decisions needed are
 collected in `synthesis_open_items.md`.
 
@@ -148,7 +148,7 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | φ_RS, φ_RP, φ_TS, φ_TP, φ_RB*, φ_TB* | = phase targets above | phi channels | covered above |
 | PD on reflection (PDrs, PDrp; `passes = 2`) | needs r_f (W2) | phi + gain shift (`reference_phase` handles 2 passes) | **deferred** (decision 2026-11-09): reference-plane question for the round trip stays open, see §5 |
 | Delta_R, Delta_T | from the retardance curve | as retardance | **done (W8a)**: constant offset of retardance (`Delta_R = Ret_R − π`, `Delta_T = Ret_T`, wrapped), two extra labels |
-| Psi_R, Psi_T | from rp/rs (W2) | gradient form on complex amplitudes (new small operator `p_coherent_grad_c_from_fields`: Re(conj(g)·∂a)) | **moderate**: blocked by W1 + W2 + new operator |
+| Psi_R, Psi_T | from the Rs/Rp (Ts/Tp) intensities: the engine's `atan √(p/s)` | tangent pair on the s and p intensity buckets, as the ratios | **done (W8.4)**: `PsiR`, `PsiT`; no complex operator needed, scores through plates |
 | Rs/Rp ratio, extinction ratio, diattenuation | from intensities | tangent pair on the s and p intensity buckets (W5) | **done (W8.3)**: `RatioR/T` = s/p, `ExtR/T` = p/s, `DiattR/T` = (p − s)/(p + s), front only, `u` |
 | retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **done (W8a)**: pair fold on the per-branch phase buckets |
 | DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
@@ -874,10 +874,10 @@ plus a per-point tolerance (W4) is the user-side mitigation.
 
 ## 5. Further and future gaps (not in W1-W7)
 
-1. **Ellipsometric and polarization targets in synthesis**: Psi,
-   DOP (retardance and Delta moved into W8a; Rs/Rp ratio, extinction
-   ratio and diattenuation done in W8.3). Need `CurveId`s, complex rows (W2.3 gives r_s, r_p), and
-   gradient-form folds (W5). Natural next step after W5.
+1. **Polarization targets in synthesis**: DOP (retardance and Delta
+   moved into W8a; Rs/Rp ratio, extinction ratio and diattenuation
+   done in W8.3, Psi in W8.4). Needs an input state on the target,
+   complex rows (W2.3 gives r_s, r_p) and gradient-form folds (W5).
 1b. **Differential phase on reflection (PDrs, PDrp) — deferred
    (decision 2026-11-09).** `reference_phase` already takes `passes = 2`;
    the open question is the reference plane of the round trip

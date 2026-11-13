@@ -956,6 +956,15 @@ impl MeritSpec {
                      (Rp, Tp, RBp, TBp)"
                 ));
             }
+            let on_t = matches!(curve, CurveId::Tp | CurveId::TBp);
+            if let Some(f) = target.ratio
+                && f.transmission().is_some_and(|t| t != on_t)
+            {
+                return Err(format!(
+                    "{f:?} on {curve:?}: Psi_R reads a reflection key (Rp, RBp), \
+                     Psi_T a transmission key (Tp, TBp)"
+                ));
+            }
         }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
@@ -2193,18 +2202,45 @@ pub enum IntensityRatio {
     /// `(X_p − X_s) / (X_p + X_s)`, the engine's `Diattenuation_R/_T`
     /// (`DiattR`, `DiattT`).
     Diattenuation,
+    /// `atan(√(X_p / X_s))`, the engine's `Psi_R` (`PsiR`): `π/2`, flat,
+    /// where `X_s < RS_FLOOR`.
+    PsiR,
+    /// The engine's `Psi_T` (`PsiT`), the same with `TS_FLOOR`.
+    PsiT,
 }
 
 /// Denominator guard of [`IntensityRatio`] (the engine's diattenuation guard).
 pub const RATIO_EPS: f64 = 1e-20;
 
 impl IntensityRatio {
-    /// Parse the raw door's spelling: `s/p`, `p/s`, `diattenuation`.
+    /// Parse the raw door's spelling: `s/p`, `p/s`, `diattenuation`,
+    /// `psi_r`, `psi_t`.
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "s/p" => Some(IntensityRatio::SOverP),
             "p/s" => Some(IntensityRatio::POverS),
             "diattenuation" => Some(IntensityRatio::Diattenuation),
+            "psi_r" => Some(IntensityRatio::PsiR),
+            "psi_t" => Some(IntensityRatio::PsiT),
+            _ => None,
+        }
+    }
+
+    /// The Ψ floor on `X_s` (the engine's); 0 for the ratios proper.
+    fn psi_floor(self) -> f64 {
+        match self {
+            IntensityRatio::PsiR => crate::smatrix::core_engine::RS_FLOOR,
+            IntensityRatio::PsiT => crate::smatrix::core_engine::TS_FLOOR,
+            _ => 0.0,
+        }
+    }
+
+    /// Whether this ratio reads transmission (`Some(true)`), reflection
+    /// (`Some(false)`) or either (`None`).
+    pub fn transmission(self) -> Option<bool> {
+        match self {
+            IntensityRatio::PsiR => Some(false),
+            IntensityRatio::PsiT => Some(true),
             _ => None,
         }
     }
@@ -2216,13 +2252,30 @@ impl IntensityRatio {
             IntensityRatio::SOverP => xs / (xp + RATIO_EPS),
             IntensityRatio::POverS => xp / (xs + RATIO_EPS),
             IntensityRatio::Diattenuation => (xp - xs) / (xp + xs + RATIO_EPS),
+            IntensityRatio::PsiR | IntensityRatio::PsiT => {
+                if xs < self.psi_floor() {
+                    std::f64::consts::FRAC_PI_2
+                } else {
+                    (xp / xs).sqrt().atan()
+                }
+            }
         }
     }
 
-    /// `(∂f/∂xs, ∂f/∂xp)` at `(xs, xp)`.
+    /// `(∂f/∂xs, ∂f/∂xp)` at `(xs, xp)`. Ψ is flat below its floor, and
+    /// at `X_p = 0`, where its slope in `X_p` is infinite, both partials
+    /// are taken as 0.
     #[inline]
     pub fn partials(self, xs: f64, xp: f64) -> (f64, f64) {
         match self {
+            IntensityRatio::PsiR | IntensityRatio::PsiT => {
+                if xs < self.psi_floor() || xp <= 0.0 {
+                    return (0.0, 0.0);
+                }
+                // ψ = atan(u), u = √(xp/xs): dψ = du/(1+u²), 1+u² = (xs+xp)/xs.
+                let h = 0.5 / (xs + xp);
+                (-h * (xp / xs).sqrt(), h * (xs / xp).sqrt())
+            }
             IntensityRatio::SOverP => {
                 let d = xp + RATIO_EPS;
                 (1.0 / d, -xs / (d * d))
@@ -5175,7 +5228,12 @@ mod tests {
                     IntensityRatio::SOverP,
                     IntensityRatio::POverS,
                     IntensityRatio::Diattenuation,
+                    IntensityRatio::PsiR,
+                    IntensityRatio::PsiT,
                 ] {
+                    if f.transmission().is_some_and(|t| t != (p == CurveId::Tp)) {
+                        continue;
+                    }
                     let mut spec = MeritSpec::new();
                     for angle in [Radians::ZERO, deg(30.0)] {
                         let k = spec.add_key(MeritKey { angle, curve: p });
@@ -5256,6 +5314,7 @@ mod tests {
                 (IntensityRatio::SOverP, xs / xp),
                 (IntensityRatio::POverS, xp / xs),
                 (IntensityRatio::Diattenuation, (xp - xs) / (xp + xs)),
+                (IntensityRatio::PsiR, (xp / xs).sqrt().atan()),
             ] {
                 let mut spec = MeritSpec::new();
                 let k = spec.add_key(MeritKey {
@@ -5308,6 +5367,49 @@ mod tests {
             t.ratio = Some(IntensityRatio::SOverP);
             t.phase = true;
             assert!(spec.add_target(t).unwrap_err().contains("no phase"));
+            let mut t = target(
+                kp as u32,
+                wl(),
+                ConstraintKind::Exact,
+                SimTransform::Linear,
+                false,
+                1.0,
+            );
+            t.ratio = Some(IntensityRatio::PsiT);
+            assert!(spec.add_target(t).unwrap_err().contains("transmission key"));
+        }
+
+        /// W8.4: Ψ is the engine's, floor included: `π/2` and flat below
+        /// `RS_FLOOR` / `TS_FLOOR`, and its partials are a finite
+        /// difference of the value above it.
+        #[test]
+        fn psi_is_the_engines_with_its_floor() {
+            use crate::smatrix::core_engine::{RS_FLOOR, TS_FLOOR};
+            use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+            for (f, floor) in [
+                (IntensityRatio::PsiR, RS_FLOOR),
+                (IntensityRatio::PsiT, TS_FLOOR),
+            ] {
+                assert_eq!(f.value(0.5 * floor, 0.3), FRAC_PI_2);
+                assert_eq!(f.partials(0.5 * floor, 0.3), (0.0, 0.0));
+                assert!((f.value(0.3, 0.3) - FRAC_PI_4).abs() < 1e-15);
+                assert_eq!(f.value(0.3, 0.0), 0.0);
+                assert_eq!(f.partials(0.3, 0.0), (0.0, 0.0));
+                for (xs, xp) in [(0.2, 0.05), (0.04, 0.6), (3e-3, 2e-4)] {
+                    let (a_s, a_p) = f.partials(xs, xp);
+                    let h = 1e-6 * xs.min(xp);
+                    let fs = (f.value(xs + h, xp) - f.value(xs - h, xp)) / (2.0 * h);
+                    let fp = (f.value(xs, xp + h) - f.value(xs, xp - h)) / (2.0 * h);
+                    assert!(
+                        (a_s - fs).abs() < 1e-6 * fs.abs(),
+                        "{f:?} {xs} {xp}: {a_s} vs {fs}"
+                    );
+                    assert!(
+                        (a_p - fp).abs() < 1e-6 * fp.abs(),
+                        "{f:?} {xs} {xp}: {a_p} vs {fp}"
+                    );
+                }
+            }
         }
 
         #[test]

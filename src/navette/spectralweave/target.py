@@ -49,10 +49,11 @@ class SpectralTarget:
                        RatioR | RatioT  intensity ratio Rs/Rp, Ts/Tp
                        ExtR | ExtT      extinction ratio Rp/Rs, Tp/Ts
                        DiattR | DiattT  diattenuation (p − s)/(p + s)
+                       PsiR | PsiT      ellipsometric Ψ = atan √(p/s)
         polarization:  s | p | u        u = unpolarized (the s/p mean)
 
     giving ``Rs``…``Au``, ``RBs``…``ABu``, the two differential labels,
-    the four retardance labels and the six ratio labels.
+    the four retardance labels and the eight ratio labels.
     Any other pair raises at construction. ``A`` is derived as 1 − R − T on
     the shared grid, so a missing companion curve fails the whole key group.
 
@@ -75,13 +76,14 @@ class SpectralTarget:
     At normal incidence s and p coincide and the retardance is identically
     0; a retardance demand at 0° only compiles with a warning.
 
-    ``RatioR``/``RatioT``, ``ExtR``/``ExtT`` and ``DiattR``/``DiattT`` are
-    front-side ratios of the s and p intensities: s/p, p/s and the engine's
-    ``Diattenuation_R``/``Diattenuation_T``. They take
-    ``polarization="u"`` and ``phase=False`` (anything else raises), and
-    each denominator carries the engine's 1e-20 guard. At normal incidence
-    s and p are equal, the value is fixed (1, 1 or 0) and a demand at 0°
-    only compiles with a warning.
+    ``RatioR``/``RatioT``, ``ExtR``/``ExtT``, ``DiattR``/``DiattT`` and
+    ``PsiR``/``PsiT`` are front-side functions of the s and p intensities:
+    s/p, p/s, the engine's ``Diattenuation_R``/``Diattenuation_T`` and its
+    ``Psi_R``/``Psi_T`` (radians, ``π/2`` below the engine's Rs/Ts floor).
+    They take ``polarization="u"`` and ``phase=False`` (anything else
+    raises), and each ratio's denominator carries the engine's 1e-20 guard.
+    At normal incidence s and p are equal, the value is fixed (1, 1, 0 or
+    π/4) and a demand at 0° only compiles with a warning.
     See ``docs/spectralweave-target-kinds.md`` for the sign convention
     (the reference is ``+kD``, the conjugate of Macleod) and the needle
     ``gain_shift_phi`` bookkeeping.
