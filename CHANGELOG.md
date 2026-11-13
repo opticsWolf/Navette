@@ -102,6 +102,37 @@ Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
   ranks them by recovery of the truth. Deterministic per seed. The
   `fit_tournament` example ranks seven strategies on a 20-layer coating.
   Stage and strategy reports count their model evaluations (`evals`).
+- **Python: `navette.fit`** (fit plan phase 5). The fit engine is now
+  available from Python:
+  - The dataclasses `Parameter`, `Tie`, `Environment`, `Dataset`,
+    `NkDataset`, `Stage`, `Strategy` and `FitProblem` describe a fit.
+  - `fit` and `evaluate` return a `FitReport` with the parameters, the
+    covariance and correlation, the stage reports, and the measured and
+    simulated curves. `plot_fit` draws the curves.
+  - The strategy tools are `orderings`, `groupings`, `cumulative`,
+    `generate`, `tournament`, `benchmark` and `draw_truth`.
+  - `to_solver`, `from_solver` and `conventions` convert instrument data.
+  - `fit_dispersion` and `table_to_model` fit dispersion models.
+
+  The engine runs in Rust with the GIL released. Python sends the request
+  as JSON and gets JSON back, through the doors in `navette::fit::doors`.
+  The guide is `docs/fitting.md`. There are two new examples:
+  `fit_coating.py` and `fit_optical_constants.py`.
+- **Progress and stopping.** `fit(problem, progress=cb)` calls `cb` when a
+  stage starts, each time χ² improves, and when a stage ends. If the
+  callback raises, the fit stops with a `ValueError` naming the exception.
+  In Rust the same works through a `Watcher` passed to `fit_watched` or
+  `run_strategy_watched`.
+- **Program schema version 4: the `fit` section.** A fit request is a
+  program document whose `fit` section holds the samples, the data, the
+  parameter declarations, ties, sets, the strategy and the solver
+  settings. `fit::fit_program` runs it, and `FitProblem.save` / `load`
+  write and read it. A `select` declaration expands a selector over every
+  address in the model (`FitModel::addresses`). `LoadedProgram.fit`
+  (Rust and Python) carries the section; documents of version 3 and
+  earlier still load.
+- Program JSON parses floats exactly (`serde_json` `float_roundtrip`), so
+  a saved fit reproduces its χ² bit for bit.
 
 ### Changed (breaking)
 

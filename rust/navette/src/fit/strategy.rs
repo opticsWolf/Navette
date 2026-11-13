@@ -30,7 +30,7 @@ use crate::lsq::backends::LsqBackend;
 
 use super::model::FitModel;
 use super::sets::{ParamSet, select};
-use super::{FitProblem, FitReport, evaluate, fit};
+use super::{FitProblem, FitReport, Progress, Watcher, evaluate, fit_watched};
 
 /// An ordered list of stages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -205,6 +205,32 @@ pub fn run_strategy(
     strategy: &Strategy,
     sets: &[ParamSet],
 ) -> Result<StrategyReport, String> {
+    run_strategy_watched(problem, strategy, sets, None)
+}
+
+/// [`run_strategy`], telling `watch` where it is: each stage's start and
+/// end, and each lower χ² inside it. The watcher's stop ends the run with
+/// its error.
+pub fn run_strategy_watched(
+    problem: &FitProblem,
+    strategy: &Strategy,
+    sets: &[ParamSet],
+    watch: Option<&Watcher<'_>>,
+) -> Result<StrategyReport, String> {
+    let out = strategy_inner(problem, strategy, sets, watch);
+    // A stop surfaces as its own error, whatever the stage made of it.
+    if let Some(w) = watch {
+        w.check()?;
+    }
+    out
+}
+
+fn strategy_inner(
+    problem: &FitProblem,
+    strategy: &Strategy,
+    sets: &[ParamSet],
+    watch: Option<&Watcher<'_>>,
+) -> Result<StrategyReport, String> {
     if strategy.stages.is_empty() {
         return Err(format!("strategy {:?}: no stages", strategy.name));
     }
@@ -212,7 +238,7 @@ pub fn run_strategy(
     let mut model = evaluate(&held(problem, &vec![false; problem.parameters.len()]))?.model;
     let mut ever = vec![false; problem.parameters.len()];
     let mut stages = Vec::new();
-    for stage in &strategy.stages {
+    for (k, stage) in strategy.stages.iter().enumerate() {
         let bad = |e: String| format!("stage {:?}: {e}", stage.name);
         let free = select(&stage.free, &problem.parameters, sets).map_err(bad)?;
         let free: Vec<bool> = free
@@ -223,7 +249,29 @@ pub fn run_strategy(
         if !free.iter().any(|f| *f) {
             return Err(bad("frees nothing (every match is declared fixed)".into()));
         }
-        let report = run_stage(problem, stage, &free, sets, &model).map_err(bad)?;
+        if let Some(w) = watch {
+            w.tell(&Progress::StageStart {
+                stage: k,
+                name: stage.name.clone(),
+                free: problem
+                    .parameters
+                    .iter()
+                    .zip(&free)
+                    .filter(|(_, f)| **f)
+                    .map(|(p, _)| p.addr.to_string())
+                    .collect(),
+            });
+        }
+        let report =
+            run_stage(problem, stage, &free, sets, &model, watch.map(|w| (w, k))).map_err(bad)?;
+        if let Some(w) = watch {
+            w.tell(&Progress::StageEnd {
+                stage: k,
+                name: stage.name.clone(),
+                chi2: report.report.chi2,
+                accepted: report.accepted,
+            });
+        }
         for (e, f) in ever.iter_mut().zip(&free) {
             *e |= f;
         }
@@ -258,7 +306,9 @@ fn run_stage(
     free: &[bool],
     sets: &[ParamSet],
     model: &FitModel,
+    watch: Option<(&Watcher<'_>, usize)>,
 ) -> Result<StageReport, String> {
+    let fit = |p: &FitProblem| fit_watched(p, watch);
     let mut sp = held(problem, free);
     sp.model = model.clone();
     for q in &mut sp.parameters {

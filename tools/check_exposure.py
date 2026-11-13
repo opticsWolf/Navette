@@ -122,20 +122,19 @@ ALLOWLIST = {
     # arm of that dispatch, reachable from Python as
     # `LmConfig(backend="trf")`. It takes the same two Rust traits.
     "trust_region_reflective",
-    # General fit engine (fit plan phase 1): Rust first, decision 2. The
-    # Python door (`navette.fit`) binds the finished API in phase 5;
-    # `channel_request` will be reachable there through the dataset's
-    # channel name, never on its own.
-    "channel_request",
-    # Dispersion doors (fit plan phase 2): bound with the rest of the fit
-    # API in phase 5 as `navette.fit.fit_dispersion` / `table_to_model`;
-    # remove them here when they are.
-    "fit_dispersion", "table_to_model",
-    # Strategies, selectors and the instrument converter (fit plan phase
-    # 3): bound in phase 5 with the rest; remove them here when they are.
-    "select", "run_strategy", "to_solver", "from_solver",
-    # Tournament and benchmark (fit plan phase 4), likewise.
-    "generate", "tournament", "draw_truth", "benchmark",
+    # General fit engine: `navette.fit` reaches it through the JSON doors
+    # of `navette::fit::doors` / `fit::request` (bound in `_fit`), so these
+    # are the doors' plumbing, never called on their own. A dataset's
+    # channel name reaches `channel_request`, a `select` declaration
+    # `select`/`addresses`, a strategy `run_strategy[_watched]` and the
+    # progress callback `fit_watched`; the rest parse the request and
+    # write the report and curves JSON.
+    "channel_request", "select", "run_strategy", "run_strategy_watched",
+    "fit_watched", "request_from_json", "request_from_program",
+    "strategies_from_json", "report_json", "strategy_report_json",
+    "curves_json",
+    # bound as `truth_json_text` (Python `navette.fit.draw_truth`)
+    "draw_truth",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

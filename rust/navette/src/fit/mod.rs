@@ -22,21 +22,28 @@
 //! - [`dispersion`]: the doors [`fit_dispersion`] (one spec against nk
 //!   data) and [`table_to_model`] (rank model candidates for a table).
 //!
-//! Phases 1-2 of `docs/plans/general_fit_plan.md`: one stage, FD Jacobian,
-//! one sample. Stages, ties, priors and several samples are phase 3.
+//! - [`strategy`], [`sets`], [`explore`]: staged strategies, parameter
+//!   sets, generated strategies, the tournament and the benchmark.
+//! - [`request`]: the fit as data, a program document's `fit` section,
+//!   and the doors the Python package calls.
+//! - [`Watcher`]: progress per stage and per lower χ², and a way to stop.
 
 pub mod convert;
 pub mod data;
 pub mod dispersion;
+pub mod doors;
 pub mod explore;
 pub mod forward;
 pub mod model;
 pub mod params;
+pub mod request;
 pub mod sets;
 mod stats;
 pub mod strategy;
 
 use std::collections::HashSet;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use convert::{
     AngleUnit, DeltaRange, DeltaSign, EllForm, InstrumentConvention, RawDataset, RawQuantity, Side,
@@ -51,10 +58,11 @@ pub use explore::{
 pub use forward::{DispersionForward, StackForward};
 pub use model::{DEFAULT_ENV, FitModel, Segment};
 pub use params::{ParamAddr, ParamKind, Parameter, Tie, Transform};
+pub use request::{FitRequest, FitSection, fit_program, request_from_json};
 pub use sets::{ParamSet, Selector, select};
 pub use strategy::{
     Accept, Repeat, Sampler, Stage, StageKind, StageLsq, StageReport, Strategy, StrategyReport,
-    run_strategy,
+    run_strategy, run_strategy_watched,
 };
 
 use crate::lsq::backends::{LsqBackend, solve_least_squares};
@@ -491,19 +499,111 @@ pub const PRIOR_ID: &str = "prior";
 /// that no step lands there, small enough that χ² stays finite.
 const REFUSED_RESIDUAL: f64 = 1e100;
 
+/// What a running fit tells its [`Watcher`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Progress {
+    /// A stage starts; `stage` counts from 0.
+    StageStart {
+        stage: usize,
+        name: String,
+        free: Vec<String>,
+    },
+    /// A least-squares run of the stage reached a lower χ² than any of
+    /// its points before: about once per accepted solver step. `evals`
+    /// counts this run's evaluations so far.
+    Improved {
+        stage: usize,
+        evals: usize,
+        chi2: f64,
+    },
+    /// A stage ended; `chi2` is its kept result on its own data.
+    StageEnd {
+        stage: usize,
+        name: String,
+        chi2: f64,
+        accepted: bool,
+    },
+}
+
+/// A progress callback and the stop it can request.
+///
+/// The callback may run on several threads at once (a multi-start stage
+/// fits its starts in parallel). Returning `Err` stops the whole fit: every
+/// solver run still going is starved (its trial points are refused without
+/// being evaluated) and the fit returns that error.
+pub struct Watcher<'a> {
+    notify: Box<dyn Fn(&Progress) -> Result<(), String> + Sync + 'a>,
+    stopped: Mutex<Option<String>>,
+}
+
+impl<'a> Watcher<'a> {
+    pub fn new(notify: impl Fn(&Progress) -> Result<(), String> + Sync + 'a) -> Self {
+        Self {
+            notify: Box::new(notify),
+            stopped: Mutex::new(None),
+        }
+    }
+
+    /// Pass `p` on, unless the fit is already stopping.
+    pub fn tell(&self, p: &Progress) {
+        if self.is_stopped() {
+            return;
+        }
+        if let Err(e) = (self.notify)(p) {
+            let mut s = self.stopped.lock().unwrap_or_else(|e| e.into_inner());
+            s.get_or_insert(e);
+        }
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// `Err` with the callback's message when it asked to stop.
+    pub fn check(&self) -> Result<(), String> {
+        match &*self.stopped.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(e) => Err(format!("fit stopped by the progress callback: {e}")),
+            None => Ok(()),
+        }
+    }
+}
+
+impl std::fmt::Debug for Watcher<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watcher")
+            .field("stopped", &self.stopped)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Fit the free parameters of `problem` in one least-squares stage.
 pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
-    run(problem, true)
+    run(problem, true, None)
+}
+
+/// [`fit`], telling `watch` (as stage `stage`) each lower χ².
+pub fn fit_watched(
+    problem: &FitProblem,
+    watch: Option<(&Watcher<'_>, usize)>,
+) -> Result<FitReport, String> {
+    run(problem, true, watch)
 }
 
 /// The report at the start values, without moving: χ², per-dataset
 /// shares, and the covariance of the free parameters there. What a
 /// strategy reports at its end, over everything any stage freed.
 pub fn evaluate(problem: &FitProblem) -> Result<FitReport, String> {
-    run(problem, false)
+    run(problem, false, None)
 }
 
-fn run(problem: &FitProblem, solve: bool) -> Result<FitReport, String> {
+fn run(
+    problem: &FitProblem,
+    solve: bool,
+    watch: Option<(&Watcher<'_>, usize)>,
+) -> Result<FitReport, String> {
     let c = Compiled::new(problem)?;
     let n = c.free.len();
     // The start is evaluated strictly: a model that cannot be evaluated
@@ -515,10 +615,35 @@ fn run(problem: &FitProblem, solve: bool) -> Result<FitReport, String> {
     let mut r0 = Vec::new();
     strict(&vec![0.0; n], &mut r0)?;
     let m0 = r0.len();
+    let evals_seen = AtomicUsize::new(0);
+    let best_seen = Mutex::new(f64::INFINITY);
     let trial = |u: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
-        if c.residuals(u, out).is_err() {
+        let refuse = |out: &mut Vec<f64>| {
             out.clear();
             out.resize(m0, REFUSED_RESIDUAL);
+        };
+        if watch.is_some_and(|(w, _)| w.is_stopped()) {
+            refuse(out);
+            return Ok(());
+        }
+        if c.residuals(u, out).is_err() {
+            refuse(out);
+            return Ok(());
+        }
+        if let Some((w, stage)) = watch {
+            let evals = evals_seen.fetch_add(1, Ordering::Relaxed) + 1;
+            let chi2: f64 = out.iter().map(|x| x * x).sum();
+            let lower = {
+                let mut best = best_seen.lock().unwrap_or_else(|e| e.into_inner());
+                let lower = chi2 < *best;
+                if lower {
+                    *best = chi2;
+                }
+                lower
+            };
+            if lower {
+                w.tell(&Progress::Improved { stage, evals, chi2 });
+            }
         }
         Ok(())
     };
@@ -549,6 +674,9 @@ fn run(problem: &FitProblem, solve: bool) -> Result<FitReport, String> {
             &ub,
             &problem.lsq,
         )?;
+        if let Some((w, _)) = watch {
+            w.check()?;
+        }
         (r.x, r.termination, r.iterations, r.evals, r.backend)
     };
 

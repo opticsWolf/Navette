@@ -118,6 +118,10 @@ pub struct InstrumentConvention {
     pub sigma: SigmaSource,
 }
 
+fn default_env() -> String {
+    DEFAULT_ENV.to_string()
+}
+
 fn sigma_none() -> SigmaSource {
     SigmaSource::None
 }
@@ -209,6 +213,8 @@ pub enum RawQuantity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawDataset {
     pub id: String,
+    /// The sample; [`DEFAULT_ENV`] when a record does not name one.
+    #[serde(default = "default_env")]
     pub env: String,
     pub quantity: RawQuantity,
     /// In the convention's angle unit.

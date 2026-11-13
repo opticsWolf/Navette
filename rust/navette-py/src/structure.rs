@@ -1451,6 +1451,15 @@ fn program_to_dict(py: Python<'_>, prog: navette::config::LoadedProgram) -> PyRe
             .map_err(|e| PyValueError::new_err(format!("program section 'environments': {e}")))?;
         out.set_item("environments", dump(&v, "environments")?)?;
     }
+    // v4: the fit section crosses the same way, as request data.
+    match &prog.fit {
+        None => out.set_item("fit", py.None())?,
+        Some(f) => {
+            let v = serde_json::to_value(f)
+                .map_err(|e| PyValueError::new_err(format!("program section 'fit': {e}")))?;
+            out.set_item("fit", dump(&v, "fit")?)?;
+        }
+    }
     Ok(out.into())
 }
 

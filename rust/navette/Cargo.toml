@@ -45,7 +45,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 ahash = "0.8"
 smallvec = "1.13"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip`: measured data crosses JSON (fit requests, program
+# files) and must come back bit-exact; the default parser can be 1 ulp off.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 rand = "0.9"
 rand_distr = "0.5"
 # --- optional optimizer backends (see [features]) --------------------------

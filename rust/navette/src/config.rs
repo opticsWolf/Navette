@@ -37,7 +37,11 @@ use crate::structure::{
 /// v3 flips the grading sign to the literature's (`+inh_delta` rises
 /// toward the surface); `gate_document` negates an older document's
 /// grading keys on read, so v1/v2 stay readable.
-pub const PROGRAM_SCHEMA_VERSION: u32 = 3;
+///
+/// v4 adds the `fit` section (`fit::request`). The section whitelist would
+/// already refuse it on a v3 build; the bump makes that refusal say the
+/// document is newer than the build, which is the remedy.
+pub const PROGRAM_SCHEMA_VERSION: u32 = 4;
 
 /// The oldest program envelope this build READS (F2.4, mirroring F1.4's
 /// state gate). A v1 program has no `design`/`environments` sections, so
@@ -58,6 +62,7 @@ const PROGRAM_SECTIONS: &[&str] = &[
     "architect",
     "design",
     "environments",
+    "fit",
 ];
 
 /// One architect block: structure label reference + placement.
@@ -283,6 +288,9 @@ pub struct LoadedProgram {
     /// F2.4: the environment roster, in evaluation order. Empty is the
     /// flat case and is what every pre-F2.4 program document is.
     pub environments: Vec<crate::smatrix::synthesis::environments::EnvironmentCfg>,
+    /// v4: what to fit (`fit::request`), shape-checked on load; the model
+    /// it fits is this program's own stack and materials.
+    pub fit: Option<crate::fit::FitSection>,
 }
 
 fn px(value: &str, prefix: Option<&str>) -> String {
@@ -755,6 +763,12 @@ fn load_program_parts(
         prog.environments = serde_json::from_value(items.clone())
             .map_err(|e| format!("program section 'environments': {e}"))?;
     }
+    if let Some(items) = sections.get("fit") {
+        prog.fit = Some(
+            serde_json::from_value(items.clone())
+                .map_err(|e| format!("program section 'fit': {e}"))?,
+        );
+    }
     if !prog.design.is_empty() && prog.environments.is_empty() {
         return Err(
             "program section 'design' is defined but 'environments' is not - a \
@@ -920,10 +934,18 @@ mod tests {
                 &grid
             )
             .is_ok(),
-            "v3 is what this build writes"
+            "v3 predates the fit section and still reads"
+        );
+        assert!(
+            load_program_json(
+                "{\"schema_version\": 4, \"kind\": \"program\", \"sections\": {}}",
+                &grid
+            )
+            .is_ok(),
+            "v4 is what this build writes"
         );
         let newer = load_program_json(
-            "{\"schema_version\": 4, \"kind\": \"program\", \"sections\": {}}",
+            "{\"schema_version\": 5, \"kind\": \"program\", \"sections\": {}}",
             &grid,
         )
         .unwrap_err();
@@ -933,7 +955,7 @@ mod tests {
             &grid,
         )
         .unwrap_err();
-        assert!(stale.contains("reads 1..=3"), "{stale}");
+        assert!(stale.contains("reads 1..=4"), "{stale}");
         // An unknown SECTION refuses by name rather than being dropped.
         let bogus = load_program_json(
             "{\"schema_version\": 2, \"kind\": \"program\", \"sections\": {\"bogus\": []}}",

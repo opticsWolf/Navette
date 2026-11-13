@@ -13,7 +13,8 @@ change). Work branch: `dev_fit`.
 | 2 dispersion fitting | done (`dev_fit`) |
 | 3 strategies, environments, ties, priors, converter | done (`dev_fit`) |
 | 4 tournament, generated strategies, truth draws, benchmark | done (`dev_fit`) |
-| 5-7 | not started |
+| 5 Python door, program `fit` section (schema v4), docs | done (`dev_fit`) |
+| 6-7 | not started |
 
 Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
 (`FitModel`: the architect's traversal with each entry's structure row,
@@ -89,6 +90,32 @@ parameters) in about 4 s and checks a second run gives the same bits.
 Freeing the group factors first recovers the truth best (mean relative
 error 2e-3); freeing everything at once lands in a wrong minimum on one
 of the four truths.
+
+In phase 5 the request became a program document. A program with a `fit`
+section (schema v4) is what Python sends to Rust, what `FitProblem.save`
+writes, and what `fit::fit_program` runs, so a request and its saved fit
+use one format. Choices made here:
+
+- Program structures load as films only. A measured sample (ambient,
+  substrate, stack) is therefore declared under `fit.environments`, and
+  data with no `env` goes to the first declared environment.
+- A `select` declaration expands over `FitModel::addresses` when the
+  request is read. Addresses declared explicitly elsewhere in the list
+  are skipped, so an explicit declaration wins.
+- The doors (`fit::doors`) take JSON text and return JSON, with NaN and
+  Inf written as null. Python only wraps them in dataclasses, and their
+  shapes are tested in Rust.
+- Progress is a `Watcher` with three events: stage start, χ² improved,
+  and stage end. When its callback errs, the watcher refuses further
+  trial points and the fit ends with that error. Python raises it as a
+  `ValueError`.
+- `serde_json` `float_roundtrip` is on, so a saved fit reloads
+  bit-exactly. Without it, the last ulp moved.
+
+`examples/fit_coating.py` and `examples/fit_optical_constants.py` run in
+the battery. The second shows that a six-term Sellmeier fitted over
+250–2000 nm reproduces n to 5e-5 RMS, while B1 alone has an error of
+±0.19. Assert on the curve, not on the coefficients.
 
 ## 0. Decisions (review of 2026-11-07)
 

@@ -362,6 +362,62 @@ impl FitModel {
             .map_err(|e| format!("{addr}: {e}"))
     }
 
+    /// The scalars a selector declaration (`{"select": "kind=thickness"}`)
+    /// expands over, in a stable order: every film row's thickness,
+    /// structure by structure; the factors and the thickness summand of
+    /// every group; every top-level number of every material spec. Other
+    /// fields (grading, roughness, gradients, oscillator entries) are
+    /// declared by address.
+    pub fn addresses(&self) -> Vec<ParamAddr> {
+        let mut out = Vec::new();
+        for (sid, s) in self.structures.iter().enumerate() {
+            for row in 0..s.materials.len() {
+                let film = self
+                    .origin
+                    .iter()
+                    .position(|o| *o == Some((sid, row)))
+                    .is_some_and(|e| self.entries[e].0.layer_type == LayerType::Film);
+                if film {
+                    out.push(ParamAddr::Layer {
+                        structure: s.name.clone(),
+                        layer: LayerRef::Index(row),
+                        field: LayerField::Thickness,
+                    });
+                }
+            }
+        }
+        let mut groups: Vec<&String> = self.groups.keys().collect();
+        groups.sort();
+        for g in groups {
+            for field in [
+                GroupField::NFactor,
+                GroupField::KFactor,
+                GroupField::ThickFactor,
+                GroupField::ThickSummand,
+            ] {
+                out.push(ParamAddr::Group {
+                    group: g.clone(),
+                    field,
+                });
+            }
+        }
+        let mut materials: Vec<(&String, &Entry)> = self.materials.iter().collect();
+        materials.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, entry) in materials {
+            if let Entry::Spec(spec) = entry {
+                for (key, v) in &spec.params {
+                    if v.is_number() {
+                        out.push(ParamAddr::Material {
+                            material: name.clone(),
+                            path: vec![PathSeg::Key(key.clone())],
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Validation of every structure row and group, as the architect's own
     /// gate runs it; the first error refuses.
     pub fn check(&self) -> Result<(), String> {
