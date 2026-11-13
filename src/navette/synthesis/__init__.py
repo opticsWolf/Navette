@@ -124,6 +124,26 @@ tangent at the operating point, as it does the log transform. At normal
 incidence s and p are equal and the value cannot move: a demand at 0°
 only compiles with a warning.
 
+Dispersion labels (``polarization="s"`` or ``"p"``, ``phase=True`` required,
+front only):
+
+==============  ==================================================
+label           meaning
+==============  ==================================================
+``"GDR"``       group delay ``dφ/dω`` of r_f (fs), the engine's ``GD_R_s/p``
+``"GDT"``       group delay of t_f, the engine's ``GD_T_s/p``
+``"GDDR"``      ``d²φ/dω²`` (fs²), ``GDD_R_s/p``; ``"GDDT"`` likewise
+``"TODR"``      ``d³φ/dω³`` (fs³), ``TOD_R_s/p``; ``"TODT"`` likewise
+``"FODR"``      ``d⁴φ/dω⁴`` (fs⁴), ``FOD_R_s/p``; ``"FODT"`` likewise
+==============  ==================================================
+
+They key on the s or p curve. The merit unwraps the element's phase over
+the simulated grid and differentiates it with the engine's own stencil
+(``grad_nonuniform``, ω = 2πc/λ), then samples the result like an
+intensity: linear, ``nf = 1``, no wrap. The LM Jacobian and the needle
+fold chain through the stencil's transpose, so both are analytic. The
+values depend on the simulated grid's spacing, exactly as the engine's do.
+
 Any other label raises ``ValueError`` — the synthesis side speaks this fixed
 vocabulary (the weaver itself accepts anything). Targets with
 ``phase=True`` become phase demands on the mapped curve's S-matrix element

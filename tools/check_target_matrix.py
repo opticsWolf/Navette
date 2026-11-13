@@ -57,6 +57,10 @@ ROWS = [
      [(sp, "u", False) for sp in ("PsiR", "PsiT")]),
     ("differential phase", "`PDts`, `PDtp`, `phase=True`",
      [("PDts", "s", True), ("PDtp", "p", True)]),
+    ("phase dispersion", "`GDR`, `GDT`, `GDDR`, `GDDT`, `TODR`, `TODT`, `FODR`, `FODT` × s/p, "
+     "`phase=True`",
+     [(sp, pol, True) for sp in ("GDR", "GDT", "GDDR", "GDDT", "TODR", "TODT", "FODR", "FODT")
+      for pol in "sp"]),
 ]
 #: Colour: `ColorTarget` curves.
 COLOR_ROW = ("colour (`ColorTarget`)", "front `R` / `T`",
@@ -65,7 +69,8 @@ COLOR_ROW = ("colour (`ColorTarget`)", "front `R` / `T`",
 #: Labels the engine knows that no row lists: each must stay refused.
 UNLISTED = [("A", "s", True), ("AB", "u", True), ("R", "u", True),
             ("PDrs", "s", True), ("PDrp", "p", True),
-            ("RatioR", "u", True), ("DiattT", "s", False), ("PsiR", "u", True)]
+            ("RatioR", "u", True), ("DiattT", "s", False), ("PsiR", "u", True),
+            ("GDR", "u", True), ("GDDT", "s", False)]
 
 WL = np.linspace(400.0, 700.0, 16)
 ANG = np.array([30.0])

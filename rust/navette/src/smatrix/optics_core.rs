@@ -627,6 +627,32 @@ pub fn grad_nonuniform(y: &[f64], x: &[f64]) -> Vec<f64> {
     d
 }
 
+/// Transpose of [`grad_nonuniform`] as a linear map in `y`: returns `Dᵀc`
+/// for `D y = grad_nonuniform(y, x)`. Chains a sensitivity on the
+/// derivative back onto the differentiated row (the synthesis merit's
+/// dispersion Jacobian and needle fold).
+pub(crate) fn grad_nonuniform_adjoint(c: &[f64], x: &[f64]) -> Vec<f64> {
+    let n = c.len();
+    let mut g = vec![0.0; n];
+    if n < 2 {
+        return g;
+    }
+    let h0 = x[1] - x[0];
+    g[0] -= c[0] / h0;
+    g[1] += c[0] / h0;
+    let hn = x[n - 1] - x[n - 2];
+    g[n - 2] -= c[n - 1] / hn;
+    g[n - 1] += c[n - 1] / hn;
+    for i in 1..n - 1 {
+        let hd = x[i] - x[i - 1];
+        let hs = x[i + 1] - x[i];
+        g[i - 1] += (-hs / (hd * (hd + hs))) * c[i];
+        g[i] += ((hs - hd) / (hd * hs)) * c[i];
+        g[i + 1] += (hd / (hs * (hd + hs))) * c[i];
+    }
+    g
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

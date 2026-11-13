@@ -41,6 +41,7 @@ use crate::smatrix::needle_operator::{
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
 use crate::smatrix::synthesis::merit::{
     CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, Radians, SimCurves,
+    dispersion_adjoint, dispersion_omega, dispersion_row,
 };
 use crate::structure::Span;
 
@@ -489,6 +490,79 @@ fn emit_ratio(
     }
 }
 
+/// The slope accumulator of a dispersion demand: one entry per simulated
+/// point when the demand has an operating point, empty otherwise.
+fn dispersion_acc(op: &Option<OpRows>) -> Vec<f64> {
+    match op {
+        Some(OpRows::Dispersion(g, _)) => vec![0.0; g.len()],
+        _ => Vec::new(),
+    }
+}
+
+/// Spread a dispersion point's slope `2w·(G_op − rt)` onto the simulated
+/// points its operating value reads, by `interp_clamped`'s weights.
+fn deposit_dispersion(c: &mut [f64], xs: &[f64], x: f64, slope: f64) {
+    if c.is_empty() || xs.is_empty() {
+        return;
+    }
+    let last = xs.len() - 1;
+    if x <= xs[0] {
+        c[0] += slope;
+    } else if x >= xs[last] {
+        c[last] += slope;
+    } else {
+        let hi = xs.partition_point(|&v| v < x).max(1);
+        let lo = hi - 1;
+        let f = (x - xs[lo]) / (xs[hi] - xs[lo]);
+        c[lo] += slope * (1.0 - f);
+        c[hi] += slope * f;
+    }
+}
+
+/// Emit a dispersion demand (W8) as phase pairs on its element's bucket.
+///
+/// The demand reads `G = Dⁿφ` (the unwrapped phase differentiated `n` times
+/// in ω on the simulated grid), so with `c` its accumulated slopes on `G`,
+/// `dM/dδ = Σ_j g_j·∂φ_j` with `g = (Dⁿ)ᵀc`. The phase kernel returns
+/// `2w'·wrap(φ − t')·∂φ`, so at simulated point `j` the pair
+/// `(φ_j − sign(g_j)·PHASE_PAIR_MAX, |g_j|)` returns `g_j·∂φ_j`: gradient
+/// form in a pair, inside the kernel's wrap. Without an operating point
+/// (or with the amplitude at the kernel's zero floor) nothing is emitted:
+/// a dispersion, like a retardance, has no target-only form.
+#[allow(clippy::too_many_arguments)]
+fn emit_dispersion(
+    folds: &mut [PolFold; 2],
+    route: Route,
+    bucket: BucketKind,
+    row: usize,
+    wavelengths: &[f64],
+    op: &Option<OpRows>,
+    sim: Option<&SimCurves>,
+    t: &MeritTarget,
+    c: &[f64],
+) {
+    let (Some(order), Some(OpRows::Dispersion(_, crow)), Some(sim), Route::One(b)) =
+        (t.dispersion, op, sim, route)
+    else {
+        return;
+    };
+    if c.iter().all(|&v| v == 0.0) {
+        return;
+    }
+    let nw = wavelengths.len();
+    let g = dispersion_adjoint(c, &dispersion_omega(&sim.wavelengths), order);
+    for (j, (&gj, z)) in g.iter().zip(crow.iter()).enumerate() {
+        if gj == 0.0 || !gj.is_finite() || z.norm_sqr() <= 1e-20 {
+            continue;
+        }
+        let k = row * nw + solver_wav_index(wavelengths, sim.wavelengths[j]);
+        let w = gj.abs();
+        let p = folds[b].pair_mut(bucket);
+        p.1[k] += w;
+        p.0[k] += w * (z.arg() - gj.signum() * PHASE_PAIR_MAX);
+    }
+}
+
 /// Demand bucket: absorption derives from companions, intensities fold to
 /// their own quantity, phase demands to their element pair.
 #[derive(Clone, Copy)]
@@ -506,6 +580,9 @@ enum OpRows<'a> {
     Retardance(&'a [Complex64], &'a [Complex64]),
     /// Intensity ratio: the s partner's row, then the key's p row.
     Ratio(IntensityRatio, &'a [f64], &'a [f64]),
+    /// Dispersion (W8): the `Dⁿφ` row on the simulated grid, then the
+    /// key's complex row it was differentiated from.
+    Dispersion(Vec<f64>, &'a [Complex64]),
 }
 
 /// Operating-point sample in demand space (Δφ with the reference subtracted
@@ -565,6 +642,7 @@ fn sample_op_value(
             interp_clamped(&sim.wavelengths, s, twl_i),
             interp_clamped(&sim.wavelengths, p, twl_i),
         ),
+        OpRows::Dispersion(g, _) => interp_clamped(&sim.wavelengths, g, twl_i),
     }
 }
 
@@ -730,7 +808,13 @@ pub fn build_needle_targets_env(
                             }
                             _ => None,
                         },
-                        None => op_rows(sim, key.curve, key.angle, t.phase),
+                        None => match (op_rows(sim, key.curve, key.angle, t.phase), t.dispersion) {
+                            (Some(OpRows::Phase(c)), Some(order)) => {
+                                let omega = dispersion_omega(&sim.wavelengths);
+                                Some(OpRows::Dispersion(dispersion_row(c, &omega, order), c))
+                            }
+                            (rows, _) => rows,
+                        },
                     },
                 },
             );
@@ -782,6 +866,9 @@ pub fn build_needle_targets_env(
             )?;
             continue;
         }
+        // W8: a dispersion demand's slopes collect on the simulated grid and
+        // leave through `(Dⁿ)ᵀ` once the demand is folded.
+        let mut disp_c = dispersion_acc(&op);
         for (i_pt, &twl_i) in twl.iter().enumerate() {
             // Interpolate normalized target, tolerance and band half-width
             // onto this solver wavelength (edge-clamped; ascending grids).
@@ -897,7 +984,11 @@ pub fn build_needle_targets_env(
             if wrap_phase && let Some(s) = s_op {
                 rt_kernel += std::f64::consts::TAU * ((s - rt) / std::f64::consts::TAU).round();
             }
-            if t.retardance {
+            if t.dispersion.is_some() {
+                if let (Some(s), Some(sim)) = (s_op, current_sim) {
+                    deposit_dispersion(&mut disp_c, &sim.wavelengths, twl_i, 2.0 * w * (s - rt));
+                }
+            } else if t.retardance {
                 emit_retardance(&mut folds, bucket, k, rt_kernel, w, ops);
             } else if let Some(f) = t.ratio {
                 emit_ratio(&mut folds, bucket, k, rt_kernel, w, f, ops);
@@ -923,6 +1014,17 @@ pub fn build_needle_targets_env(
                 folds[b].phi_gain_shift[ch] += -2.0 * kz * w * residual(s - rt, wrap_phase);
             }
         }
+        emit_dispersion(
+            &mut folds,
+            route,
+            bucket,
+            row,
+            wavelengths,
+            &op,
+            current_sim,
+            t,
+            &disp_c,
+        );
     }
 
     // Accumulate W and W·t separately, then divide once (exact fold).
@@ -1215,6 +1317,7 @@ fn fold_integral_demand(
         return Ok(());
     }
     let w_inside = t.weight * nf * nf / (bw_bar * bw_bar);
+    let mut disp_c = dispersion_acc(op);
     // d_bar for the edge gap (opm is Some whenever we emit edge forms).
     let d_bar = opm.map(|(_, d)| d).unwrap_or(0.0);
     // W5: a Log mean is over log10(s), so its centre gap is the mean
@@ -1279,7 +1382,11 @@ fn fold_integral_demand(
                 .copied()
                 .zip(sample_parts(op, op_parts, current_sim, twl_i, t, key));
         let rt_kernel = rt_j + reference_at(t, key, current_sim, n_inc, twl_i);
-        if t.retardance {
+        if t.dispersion.is_some() {
+            if let (Some(&s), Some(sim)) = (s_vals.get(j), current_sim) {
+                deposit_dispersion(&mut disp_c, &sim.wavelengths, twl_i, 2.0 * w_j * (s - rt_j));
+            }
+        } else if t.retardance {
             emit_retardance(folds, bucket, k, rt_kernel, w_j, ops);
         } else if let Some(f) = t.ratio {
             emit_ratio(folds, bucket, k, rt_kernel, w_j, f, ops);
@@ -1300,6 +1407,17 @@ fn fold_integral_demand(
             folds[b].phi_gain_shift[ch] += -2.0 * kz * w_j * residual(s - rt_j, wrap_phase);
         }
     }
+    emit_dispersion(
+        folds,
+        route,
+        bucket,
+        row,
+        wavelengths,
+        op,
+        current_sim,
+        t,
+        &disp_c,
+    );
     Ok(())
 }
 
@@ -2153,6 +2271,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2177,6 +2296,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2213,6 +2333,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2267,6 +2388,7 @@ mod tests {
             differential_passes: Some(1.0),
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2365,6 +2487,7 @@ mod tests {
             differential_passes: Some(1.0),
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2459,6 +2582,7 @@ mod tests {
                 differential_passes: if differential { Some(1.0) } else { None },
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2624,6 +2748,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 3.0,
@@ -2658,6 +2783,7 @@ mod tests {
                 differential_passes: Some(1.0),
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 2.0,
@@ -2707,6 +2833,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
@@ -2847,6 +2974,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -3113,6 +3241,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -3535,6 +3664,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 50.0,

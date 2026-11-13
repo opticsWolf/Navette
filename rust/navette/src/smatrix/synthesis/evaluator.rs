@@ -1196,6 +1196,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1259,6 +1260,7 @@ mod tests {
             differential_passes: Some(1.0),
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1391,6 +1393,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -1509,6 +1512,7 @@ mod tests {
             differential_passes: Some(1.0),
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1550,6 +1554,7 @@ mod tests {
             differential_passes: Some(1.0),
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1651,6 +1656,7 @@ mod tests {
                 differential_passes: passes,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -1711,6 +1717,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2643,6 +2650,89 @@ mod tests {
             }
         }
 
+        /// W8 forward: the eight dispersion labels, s and p, compiled with
+        /// target 0 and tolerance 1, leave residuals equal to the engine's
+        /// own `GD…FOD` of r_f / t_f on the same stack, at 0° and 45°.
+        #[test]
+        fn dispersion_follows_the_engine() {
+            use crate::smatrix::core_engine::{
+                REQ_DISP_R_P, REQ_DISP_R_S, REQ_DISP_T_P, REQ_DISP_T_S,
+            };
+            use crate::smatrix::synthesis::targets::{TargetSet, compile_merit_spec};
+            use num_complex::Complex64;
+            let stack = stack3(118.0, 203.0, 64.0);
+            let sa = stack.solver_arrays();
+            let (nl, nw) = (sa.n_layers as usize, WLS.len());
+            let indices: Vec<Complex64> = (0..nl * nw)
+                .map(|i| {
+                    let (l, w) = (i / nw, i % nw);
+                    let b = (w * nl + l) * 2;
+                    Complex64::new(sa.n_stack_cache[b], sa.n_stack_cache[b + 1])
+                })
+                .collect();
+            for angle_deg in [0.0, 45.0] {
+                let (sol, _) = crate::smatrix::solver::solve_arrays(
+                    &indices,
+                    &sa.thicknesses,
+                    &vec![false; nl],
+                    &sa.rough_types,
+                    &sa.rough_vals,
+                    &WLS,
+                    &[deg(angle_deg)],
+                    REQ_DISP_R_S | REQ_DISP_R_P | REQ_DISP_T_S | REQ_DISP_T_P,
+                    2,
+                )
+                .unwrap();
+                for (label, side, order) in [
+                    ("GDR", "R", 1u8),
+                    ("GDT", "T", 1),
+                    ("GDDR", "R", 2),
+                    ("GDDT", "T", 2),
+                    ("TODR", "R", 3),
+                    ("TODT", "T", 3),
+                    ("FODR", "R", 4),
+                    ("FODT", "T", 4),
+                ] {
+                    for pol in ["s", "p"] {
+                        let key = format!("{side}_{pol}");
+                        let want = &sol
+                            .dispmaps
+                            .iter()
+                            .find(|(k, _)| *k == key)
+                            .unwrap_or_else(|| panic!("engine has no {key}"))
+                            .1[order as usize - 1];
+                        let (zeros, ones) = (vec![0.0; nw], vec![1.0; nw]);
+                        let set = TargetSet::from_value(serde_json::json!({
+                            "spectral": [{
+                                "wavelengths": WLS, "values": zeros, "tolerances": ones,
+                                "angle_deg": angle_deg, "polarization": pol,
+                                "spectral": label, "phase": true,
+                            }],
+                        }))
+                        .unwrap();
+                        let mut ctx = ctx3(compile_merit_spec(&set).unwrap());
+                        ctx.sin_theta = vec![deg(angle_deg).get().sin()];
+                        let t = &ctx.spec.targets()[0];
+                        assert_eq!(t.dispersion, Some(order), "{label}");
+                        assert_eq!(t.transform, SimTransform::Linear, "{label}");
+                        assert_eq!(t.norm_factor, 1.0, "{label}");
+                        let mut r = Vec::new();
+                        ctx.spec
+                            .residuals(&ctx.simulate(&stack).unwrap(), &mut r)
+                            .unwrap();
+                        assert_eq!(r.len(), nw);
+                        assert!(want.iter().any(|e| e.abs() > 1e-3), "{key} flat: {want:?}");
+                        for (i, (&got, &e)) in r.iter().zip(want).enumerate() {
+                            assert!(
+                                (got - e).abs() <= 1e-9 * e.abs().max(1.0),
+                                "{label} {pol} at {angle_deg} deg, point {i}: {got} vs engine {e}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         /// A retardance demand on p key `curve` at `angle` over `wls`.
         fn retardance_demand(
             spec: &mut MeritSpec,
@@ -2668,6 +2758,7 @@ mod tests {
                 differential_passes: None,
                 retardance: true,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -2834,6 +2925,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2935,6 +3027,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -3815,6 +3908,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -4107,6 +4201,8 @@ mod needle_oracle {
         weighted: bool,
         /// W5: a Log demand; `target` is then log10 of the level.
         log: bool,
+        /// W8: a dispersion demand of this ω order (fs^n, linear).
+        disp: Option<u8>,
     }
 
     fn d(curve: CurveId, target: f64) -> D {
@@ -4122,6 +4218,7 @@ mod needle_oracle {
             ratio: None,
             weighted: false,
             log: false,
+            disp: None,
         }
     }
 
@@ -4150,8 +4247,19 @@ mod needle_oracle {
         }
     }
 
+    /// W8: a dispersion demand of `order` on `curve`'s amplitude; the
+    /// tolerance scales with the order so every order weighs alike.
+    fn dsp(curve: CurveId, order: u8, target: f64) -> D {
+        D {
+            phase: true,
+            disp: Some(order),
+            ..d(curve, target)
+        }
+    }
+
     fn add(spec: &mut MeritSpec, angle: Radians, x: D) {
         let n = WLS.len();
+        let tol = x.disp.map_or(0.05, |o| 10f64.powi(o as i32));
         let k = spec.add_key(MeritKey {
             angle,
             curve: x.curve,
@@ -4161,7 +4269,9 @@ mod needle_oracle {
             env_idx: 0,
             wavelengths: WLS.to_vec().into(),
             kind: x.kind,
-            transform: if x.phase {
+            transform: if x.disp.is_some() {
+                SimTransform::Linear
+            } else if x.phase {
                 SimTransform::Phase
             } else if x.log {
                 SimTransform::Log
@@ -4170,7 +4280,7 @@ mod needle_oracle {
             },
             norm_factor: 1.0,
             normalized_targets: vec![x.target; n].into(),
-            tolerances: vec![0.05; n].into(),
+            tolerances: vec![tol; n].into(),
             band: if x.band > 0.0 {
                 vec![x.band; n].into()
             } else {
@@ -4180,6 +4290,7 @@ mod needle_oracle {
             differential_passes: x.passes,
             retardance: x.retardance,
             ratio: x.ratio,
+            dispersion: x.disp,
             point_weights: if x.weighted {
                 (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into()
             } else {
@@ -4771,6 +4882,80 @@ mod needle_oracle {
                 }),
             ),
         ]
+    }
+
+    /// W8: dispersion demands, every order, both sides and polarizations,
+    /// a back amplitude, the kinds that activate, integral, weighted, and
+    /// mixed with a phase and a second dispersion demand on one element.
+    fn dispersion_cases(angle: Radians) -> Vec<(&'static str, MeritSpec)> {
+        use ConstraintKind::*;
+        use CurveId::*;
+        let one = |x: D| {
+            let mut s = MeritSpec::new();
+            add(&mut s, angle, x);
+            s
+        };
+        let mut mixed = MeritSpec::new();
+        add(&mut mixed, angle, dsp(Rs, 1, 4.0));
+        add(&mut mixed, angle, dsp(Rs, 2, -30.0));
+        add(
+            &mut mixed,
+            angle,
+            D {
+                phase: true,
+                ..d(Rs, 0.5)
+            },
+        );
+        vec![
+            ("GDR s", one(dsp(Rs, 1, 4.0))),
+            ("GDT p", one(dsp(Tp, 1, 2.0))),
+            ("GDDR p", one(dsp(Rp, 2, -30.0))),
+            ("GDDT s", one(dsp(Ts, 2, 10.0))),
+            ("TODR s", one(dsp(Rs, 3, 200.0))),
+            ("FODT p", one(dsp(Tp, 4, -1000.0))),
+            ("GD back", one(dsp(RBp, 1, 3.0))),
+            (
+                "GDR integral",
+                one(D {
+                    integral: true,
+                    ..dsp(Rs, 1, 4.0)
+                }),
+            ),
+            (
+                "GDDR above",
+                one(D {
+                    kind: Above,
+                    ..dsp(Rp, 2, 500.0)
+                }),
+            ),
+            (
+                "GDT range weighted",
+                one(D {
+                    kind: Range,
+                    band: 0.5,
+                    weighted: true,
+                    ..dsp(Ts, 1, 5.0)
+                }),
+            ),
+            (
+                "GDDT integral weighted",
+                one(D {
+                    integral: true,
+                    weighted: true,
+                    ..dsp(Tp, 2, 10.0)
+                }),
+            ),
+            ("GDR + GDDR + Rs phase", mixed),
+        ]
+    }
+
+    #[test]
+    fn dispersion_p_is_the_merit_slope() {
+        for angle in [Radians::ZERO, deg(45.0)] {
+            for (name, spec) in dispersion_cases(angle) {
+                check(name, spec, angle);
+            }
+        }
     }
 
     #[test]

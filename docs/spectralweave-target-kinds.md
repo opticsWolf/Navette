@@ -39,6 +39,7 @@ regenerates it).
 | intensity ratio | `RatioR`, `RatioT`, `ExtR`, `ExtT`, `DiattR`, `DiattT`, u | yes | yes |
 | ellipsometric Ψ | `PsiR`, `PsiT`, u | yes | yes |
 | differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
+| phase dispersion | `GDR`, `GDT`, `GDDR`, `GDDT`, `TODR`, `TODT`, `FODR`, `FODT` × s/p, `phase=True` | yes | no² |
 | colour (`ColorTarget`) | front `R` / `T` | yes | yes |
 <!-- target-matrix:end -->
 
@@ -47,8 +48,8 @@ point weights and `integral`; intensity rows take linear or log
 normalization, phase rows linear or phase. Colour is `Exact` and linear
 only (*Color demands*). Not available in synthesis (the engine computes
 them, the merit does not): differential phase in reflection (`PDrs`,
-`PDrp`), group delay and higher dispersion orders, degree of
-polarization and Stokes parameters, and the `complex` transform.
+`PDrp`), dispersion of the back elements, degree of polarization and
+Stokes parameters, and the `complex` transform.
 
 1. Not computable when the exit medium absorbs over the demand's
    wavelengths: light coming from inside an absorbing half-space has no
@@ -311,6 +312,32 @@ plate). With no operating point a ratio folds nothing, and a branch with
 $a_b = 0$ emits nothing. At normal incidence $X_s = X_p$ for every
 stack, the value is fixed and a demand there only compiles with a
 warning.
+
+**Dispersion demands** (`GDR/T`, `GDDR/T`, `TODR/T`, `FODR/T` × s/p)
+score $G = D^n \varphi$: the unwrapped $\arg$ of the s or p element of
+r_f / t_f on the *simulated* grid, differentiated $n = 1..4$ times in
+$\omega = 2\pi c/\lambda$ (rad/fs) with the engine's own stencil
+(`grad_nonuniform`, three points, one-sided at the ends), so $G$ is the
+engine's `GD_R_s`…`FOD_T_p` bit for bit, in fs$^n$. The target points
+then sample $G$ like an intensity row: linear, $nf = 1$, no wrap. A
+dispersion demand therefore depends on the simulated grid's spacing, as
+the engine's maps do, and a one-wavelength grid gives 0. With $s_i$ the
+sampling weights of point $i$, the merit row reads the phase with
+$(D^n)^\mathsf{T} s_i$, and each simulated point enters through
+$\partial\arg z/\partial(\operatorname{Re} z, \operatorname{Im} z)$: the
+LM Jacobian is analytic. The needle fold collects the slopes
+$c_j = \sum_i 2\,w_i\,(G_{i,op} - t_i)\,s_{ij}$ of the demand's points
+on the simulated grid, pulls them back to $g = (D^n)^\mathsf{T} c$, and
+emits at each simulated point the phase pair
+
+$$t_{j} = \varphi_{j,op} - \operatorname{sign}(g_j)\cdot 0.5, \qquad w_j = |g_j|,$$
+
+whose kernel slope $2\,w_j\,(\varphi_j - t_j)\,\partial\varphi_j$ is
+$g_j\,\partial\varphi_j$: gradient form in a pair, inside the kernel's
+wrap (pinned by the oracle for every order, both sides, a back element,
+the kinds that activate, the integral and point weights). With no
+operating point a dispersion demand folds nothing. Like every phase
+demand it is dropped across an incoherent plate.
 
 Spectral-label mapping for the converter (`TargetCollection` → `MeritSpec`):
 `R/T/A` × s/p/u → front demands, `RB/TB/AB` × s/p/u → back demands;

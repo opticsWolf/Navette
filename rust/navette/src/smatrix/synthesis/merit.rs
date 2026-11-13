@@ -693,6 +693,13 @@ pub struct MeritTarget {
     /// ([`CurveId::retardance_partner`]) instead of `X_p`. Excludes `phase`
     /// (rejected otherwise). `None` for every other demand.
     pub ratio: Option<IntensityRatio>,
+    /// W8 phase dispersion (`GD…FOD`): the `n`-th derivative of the key
+    /// element's unwrapped phase in ω (fs^n), the engine's own
+    /// [`crate::smatrix::core_engine::dispersion_channel`] over the simulated
+    /// grid, then sampled like an intensity row. Requires `phase` and the
+    /// `Linear` transform (no wrap); excludes `differential_passes`,
+    /// `retardance` and `ratio`. `n` in 1..=4; `None` for every other demand.
+    pub dispersion: Option<u8>,
     /// User weight (default 1): multiplies this frame's merit sum.
     /// Applied at the residual level (`r × √(weight/count)`) so values,
     /// LM Jacobians and the needle fold stay consistent by construction.
@@ -966,6 +973,21 @@ impl MeritSpec {
                 ));
             }
         }
+        if let Some(order) = target.dispersion {
+            if !(1..=4).contains(&order) {
+                return Err(format!(
+                    "dispersion order must be 1..=4 (GD..FOD), got {order}"
+                ));
+            }
+            if !target.phase || target.transform != SimTransform::Linear {
+                return Err(
+                    "dispersion needs phase and the linear transform (fs^n, no wrap)".into(),
+                );
+            }
+            if target.differential_passes.is_some() || target.retardance || target.ratio.is_some() {
+                return Err("dispersion excludes differential_passes, retardance and ratio".into());
+            }
+        }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
         if !target.weight.is_finite() || target.weight < 0.0 {
@@ -1154,6 +1176,8 @@ impl MeritSpec {
                     "retardance"
                 } else if t.ratio.is_some() {
                     "intensity ratio"
+                } else if t.dispersion.is_some() {
+                    "dispersion"
                 } else if t.phase {
                     "phase"
                 } else {
@@ -1473,6 +1497,9 @@ impl MeritSpec {
                 Retardance(&'a [Complex64], &'a [Complex64]),
                 /// The s and p rows of an intensity ratio.
                 Ratio(IntensityRatio, &'a [f64], &'a [f64]),
+                /// The dispersion row on the simulated grid, sampled like
+                /// an intensity.
+                Dispersion(Vec<f64>),
             }
             let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
                 let arc = if id.is_back() {
@@ -1485,6 +1512,12 @@ impl MeritSpec {
             };
             let input: TargetInput = if let Some(s) = retardance_partner(t, key.curve) {
                 TargetInput::Retardance(crow(key.curve)?, crow(s)?)
+            } else if let Some(order) = t.dispersion {
+                TargetInput::Dispersion(dispersion_row(
+                    crow(key.curve)?,
+                    &dispersion_omega(sim_wl),
+                    order,
+                ))
             } else if t.phase {
                 TargetInput::Phase(crow(key.curve)?)
             } else if let Some((s, f)) = ratio_partner(t, key.curve) {
@@ -1620,6 +1653,7 @@ impl MeritSpec {
             for i in 0..t_wl.len() {
                 let sim_raw = match &input {
                     TargetInput::Intensity(row) => sample(row, i, &mut sim_idx),
+                    TargetInput::Dispersion(row) => sample(row, i, &mut sim_idx),
                     TargetInput::Absorption(r, tt) => {
                         1.0 - sample(r, i, &mut sim_idx) - sample(tt, i, &mut sim_idx)
                     }
@@ -2062,6 +2096,8 @@ impl MeritSpec {
                         out.uncovered.push(out.rows.len());
                         out.rows.push(Vec::new());
                     }
+                } else if let Some(order) = t.dispersion {
+                    dispersion_rows_into(sim, key, ang_row, t, order, out);
                 } else {
                     phase_rows_into(sim, key, ang_row, t, out);
                 }
@@ -2341,6 +2377,41 @@ pub(crate) fn retardance_partner(t: &MeritTarget, curve: CurveId) -> Option<Curv
     }
 }
 
+/// ω = 2πc/λ (rad/fs, λ in nm) of the simulated grid: the engine's
+/// dispersion axis.
+pub(crate) fn dispersion_omega(sim_wl: &[f64]) -> Vec<f64> {
+    use crate::smatrix::optics_core::C_NM_PER_FS;
+    sim_wl
+        .iter()
+        .map(|&l| std::f64::consts::TAU * C_NM_PER_FS / l)
+        .collect()
+}
+
+/// The `order`-th ω derivative (fs^order) of `crow`'s unwrapped phase over
+/// the simulated grid: the engine's
+/// [`crate::smatrix::core_engine::dispersion_channel`] for one angle row.
+pub(crate) fn dispersion_row(crow: &[Complex64], omega: &[f64], order: u8) -> Vec<f64> {
+    use crate::smatrix::optics_core::grad_nonuniform;
+    let phi: Vec<f64> = crow.iter().map(|z| z.arg()).collect();
+    let mut row = crate::smatrix::core_engine::unwrap(&phi);
+    for _ in 0..order {
+        row = grad_nonuniform(&row, omega);
+    }
+    row
+}
+
+/// `(Dⁿ)ᵀ c`: a sensitivity `c` on the dispersion row, chained back onto
+/// the unwrapped phase at each simulated point. Unwrapping adds a constant
+/// per point, so `∂φ_unwrapped = ∂arg`.
+pub(crate) fn dispersion_adjoint(c: &[f64], omega: &[f64], order: u8) -> Vec<f64> {
+    use crate::smatrix::optics_core::grad_nonuniform_adjoint;
+    let mut g = c.to_vec();
+    for _ in 0..order {
+        g = grad_nonuniform_adjoint(&g, omega);
+    }
+    g
+}
+
 /// The rows of one phase target, in `residuals_into`'s order. A back
 /// target reads the back complex row and the exit medium's index.
 ///
@@ -2510,6 +2581,106 @@ fn phase_rows_into(
     }
 }
 
+/// The rows of one dispersion target (`t.dispersion = Some(n)`), in
+/// `residuals_into`'s order. The residual samples `G = Dⁿ φ` (the unwrapped
+/// phase differentiated `n` times in ω over the simulated grid), so a row
+/// that reads `G` with weights `s` reads the phase with `(Dⁿ)ᵀ s`, and each
+/// simulated point `j` enters through `∂arg z_j / ∂(Re z_j, Im z_j)`.
+fn dispersion_rows_into(
+    sim: &SimCurves,
+    key: &MeritKey,
+    ang_row: usize,
+    t: &MeritTarget,
+    order: u8,
+    out: &mut MeritSensitivity,
+) {
+    let sim_wl: &[f64] = &sim.wavelengths;
+    let n_wav = sim_wl.len();
+    let t_wl: &[f64] = &t.wavelengths;
+    let full = if key.curve.is_back() {
+        sim.complex_back_curve(key.curve)
+    } else {
+        sim.complex_curve(key.curve)
+    };
+    let full = full.expect("dispersion_rows_into: complex row checked by the caller");
+    let prow = &full[ang_row * n_wav..(ang_row + 1) * n_wav];
+    let omega = dispersion_omega(sim_wl);
+    let g_row = dispersion_row(prow, &omega, order);
+    let (aligned, offset) = alignment(t_wl, sim_wl);
+    let rscale = (t.weight / t.count_norm.unwrap_or(1.0)).sqrt();
+
+    let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
+    let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut sim_idx = 0usize;
+    for i in 0..t_wl.len() {
+        let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
+        let raw = r.read(&g_row);
+        refs.push(r);
+        raws.push(raw);
+        diffs.push(raw * t.norm_factor - t.normalized_targets[i]);
+    }
+
+    // One row from its per-point scales: spread onto G by the sample
+    // weights, pull back through (Dⁿ)ᵀ, then through arg at each point.
+    let row_terms = |scales: &[(usize, f64)]| -> Vec<CurveTerm> {
+        let mut c = vec![0.0; n_wav];
+        for &(i, scale) in scales {
+            match refs[i] {
+                SampleRef::Direct(j) => c[j] += scale,
+                SampleRef::Interp(j, f) => {
+                    c[j] += scale * (1.0 - f);
+                    c[j + 1] += scale * f;
+                }
+            }
+        }
+        let g = dispersion_adjoint(&c, &omega, order);
+        let mut terms: Vec<CurveTerm> = Vec::new();
+        for (j, (&gj, z)) in g.iter().zip(prow).enumerate() {
+            if gj == 0.0 || z.norm_sqr() == 0.0 {
+                continue;
+            }
+            let cz = z.conj() / z.norm_sqr();
+            for (part, d) in [(TermPart::Re, cz.im), (TermPart::Im, cz.re)] {
+                let w = gj * d;
+                if w != 0.0 {
+                    terms.push(CurveTerm {
+                        curve: key.curve,
+                        angle_row: ang_row,
+                        wavelength: j,
+                        d_residual: w,
+                        part,
+                    });
+                }
+            }
+        }
+        terms
+    };
+
+    if t.integral {
+        let (mean_d, mean_tol, mean_bw, w_sum) = weighted_means(t, &diffs);
+        let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
+        let scales: Vec<(usize, f64)> = (0..t_wl.len())
+            .map(|i| {
+                let dt = d_transform(t.transform, raws[i], t.norm_factor);
+                (i, rscale * dk * dt * t.point_weight(i) / w_sum)
+            })
+            .collect();
+        out.rows.push(row_terms(&scales));
+    } else {
+        for i in 0..t_wl.len() {
+            let tol = t.tolerances[i];
+            let bw = t.band.get(i).copied().unwrap_or(0.0);
+            let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
+            let dt = d_transform(t.transform, raws[i], t.norm_factor);
+            out.rows.push(row_terms(&[(
+                i,
+                rscale * t.point_weight(i).sqrt() * dk * dt,
+            )]));
+        }
+    }
+}
+
 /// An integral target's point-weighted means of its diffs, tolerances and
 /// band, and the weight sum: the residual pass's accumulation, in the same
 /// order, so the derivative rows see the values the residual saw.
@@ -2670,6 +2841,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2700,6 +2872,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -4709,6 +4882,7 @@ mod tests {
                 differential_passes: None,
                 retardance: false,
                 ratio: None,
+                dispersion: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight,
@@ -5186,6 +5360,152 @@ mod tests {
         fn retardance_rows_are_a_finite_difference_of_both_complex_rows() {
             check_retardance_rows(CurveId::Rp);
             check_retardance_rows(CurveId::TBp);
+        }
+
+        /// A complex row whose phase winds through ±π several times along
+        /// each angle row (steps of about 2.4 rad, inside unwrap's π), so the
+        /// dispersion forward unwraps for real. `bump` moves one part of one
+        /// entry.
+        fn disp_sim(id: CurveId, bump: Option<(TermPart, usize, f64)>) -> SimCurves {
+            let mut sim = base_sim();
+            let mut c: Vec<Complex64> = (0..NA * NW)
+                .map(|k| {
+                    let j = (k % NW) as f64;
+                    let a = -0.8 + 2.4 * j + 0.15 * (j * j) / NW as f64 + 0.3 * (k / NW) as f64;
+                    Complex64::from_polar(0.6 + 0.1 * (k as f64 * 0.5).cos(), a)
+                })
+                .collect();
+            match bump {
+                Some((TermPart::Re, flat, h)) => c[flat].re += h,
+                Some((TermPart::Im, flat, h)) => c[flat].im += h,
+                _ => {}
+            }
+            sim.set_complex(id, Arc::from(c)).unwrap();
+            sim
+        }
+
+        /// W8: the dispersion forward is the engine's `dispersion_channel`
+        /// row, and its rows (through `(Dⁿ)ᵀ` and `arg`) are `residuals()`
+        /// differenced in Re/Im of every grid amplitude. Every order,
+        /// pointwise and integral, aligned and off-grid, two kinds, both
+        /// angles, a front and a back key.
+        #[test]
+        fn dispersion_rows_are_a_finite_difference_of_the_complex_row() {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            for id in [CurveId::Rs, CurveId::TBp] {
+                let base = disp_sim(id, None);
+                // The forward against the engine's own post-pass.
+                let full = if id.is_back() {
+                    base.complex_back_curve(id)
+                } else {
+                    base.complex_curve(id)
+                }
+                .unwrap();
+                let phi: Vec<f64> = full.iter().map(|z| z.arg()).collect();
+                let omega = dispersion_omega(&base.wavelengths);
+                let engine = crate::smatrix::core_engine::dispersion_channel(&phi, &omega, NA, NW);
+                for order in 1..=4u8 {
+                    let want = match order {
+                        1 => &engine.0,
+                        2 => &engine.1,
+                        3 => &engine.2,
+                        _ => &engine.3,
+                    };
+                    for a in 0..NA {
+                        let got = dispersion_row(&full[a * NW..(a + 1) * NW], &omega, order);
+                        assert_eq!(got.as_slice(), &want[a * NW..(a + 1) * NW]);
+                    }
+                }
+                for order in 1..=4u8 {
+                    let scale = 10f64.powi(order as i32);
+                    let mut spec = MeritSpec::new();
+                    for angle in [Radians::ZERO, deg(30.0)] {
+                        let k = spec.add_key(MeritKey { angle, curve: id });
+                        for (grid, integral, kind) in [
+                            (wl(), false, ConstraintKind::Exact),
+                            (off.clone(), false, ConstraintKind::Exact),
+                            (wl(), true, ConstraintKind::Exact),
+                            (off.clone(), false, ConstraintKind::CenterBand),
+                        ] {
+                            let n = grid.len();
+                            let mut t =
+                                target(k as u32, grid, kind, SimTransform::Linear, integral, 1.3);
+                            t.phase = true;
+                            t.dispersion = Some(order);
+                            t.normalized_targets = vec![0.3 * scale; n].into();
+                            t.tolerances = vec![scale; n].into();
+                            t.band = vec![0.2 * scale; n].into();
+                            t.point_weights =
+                                (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                            spec.add_target(t).unwrap();
+                        }
+                    }
+                    assert!(spec.required_rows().has_complex(id));
+                    let sens = spec.curve_sensitivity(&base).unwrap();
+                    assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+                    let h = 1e-7;
+                    let mut live = 0usize;
+                    for part in [TermPart::Re, TermPart::Im] {
+                        for flat in 0..NA * NW {
+                            let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                            spec.residuals(&disp_sim(id, Some((part, flat, h))), &mut rp)
+                                .unwrap();
+                            spec.residuals(&disp_sim(id, Some((part, flat, -h))), &mut rm)
+                                .unwrap();
+                            for (i, terms) in sens.rows.iter().enumerate() {
+                                let x: f64 = terms
+                                    .iter()
+                                    .filter(|t| {
+                                        t.curve == id
+                                            && t.part == part
+                                            && t.angle_row * NW + t.wavelength == flat
+                                    })
+                                    .map(|t| t.d_residual)
+                                    .sum();
+                                let y = (rp[i] - rm[i]) / (2.0 * h);
+                                let dev = (x - y).abs() / y.abs().max(1.0);
+                                assert!(
+                                    dev < 1e-5,
+                                    "{id:?} order {order} row {i}, {part:?}[{flat}]: {x} vs {y}"
+                                );
+                                if y.abs() > 1e-9 {
+                                    live += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert!(live > 100, "{id:?} order {order}: only {live} live entries");
+                }
+            }
+        }
+
+        /// W8: a dispersion demand is phase-only, linear, and alone.
+        #[test]
+        fn dispersion_registration_refusals() {
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rp,
+            }) as u32;
+            let mk = |phase: bool, transform: SimTransform, order: u8| {
+                let mut t = target(k, wl(), ConstraintKind::Exact, transform, false, 1.0);
+                t.phase = phase;
+                t.dispersion = Some(order);
+                t
+            };
+            assert!(spec.add_target(mk(true, SimTransform::Linear, 2)).is_ok());
+            for (t, what) in [
+                (mk(false, SimTransform::Linear, 2), "phase"),
+                (mk(true, SimTransform::Phase, 2), "linear"),
+                (mk(true, SimTransform::Linear, 0), "1..=4"),
+                (mk(true, SimTransform::Linear, 5), "1..=4"),
+            ] {
+                let e = spec.add_target(t).unwrap_err();
+                assert!(e.contains(what), "{e}");
+            }
+            let mut t = mk(true, SimTransform::Linear, 1);
+            t.retardance = true;
+            assert!(spec.add_target(t).unwrap_err().contains("excludes"));
         }
 
         /// W8: smooth, positive, mutually distinct s and p intensity rows

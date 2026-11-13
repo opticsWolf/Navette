@@ -240,15 +240,18 @@ impl PyMeritSpec {
     #[pyo3(signature = (key_idx, wavelengths, normalized, tolerances, kind, transform,
                         norm_factor, band=None, phase=false, differential_passes=None,
                         weight=1.0, count_norm=None, integral=false, retardance=false,
-                        ratio=None, point_weights=None))]
+                        ratio=None, dispersion=None, point_weights=None))]
     /// Append one target frame. Arrays are per-point values on `wavelengths`.
     /// `differential_passes` (None = absolute phase; 1.0 = `PDts`/`PDtp`
     /// transmitted) subtracts the equivalent-medium reference (see
     /// `SimCurves` metadata); requires `phase=true`. `retardance` samples
     /// `arg(z_p · conj(z_s))` on a p key (`Rp`/`Tp`/`RBp`/`TBp`); requires
     /// `phase=true` and no `differential_passes`. `ratio` (`"s/p"`,
-    /// `"p/s"` or `"diattenuation"`) samples that ratio of the p key's
-    /// intensity and its s partner instead; it excludes `phase`.
+    /// `"p/s"`, `"diattenuation"`, `"psi_r"` or `"psi_t"`) samples that
+    /// ratio of the p key's intensity and its s partner instead; it
+    /// excludes `phase`. `dispersion` (1..=4: GD, GDD, TOD, FOD, in fs^n)
+    /// samples that ω derivative of the key's unwrapped phase over the
+    /// simulated grid; it requires `phase=true` and `transform="linear"`.
     /// `weight` scales the frame's merit sum; `count_norm` (target-level
     /// point count, resolved by the converter) divides it. `integral`
     /// constrains the mean of the scaled diffs (single residual).
@@ -272,6 +275,7 @@ impl PyMeritSpec {
         integral: bool,
         retardance: bool,
         ratio: Option<String>,
+        dispersion: Option<u8>,
         point_weights: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
         let pw: Vec<f64> = match point_weights {
@@ -304,6 +308,7 @@ impl PyMeritSpec {
                 differential_passes,
                 retardance,
                 ratio: ratio.as_deref().map(parse_ratio).transpose()?,
+                dispersion,
                 weight,
                 count_norm,
                 integral,

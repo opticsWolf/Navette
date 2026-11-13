@@ -468,6 +468,18 @@ fn curve_id(spectral: &str, polarization: &str) -> Result<String, String> {
         }
         return Ok(curve.to_string());
     }
+    if let Some((side, _)) = dispersion(spectral) {
+        return match (side, polarization) {
+            ("R", "s") => Ok("Rs".to_string()),
+            ("R", "p") => Ok("Rp".to_string()),
+            ("T", "s") => Ok("Ts".to_string()),
+            ("T", "p") => Ok("Tp".to_string()),
+            _ => Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} is the dispersion of one amplitude; pass polarization=\"s\" or \"p\"."
+            )),
+        };
+    }
     let curve = match (spectral, polarization) {
         ("R", "s") => "Rs",
         ("R", "p") => "Rp",
@@ -539,11 +551,31 @@ fn ratio(spectral: &str) -> Option<(&'static str, IntensityRatio)> {
     }
 }
 
+/// Phase-dispersion labels (W8): spectral → (front side "R"/"T", ω
+/// derivative order). `GD*` is the group delay in fs, `GDD*` fs², `TOD*`
+/// fs³, `FOD*` fs⁴: the engine's `GD_R_s`…`FOD_T_p` of the s or p
+/// amplitude the polarization picks.
+fn dispersion(spectral: &str) -> Option<(&'static str, u8)> {
+    match spectral {
+        "GDR" => Some(("R", 1)),
+        "GDT" => Some(("T", 1)),
+        "GDDR" => Some(("R", 2)),
+        "GDDT" => Some(("T", 2)),
+        "TODR" => Some(("R", 3)),
+        "TODT" => Some(("T", 3)),
+        "FODR" => Some(("R", 4)),
+        "FODT" => Some(("T", 4)),
+        _ => None,
+    }
+}
+
 /// Labels that are phase quantities by definition: ingestion forces phase
-/// normalization (raw radians, nf = 1) and compilation requires
+/// normalization (raw values, nf = 1) and compilation requires
 /// `phase=True`.
 fn phase_only(spectral: &str) -> bool {
-    differential(spectral).is_some() || retardance(spectral).is_some()
+    differential(spectral).is_some()
+        || retardance(spectral).is_some()
+        || dispersion(spectral).is_some()
 }
 
 fn allclose(a: &[f64], b: &[f64]) -> bool {
@@ -1082,9 +1114,12 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
                 t.0
             ));
         }
+        let disp = dispersion(t.0).map(|(_, n)| n);
         if !t.2 && phase_only(t.0) {
             let what = if diff.is_some() {
                 "differential-phase"
+            } else if disp.is_some() {
+                "a phase dispersion"
             } else {
                 "a retardance"
             };
@@ -1102,10 +1137,12 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         };
         let (norm, band, mode, out_nf) = if t.2 {
             nf = nf.max(1e-300);
+            // Dispersion is a derivative in fs^n, not an angle: linear, no wrap.
+            let mode = if disp.is_some() { "linear" } else { "phase" };
             (
                 e.targets.iter().map(|x| shift(x / nf)).collect(),
                 e.band.iter().map(|x| x / nf).collect(),
-                "phase".to_string(),
+                mode.to_string(),
                 1.0,
             )
         } else {
@@ -1148,6 +1185,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             differential_passes: diff.map(|(_, _, p)| p),
             retardance: ret.is_some(),
             ratio: rat,
+            dispersion: disp,
             point_weights: Arc::from(point_weights),
             weight: t.3,
             count_norm: e.count_norm,
@@ -1329,6 +1367,7 @@ mod tests {
             differential_passes: None,
             retardance: false,
             ratio: None,
+            dispersion: None,
             point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
@@ -1670,6 +1709,65 @@ mod tests {
             err.contains("intensity ratio") && err.contains("phase"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn dispersion_labels_compile() {
+        use crate::smatrix::synthesis::merit::SimTransform;
+        let target = |label: &str, pol: &str, phase: bool| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: pol.to_string(),
+            angle: deg(45.0),
+            phase,
+            // fs^n values far from the phase range: no normalization, no wrap.
+            values: vec![250.0; spec_target().values.len()],
+            ..spec_target()
+        };
+        let cases = [
+            ("GDR", "Rs", "Rp", 1),
+            ("GDT", "Ts", "Tp", 1),
+            ("GDDR", "Rs", "Rp", 2),
+            ("GDDT", "Ts", "Tp", 2),
+            ("TODR", "Rs", "Rp", 3),
+            ("TODT", "Ts", "Tp", 3),
+            ("FODR", "Rs", "Rp", 4),
+            ("FODT", "Ts", "Tp", 4),
+        ];
+        for (label, host_s, host_p, order) in cases {
+            for (pol, host) in [("s", host_s), ("p", host_p)] {
+                let spec = compile_merit_spec(&TargetSet {
+                    spectral: vec![target(label, pol, true)],
+                    ..base_set()
+                })
+                .unwrap();
+                let t = &spec.targets()[0];
+                assert_eq!(
+                    format!("{:?}", spec.keys()[t.key_idx as usize].curve),
+                    host,
+                    "{label}/{pol}"
+                );
+                assert_eq!(t.dispersion, Some(order), "{label}");
+                assert!(t.phase && !t.retardance && t.ratio.is_none(), "{label}");
+                assert_eq!(t.transform, SimTransform::Linear, "{label}");
+                assert_eq!(t.norm_factor, 1.0, "{label}");
+                assert!(t.normalized_targets.iter().all(|&x| x == 250.0), "{label}");
+            }
+            let err = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, "u", true)],
+                ..base_set()
+            })
+            .unwrap_err();
+            assert!(err.contains("\"s\" or \"p\""), "{label}/u: {err}");
+            let err = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, "s", false)],
+                ..base_set()
+            })
+            .unwrap_err();
+            assert!(
+                err.contains("dispersion") && err.contains("phase=True"),
+                "{err}"
+            );
+        }
     }
 
     fn color_target() -> ColorTargetJson {

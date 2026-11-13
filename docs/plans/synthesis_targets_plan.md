@@ -3,8 +3,8 @@
 Status: **in progress.** W1, W2 (including the back-channel deposits,
 step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5, W7 and W8a
 are implemented (2026-11-10); W6 has a first cut, intensity-only
-(2026-11-11); the W8 intensity ratios and Psi are done (2026-11-13);
-the rest of W8 is open. Drafted 2026-11-09. Everything still open,
+(2026-11-11); the W8 intensity ratios, Psi and GD…FOD are done
+(2026-11-13); the rest of W8 is open. Drafted 2026-11-09. Everything still open,
 the inconsistencies found on the way, and the decisions needed are
 collected in `synthesis_open_items.md`.
 
@@ -152,7 +152,7 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | Rs/Rp ratio, extinction ratio, diattenuation | from intensities | tangent pair on the s and p intensity buckets (W5) | **done (W8.3)**: `RatioR/T` = s/p, `ExtR/T` = p/s, `DiattR/T` = (p − s)/(p + s), front only, `u` |
 | retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **done (W8a)**: pair fold on the per-branch phase buckets |
 | DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
-| GD, GDD, TOD, FOD (R/T, s/p) | **not computed** in the synthesis evaluator (engine `dispmaps`) | **exists** in the engine (`phase_dispersion_sensitivity`, NREQ_DGD…DFOD) | **harder**: port the dispersion forward into `simulate_inner`, add curve ids, map the fold to Q rows; LM via FD first |
+| GD, GDD, TOD, FOD (R/T, s/p) | from the kept r_f / t_f complex rows: unwrap, then the engine's `grad_nonuniform` n times in ω (bit-equal to `dispmaps`) | phase pairs at every simulated point through the stencil's transpose, `g = (Dⁿ)ᵀc` | **done (W8.5)**: `GDR/T`…`FODR/T` × s/p, a `dispersion` order on the phase demand (no new curve ids); analytic LM Jacobian, no FD |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
 | any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **done for intensities (W6 first cut, 2026-11-11)**: R/T/A, RB/TB/AB and colour through a fixed plate; phase on a stack with a spacer stays out (dropped at run setup with a warning since 2026-11-12) |
 | angle-cone or bandwidth-averaged R/T | — | linear in the pointwise terms | **moderate**: needs point weights (W4) and a quadrature on the solver grid |
@@ -883,10 +883,9 @@ plus a per-point tolerance (W4) is the user-side mitigation.
    the open question is the reference plane of the round trip
    (implementation_plan_pd.md:721). Revisit once a user case fixes the
    convention; the fold is the existing phi pair plus the gain shift.
-2. **Dispersion targets**: GD/GDD/TOD on reflection or transmission
-   (chirped mirrors). The engine computes them (`dispmaps`); synthesis
-   needs curve ids, a merit form and the needle derivative of GD (phase
-   derivative in λ). Larger research item.
+2. **Dispersion targets**: done for the front elements in W8.5
+   (`GDR/T`…`FODR/T`). Open: the back elements (RB/TB), and dispersion
+   across an incoherent plate (dropped there, like every phase demand).
 3. **Angle- and bandwidth-averaged targets**: cone of incidence, finite
    spectral bandwidth. Integration weights over (θ, λ) on the solver grid;
    W4's point weights are the building block.

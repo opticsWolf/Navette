@@ -28,8 +28,9 @@ except ImportError as exc:  # pragma: no cover - native not built yet
   ) from exc
 
 TargetType = Literal["a", "b", "e", "r", "c"]
-#: Labels that are phase quantities by definition (raw radians, phase=True).
-_PHASE_ONLY = ("PDts", "PDtp", "RetR", "RetT", "DeltaR", "DeltaT")
+#: Labels that are phase quantities by definition (raw values, phase=True).
+_PHASE_ONLY = ("PDts", "PDtp", "RetR", "RetT", "DeltaR", "DeltaT",
+               "GDR", "GDT", "GDDR", "GDDT", "TODR", "TODT", "FODR", "FODT")
 NormalizationMode = Literal["auto", "linear", "log", "phase", "complex"]
 
 # ---------------------------------------------------------------------------
@@ -50,10 +51,15 @@ class SpectralTarget:
                        ExtR | ExtT      extinction ratio Rp/Rs, Tp/Ts
                        DiattR | DiattT  diattenuation (p − s)/(p + s)
                        PsiR | PsiT      ellipsometric Ψ = atan √(p/s)
+                       GDR  | GDT       group delay dφ/dω (fs), r_f / t_f
+                       GDDR | GDDT      group-delay dispersion (fs²)
+                       TODR | TODT      third-order dispersion (fs³)
+                       FODR | FODT      fourth-order dispersion (fs⁴)
         polarization:  s | p | u        u = unpolarized (the s/p mean)
 
     giving ``Rs``…``Au``, ``RBs``…``ABu``, the two differential labels,
-    the four retardance labels and the eight ratio labels.
+    the four retardance labels, the eight ratio labels and the eight
+    dispersion labels.
     Any other pair raises at construction. ``A`` is derived as 1 − R − T on
     the shared grid, so a missing companion curve fails the whole key group.
 
@@ -84,6 +90,15 @@ class SpectralTarget:
     raises), and each ratio's denominator carries the engine's 1e-20 guard.
     At normal incidence s and p are equal, the value is fixed (1, 1, 0 or
     π/4) and a demand at 0° only compiles with a warning.
+
+    ``GDR``…``FODT`` are the engine's ``GD``/``GDD``/``TOD``/``FOD`` of
+    the s or p amplitude (``polarization="s"`` or ``"p"``; ``"u"`` raises):
+    the unwrapped ``arg`` of r_f / t_f differentiated 1–4 times in
+    ω = 2πc/λ over the *simulated* wavelength grid, then sampled at the
+    target points. Values are fs^n, need ``phase=True`` and are never
+    normalized or wrapped. Like the engine's, they are coherent-stack
+    quantities, and the simulated grid must be fine enough to resolve them
+    (one wavelength gives zero).
     See ``docs/spectralweave-target-kinds.md`` for the sign convention
     (the reference is ``+kD``, the conjugate of Macleod) and the needle
     ``gain_shift_phi`` bookkeeping.

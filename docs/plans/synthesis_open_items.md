@@ -229,14 +229,16 @@ Done: W8a retardance (RetR/RetT, DeltaR/DeltaT); W8.3 intensity ratios
 W8.4 Psi (PsiR/PsiT). The engine's Psi is atan √(p/s) of the
 intensities, so it is one more ratio on the same tangent pair: the
 complex gradient operator the plan expected is not needed, and it
-scores through plates.
+scores through plates; W8.5 GD…FOD (GDR/T, GDDR/T, TODR/T, FODR/T × s/p).
+The dispersion is computed in the merit from the complex rows the
+evaluator already keeps (unwrap, then the engine's stencil n times in ω),
+a `dispersion` order on the phase demand instead of new curve ids; the
+LM Jacobian and the needle fold chain through the stencil's transpose,
+so neither needed FD nor the engine's Q-row sensitivities.
 Open, in plan order:
 1. DOP / Stokes for a given input state: needs an input-polarization
    field on the target.
-2. GD…FOD: port the engine's dispersion forward into `simulate_inner`,
-   add curve ids, fold onto the existing Q-row sensitivities; LM by FD
-   first.
-3. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+2. PDrs/PDrp: deferred (reference plane of the round trip, D3).
 
 ### Further gaps (plan §5)
 - Angle-cone and bandwidth-averaged targets (W4 point weights are the

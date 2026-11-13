@@ -30,8 +30,24 @@ All notable changes to Navette are recorded here. Work items reference
   (merit partials, one tangent pair per branch) and scores through
   incoherent plates. `MeritSpec.add_target` takes `ratio="psi_r"` on
   `Rp`/`RBp` and `ratio="psi_t"` on `Tp`/`TBp`.
+- **Phase-dispersion targets: `GDR`, `GDT`, `GDDR`, `GDDT`, `TODR`,
+  `TODT`, `FODR`, `FODT`** (W8.5), × s/p, `phase=True`. The group delay
+  and its ω derivatives (fs^n) of r_f / t_f: the merit unwraps the
+  element's phase over the simulated grid and differentiates it 1–4
+  times in ω = 2πc/λ with the engine's own stencil, so the values equal
+  the engine's `GD_R_s`…`FOD_T_p` bit for bit, then samples them like an
+  intensity (linear, no normalization, no wrap). Every kind, `band`,
+  point weights and `integral` apply. The LM Jacobian and the needle
+  fold chain through the stencil's transpose, so both are analytic
+  (pinned against finite differences and by the needle oracle). Like
+  every phase demand, a dispersion demand is dropped across an
+  incoherent plate. `MeritSpec.add_target` takes `dispersion=1..4` on a
+  phase demand with `transform="linear"`.
 
 ### Changed (breaking)
+
+- `MeritTarget` (Rust) has a new field `dispersion: Option<u8>`; struct
+  literals need `dispersion: None`.
 
 - `retardance_warnings` (Rust, `synthesis::targets`) is now
   `sp_contrast_warnings`; it also covers the ratio labels.
