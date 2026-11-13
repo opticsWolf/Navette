@@ -1989,6 +1989,60 @@ mod tests {
         }
     }
 
+    /// W6 item 6: an edge list next to a plate. The edge is the layer
+    /// facing the ambient (outer) or the exit medium (inner), so a plate
+    /// as the first or last film IS that edge: off its list it refuses,
+    /// and `seed_edges` coats the bare face outside the plate, which stays
+    /// pinned and untouched.
+    #[test]
+    fn edge_lists_next_to_a_plate_treat_the_plate_as_the_edge() {
+        let pool = MaterialPool::from(vec![entry("H", 2.35), entry("L", 1.38)]);
+        let plate = || {
+            let mut g = LayerSpec::constant("Plate", 1.52, 0.0, 1.0e6, 1);
+            g.coherent = false;
+            g.optimize = false;
+            g.needle = false;
+            g
+        };
+        let stack = |films: Vec<LayerSpec>| {
+            let (base, _) = glass_stack();
+            DesignStack::with_films(base.ambient().clone(), base.substrate().clone(), films)
+                .unwrap()
+        };
+        let coat = || LayerSpec::constant("H", 2.35, 0.0, 100.0, 1);
+        for (outer, films) in [
+            (false, vec![coat(), plate()]),
+            (true, vec![plate(), coat()]),
+        ] {
+            let side = if outer { "outer" } else { "inner" };
+            let rules = |seed| NeedleRules {
+                outer: outer.then(|| vec!["L".into()]),
+                inner: (!outer).then(|| vec!["L".into()]),
+                seed_edges: seed,
+                ..Default::default()
+            };
+            let mut st = stack(films.clone());
+            let e = rules(None).apply(&mut st, pool.clone()).unwrap_err();
+            assert!(e.contains(side), "{side}: {e}");
+
+            let mut st = stack(films);
+            rules(Some(2.0)).apply(&mut st, pool.clone()).unwrap();
+            let f: Vec<(&str, bool)> = st
+                .films()
+                .iter()
+                .map(|l| (l.material.as_ref(), l.coherent))
+                .collect();
+            let want = if outer {
+                [("L#1", true), ("Plate", false), ("H", true)]
+            } else {
+                [("H", true), ("Plate", false), ("L#1", true)]
+            };
+            assert_eq!(f, want, "{side}");
+            let p = st.films().iter().find(|l| !l.coherent).unwrap();
+            assert!(p.d_nm == 1.0e6 && !p.optimize && !p.needle, "{side}");
+        }
+    }
+
     #[test]
     fn satisfied_r_demand_inserts_nothing() {
         // R demanded at its exact value → residual ~1e-16 → dust profile,

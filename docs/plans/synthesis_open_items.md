@@ -187,16 +187,28 @@ bucket (FD oracle, 0° and 30°); LM with the analytic Jacobian (item
    Python doors already pass `coherent` per film. Record it as the
    adopted model or schedule the field (decision D5).
 6. **Edge materials** (`outer`/`inner`) next to a plate: the edge rule
-   names the first/last film, which may now be the plate. Not tested.
+   names the first/last film, which may now be the plate. Tested
+   2026-11-13 (`edge_lists_next_to_a_plate_treat_the_plate_as_the_edge`):
+   a plate as the first or last film IS the edge; off its list the run
+   refuses, and `seed_edges` coats the bare face outside the plate,
+   which stays pinned.
 7. **Roughness at a plate face**: carried to the solver unchanged, as the
-   engine does; no synthesis test covers a rough plate interface.
+   engine does. Tested 2026-11-13
+   (`a_rough_plate_face_is_solved_and_differentiated_consistently`): rough
+   interfaces on the plate and on films either side match the engine's
+   walk, and the needle P and the deposits remain the slopes of the
+   simulated rows.
 8. **Back-incidence from an absorbing plate**: `check_back_exit` looks at
    the exit medium only. A strongly absorbing plate makes back demands
    ill-conditioned (tiny T_b) but not undefined; no guard.
-9. **Test coverage**: the needle oracle runs through a plate at 0° and
-   30°, not 60°. No test covers two plates, a plate as the first or last
-   film, a plate with only back films, Log or weighted demands through a
-   plate. The joint needle path is covered since W6 item 2.
+9. **Test coverage: done 2026-11-13.** The needle oracle and the deposit
+   oracle run at 0°, 30° and 60° through the original plate and through
+   two plates, a plate as the first film (films only behind it) and a
+   plate as the last film (`p_is_the_merit_slope_in_more_plate_layouts`,
+   `deposits_match_differences_in_more_plate_layouts`). Log and weighted
+   demands were already in the oracle's case list, so they ran through
+   the plate from the start. The joint needle path is covered since W6
+   item 2.
 
 ### W7, material identity
 - `pool_share_tol` (near-equal indices sharing a sweep): not done.

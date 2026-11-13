@@ -4595,7 +4595,7 @@ mod needle_oracle {
 
     #[test]
     fn p_is_the_merit_slope_through_an_incoherent_plate() {
-        for angle in [Radians::ZERO, deg(30.0)] {
+        for angle in [Radians::ZERO, deg(30.0), deg(60.0)] {
             for (name, spec) in cases(angle) {
                 if spec.uses_phase() {
                     continue;
@@ -4695,10 +4695,8 @@ mod needle_oracle {
     /// (the absorbing one included), at 0 and 30 degrees.
     #[test]
     fn deposits_through_an_incoherent_plate_match_differences() {
-        use crate::smatrix::synthesis::jacobian::deposit_channel;
         use CurveId::*;
-        let h = 1e-4;
-        for angle in [Radians::ZERO, deg(30.0)] {
+        for angle in [Radians::ZERO, deg(30.0), deg(60.0)] {
             for with_back in [false, true] {
                 let ids: &[CurveId] = if with_back {
                     &[Rs, Rp, Ts, Tp, RBs, RBp, TBs, TBp]
@@ -4727,40 +4725,201 @@ mod needle_oracle {
                     ])
                 };
                 for (st, par) in [(plate(), vec![0usize, 1, 3, 4]), (lossless, vec![0, 1, 3])] {
-                    let (_, dep) = c.simulate_with_deposits(&st, &par).unwrap();
-                    let mut live = 0;
-                    for (kp, &fi) in par.iter().enumerate() {
-                        let d0 = st.films()[fi].d_nm;
-                        let (mut sp, mut sm) = (st.clone(), st.clone());
-                        sp.set_thickness(fi, d0 + h).unwrap();
-                        sm.set_thickness(fi, d0 - h).unwrap();
-                        let (a, b) = (c.simulate(&sp).unwrap(), c.simulate(&sm).unwrap());
-                        for &id in ids {
-                            let row = |s: &SimCurves| {
-                                if id.is_back() {
-                                    s.back_curve(id).unwrap().clone()
-                                } else {
-                                    s.curve(id).unwrap().clone()
-                                }
-                            };
-                            let (ra, rb) = (row(&a), row(&b));
-                            let ch = deposit_channel(id).unwrap();
-                            for pt in 0..ra.len() {
-                                let fd = (ra[pt] - rb[pt]) / (2.0 * h);
-                                let an = dep.get(ch, pt, kp);
-                                assert!(
-                                    (an - fd).abs() < 1e-7 * fd.abs().max(1e-3),
-                                    "{angle:?} film {fi} {id:?} point {pt}: {an} vs {fd}"
-                                );
-                                if fd.abs() > 1e-5 {
-                                    live += 1;
-                                }
-                            }
-                        }
-                    }
-                    assert!(live > 0, "every slope vanished");
+                    deposits_match_differences(&c, &st, &par, ids, "");
                 }
             }
+        }
+    }
+
+    /// The deposits of `par` (coherent film indices) on `st` are the
+    /// central-difference slopes of the simulated rows `ids`.
+    fn deposits_match_differences(
+        c: &SmatrixContext,
+        st: &DesignStack,
+        par: &[usize],
+        ids: &[CurveId],
+        what: &str,
+    ) {
+        use crate::smatrix::synthesis::jacobian::deposit_channel;
+        let h = 1e-4;
+        let angle = c.sin_theta[0].asin().to_degrees();
+        let (_, dep) = c.simulate_with_deposits(st, par).unwrap();
+        let mut live = 0;
+        for (kp, &fi) in par.iter().enumerate() {
+            let d0 = st.films()[fi].d_nm;
+            let (mut sp, mut sm) = (st.clone(), st.clone());
+            sp.set_thickness(fi, d0 + h).unwrap();
+            sm.set_thickness(fi, d0 - h).unwrap();
+            let (a, b) = (c.simulate(&sp).unwrap(), c.simulate(&sm).unwrap());
+            for &id in ids {
+                let row = |s: &SimCurves| {
+                    if id.is_back() {
+                        s.back_curve(id).unwrap().clone()
+                    } else {
+                        s.curve(id).unwrap().clone()
+                    }
+                };
+                let (ra, rb) = (row(&a), row(&b));
+                let ch = deposit_channel(id).unwrap();
+                for pt in 0..ra.len() {
+                    let fd = (ra[pt] - rb[pt]) / (2.0 * h);
+                    let an = dep.get(ch, pt, kp);
+                    assert!(
+                        (an - fd).abs() < 1e-7 * fd.abs().max(1e-3),
+                        "{what} {angle:.0} deg film {fi} {id:?} point {pt}: {an} vs {fd}"
+                    );
+                    if fd.abs() > 1e-5 {
+                        live += 1;
+                    }
+                }
+            }
+        }
+        assert!(live > 0, "{what}: every slope vanished");
+    }
+
+    // --- W6 items 7 and 9: layouts the first cut did not cover ------------
+
+    fn glass_plate() -> LayerSpec {
+        let mut g = LayerSpec::constant("G", 1.52, 2e-6, 200_000.0, WLS.len());
+        g.coherent = false;
+        g.optimize = false;
+        g.needle = false;
+        g
+    }
+
+    /// Two plates; a plate as the first film (films behind it only, the
+    /// front face bare); a plate as the last film (the back face bare).
+    fn plate_layouts() -> Vec<(&'static str, Vec<LayerSpec>)> {
+        let nw = WLS.len();
+        let h = || LayerSpec::constant("H", 2.30, 0.0, 118.0, nw);
+        let l = || LayerSpec::constant("L", 1.46, 0.0, 203.0, nw);
+        let habs = || LayerSpec::constant("Habs", 2.30, 0.004, 64.0, nw);
+        vec![
+            (
+                "two plates",
+                vec![h(), glass_plate(), l(), glass_plate(), habs()],
+            ),
+            ("plate first", vec![glass_plate(), h(), l(), habs()]),
+            ("plate last", vec![h(), l(), habs(), glass_plate()]),
+        ]
+    }
+
+    /// The coherent films of `films`: the LM's parameters.
+    fn coherent_films(films: &[LayerSpec]) -> Vec<usize> {
+        (0..films.len()).filter(|&i| films[i].coherent).collect()
+    }
+
+    /// W6 item 9: the needle P is the merit slope in every layout, for
+    /// every intensity, colour, Log and weighted case, at 0, 30 and 60 deg.
+    #[test]
+    fn p_is_the_merit_slope_in_more_plate_layouts() {
+        for (layout, films) in plate_layouts() {
+            for angle in [Radians::ZERO, deg(30.0), deg(60.0)] {
+                for (name, spec) in cases(angle) {
+                    if spec.uses_phase() {
+                        continue;
+                    }
+                    let name = format!("{layout}: {name}");
+                    check_on(&name, in_air(films.clone()), spec, angle);
+                }
+            }
+        }
+    }
+
+    /// W6 item 9: the analytic Jacobian's deposits are the slopes of the
+    /// front and back rows in every layout, at 0, 30 and 60 deg.
+    #[test]
+    fn deposits_match_differences_in_more_plate_layouts() {
+        use CurveId::*;
+        let ids = [Rs, Rp, Ts, Tp, RBs, RBp, TBs, TBp];
+        for (layout, films) in plate_layouts() {
+            for angle in [Radians::ZERO, deg(30.0), deg(60.0)] {
+                let mut spec = MeritSpec::new();
+                for id in ids {
+                    add(&mut spec, angle, d(id, 0.3));
+                }
+                let par = coherent_films(&films);
+                deposits_match_differences(
+                    &ctx(spec, angle),
+                    &in_air(films.clone()),
+                    &par,
+                    &ids,
+                    layout,
+                );
+            }
+        }
+    }
+
+    /// W6 item 7: rough interfaces on and around the plate. The forward
+    /// rows match the engine's own walk, and the needle P and the
+    /// deposits are still the slopes of what `simulate` returns.
+    #[test]
+    fn a_rough_plate_face_is_solved_and_differentiated_consistently() {
+        use crate::smatrix::core_engine::{MODE_B, solve_point};
+        use CurveId::*;
+        let mut films = plate_films(WLS.len());
+        for (i, (kind, val)) in [(0, (4, 8.0)), (2, (4, 15.0)), (3, (1, 10.0))] {
+            films[i].rough_type = kind;
+            films[i].rough_val = val;
+        }
+        let st = in_air(films.clone());
+        let angle = deg(30.0);
+
+        // Roughness reaches the solve: the rough stack differs from the
+        // smooth one, and agrees with the engine.
+        let mut spec = MeritSpec::new();
+        for id in [Rs, Rp, Ts, Tp, RBs, RBp, TBs, TBp] {
+            add(&mut spec, angle, d(id, 0.3));
+        }
+        let c = ctx(spec, angle);
+        let sim = c.simulate(&st).unwrap();
+        let smooth = c.simulate(&plate()).unwrap();
+        let gap = (0..WLS.len())
+            .map(|w| (sim.curve(Rs).unwrap()[w] - smooth.curve(Rs).unwrap()[w]).abs())
+            .fold(0.0, f64::max);
+        assert!(gap > 1e-6, "roughness did not reach the solve ({gap})");
+        let sa = st.solver_arrays();
+        let nl = sa.n_layers as usize;
+        for (w, &lam) in WLS.iter().enumerate() {
+            let ns: Vec<Complex64> = (0..nl)
+                .map(|l| {
+                    let b = w * nl * 2 + l * 2;
+                    Complex64::new(sa.n_stack_cache[b], sa.n_stack_cache[b + 1])
+                })
+                .collect();
+            let inv: Vec<Complex64> = ns.iter().map(|&n| 1.0 / n).collect();
+            let e = solve_point(
+                nl - 1,
+                lam,
+                c.sin_theta[0],
+                &ns,
+                &inv,
+                &sa.thicknesses,
+                &sa.incoherent_flags,
+                &sa.rough_types,
+                &sa.rough_vals,
+                MODE_B,
+                true,
+                true,
+                false,
+            );
+            for (id, v) in [(Rs, e.rs), (Rp, e.rp), (Ts, e.ts), (Tp, e.tp)] {
+                assert_eq!(sim.curve(id).unwrap()[w], v, "{id:?} at {lam}");
+            }
+        }
+
+        deposits_match_differences(
+            &c,
+            &st,
+            &coherent_films(&films),
+            &[Rs, Rp, Ts, Tp, RBs, RBp, TBs, TBp],
+            "rough",
+        );
+        for (name, spec) in cases(angle) {
+            if spec.uses_phase() {
+                continue;
+            }
+            check_on(&format!("rough: {name}"), st.clone(), spec, angle);
         }
     }
 
