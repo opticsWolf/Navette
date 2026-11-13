@@ -763,3 +763,65 @@ fn converted_data_fits_and_says_how_it_was_read() {
 fn deg_rad(d: f64) -> f64 {
     d * PI / 180.0
 }
+
+// --- global stages ----------------------------------------------------------
+
+#[cfg(not(feature = "opt-basin"))]
+#[test]
+fn a_global_stage_without_basin_says_so() {
+    let data = measure(&hlh(), &[("R", "default", "R_avg", 8.0)], 0.002, 3);
+    let p = FitProblem::new(hlh(), data, params(&["layer[main:1].thickness"]));
+    let s = Strategy::from_json(
+        r#"{"name": "g", "stages": [{"name": "g", "free": ["*"], "kind": {"global": {"budget": 50}}}]}"#,
+    )
+    .unwrap();
+    let e = run_strategy(&p, &s, &[]).unwrap_err();
+    assert!(e.contains("opt-basin"), "{e}");
+}
+
+#[test]
+fn analytic_and_differenced_jacobians_fit_alike() {
+    let truth = with(
+        &hlh(),
+        &[
+            ("layer[main:2].thickness", 124.0),
+            ("material[TiO2].A", 2.23),
+        ],
+    );
+    let data = measure(
+        &truth,
+        &[("R", "default", "R_avg", 8.0), ("T", "default", "Tp", 45.0)],
+        0.002,
+        9,
+    );
+    let mut p = FitProblem::new(
+        hlh(),
+        data,
+        params(&[
+            "layer[main:1].thickness",
+            "layer[main:2].thickness",
+            "group[TiO2].thick_factor",
+            "material[TiO2].A",
+        ]),
+    );
+    let a = fit(&p).unwrap();
+    p.lsq.jacobian = navette::lsq::lm::JacobianMode::Fd;
+    let f = fit(&p).unwrap();
+    assert!(
+        (a.chi2 / f.chi2 - 1.0).abs() < 1e-6,
+        "{} vs {}",
+        a.chi2,
+        f.chi2
+    );
+    for (x, y) in a.parameters.iter().zip(&f.parameters) {
+        let (sx, sy) = (x.std_error.unwrap(), y.std_error.unwrap());
+        assert!(
+            (x.value - y.value).abs() < 1e-3 * sx,
+            "{}: {} vs {}",
+            x.addr,
+            x.value,
+            y.value
+        );
+        assert!((sx / sy - 1.0).abs() < 1e-4, "{}: se {sx} vs {sy}", x.addr);
+    }
+}

@@ -26,11 +26,10 @@ use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::lsq::backends::LsqBackend;
-
+use super::global::{GlobalMethod, Search};
 use super::model::FitModel;
 use super::sets::{ParamSet, select};
-use super::{FitProblem, FitReport, Progress, Watcher, evaluate, fit_watched};
+use super::{Chi2Fn, FitProblem, FitReport, Progress, Watcher, evaluate, fit_watched};
 
 /// An ordered list of stages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +112,19 @@ pub enum StageKind {
         #[serde(default)]
         seed: u64,
     },
+    /// A population search (basin, `opt-basin`) over the same box as
+    /// `multi_start`, at most `budget` χ² evaluations, then `lsq` from the
+    /// best point found (the current point if nothing beat it).
+    Global {
+        #[serde(default)]
+        method: GlobalMethod,
+        budget: usize,
+        #[serde(default)]
+        seed: u64,
+        /// Population size (CMA-ES: λ); the method's default if unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        population: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -140,6 +152,10 @@ pub struct StageLsq {
     pub xtol: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gtol: Option<f64>,
+    /// "analytic" (the default: the fit's own Jacobian) or "fd" (central
+    /// differences over the whole residual vector).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jacobian: Option<String>,
 }
 
 impl StageLsq {
@@ -282,6 +298,10 @@ fn strategy_inner(
     }
     let mut end = held(problem, &ever);
     end.model = model;
+    // The values are the model's now, not the declared starts.
+    for q in &mut end.parameters {
+        q.value = None;
+    }
     Ok(StrategyReport {
         name: strategy.name.clone(),
         evals: stages.iter().map(|s| s.evals).sum(),
@@ -373,24 +393,7 @@ fn run_stage(
             sampler,
             seed,
         } => {
-            let boxes: Vec<(usize, f64, f64)> = (0..free.len())
-                .filter(|&i| free[i])
-                .map(|i| {
-                    let p = &start.parameters[i];
-                    let half = (0.5 * p.value.abs()).max(1e-3);
-                    let lo = if p.lb.is_finite() {
-                        p.lb
-                    } else {
-                        p.value - half
-                    };
-                    let hi = if p.ub.is_finite() {
-                        p.ub
-                    } else {
-                        p.value + half
-                    };
-                    (i, lo.max(p.lb), hi.min(p.ub))
-                })
-                .collect();
+            let boxes = search_box(&start, free);
             let points = sample(&boxes, *starts, *sampler, *seed);
             let mut candidates = vec![sp.clone()];
             for pt in points {
@@ -410,6 +413,32 @@ fn run_stage(
             let n = reports.len();
             let e = reports.iter().flatten().map(|r| r.evals).sum();
             (reports.into_iter().nth(i).flatten().unwrap(), n, e)
+        }
+        StageKind::Global {
+            method,
+            budget,
+            seed,
+            population,
+        } => {
+            let boxes = search_box(&start, free);
+            let chi2 = Chi2Fn::new(&sp)?;
+            let found = Search {
+                chi2: &chi2,
+                lo: boxes.iter().map(|b| b.1).collect(),
+                hi: boxes.iter().map(|b| b.2).collect(),
+                x0: boxes.iter().map(|b| start.parameters[b.0].value).collect(),
+                budget: *budget,
+                seed: *seed,
+                population: *population,
+                watch,
+            }
+            .run(*method)?;
+            for (&(i, _, _), x) in boxes.iter().zip(found.x) {
+                sp.parameters[i].value = Some(x);
+            }
+            let r = fit(&sp)?;
+            let e = r.evals + found.evals;
+            (r, 1, e)
         }
     };
 
@@ -453,6 +482,29 @@ fn run_stage(
         accepted,
         report: best,
     })
+}
+
+/// `(parameter index, lo, hi)` of each free parameter: its bounds, an open
+/// side replaced by `x ± max(|x|/2, 1e-3)`.
+fn search_box(start: &FitReport, free: &[bool]) -> Vec<(usize, f64, f64)> {
+    (0..free.len())
+        .filter(|&i| free[i])
+        .map(|i| {
+            let p = &start.parameters[i];
+            let half = (0.5 * p.value.abs()).max(1e-3);
+            let lo = if p.lb.is_finite() {
+                p.lb
+            } else {
+                p.value - half
+            };
+            let hi = if p.ub.is_finite() {
+                p.ub
+            } else {
+                p.value + half
+            };
+            (i, lo.max(p.lb), hi.min(p.ub))
+        })
+        .collect()
 }
 
 /// Index of the smallest finite value, the first on a tie.
@@ -540,25 +592,7 @@ fn scope_data(p: &mut FitProblem, stage: &Stage) -> Result<(), String> {
 }
 
 fn apply_lsq(p: &mut FitProblem, s: &StageLsq) -> Result<(), String> {
-    if let Some(b) = &s.backend {
-        p.lsq.backend = LsqBackend::parse(b)?;
-    }
-    if let Some(v) = s.max_iterations {
-        p.lsq.max_iterations = v;
-    }
-    if let Some(v) = s.max_evals {
-        p.lsq.max_evals = v;
-    }
-    if let Some(v) = s.ftol {
-        p.lsq.ftol = v;
-    }
-    if let Some(v) = s.xtol {
-        p.lsq.xtol = v;
-    }
-    if let Some(v) = s.gtol {
-        p.lsq.gtol = v;
-    }
-    Ok(())
+    super::request::override_lsq(&mut p.lsq, s)
 }
 
 #[cfg(test)]
@@ -589,6 +623,44 @@ mod tests {
             .unwrap_err()
             .contains("colour")
         );
+    }
+
+    #[test]
+    fn global_stages_and_the_jacobian_switch_read_from_json() {
+        let text = r#"{"name": "s", "stages": [
+            {"name": "g", "free": ["*"], "kind": {"global": {"budget": 500}}},
+            {"name": "h", "free": ["*"],
+             "kind": {"global": {"method": "cma_es", "budget": 900, "seed": 4, "population": 12}},
+             "lsq": {"jacobian": "fd"}}
+        ]}"#;
+        let s = Strategy::from_json(text).unwrap();
+        assert_eq!(
+            s.stages[0].kind,
+            StageKind::Global {
+                method: GlobalMethod::De,
+                budget: 500,
+                seed: 0,
+                population: None
+            }
+        );
+        assert_eq!(
+            s.stages[1].kind,
+            StageKind::Global {
+                method: GlobalMethod::CmaEs,
+                budget: 900,
+                seed: 4,
+                population: Some(12)
+            }
+        );
+        assert_eq!(Strategy::from_json(&s.to_json()).unwrap(), s);
+        let lm = crate::fit::request::lm_config(&s.stages[1].lsq).unwrap();
+        assert_eq!(lm.jacobian, crate::lsq::lm::JacobianMode::Fd);
+        let bad = StageLsq {
+            jacobian: Some("exact".into()),
+            ..StageLsq::default()
+        };
+        let e = crate::fit::request::lm_config(&bad).unwrap_err();
+        assert!(e.contains("exact"), "{e}");
     }
 
     #[test]

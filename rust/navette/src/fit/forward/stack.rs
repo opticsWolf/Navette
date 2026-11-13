@@ -23,7 +23,7 @@ use num_complex::Complex64;
 
 use crate::smatrix::angle::Radians;
 use crate::smatrix::solver::solve_arrays;
-use crate::structure::expansion::{ExpandOptions, expand};
+use crate::structure::expansion::{ExpandOptions, SolverArrays, expand};
 use crate::structure::providers::{Entry, MaterialProvider};
 
 use crate::fit::data::{SpectrumData, channel_request};
@@ -31,21 +31,21 @@ use crate::fit::model::FitModel;
 
 /// Where one dataset's points sit in its environment's solution.
 #[derive(Debug, Clone)]
-struct Pick {
+pub(crate) struct Pick {
     /// Index into `StackForward::solves`.
-    solve: usize,
-    channel: String,
-    angle: usize,
+    pub(crate) solve: usize,
+    pub(crate) channel: String,
+    pub(crate) angle: usize,
     /// Grid index of each kept point.
-    wav: Vec<usize>,
+    pub(crate) wav: Vec<usize>,
 }
 
 /// One environment's solve.
 #[derive(Debug, Clone)]
-struct EnvSolve {
-    env: String,
-    grid: Vec<f64>,
-    angles: Vec<Radians>,
+pub(crate) struct EnvSolve {
+    pub(crate) env: String,
+    pub(crate) grid: Vec<f64>,
+    pub(crate) angles: Vec<Radians>,
     requested: u64,
     /// Materials no parameter reaches, evaluated on `grid`.
     frozen: HashMap<String, Vec<Complex64>>,
@@ -160,48 +160,92 @@ impl StackForward {
 
     /// Simulated values, one vector per dataset, at its kept points.
     pub fn simulate(&self, model: &FitModel) -> Result<Vec<Vec<f64>>, String> {
-        let sols = self
-            .solves
-            .iter()
-            .map(|s| {
-                let provider = FitProvider {
-                    frozen: &s.frozen,
-                    live: model.materials(),
-                    grid: &s.grid,
-                    cache: RefCell::new(HashMap::new()),
-                };
-                let (sa, _spans) = expand(
-                    model.entries(&s.env)?,
-                    &provider,
-                    &s.grid,
-                    model.groups(),
-                    ExpandOptions::deterministic(),
-                )?;
-                let (sol, _warnings) = solve_arrays(
-                    &sa.indices,
-                    &sa.thicknesses,
-                    &sa.incoherent,
-                    &sa.rough_types,
-                    &sa.rough_vals,
-                    &s.grid,
-                    &s.angles,
-                    s.requested,
-                    self.coherence_mode,
-                )?;
-                Ok(sol)
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut out: Vec<Vec<f64>> = vec![Vec::new(); self.picks.len()];
+        for s in 0..self.solves.len() {
+            for (d, values) in self.simulate_solve(model, s)? {
+                out[d] = values;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The environments' solves, in order.
+    pub(crate) fn solves(&self) -> &[EnvSolve] {
+        &self.solves
+    }
+
+    /// Where each dataset reads its environment's solution.
+    pub(crate) fn picks(&self) -> &[Pick] {
+        &self.picks
+    }
+
+    /// Environment `s`'s chain expanded at `model`, with the material names
+    /// the expansion asked for.
+    pub(crate) fn expand_solve(
+        &self,
+        model: &FitModel,
+        s: usize,
+    ) -> Result<(SolverArrays, HashSet<String>), String> {
+        let s = &self.solves[s];
+        let provider = FitProvider {
+            frozen: &s.frozen,
+            live: model.materials(),
+            grid: &s.grid,
+            cache: RefCell::new(HashMap::new()),
+            asked: RefCell::new(HashSet::new()),
+        };
+        let (sa, _spans) = expand(
+            model.entries(&s.env)?,
+            &provider,
+            &s.grid,
+            model.groups(),
+            ExpandOptions::deterministic(),
+        )?;
+        Ok((sa, provider.asked.into_inner()))
+    }
+
+    /// One environment's datasets at `model`: `(dataset index, values)`
+    /// for each dataset this solve serves, in dataset order.
+    pub(crate) fn simulate_solve(
+        &self,
+        model: &FitModel,
+        s: usize,
+    ) -> Result<Vec<(usize, Vec<f64>)>, String> {
+        let (sa, _) = self.expand_solve(model, s)?;
+        self.read_solve(&sa, s)
+    }
+
+    /// [`Self::simulate_solve`] from expanded arrays.
+    pub(crate) fn read_solve(
+        &self,
+        sa: &SolverArrays,
+        s: usize,
+    ) -> Result<Vec<(usize, Vec<f64>)>, String> {
+        let es = &self.solves[s];
+        let (sol, _warnings) = solve_arrays(
+            &sa.indices,
+            &sa.thicknesses,
+            &sa.incoherent,
+            &sa.rough_types,
+            &sa.rough_vals,
+            &es.grid,
+            &es.angles,
+            es.requested,
+            self.coherence_mode,
+        )?;
+        let n_w = es.grid.len();
         self.picks
             .iter()
-            .map(|p| {
-                let n_w = self.solves[p.solve].grid.len();
-                let map = sols[p.solve]
+            .enumerate()
+            .filter(|(_, p)| p.solve == s)
+            .map(|(d, p)| {
+                let map = sol
                     .f64maps
                     .iter()
                     .find(|(k, _)| *k == p.channel)
                     .map(|(_, v)| v)
                     .ok_or_else(|| format!("fit: the solver did not return {}", p.channel))?;
-                Ok(p.wav.iter().map(|&w| map[p.angle * n_w + w]).collect())
+                Ok((d, p.wav.iter().map(|&w| map[p.angle * n_w + w]).collect()))
             })
             .collect()
     }
@@ -225,10 +269,15 @@ struct FitProvider<'a> {
     live: &'a HashMap<String, Entry>,
     grid: &'a [f64],
     cache: RefCell<HashMap<String, Vec<Complex64>>>,
+    /// Every name `expand` asked for: what this environment depends on.
+    asked: RefCell<HashSet<String>>,
 }
 
 impl MaterialProvider for FitProvider<'_> {
     fn nk(&self, name: &str, _wavelengths: &[f64]) -> Result<Vec<Complex64>, String> {
+        if !self.asked.borrow().contains(name) {
+            self.asked.borrow_mut().insert(name.to_string());
+        }
         if let Some(nk) = self.frozen.get(name) {
             return Ok(nk.clone());
         }

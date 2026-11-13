@@ -8,6 +8,8 @@
 //! [`StackForward`](super::StackForward), which is what makes a joint
 //! fit (a film's spectrum and a literature nk table) one problem.
 
+use num_complex::Complex64;
+
 use crate::fit::data::{NkData, NkQuantity};
 use crate::fit::model::FitModel;
 
@@ -15,10 +17,10 @@ use super::stack::evaluate;
 
 /// One dataset's material, kept wavelengths and measured quantities.
 #[derive(Debug, Clone)]
-struct NkPick {
-    material: String,
-    wavelengths: Vec<f64>,
-    quantities: Vec<NkQuantity>,
+pub(crate) struct NkPick {
+    pub(crate) material: String,
+    pub(crate) wavelengths: Vec<f64>,
+    pub(crate) quantities: Vec<NkQuantity>,
 }
 
 /// The compiled nk forward model of one problem.
@@ -57,17 +59,29 @@ impl DispersionForward {
     /// Simulated values, one vector per dataset: its columns in order, each
     /// at its kept points.
     pub fn simulate(&self, model: &FitModel) -> Result<Vec<Vec<f64>>, String> {
-        self.picks
-            .iter()
-            .map(|p| {
-                let entry = &model.materials()[&p.material];
-                let nk = evaluate(entry, &p.wavelengths)
-                    .map_err(|e| format!("material {}: {e}", p.material))?;
-                Ok(p.quantities
-                    .iter()
-                    .flat_map(|q| nk.iter().map(move |&z| q.of(z)))
-                    .collect())
-            })
+        (0..self.picks.len())
+            .map(|i| self.simulate_one(model, i))
             .collect()
+    }
+
+    pub(crate) fn picks(&self) -> &[NkPick] {
+        &self.picks
+    }
+
+    /// Dataset `i`'s material on its wavelengths.
+    pub(crate) fn nk_of(&self, model: &FitModel, i: usize) -> Result<Vec<Complex64>, String> {
+        let p = &self.picks[i];
+        let entry = &model.materials()[&p.material];
+        evaluate(entry, &p.wavelengths).map_err(|e| format!("material {}: {e}", p.material))
+    }
+
+    /// Dataset `i` alone: its columns in order, each at its kept points.
+    pub(crate) fn simulate_one(&self, model: &FitModel, i: usize) -> Result<Vec<f64>, String> {
+        let nk = self.nk_of(model, i)?;
+        Ok(self.picks[i]
+            .quantities
+            .iter()
+            .flat_map(|q| nk.iter().map(move |&z| q.of(z)))
+            .collect())
     }
 }

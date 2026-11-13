@@ -294,11 +294,14 @@ class Stage:
     """One stage: the selectors it frees, what it scores, how it solves.
 
     ``kind`` is ``None`` (least squares), ``{"scan": {"param": sel,
-    "points": n}}`` or ``{"multi_start": {"starts": n, "sampler":
-    "lhs", "seed": 0}}``. ``repeat`` is ``{"until_no_gain": {"rel": 1e-3,
+    "points": n}}``, ``{"multi_start": {"starts": n, "sampler":
+    "lhs", "seed": 0}}`` or ``{"global": {"method": "de", "budget": n,
+    "seed": 0}}`` (``"de"``, ``"de_inject"`` or ``"cma_es"``; needs the
+    ``opt-basin`` build). ``repeat`` is ``{"until_no_gain": {"rel": 1e-3,
     "max": 5}}``; ``accept`` ``"if_better"`` rolls a stage back that did
     not lower its chi2. ``lsq`` overrides solver settings (``backend``,
-    ``max_iterations``, ``max_evals``, ``ftol``, ``xtol``, ``gtol``).
+    ``max_iterations``, ``max_evals``, ``ftol``, ``xtol``, ``gtol``,
+    ``jacobian``: ``"analytic"`` or ``"fd"``).
     """
 
     name: str

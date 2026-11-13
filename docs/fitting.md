@@ -41,7 +41,7 @@ print(report.summary())
 | `Parameter` | One scalar (`addr`) or a selector (`select`). Optional keys are `value`, `lb`, `ub`, `scale`, `log`, `fixed`, `tags` and `prior=(p0, sigma)`. |
 | `Tie` | A follower that moves with its driver: `target = factor * driver + offset`. A follower is never a parameter itself. |
 | `sets` | Named unions of selectors, the units a strategy orders. |
-| `lsq` | Solver settings: `backend` (`"lm"`, `"trf"`), `max_iterations`, `max_evals`, `ftol`, `xtol`, `gtol`. |
+| `lsq` | Solver settings: `backend` (`"lm"`, `"trf"`), `max_iterations`, `max_evals`, `ftol`, `xtol`, `gtol`, `jacobian` (`"analytic"`, the default, or `"fd"`; see below). |
 
 Channels are the synthesis channel names:
 
@@ -52,6 +52,16 @@ Channels are the synthesis channel names:
 - phase: `phi_rs` and the rest of the `phi_*` channels, and `PDts`/`PDtp`
 
 An unknown name lists the known ones.
+
+### The Jacobian
+
+By default (`"jacobian": "analytic"`) the fit builds its own Jacobian:
+
+- **Thickness columns are exact.** A parameter that only moves layer thicknesses (a film's thickness, a group's `thick_factor` or `thick_summand`, graded and sliced layers included) is differentiated through the stack. This applies to coherent stacks read through `R`, `T` or `A` channels. All such columns together cost about three evaluations, instead of two evaluations each.
+- **Dispersion columns on nk data are closed form** for `Konstant` (`n`, `k`), `Cauchy` (`A`, `B`, `C`), `Sellmeier` (`B1`..`C3`) and `Drude` (`omega_p`, `gamma`, `epsilon_inf`).
+- **Everything else is differenced, but only where the parameter can act.** A parameter's column is recomputed only on the samples and nk datasets it can change, and is exactly zero elsewhere. Differenced entries are bit for bit those of `"fd"`.
+
+`"fd"` differences every column over every residual: it is the cross-check, and the escape hatch if a result is ever in doubt. The two agree to about 1e-6 relative. Exact columns are also free of the rounding noise central differences pick up when a parameter's step is tiny (a summand starting at 0, say).
 
 ### Addresses and selectors
 
@@ -128,7 +138,7 @@ report = fit(problem, strategy)
 | Stage key | Meaning |
 |---|---|
 | `datasets`, `weights`, `window` | Restrict or reweight the data for this stage. |
-| `kind` | `"lsq"` (the default). `{"scan": {"param": sel, "points": n}}` tries `n` values of one parameter across its bounds, then runs LSQ. `{"multi_start": {"starts": n, "sampler": "lhs", "seed": 0}}` runs LSQ from `n` sampled points and keeps the best. |
+| `kind` | `"lsq"` (the default). `{"scan": {"param": sel, "points": n}}` tries `n` values of one parameter across its bounds, then runs LSQ. `{"multi_start": {"starts": n, "sampler": "lhs", "seed": 0}}` runs LSQ from `n` sampled points and keeps the best. `{"global": {"method": "de", "budget": n, "seed": 0}}` searches the same box with at most `n` chi2 evaluations, then runs LSQ from the best point found. `method` is `"de"` (differential evolution, the default), `"de_inject"` (DE with a Nelder-Mead polish of its best member) or `"cma_es"`; `population` overrides the method's population size. Needs a build with the `opt-basin` feature; without it the stage refuses. |
 | `lsq` | Solver settings for this stage. |
 | `repeat` | `"once"`, or `{"until_no_gain": {"rel": 1e-3, "max": 5}}`. |
 | `accept` | `"always"` or `"if_better"`. |

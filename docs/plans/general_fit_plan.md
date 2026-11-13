@@ -14,7 +14,8 @@ change). Work branch: `dev_fit`.
 | 3 strategies, environments, ties, priors, converter | done (`dev_fit`) |
 | 4 tournament, generated strategies, truth draws, benchmark | done (`dev_fit`) |
 | 5 Python door, program `fit` section (schema v4), docs | done (`dev_fit`) |
-| 6-7 | not started |
+| 6 fit Jacobian (block skipping, analytic thickness and nk columns), `global` stage on basin | done (`dev_fit`) |
+| 7 | not started |
 
 Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
 (`FitModel`: the architect's traversal with each entry's structure row,
@@ -116,6 +117,58 @@ use one format. Choices made here:
 the battery. The second shows that a six-term Sellmeier fitted over
 250–2000 nm reproduces n to 5e-5 RMS, while B1 alone has an error of
 ±0.19. Assert on the curve, not on the coefficients.
+
+Phase 6 gave the fit its own Jacobian source (`fit::jacobian`); the old
+path stays as `lsq.jacobian = "fd"`. What it does and what it found:
+
+- **Block skipping.** A column recomputes only the environments and nk
+  datasets its parameter (or the followers it drives) can reach; reach is
+  read from the expansion, so gradients and anything `expand` asks the
+  provider for count. Differenced entries are bit-identical to the old
+  Jacobian, unreached rows exactly zero (a test checks the bits).
+- **Thickness columns, analytically.** Not via `simulate_with_deposits`
+  or `SmatrixContext` (§3.7's two options): a column is classified per
+  environment by expanding at u±h without solving. If only slot
+  thicknesses moved, the column is `Σ ∂X/∂d_slot · ∂d_slot/∂u`, the first
+  factor read from `needle_operator`'s `thickness_slopes_ddz` on one
+  dual field build per point for all slots, the second the (linear)
+  expansion differenced. This covers films, `thick_factor`,
+  `thick_summand`, graded and sliced layers with no per-kind code. It
+  needs a coherent interior and R/T/A channels; Psi/Delta and phases fall
+  back to block differences. All thickness columns of an environment cost
+  about three evaluations together.
+- **Dispersion columns** on nk data are closed form for Konstant, Cauchy,
+  Sellmeier and Drude top-level numbers. Urbach and Lorentz were left:
+  Lorentz oscillators live in arrays (pointer addresses), and nk-only fits
+  are microseconds per evaluation already.
+- **Index perturbation** (index columns on spectra) was not done. They
+  are the largest remaining cost: in `coat20` the two Cauchy `A` columns
+  take four of the Jacobian's ~8 evaluations. The needle function's depth
+  integral over a layer is the route, for a later phase.
+- **Exact columns beat the oracle where the oracle is noisy.** Central
+  differences with the default scale step a summand that starts at 0 by
+  6e-9 nm, and an `A_avg` of a lossless stack read 1e-8 of rounding noise
+  where the true slope is 0. Tests compare analytic and FD at 1e-5 of each
+  column's scale, with parameters whose FD step is sane.
+- `examples/fit_perf.rs` runs every case both ways. Best of three on
+  this machine (32 threads): coat20 (22 free, 453 residuals) 53 → 18 ms,
+  2.9×; coat20 with witness samples 54 → 25 ms, 2.2×; coat20 with an nk
+  table 37 → 20 ms, 1.9×; same iterations and χ² in each. Single-threaded,
+  a coat20 Jacobian is 9.9 evaluations instead of 44. Fits on nk data
+  alone (0.2 ms) are unchanged within 10 %. The Sellmeier nk case still
+  hits the iteration cap with exact derivatives: it is ill-conditioned
+  (B/C trade-off), not an FD-accuracy problem.
+- **`global` stage** (`fit::global`, `opt-basin`): basin's `De`,
+  `DeInject` (Nelder-Mead polish) or `BoundedCmaEs` over the stage's box
+  scaled to [0, 1]ⁿ, χ² compiled once, then the stage's LSQ from the best
+  point. `tests/fit_global.rs`: on the phase-4 coating from six random
+  starts in a 0.5–1.8× thickness, ±10 % index box, all three methods end
+  at or below χ²(truth); plain LSQ does too there. On the same design
+  four times thicker, read through one curve, LSQ is caught on all six
+  starts (χ² thousands of times χ²(truth)) and DE on none.
+- Found on the way: a strategy's final report re-applied the declared
+  start values over the fitted model when a parameter had an explicit
+  `value`. Fixed; phase-4 problems never set one, so it had not shown.
 
 ## 0. Decisions (review of 2026-11-07)
 

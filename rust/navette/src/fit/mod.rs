@@ -34,6 +34,8 @@ pub mod dispersion;
 pub mod doors;
 pub mod explore;
 pub mod forward;
+pub mod global;
+mod jacobian;
 pub mod model;
 pub mod params;
 pub mod request;
@@ -56,6 +58,7 @@ pub use explore::{
     TournamentEntry, Truth, benchmark, draw_truth, generate, tournament,
 };
 pub use forward::{DispersionForward, StackForward};
+pub use global::GlobalMethod;
 pub use model::{DEFAULT_ENV, FitModel, Segment};
 pub use params::{ParamAddr, ParamKind, Parameter, Tie, Transform};
 pub use request::{FitRequest, FitSection, fit_program, request_from_json};
@@ -66,7 +69,7 @@ pub use strategy::{
 };
 
 use crate::lsq::backends::{LsqBackend, solve_least_squares};
-use crate::lsq::lm::{LmConfig, LmTermination, NoJacobian, build_jacobian};
+use crate::lsq::lm::{JacobianMode, JacobianSource, LmConfig, LmTermination, build_jacobian};
 use model::Target;
 use params::{default_bounds, default_scale, material_bounds};
 
@@ -426,6 +429,16 @@ impl Compiled {
         })
     }
 
+    /// χ² at free values `x` (free order), `None` where the model cannot
+    /// be evaluated.
+    #[cfg_attr(not(feature = "opt-basin"), allow(dead_code))]
+    fn chi2_at(&self, x: &[f64]) -> Option<f64> {
+        let u: Vec<f64> = self.free.iter().zip(x).map(|(f, &x)| f.u(x)).collect();
+        let mut r = Vec::new();
+        self.residuals(&u, &mut r).ok()?;
+        Some(r.iter().map(|v| v * v).sum())
+    }
+
     /// Prior rows `(x - p0) / sigma` of the free parameters that have one.
     fn prior_rows(&self, u: &[f64], out: &mut Vec<f64>) {
         for (f, &uj) in self.free.iter().zip(u) {
@@ -599,6 +612,23 @@ pub fn evaluate(problem: &FitProblem) -> Result<FitReport, String> {
     run(problem, false, None)
 }
 
+/// χ² of a problem as a function of its free parameters' values (in
+/// problem order), compiled once: what a global search samples.
+#[cfg_attr(not(feature = "opt-basin"), allow(dead_code))]
+pub(crate) struct Chi2Fn(Compiled);
+
+#[cfg_attr(not(feature = "opt-basin"), allow(dead_code))]
+impl Chi2Fn {
+    pub(crate) fn new(problem: &FitProblem) -> Result<Self, String> {
+        Compiled::new(problem).map(Self)
+    }
+
+    /// `None` where the model cannot be evaluated.
+    pub(crate) fn chi2(&self, x: &[f64]) -> Option<f64> {
+        self.0.chi2_at(x)
+    }
+}
+
 fn run(
     problem: &FitProblem,
     solve: bool,
@@ -648,6 +678,12 @@ fn run(
         Ok(())
     };
     let residuals = strict;
+    let source = match problem.lsq.jacobian {
+        JacobianMode::Analytic if n > 0 => {
+            Some(jacobian::FitJacobian::new(&c, watch.map(|(w, _)| w))?)
+        }
+        _ => None,
+    };
 
     let (u, termination, iterations, evals, backend) = if n == 0 || !solve {
         (
@@ -668,7 +704,7 @@ fn run(
         }
         let r = solve_least_squares(
             &trial,
-            None::<&NoJacobian>,
+            source.as_ref(),
             &vec![0.0; n],
             &lb,
             &ub,
@@ -731,9 +767,18 @@ fn run(
         (None, None)
     } else {
         let mut jac = Vec::new();
-        match build_jacobian(&residuals, &u, &mut jac)
-            .and_then(|_| stats::inverse_normal_matrix(&jac, m, n))
-        {
+        // The watcher may have stopped the fit: the source then declines,
+        // and the covariance falls back to central differences.
+        let filled = match &source {
+            Some(s) => s.fill(&u, &mut jac),
+            None => Ok(None),
+        };
+        let filled = match filled {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => build_jacobian(&residuals, &u, &mut jac).map(|_| ()),
+            Err(e) => Err(e),
+        };
+        match filled.and_then(|_| stats::inverse_normal_matrix(&jac, m, n)) {
             Ok(cu) if chi2_reduced.is_finite() => {
                 let dxdu: Vec<f64> = c
                     .free

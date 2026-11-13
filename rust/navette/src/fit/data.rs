@@ -235,6 +235,17 @@ impl NkQuantity {
             NkQuantity::Eps2 => (nk * nk).im,
         }
     }
+
+    /// The quantity's derivative when `nk` moves by `dnk` (to first order):
+    /// `d(z²) = 2·z·dz` for the ε parts.
+    pub fn slope(self, nk: Complex64, dnk: Complex64) -> f64 {
+        match self {
+            NkQuantity::N => dnk.re,
+            NkQuantity::K => dnk.im,
+            NkQuantity::Eps1 => (2.0 * nk * dnk).re,
+            NkQuantity::Eps2 => (2.0 * nk * dnk).im,
+        }
+    }
 }
 
 /// One measured optical-constant curve of an [`NkData`].

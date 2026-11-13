@@ -337,6 +337,15 @@ impl FitModel {
             })
     }
 
+    /// Where environment `env`'s chain sits among every environment's
+    /// entries (the indices a layer [`Target`] names).
+    pub(crate) fn env_range(&self, env: &str) -> Option<Range<usize>> {
+        self.envs
+            .iter()
+            .find(|(n, _)| n == env)
+            .map(|(_, r)| r.clone())
+    }
+
     pub fn groups(&self) -> &HashMap<String, Group> {
         &self.groups
     }

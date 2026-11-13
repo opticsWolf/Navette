@@ -133,6 +133,36 @@ Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
   earlier still load.
 - Program JSON parses floats exactly (`serde_json` `float_roundtrip`), so
   a saved fit reproduces its χ² bit for bit.
+- **The fit's own Jacobian** (fit plan phase 6), now the default
+  (`lsq.jacobian = "analytic"`; `"fd"` keeps central differences
+  everywhere):
+  - a column is recomputed only on the samples and nk datasets its
+    parameter can reach. Those entries are bit-identical to the old
+    ones, and the rest are exactly zero;
+  - columns that only move layer thicknesses (films, `thick_factor`,
+    `thick_summand`, graded and sliced layers) are exact on coherent
+    stacks read through R, T or A. They come from the needle operator's
+    thickness slopes, so all of them together cost about three
+    evaluations;
+  - dispersion parameters on nk data use closed forms for Konstant,
+    Cauchy, Sellmeier and Drude.
+
+  `examples/fit_perf.rs` measures both modes: a 20-layer coating fit
+  (22 free) runs 2.9× faster, and the same with witness samples or an
+  nk table runs 2.2× and 1.9× faster, with the same iterations and χ².
+- **`global` strategy stage** (behind `opt-basin`):
+  `{"global": {"method": "de" | "de_inject" | "cma_es", "budget": n}}`
+  searches the stage's box with basin's differential evolution, memetic
+  DE or bounded CMA-ES, then polishes with least squares. From random
+  starts it solves the phase-4 coating, and a thick variant where least
+  squares alone is caught every time. Without the feature, the stage asks
+  for a rebuild.
+
+### Fixed
+
+- A strategy whose parameters declared explicit start values reported
+  the starts, not the fit: the final report wrote them back over the
+  fitted model.
 
 ### Changed (breaking)
 

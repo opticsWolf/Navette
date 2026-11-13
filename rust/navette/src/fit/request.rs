@@ -51,7 +51,7 @@ use serde_json::{Value, json};
 
 use crate::config::{LoadedProgram, load_program_json};
 use crate::lsq::backends::LsqBackend;
-use crate::lsq::lm::LmConfig;
+use crate::lsq::lm::{JacobianMode, LmConfig};
 use crate::smatrix::angle::Radians;
 use crate::structure::Layer;
 use crate::structure::enums::LayerType;
@@ -505,6 +505,12 @@ pub(crate) fn parameters(
 /// The default solver settings with `s`'s overrides.
 pub(crate) fn lm_config(s: &StageLsq) -> Result<LmConfig, String> {
     let mut c = LmConfig::default();
+    override_lsq(&mut c, s)?;
+    Ok(c)
+}
+
+/// `s`'s overrides written over `c`.
+pub(crate) fn override_lsq(c: &mut LmConfig, s: &StageLsq) -> Result<(), String> {
     if let Some(b) = &s.backend {
         c.backend = LsqBackend::parse(b)?;
     }
@@ -523,7 +529,18 @@ pub(crate) fn lm_config(s: &StageLsq) -> Result<LmConfig, String> {
     if let Some(v) = s.gtol {
         c.gtol = v;
     }
-    Ok(c)
+    if let Some(j) = &s.jacobian {
+        c.jacobian = match j.as_str() {
+            "analytic" => JacobianMode::Analytic,
+            "fd" => JacobianMode::Fd,
+            other => {
+                return Err(format!(
+                    "lsq.jacobian {other:?}: expected \"analytic\" or \"fd\""
+                ));
+            }
+        };
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
