@@ -14,7 +14,8 @@ use serde::Deserialize;
 
 use super::color_merit::{ColorDemand, ColorDistance, ColorQuantity, ColorReference};
 use super::merit::{
-    ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimTransform,
+    ConstraintKind, CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, Radians,
+    SimTransform,
 };
 use super::weights::{ProfileRef, WeightProfile, check_point_weights};
 use crate::color::tables::default_tables;
@@ -458,6 +459,15 @@ fn curve_id(spectral: &str, polarization: &str) -> Result<String, String> {
         }
         return Ok(curve.to_string());
     }
+    if let Some((curve, _)) = ratio(spectral) {
+        if polarization != "u" {
+            return Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} is a ratio of the s and p intensities; pass polarization=\"u\"."
+            ));
+        }
+        return Ok(curve.to_string());
+    }
     let curve = match (spectral, polarization) {
         ("R", "s") => "Rs",
         ("R", "p") => "Rp",
@@ -507,6 +517,22 @@ fn retardance(spectral: &str) -> Option<(&'static str, f64)> {
         "RetT" => Some(("Tp", 0.0)),
         "DeltaR" => Some(("Rp", std::f64::consts::PI)),
         "DeltaT" => Some(("Tp", 0.0)),
+        _ => None,
+    }
+}
+
+/// Intensity-ratio labels (W8): spectral → (host p CurveId, ratio). Each
+/// reads the p intensity and its s partner of one element: `Ratio*` is
+/// `X_s / X_p`, `Ext*` the extinction ratio `X_p / X_s`, `Diatt*` the
+/// engine's `Diattenuation_R`/`_T`, `(X_p − X_s) / (X_p + X_s)`.
+fn ratio(spectral: &str) -> Option<(&'static str, IntensityRatio)> {
+    match spectral {
+        "RatioR" => Some(("Rp", IntensityRatio::SOverP)),
+        "RatioT" => Some(("Tp", IntensityRatio::SOverP)),
+        "ExtR" => Some(("Rp", IntensityRatio::POverS)),
+        "ExtT" => Some(("Tp", IntensityRatio::POverS)),
+        "DiattR" => Some(("Rp", IntensityRatio::Diattenuation)),
+        "DiattT" => Some(("Tp", IntensityRatio::Diattenuation)),
         _ => None,
     }
 }
@@ -799,18 +825,25 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
     )
 }
 
-/// One line per retardance demand whose every angle is normal incidence,
-/// where s and p coincide and the retardance is identically 0: the demand
-/// compiles (it is not wrong, only unreachable) and the caller warns.
-pub fn retardance_warnings(set: &TargetSet) -> Vec<String> {
+/// One line per s-against-p demand (retardance, intensity ratio) whose
+/// every angle is normal incidence, where s and p coincide: a retardance
+/// is identically 0, a ratio 1 and a diattenuation 0. The demand compiles
+/// (it is not wrong, only unreachable) and the caller warns.
+pub fn sp_contrast_warnings(set: &TargetSet) -> Vec<String> {
     let flat = |spectral: &str, angles: &[Radians]| {
-        retardance(spectral).is_some() && angles.iter().all(|a| a.get() == 0.0)
+        (retardance(spectral).is_some() || ratio(spectral).is_some())
+            && angles.iter().all(|a| a.get() == 0.0)
     };
     let mut out = Vec::new();
     let line = |what: String, spectral: &str| {
+        let fixed = if ratio(spectral).is_some() {
+            "the s and p intensities are equal"
+        } else {
+            "the retardance is identically 0"
+        };
         format!(
             "{what}: {spectral} at normal incidence only - s and p coincide there, \
-             so the retardance is identically 0 and the demand cannot move"
+             so {fixed} and the demand cannot move"
         )
     };
     for (i, t) in set.spectral.iter().enumerate() {
@@ -1040,6 +1073,13 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         let mut nf = e.norm_factor;
         let diff = differential(t.0);
         let ret = retardance(t.0);
+        let rat = ratio(t.0).map(|(_, f)| f);
+        if t.2 && rat.is_some() {
+            return Err(format!(
+                "spectral={:?} is an intensity ratio: it has no phase; drop phase=True.",
+                t.0
+            ));
+        }
         if !t.2 && phase_only(t.0) {
             let what = if diff.is_some() {
                 "differential-phase"
@@ -1105,6 +1145,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             phase: t.2,
             differential_passes: diff.map(|(_, _, p)| p),
             retardance: ret.is_some(),
+            ratio: rat,
             point_weights: Arc::from(point_weights),
             weight: t.3,
             count_norm: e.count_norm,
@@ -1285,6 +1326,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
@@ -1572,6 +1614,56 @@ mod tests {
         .unwrap_err();
         assert!(
             err.contains("retardance") && err.contains("phase=True"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn intensity_ratio_labels_compile() {
+        use crate::smatrix::synthesis::merit::IntensityRatio;
+        let target = |label: &str, pol: &str| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: pol.to_string(),
+            angle: deg(45.0),
+            ..spec_target()
+        };
+        let cases = [
+            ("RatioR", CurveId::Rp, IntensityRatio::SOverP),
+            ("RatioT", CurveId::Tp, IntensityRatio::SOverP),
+            ("ExtR", CurveId::Rp, IntensityRatio::POverS),
+            ("ExtT", CurveId::Tp, IntensityRatio::POverS),
+            ("DiattR", CurveId::Rp, IntensityRatio::Diattenuation),
+            ("DiattT", CurveId::Tp, IntensityRatio::Diattenuation),
+        ];
+        for (label, host, f) in cases {
+            let spec = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, "u")],
+                ..base_set()
+            })
+            .unwrap();
+            let t = &spec.targets()[0];
+            assert_eq!(spec.keys()[t.key_idx as usize].curve, host, "{label}");
+            assert_eq!(t.ratio, Some(f), "{label}");
+            assert!(!t.phase && !t.retardance, "{label}");
+            for pol in ["s", "p"] {
+                let err = compile_merit_spec(&TargetSet {
+                    spectral: vec![target(label, pol)],
+                    ..base_set()
+                })
+                .unwrap_err();
+                assert!(err.contains("\"u\""), "{label}/{pol}: {err}");
+            }
+        }
+        let err = compile_merit_spec(&TargetSet {
+            spectral: vec![SpectralTarget {
+                phase: true,
+                ..target("ExtR", "u")
+            }],
+            ..base_set()
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("intensity ratio") && err.contains("phase"),
             "{err}"
         );
     }

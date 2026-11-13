@@ -40,7 +40,7 @@ use crate::smatrix::needle_operator::{
 };
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
 use crate::smatrix::synthesis::merit::{
-    CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimCurves,
+    CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, Radians, SimCurves,
 };
 use crate::structure::Span;
 
@@ -455,6 +455,40 @@ fn emit_retardance(
     }
 }
 
+/// Emit an intensity-ratio demand `w·(f(Xs, Xp) − rt)²` at point `k` as one
+/// intensity pair per branch on the key's bucket.
+///
+/// `dM/dδ = 2w·(f − rt)·(a_s·∂Xs + a_p·∂Xp)` with `a_b = ∂f/∂Xb` at the
+/// operating point. Branch b's kernel returns `w'·(Xb − t')·∂Xb`, so
+/// `w' = 2w·a_b²` and `t' = Xb − (f − rt)/a_b` reproduce its share: the
+/// tangent of the ratio at the operating point, as W5 folds a log. `ops`
+/// carries `(f_op, [Xs_op, Xp_op])`; without it the demand emits nothing
+/// (a ratio, like a retardance, has no target-only form), and a branch
+/// whose partial is zero gets nothing.
+fn emit_ratio(
+    folds: &mut [PolFold; 2],
+    bucket: BucketKind,
+    k: usize,
+    rt: f64,
+    w: f64,
+    ratio: IntensityRatio,
+    ops: Option<(f64, [f64; 2])>,
+) {
+    let Some((f, [xs, xp])) = ops else {
+        return;
+    };
+    let (a_s, a_p) = ratio.partials(xs, xp);
+    for (b, x, a) in [(0, xs, a_s), (1, xp, a_p)] {
+        if a == 0.0 || !a.is_finite() {
+            continue;
+        }
+        let p = folds[b].pair_mut(bucket);
+        let w_b = 2.0 * w * a * a;
+        p.1[k] += w_b;
+        p.0[k] += w_b * (x - (f - rt) / a);
+    }
+}
+
 /// Demand bucket: absorption derives from companions, intensities fold to
 /// their own quantity, phase demands to their element pair.
 #[derive(Clone, Copy)]
@@ -470,6 +504,8 @@ enum OpRows<'a> {
     Phase(&'a [Complex64]),
     /// Retardance: the key's p row and its s partner.
     Retardance(&'a [Complex64], &'a [Complex64]),
+    /// Intensity ratio: the s partner's row, then the key's p row.
+    Ratio(IntensityRatio, &'a [f64], &'a [f64]),
 }
 
 /// Operating-point sample in demand space (Δφ with the reference subtracted
@@ -525,6 +561,10 @@ fn sample_op_value(
             let zs = cinterp_clamped(&sim.wavelengths, s, twl_i);
             (zp * zs.conj()).arg()
         }
+        OpRows::Ratio(f, s, p) => f.value(
+            interp_clamped(&sim.wavelengths, s, twl_i),
+            interp_clamped(&sim.wavelengths, p, twl_i),
+        ),
     }
 }
 
@@ -680,7 +720,18 @@ pub fn build_needle_targets_env(
                         }
                         _ => None,
                     },
-                    None => op_rows(sim, key.curve, key.angle, t.phase),
+                    None => match crate::smatrix::synthesis::merit::ratio_partner(t, key.curve) {
+                        Some((s, f)) => match (
+                            op_rows(sim, s, key.angle, false),
+                            op_rows(sim, key.curve, key.angle, false),
+                        ) {
+                            (Some(OpRows::Intensity(s)), Some(OpRows::Intensity(p))) => {
+                                Some(OpRows::Ratio(f, s, p))
+                            }
+                            _ => None,
+                        },
+                        None => op_rows(sim, key.curve, key.angle, t.phase),
+                    },
                 },
             );
         // An unpolarized demand also samples its s and p rows: the branches
@@ -848,6 +899,8 @@ pub fn build_needle_targets_env(
             }
             if t.retardance {
                 emit_retardance(&mut folds, bucket, k, rt_kernel, w, ops);
+            } else if let Some(f) = t.ratio {
+                emit_ratio(&mut folds, bucket, k, rt_kernel, w, f, ops);
             } else {
                 emit(&mut folds, route, bucket, k, rt_kernel, w, ops);
             }
@@ -1006,6 +1059,12 @@ fn sample_parts(
             return None;
         }
         return Some([zs.arg(), zp.arg()]);
+    }
+    if let (Some(OpRows::Ratio(_, s, p)), Some(sim)) = (op, sim) {
+        return Some([
+            interp_clamped(&sim.wavelengths, s, twl_i),
+            interp_clamped(&sim.wavelengths, p, twl_i),
+        ]);
     }
     let (Some([ps, pp]), Some(sim)) = (parts, sim) else {
         return None;
@@ -1222,6 +1281,8 @@ fn fold_integral_demand(
         let rt_kernel = rt_j + reference_at(t, key, current_sim, n_inc, twl_i);
         if t.retardance {
             emit_retardance(folds, bucket, k, rt_kernel, w_j, ops);
+        } else if let Some(f) = t.ratio {
+            emit_ratio(folds, bucket, k, rt_kernel, w_j, f, ops);
         } else {
             emit(folds, route, bucket, k, rt_kernel, w_j, ops);
         }
@@ -2091,6 +2152,7 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2114,6 +2176,7 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2149,6 +2212,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2202,6 +2266,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2299,6 +2364,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2392,6 +2458,7 @@ mod tests {
                 phase: true,
                 differential_passes: if differential { Some(1.0) } else { None },
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2556,6 +2623,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 3.0,
@@ -2589,6 +2657,7 @@ mod tests {
                 phase: true,
                 differential_passes: Some(1.0),
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 2.0,
@@ -2637,6 +2706,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
@@ -2776,6 +2846,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -3041,6 +3112,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -3462,6 +3534,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 50.0,

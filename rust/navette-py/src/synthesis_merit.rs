@@ -18,7 +18,8 @@ use pyo3::types::{PyAny, PyDict};
 use crate::structure::WarnOnce;
 
 use navette::smatrix::synthesis::merit::{
-    ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves, SimTransform,
+    ConstraintKind, CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, SimCurves,
+    SimTransform,
 };
 use navette::smatrix::synthesis::needle_pass::build_needle_targets as core_fold;
 
@@ -43,6 +44,14 @@ fn parse_transform(s: &str) -> PyResult<SimTransform> {
     SimTransform::from_str(s).ok_or_else(|| {
         PyValueError::new_err(format!(
             "Invalid transform '{s}' (use 'linear', 'log', 'phase' or 'complex')"
+        ))
+    })
+}
+
+fn parse_ratio(s: &str) -> PyResult<IntensityRatio> {
+    IntensityRatio::from_str(s).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "Invalid ratio '{s}' (use 's/p', 'p/s' or 'diattenuation')"
         ))
     })
 }
@@ -196,7 +205,7 @@ pub(crate) fn compile_merit_spec(py: Python<'_>, request_json: &str) -> PyResult
     // Warned, not refused (W8a): a retardance demand at 0 deg only is
     // unreachable, not malformed.
     let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
-    for msg in navette::smatrix::synthesis::targets::retardance_warnings(&set) {
+    for msg in navette::smatrix::synthesis::targets::sp_contrast_warnings(&set) {
         PyErr::warn(
             py,
             &user_warning,
@@ -231,13 +240,15 @@ impl PyMeritSpec {
     #[pyo3(signature = (key_idx, wavelengths, normalized, tolerances, kind, transform,
                         norm_factor, band=None, phase=false, differential_passes=None,
                         weight=1.0, count_norm=None, integral=false, retardance=false,
-                        point_weights=None))]
+                        ratio=None, point_weights=None))]
     /// Append one target frame. Arrays are per-point values on `wavelengths`.
     /// `differential_passes` (None = absolute phase; 1.0 = `PDts`/`PDtp`
     /// transmitted) subtracts the equivalent-medium reference (see
     /// `SimCurves` metadata); requires `phase=true`. `retardance` samples
     /// `arg(z_p · conj(z_s))` on a p key (`Rp`/`Tp`/`RBp`/`TBp`); requires
-    /// `phase=true` and no `differential_passes`.
+    /// `phase=true` and no `differential_passes`. `ratio` (`"s/p"`,
+    /// `"p/s"` or `"diattenuation"`) samples that ratio of the p key's
+    /// intensity and its s partner instead; it excludes `phase`.
     /// `weight` scales the frame's merit sum; `count_norm` (target-level
     /// point count, resolved by the converter) divides it. `integral`
     /// constrains the mean of the scaled diffs (single residual).
@@ -260,6 +271,7 @@ impl PyMeritSpec {
         count_norm: Option<f64>,
         integral: bool,
         retardance: bool,
+        ratio: Option<String>,
         point_weights: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
         let pw: Vec<f64> = match point_weights {
@@ -291,6 +303,7 @@ impl PyMeritSpec {
                 phase,
                 differential_passes,
                 retardance,
+                ratio: ratio.as_deref().map(parse_ratio).transpose()?,
                 weight,
                 count_norm,
                 integral,

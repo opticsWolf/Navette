@@ -140,7 +140,7 @@ halves stay pinned, so a sliver left by an insertion is kept.
 
 ### W5, transforms in the needle
 - `complex` transform: refused at the first fold (no fold form exists).
-- Ratio, extinction and contrast targets: not started; would reuse the
+- Ratio, extinction and diattenuation targets: done (W8.3), on the
   tangent-pair construction.
 
 ### W6, incoherent synthesis (first cut, this change)
@@ -224,17 +224,17 @@ bucket (FD oracle, 0° and 30°); LM with the analytic Jacobian (item
   differ per entry); only the flat scan shares sweeps.
 
 ### W8, new target types
-Done: W8a retardance (RetR/RetT, DeltaR/DeltaT). Open, in plan order:
-1. Rs/Rp ratio, extinction ratio, diattenuation (tangent pair or grad
-   bucket).
-2. Psi_R/Psi_T: needs a complex gradient operator
+Done: W8a retardance (RetR/RetT, DeltaR/DeltaT); W8.3 intensity ratios
+(RatioR/T = s/p, ExtR/T = p/s, DiattR/T), tangent pair per branch.
+Open, in plan order:
+1. Psi_R/Psi_T: needs a complex gradient operator
    (`p_coherent_grad_c_from_fields`).
-3. DOP / Stokes for a given input state: needs an input-polarization
+2. DOP / Stokes for a given input state: needs an input-polarization
    field on the target.
-4. GD…FOD: port the engine's dispersion forward into `simulate_inner`,
+3. GD…FOD: port the engine's dispersion forward into `simulate_inner`,
    add curve ids, fold onto the existing Q-row sensitivities; LM by FD
    first.
-5. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+4. PDrs/PDrp: deferred (reference plane of the round trip, D3).
 
 ### Further gaps (plan §5)
 - Angle-cone and bandwidth-averaged targets (W4 point weights are the

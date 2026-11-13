@@ -102,6 +102,25 @@ Delta target is compiled as the retardance target shifted by its offset,
 so one forward and one needle fold serve all four. At normal incidence the
 retardance is identically 0: a demand at 0° only compiles with a warning.
 
+Intensity-ratio labels (``polarization="u"``, ``phase=False``, front only):
+
+==============  ==================================================
+label           meaning
+==============  ==================================================
+``"RatioR"``    ``Rs / Rp``
+``"RatioT"``    ``Ts / Tp``
+``"ExtR"``      ``Rp / Rs``, the extinction ratio
+``"ExtT"``      ``Tp / Ts``
+``"DiattR"``    ``(Rp − Rs)/(Rp + Rs)``, the engine's ``Diattenuation_R``
+``"DiattT"``    ``(Tp − Ts)/(Tp + Ts)``, the engine's ``Diattenuation_T``
+==============  ==================================================
+
+They key on the p curve and read its s partner too; each denominator
+carries the engine's 1e-20 guard. The needle folds a ratio through its
+tangent at the operating point, as it does the log transform. At normal
+incidence s and p are equal and the value cannot move: a demand at 0°
+only compiles with a warning.
+
 Any other label raises ``ValueError`` — the synthesis side speaks this fixed
 vocabulary (the weaver itself accepts anything). Targets with
 ``phase=True`` become phase demands on the mapped curve's S-matrix element

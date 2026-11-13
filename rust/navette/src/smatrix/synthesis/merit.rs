@@ -688,6 +688,11 @@ pub struct MeritTarget {
     /// and excludes `differential_passes` (rejected otherwise): the two
     /// polarizations share one propagation reference, which cancels.
     pub retardance: bool,
+    /// W8 intensity ratio (`RatioR`/`ExtR`/`DiattR` and their T labels):
+    /// sample `f(X_s, X_p)` of the key's p intensity and its s partner
+    /// ([`CurveId::retardance_partner`]) instead of `X_p`. Excludes `phase`
+    /// (rejected otherwise). `None` for every other demand.
+    pub ratio: Option<IntensityRatio>,
     /// User weight (default 1): multiplies this frame's merit sum.
     /// Applied at the residual level (`r × √(weight/count)`) so values,
     /// LM Jacobians and the needle fold stay consistent by construction.
@@ -938,6 +943,20 @@ impl MeritSpec {
                 ));
             }
         }
+        if target.ratio.is_some() {
+            let curve = self.keys[target.key_idx as usize].curve;
+            if target.phase || target.retardance {
+                return Err(
+                    "intensity ratio with phase: a ratio of intensities has no phase".into(),
+                );
+            }
+            if curve.retardance_partner().is_none() {
+                return Err(format!(
+                    "intensity ratio on {curve:?}: the key must be a p intensity \
+                     (Rp, Tp, RBp, TBp)"
+                ));
+            }
+        }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
         if !target.weight.is_finite() || target.weight < 0.0 {
@@ -995,6 +1014,9 @@ impl MeritSpec {
                 continue;
             }
             let mut rows = rows_of(curve);
+            if let Some((s, _)) = ratio_partner(t, curve) {
+                rows.push(s);
+            }
             for c in rows.clone() {
                 if let Some((cs, cp)) = c.unpolarized_parts() {
                     rows.extend([cs, cp]);
@@ -1114,12 +1136,15 @@ impl MeritSpec {
                 provides.has_intensity(rc) && provides.has_intensity(tc)
             } else {
                 provides.has_intensity(key.curve)
+                    && ratio_partner(t, key.curve).is_none_or(|(s, _)| provides.has_intensity(s))
             };
             if !ok {
                 let what = if t.differential_passes.is_some() {
                     "differential phase"
                 } else if t.retardance {
                     "retardance"
+                } else if t.ratio.is_some() {
+                    "intensity ratio"
                 } else if t.phase {
                     "phase"
                 } else {
@@ -1437,6 +1462,8 @@ impl MeritSpec {
                 Absorption(&'a [f64], &'a [f64]),
                 Phase(&'a [Complex64]),
                 Retardance(&'a [Complex64], &'a [Complex64]),
+                /// The s and p rows of an intensity ratio.
+                Ratio(IntensityRatio, &'a [f64], &'a [f64]),
             }
             let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
                 let arc = if id.is_back() {
@@ -1451,6 +1478,8 @@ impl MeritSpec {
                 TargetInput::Retardance(crow(key.curve)?, crow(s)?)
             } else if t.phase {
                 TargetInput::Phase(crow(key.curve)?)
+            } else if let Some((s, f)) = ratio_partner(t, key.curve) {
+                TargetInput::Ratio(f, irow(s)?, irow(key.curve)?)
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 TargetInput::Absorption(irow(rc)?, irow(tc)?)
             } else {
@@ -1584,6 +1613,10 @@ impl MeritSpec {
                     TargetInput::Intensity(row) => sample(row, i, &mut sim_idx),
                     TargetInput::Absorption(r, tt) => {
                         1.0 - sample(r, i, &mut sim_idx) - sample(tt, i, &mut sim_idx)
+                    }
+                    TargetInput::Ratio(f, srow, prow) => {
+                        let xs = sample(srow, i, &mut sim_idx);
+                        f.value(xs, sample(prow, i, &mut sim_idx))
                     }
                     TargetInput::Phase(crow) => {
                         let mut a = sample_c(crow, i, &mut sim_idx).arg();
@@ -1981,11 +2014,19 @@ impl MeritSpec {
                     return Err(key.curve);
                 }
                 (0.0, Vec::new())
+            } else if let Some((s, _)) = ratio_partner(t, key.curve) {
+                // Not linear: the signs are placeholders, each point's
+                // own partials replace them below.
+                (
+                    0.0,
+                    vec![(s, irow(s)?, 1.0), (key.curve, irow(key.curve)?, 1.0)],
+                )
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 (1.0, vec![(rc, irow(rc)?, -1.0), (tc, irow(tc)?, -1.0)])
             } else {
                 (0.0, vec![(key.curve, irow(key.curve)?, 1.0)])
             };
+            let ratio = ratio_partner(t, key.curve).map(|(_, f)| f);
 
             if t_wl.is_empty() {
                 continue;
@@ -2027,13 +2068,31 @@ impl MeritSpec {
             let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
             let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
             let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+            // ∂raw/∂channel per point: the signs for a linear combination,
+            // the partials at the sampled values for a ratio.
+            let mut dchs: Vec<[f64; 2]> = Vec::with_capacity(t_wl.len());
             for i in 0..t_wl.len() {
                 let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
-                let raw = konst
-                    + channels
-                        .iter()
-                        .map(|(_, row, sgn)| sgn * r.read(row))
-                        .sum::<f64>();
+                let (raw, dch) = match ratio {
+                    Some(f) => {
+                        let (xs, xp) = (r.read(channels[0].1), r.read(channels[1].1));
+                        let (a_s, a_p) = f.partials(xs, xp);
+                        (f.value(xs, xp), [a_s, a_p])
+                    }
+                    None => {
+                        let mut dch = [0.0; 2];
+                        for (j, c) in channels.iter().enumerate() {
+                            dch[j] = c.2;
+                        }
+                        let raw = konst
+                            + channels
+                                .iter()
+                                .map(|(_, row, sgn)| sgn * r.read(row))
+                                .sum::<f64>();
+                        (raw, dch)
+                    }
+                };
+                dchs.push(dch);
                 let target_scaled = t.normalized_targets[i];
                 let diff = match t.transform {
                     SimTransform::Phase => {
@@ -2062,6 +2121,7 @@ impl MeritSpec {
                     push_terms(
                         &mut terms,
                         &channels,
+                        dchs[i],
                         ang_row,
                         &refs[i],
                         rscale * dk * dt * t.point_weight(i) / w_sum,
@@ -2078,6 +2138,7 @@ impl MeritSpec {
                     push_terms(
                         &mut terms,
                         &channels,
+                        dchs[i],
                         ang_row,
                         &refs[i],
                         rscale * t.point_weight(i).sqrt() * dk * dt,
@@ -2099,12 +2160,14 @@ impl MeritSpec {
     }
 }
 
-/// Append ∂r/∂value for every (channel × simulated point) this sample reads.
+/// Append ∂r/∂value for every (channel × simulated point) this sample reads,
+/// channel `j` scaled by its `∂raw/∂channel` in `dch[j]`.
 /// Terms that are structurally zero are dropped rather than stored: a caller
 /// multiplying them by ∂(curve)/∂θ would only be adding zeros.
 fn push_terms(
     terms: &mut Vec<CurveTerm>,
     channels: &[(CurveId, &[f64], f64)],
+    dch: [f64; 2],
     angle_row: usize,
     r: &SampleRef,
     scale: f64,
@@ -2112,9 +2175,76 @@ fn push_terms(
     if scale == 0.0 {
         return;
     }
-    for &(curve, _, sgn) in channels {
-        push_part_terms(terms, curve, TermPart::Value, angle_row, r, scale * sgn);
+    for (j, &(curve, _, _)) in channels.iter().enumerate() {
+        push_part_terms(terms, curve, TermPart::Value, angle_row, r, scale * dch[j]);
     }
+}
+
+/// W8: an intensity ratio of one element's s and p intensities, `X_s` and
+/// `X_p`. The small `RATIO_EPS` in each denominator is the engine's own
+/// guard for diattenuation (`s1 / (s0 + 1e-20)`); it keeps the ratio and
+/// its partials finite where an intensity vanishes, and leaves them smooth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IntensityRatio {
+    /// `X_s / X_p` (`RatioR`, `RatioT`).
+    SOverP,
+    /// `X_p / X_s`, the extinction ratio (`ExtR`, `ExtT`).
+    POverS,
+    /// `(X_p − X_s) / (X_p + X_s)`, the engine's `Diattenuation_R/_T`
+    /// (`DiattR`, `DiattT`).
+    Diattenuation,
+}
+
+/// Denominator guard of [`IntensityRatio`] (the engine's diattenuation guard).
+pub const RATIO_EPS: f64 = 1e-20;
+
+impl IntensityRatio {
+    /// Parse the raw door's spelling: `s/p`, `p/s`, `diattenuation`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "s/p" => Some(IntensityRatio::SOverP),
+            "p/s" => Some(IntensityRatio::POverS),
+            "diattenuation" => Some(IntensityRatio::Diattenuation),
+            _ => None,
+        }
+    }
+
+    /// The ratio at intensities `(xs, xp)`.
+    #[inline]
+    pub fn value(self, xs: f64, xp: f64) -> f64 {
+        match self {
+            IntensityRatio::SOverP => xs / (xp + RATIO_EPS),
+            IntensityRatio::POverS => xp / (xs + RATIO_EPS),
+            IntensityRatio::Diattenuation => (xp - xs) / (xp + xs + RATIO_EPS),
+        }
+    }
+
+    /// `(∂f/∂xs, ∂f/∂xp)` at `(xs, xp)`.
+    #[inline]
+    pub fn partials(self, xs: f64, xp: f64) -> (f64, f64) {
+        match self {
+            IntensityRatio::SOverP => {
+                let d = xp + RATIO_EPS;
+                (1.0 / d, -xs / (d * d))
+            }
+            IntensityRatio::POverS => {
+                let d = xs + RATIO_EPS;
+                (-xp / (d * d), 1.0 / d)
+            }
+            IntensityRatio::Diattenuation => {
+                let d = xp + xs + RATIO_EPS;
+                let d2 = d * d;
+                (-(2.0 * xp + RATIO_EPS) / d2, (2.0 * xs + RATIO_EPS) / d2)
+            }
+        }
+    }
+}
+
+/// The s curve and ratio of an intensity-ratio target on p key `curve`;
+/// `None` for every other target (registration guarantees the partner
+/// exists when `t.ratio` is set).
+pub(crate) fn ratio_partner(t: &MeritTarget, curve: CurveId) -> Option<(CurveId, IntensityRatio)> {
+    t.ratio.zip(curve.retardance_partner()).map(|(f, s)| (s, f))
 }
 
 /// [`push_terms`] for one curve and part: `scale` spread over the simulated
@@ -2486,6 +2616,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2515,6 +2646,7 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -4523,6 +4655,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight,
@@ -5000,6 +5133,181 @@ mod tests {
         fn retardance_rows_are_a_finite_difference_of_both_complex_rows() {
             check_retardance_rows(CurveId::Rp);
             check_retardance_rows(CurveId::TBp);
+        }
+
+        /// W8: smooth, positive, mutually distinct s and p intensity rows
+        /// for the ratio demands; `bump` moves one entry of one row.
+        fn ratio_sim(bump: Option<(CurveId, usize, f64)>) -> SimCurves {
+            let mut sim = base_sim();
+            let ids = [
+                CurveId::Rs,
+                CurveId::Rp,
+                CurveId::Ts,
+                CurveId::Tp,
+                CurveId::RBs,
+                CurveId::RBp,
+            ];
+            for (j, id) in ids.into_iter().enumerate() {
+                let mut v: Vec<f64> = (0..NA * NW)
+                    .map(|k| 0.12 + 0.07 * j as f64 + 0.05 * ((k as f64) * 0.4 + j as f64).sin())
+                    .collect();
+                if let Some((b, flat, h)) = bump
+                    && b == id
+                {
+                    v[flat] += h;
+                }
+                sim.set_curve(id, Arc::from(v)).unwrap();
+            }
+            sim
+        }
+
+        /// W8: an intensity-ratio demand reads `f(X_s, X_p)` and its rows
+        /// land on both intensity rows with the ratio's partials, against
+        /// `residuals()` differenced in every entry of either row. Every
+        /// ratio, linear and log, pointwise and integral, aligned and
+        /// off-grid, two kinds, both angles, a front and a back key.
+        #[test]
+        fn ratio_rows_are_a_finite_difference_of_both_intensity_rows() {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            for p in [CurveId::Rp, CurveId::Tp, CurveId::RBp] {
+                let s_id = p.retardance_partner().unwrap();
+                for f in [
+                    IntensityRatio::SOverP,
+                    IntensityRatio::POverS,
+                    IntensityRatio::Diattenuation,
+                ] {
+                    let mut spec = MeritSpec::new();
+                    for angle in [Radians::ZERO, deg(30.0)] {
+                        let k = spec.add_key(MeritKey { angle, curve: p });
+                        for (grid, integral, kind, transform) in [
+                            (wl(), false, ConstraintKind::Exact, SimTransform::Linear),
+                            (off.clone(), false, ConstraintKind::Exact, SimTransform::Log),
+                            (wl(), true, ConstraintKind::Exact, SimTransform::Linear),
+                            (
+                                off.clone(),
+                                false,
+                                ConstraintKind::CenterBand,
+                                SimTransform::Linear,
+                            ),
+                        ] {
+                            let n = grid.len();
+                            let mut t = target(k as u32, grid, kind, transform, integral, 1.3);
+                            t.ratio = Some(f);
+                            let level = f.value(0.2, 0.3);
+                            t.normalized_targets = vec![
+                                if transform == SimTransform::Log {
+                                    level.abs().log10()
+                                } else {
+                                    level
+                                };
+                                n
+                            ]
+                            .into();
+                            t.point_weights =
+                                (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                            spec.add_target(t).unwrap();
+                        }
+                    }
+                    let need = spec.required_rows();
+                    assert!(need.has_intensity(p) && need.has_intensity(s_id));
+
+                    let sim = ratio_sim(None);
+                    let sens = spec.curve_sensitivity(&sim).unwrap();
+                    assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+                    let h = 1e-7;
+                    let mut live = 0usize;
+                    for curve in [p, s_id] {
+                        for flat in 0..NA * NW {
+                            let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                            spec.residuals(&ratio_sim(Some((curve, flat, h))), &mut rp)
+                                .unwrap();
+                            spec.residuals(&ratio_sim(Some((curve, flat, -h))), &mut rm)
+                                .unwrap();
+                            let a = analytic_column(&sens, NW, curve, flat);
+                            for (i, ((x, u), v)) in a.iter().zip(&rp).zip(&rm).enumerate() {
+                                let y = (u - v) / (2.0 * h);
+                                let dev = (x - y).abs() / y.abs().max(1.0);
+                                assert!(
+                                    dev < 1e-6,
+                                    "{f:?} on {p:?}: row {i}, {curve:?}[{flat}]: {x} vs {y}"
+                                );
+                                if y.abs() > 1e-9 {
+                                    live += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert!(live > 100, "{f:?} on {p:?}: only {live} live entries");
+                }
+            }
+        }
+
+        /// W8: the residual reads the ratio of the two rows, with the
+        /// engine's diattenuation guard, and registration refuses a ratio
+        /// on anything but a p key or with phase.
+        #[test]
+        fn ratio_demand_reads_the_ratio_and_refuses_bad_keys() {
+            let sim = ratio_sim(None);
+            let (xs, xp) = (
+                sim.curve(CurveId::Rs).unwrap()[3],
+                sim.curve(CurveId::Rp).unwrap()[3],
+            );
+            for (f, want) in [
+                (IntensityRatio::SOverP, xs / xp),
+                (IntensityRatio::POverS, xp / xs),
+                (IntensityRatio::Diattenuation, (xp - xs) / (xp + xs)),
+            ] {
+                let mut spec = MeritSpec::new();
+                let k = spec.add_key(MeritKey {
+                    angle: Radians::ZERO,
+                    curve: CurveId::Rp,
+                });
+                let mut t = target(
+                    k as u32,
+                    wl(),
+                    ConstraintKind::Exact,
+                    SimTransform::Linear,
+                    false,
+                    1.0,
+                );
+                t.ratio = Some(f);
+                t.normalized_targets = vec![0.0; NW].into();
+                t.tolerances = vec![1.0; NW].into();
+                spec.add_target(t).unwrap();
+                let mut r = Vec::new();
+                spec.residuals(&sim, &mut r).unwrap();
+                assert!((r[3] - want).abs() < 1e-12, "{f:?}: {} vs {want}", r[3]);
+            }
+            let mut spec = MeritSpec::new();
+            let ks = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rs,
+            });
+            let kp = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rp,
+            });
+            let mut t = target(
+                ks as u32,
+                wl(),
+                ConstraintKind::Exact,
+                SimTransform::Linear,
+                false,
+                1.0,
+            );
+            t.ratio = Some(IntensityRatio::SOverP);
+            assert!(spec.add_target(t).unwrap_err().contains("p intensity"));
+            let mut t = target(
+                kp as u32,
+                wl(),
+                ConstraintKind::Exact,
+                SimTransform::Phase,
+                false,
+                1.0,
+            );
+            t.ratio = Some(IntensityRatio::SOverP);
+            t.phase = true;
+            assert!(spec.add_target(t).unwrap_err().contains("no phase"));
         }
 
         #[test]

@@ -36,6 +36,7 @@ regenerates it).
 | phase of one element, front | `R`, `T` × s/p, `phase=True` | yes | no² |
 | phase of one element, back | `RB`, `TB` × s/p, `phase=True` | yes¹ | no² |
 | retardance | `RetR`, `RetT`, `DeltaR`, `DeltaT`, u, `phase=True` | yes | no² |
+| intensity ratio | `RatioR`, `RatioT`, `ExtR`, `ExtT`, `DiattR`, `DiattT`, u | yes | yes |
 | differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
 | colour (`ColorTarget`) | front `R` / `T` | yes | yes |
 <!-- target-matrix:end -->
@@ -46,8 +47,7 @@ normalization, phase rows linear or phase. Colour is `Exact` and linear
 only (*Color demands*). Not available in synthesis (the engine computes
 them, the merit does not): differential phase in reflection (`PDrs`,
 `PDrp`), Ψ, group delay and higher dispersion orders, degree of
-polarization and Stokes parameters, ratio and extinction targets, and
-the `complex` transform.
+polarization and Stokes parameters, and the `complex` transform.
 
 1. Not computable when the exit medium absorbs over the demand's
    wavelengths: light coming from inside an absorbing half-space has no
@@ -285,6 +285,26 @@ is flat there). `"auto"` resolves to log for any curve spanning 100× or
 more, so this is what makes such targets usable in needle runs at all.
 Phase demands must carry raw values with `norm_factor == 1` (the phase
 arm scales nothing — the converter unscales the resolved triple).
+
+**Intensity-ratio demands** (`RatioR/T` = s/p, `ExtR/T` = p/s,
+`DiattR/T` = $(p-s)/(p+s)$) read both front intensities $X_s, X_p$ of
+one quantity and score $f(X_s, X_p)$; each denominator carries the
+engine's $10^{-20}$ guard, so `DiattR` equals the engine's
+`Diattenuation_R` to rounding. The merit Jacobian takes the partials
+$a_s = \partial f/\partial X_s$, $a_p = \partial f/\partial X_p$ per
+point. The needle fold is the log fold applied to each branch: with the
+kind table's centre or edge $c$ (in $f$ units, after $nf$) and weight
+$w$, branch $b \in \{s, p\}$ emits
+
+$$t_{b,k} = X_{b,op} - (f_{op} - c)/a_b, \qquad w_{b,k} = 2\,w\,a_b^2,$$
+
+into the s and p buckets of the same quantity. The two pairs together
+have the ratio residual's value and gradient at the operating point
+(pinned by the oracle for every kind, log, the integral and through a
+plate). With no operating point a ratio folds nothing, and a branch with
+$a_b = 0$ emits nothing. At normal incidence $X_s = X_p$ for every
+stack, the value is fixed and a demand there only compiles with a
+warning.
 
 Spectral-label mapping for the converter (`TargetCollection` → `MeritSpec`):
 `R/T/A` × s/p/u → front demands, `RB/TB/AB` × s/p/u → back demands;

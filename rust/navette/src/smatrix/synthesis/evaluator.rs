@@ -1160,7 +1160,9 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use crate::smatrix::angle::{Radians, deg, degs};
-    use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
+    use crate::smatrix::synthesis::merit::{
+        ConstraintKind, IntensityRatio, MeritKey, MeritTarget, SimTransform,
+    };
     use crate::smatrix::synthesis::structure::LayerSpec;
 
     #[test]
@@ -1193,6 +1195,7 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1255,6 +1258,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1386,6 +1390,7 @@ mod tests {
                 phase: true,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -1503,6 +1508,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1543,6 +1549,7 @@ mod tests {
             phase: true,
             differential_passes: Some(1.0),
             retardance: false,
+            ratio: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1643,6 +1650,7 @@ mod tests {
                 phase: true,
                 differential_passes: passes,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -1702,6 +1710,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2526,6 +2535,105 @@ mod tests {
             }
         }
 
+        /// W8 forward: the six intensity-ratio labels, compiled with target
+        /// 0 and tolerance 1, leave residuals equal to the ratio of the
+        /// engine's own `Rs`/`Rp` (`Ts`/`Tp`) on the same stack, and the
+        /// diattenuation labels equal to its `Diattenuation_R/_T`, at 45°
+        /// and 70°.
+        #[test]
+        fn intensity_ratios_follow_the_engine() {
+            use crate::smatrix::core_engine::{
+                REQ_DIATT_R, REQ_DIATT_T, REQ_RP, REQ_RS, REQ_TP, REQ_TS,
+            };
+            use crate::smatrix::synthesis::targets::{TargetSet, compile_merit_spec};
+            use num_complex::Complex64;
+            let stack = stack3(118.0, 203.0, 64.0);
+            let sa = stack.solver_arrays();
+            let (nl, nw) = (sa.n_layers as usize, WLS.len());
+            let indices: Vec<Complex64> = (0..nl * nw)
+                .map(|i| {
+                    let (l, w) = (i / nw, i % nw);
+                    let b = (w * nl + l) * 2;
+                    Complex64::new(sa.n_stack_cache[b], sa.n_stack_cache[b + 1])
+                })
+                .collect();
+            for angle_deg in [45.0, 70.0] {
+                let (sol, _) = crate::smatrix::solver::solve_arrays(
+                    &indices,
+                    &sa.thicknesses,
+                    &vec![false; nl],
+                    &sa.rough_types,
+                    &sa.rough_vals,
+                    &WLS,
+                    &[deg(angle_deg)],
+                    REQ_RS | REQ_RP | REQ_TS | REQ_TP | REQ_DIATT_R | REQ_DIATT_T,
+                    2,
+                )
+                .unwrap();
+                let engine = |key: &str| -> Vec<f64> {
+                    sol.f64maps
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .unwrap_or_else(|| panic!("engine has no {key}"))
+                        .1
+                        .clone()
+                };
+                let (rs, rp, ts, tp) = (engine("Rs"), engine("Rp"), engine("Ts"), engine("Tp"));
+                for (label, f, (xs, xp), direct) in [
+                    ("RatioR", IntensityRatio::SOverP, (&rs, &rp), None),
+                    ("RatioT", IntensityRatio::SOverP, (&ts, &tp), None),
+                    ("ExtR", IntensityRatio::POverS, (&rs, &rp), None),
+                    ("ExtT", IntensityRatio::POverS, (&ts, &tp), None),
+                    (
+                        "DiattR",
+                        IntensityRatio::Diattenuation,
+                        (&rs, &rp),
+                        Some("Diattenuation_R"),
+                    ),
+                    (
+                        "DiattT",
+                        IntensityRatio::Diattenuation,
+                        (&ts, &tp),
+                        Some("Diattenuation_T"),
+                    ),
+                ] {
+                    let (zeros, ones) = (vec![0.0; nw], vec![1.0; nw]);
+                    let set = TargetSet::from_value(serde_json::json!({
+                        "spectral": [{
+                            "wavelengths": WLS, "values": zeros, "tolerances": ones,
+                            "angle_deg": angle_deg, "polarization": "u",
+                            "spectral": label, "normalization_mode": "linear",
+                        }],
+                    }))
+                    .unwrap();
+                    let mut ctx = ctx3(compile_merit_spec(&set).unwrap());
+                    ctx.sin_theta = vec![deg(angle_deg).get().sin()];
+                    let nf = ctx.spec.targets()[0].norm_factor;
+                    assert_eq!(ctx.spec.targets()[0].ratio, Some(f), "{label}");
+                    let mut r = Vec::new();
+                    ctx.spec
+                        .residuals(&ctx.simulate(&stack).unwrap(), &mut r)
+                        .unwrap();
+                    assert_eq!(r.len(), nw);
+                    for i in 0..nw {
+                        let want = f.value(xs[i], xp[i]);
+                        let got = r[i] / nf;
+                        assert!(
+                            (got - want).abs() < 1e-10 * want.abs().max(1.0),
+                            "{label} at {angle_deg} deg, point {i}: {got} vs {want}"
+                        );
+                        if let Some(key) = direct {
+                            let e = engine(key)[i];
+                            assert!(
+                                (got - e).abs() < 1e-10,
+                                "{label} at {angle_deg} deg, point {i}: {got} vs engine {key} {e}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         /// A retardance demand on p key `curve` at `angle` over `wls`.
         fn retardance_demand(
             spec: &mut MeritSpec,
@@ -2550,6 +2658,7 @@ mod tests {
                 phase: true,
                 differential_passes: None,
                 retardance: true,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -2715,6 +2824,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2815,6 +2925,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -3694,6 +3805,7 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -3922,7 +4034,9 @@ mod needle_oracle {
     use crate::smatrix::synthesis::color_merit::{
         ColorDemand, ColorDistance, ColorQuantity, ColorReference, E313_CX_D65_10, E313_CZ_D65_10,
     };
-    use crate::smatrix::synthesis::merit::{ConstraintKind, MeritKey, MeritTarget, SimTransform};
+    use crate::smatrix::synthesis::merit::{
+        ConstraintKind, IntensityRatio, MeritKey, MeritTarget, SimTransform,
+    };
     use crate::smatrix::synthesis::needle_pass::{
         NeedlePassInput, build_needle_targets, build_scan_sites, needle_pass_scan,
     };
@@ -3978,6 +4092,8 @@ mod needle_oracle {
         passes: Option<f64>,
         integral: bool,
         retardance: bool,
+        /// W8: an intensity ratio on p key `curve`.
+        ratio: Option<IntensityRatio>,
         /// Non-uniform W4 point weights (0.5, 1.5, 2.5, ...) instead of none.
         weighted: bool,
         /// W5: a Log demand; `target` is then log10 of the level.
@@ -3994,6 +4110,7 @@ mod needle_oracle {
             passes: None,
             integral: false,
             retardance: false,
+            ratio: None,
             weighted: false,
             log: false,
         }
@@ -4012,6 +4129,14 @@ mod needle_oracle {
         D {
             phase: true,
             retardance: true,
+            ..d(curve, target)
+        }
+    }
+
+    /// W8: an intensity-ratio demand `f(X_s, X_p)` on p key `curve`.
+    fn rat(curve: CurveId, f: IntensityRatio, target: f64) -> D {
+        D {
+            ratio: Some(f),
             ..d(curve, target)
         }
     }
@@ -4045,6 +4170,7 @@ mod needle_oracle {
             phase: x.phase,
             differential_passes: x.passes,
             retardance: x.retardance,
+            ratio: x.ratio,
             point_weights: if x.weighted {
                 (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into()
             } else {
@@ -4528,6 +4654,118 @@ mod needle_oracle {
         for (name, x) in [
             ("RetR", ret(CurveId::Rp, 0.4)),
             ("RetT", ret(CurveId::Tp, 0.4)),
+        ] {
+            let mut spec = MeritSpec::new();
+            add(&mut spec, Radians::ZERO, x);
+            for (i, (p, s)) in p_and_slope(spec, Radians::ZERO).into_iter().enumerate() {
+                assert!(
+                    p.abs() < 1e-9 && s.abs() < 1e-6,
+                    "{name}, site {i}: P {p}, slope {s}"
+                );
+            }
+        }
+    }
+
+    /// W8: every intensity ratio, front and back, linear and log, the
+    /// kinds that activate, integral, weighted, and mixed with a plain
+    /// intensity demand on the same element.
+    fn ratio_cases(angle: Radians) -> Vec<(&'static str, MeritSpec)> {
+        use ConstraintKind::*;
+        use CurveId::*;
+        use IntensityRatio::*;
+        let one = |x: D| {
+            let mut s = MeritSpec::new();
+            add(&mut s, angle, x);
+            s
+        };
+        let mut mixed = MeritSpec::new();
+        add(&mut mixed, angle, rat(Rp, SOverP, 0.5));
+        add(&mut mixed, angle, d(Rs, 0.1));
+        add(&mut mixed, angle, d(Ru, 0.2));
+        vec![
+            ("RatioR", one(rat(Rp, SOverP, 0.5))),
+            ("RatioT", one(rat(Tp, SOverP, 0.9))),
+            ("ExtR", one(rat(Rp, POverS, 2.0))),
+            ("ExtT", one(rat(Tp, POverS, 1.3))),
+            ("DiattR", one(rat(Rp, Diattenuation, -0.4))),
+            ("DiattT", one(rat(Tp, Diattenuation, 0.1))),
+            ("DiattRB", one(rat(RBp, Diattenuation, -0.2))),
+            ("RatioTB", one(rat(TBp, SOverP, 0.8))),
+            (
+                "ExtT log",
+                one(D {
+                    log: true,
+                    ..rat(Tp, POverS, 1.5f64.log10())
+                }),
+            ),
+            (
+                "RatioR above",
+                one(D {
+                    kind: Above,
+                    ..rat(Rp, SOverP, 3.0)
+                }),
+            ),
+            (
+                "DiattT range",
+                one(D {
+                    kind: Range,
+                    band: 0.01,
+                    ..rat(Tp, Diattenuation, 0.3)
+                }),
+            ),
+            (
+                "ExtR integral",
+                one(D {
+                    integral: true,
+                    ..rat(Rp, POverS, 2.0)
+                }),
+            ),
+            (
+                "DiattR integral weighted",
+                one(D {
+                    integral: true,
+                    weighted: true,
+                    ..rat(Rp, Diattenuation, -0.4)
+                }),
+            ),
+            (
+                "RatioT weighted",
+                one(D {
+                    weighted: true,
+                    ..rat(Tp, SOverP, 0.9)
+                }),
+            ),
+            ("RatioR + Rs + Ru", mixed),
+        ]
+    }
+
+    #[test]
+    fn ratio_p_is_the_merit_slope_at_45_and_70_deg() {
+        for angle in [deg(45.0), deg(70.0)] {
+            for (name, spec) in ratio_cases(angle) {
+                check(name, spec, angle);
+            }
+        }
+    }
+
+    #[test]
+    fn ratio_p_is_the_merit_slope_through_an_incoherent_plate() {
+        for angle in [deg(30.0), deg(60.0)] {
+            for (name, spec) in ratio_cases(angle) {
+                check_on(name, plate(), spec, angle);
+            }
+        }
+    }
+
+    /// At normal incidence s and p coincide: a ratio is fixed at 1 and a
+    /// diattenuation at 0, and the two branches' P cancel to round-off.
+    #[test]
+    fn ratio_is_flat_at_normal_incidence() {
+        use IntensityRatio::*;
+        for (name, x) in [
+            ("RatioR", rat(CurveId::Rp, SOverP, 0.5)),
+            ("ExtT", rat(CurveId::Tp, POverS, 1.3)),
+            ("DiattR", rat(CurveId::Rp, Diattenuation, -0.4)),
         ] {
             let mut spec = MeritSpec::new();
             add(&mut spec, Radians::ZERO, x);

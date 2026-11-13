@@ -14,7 +14,7 @@
 # Kept in sync with the PyO3 registration list by tools/check_pyi_sync.py.
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -380,6 +380,7 @@ class MeritSpec:
         count_norm: float | None = ...,
         integral: bool = ...,
         retardance: bool = ...,
+        ratio: Literal["s/p", "p/s", "diattenuation"] | None = ...,
         point_weights: FloatArray | None = ...,
     ) -> None: ...
     def merit(self, sim: SimCurves, missing_penalty: float) -> float: ...

@@ -7,6 +7,28 @@ All notable changes to Navette are recorded here. Work items reference
 
 ## [Unreleased]
 
+### Added
+
+- **Intensity-ratio targets: `RatioR`, `RatioT`, `ExtR`, `ExtT`,
+  `DiattR`, `DiattT`** (W8.3). Synthesis scores the front s/p intensity
+  ratio (`Ratio` = s/p), the extinction ratio (`Ext` = p/s) and the
+  diattenuation (p − s)/(p + s), each denominator guarded by the
+  engine's 1e-20, so `DiattR`/`DiattT` equal the engine's
+  `Diattenuation_R`/`Diattenuation_T`. They take `polarization="u"` and
+  no phase; every kind, `band`, point weights, log normalization and
+  `integral` apply, and they score through incoherent plates. The merit
+  Jacobian carries the ratio's partials; the needle folds each demand as
+  one tangent pair per branch on the s and p intensity buckets (pinned
+  by the needle oracle, P = dM/dδ). A demand at normal incidence, where
+  s and p coincide and the value cannot move, compiles with a warning.
+  `MeritSpec.add_target` takes `ratio="s/p" | "p/s" | "diattenuation"`
+  on a p intensity key.
+
+### Changed (breaking)
+
+- `retardance_warnings` (Rust, `synthesis::targets`) is now
+  `sp_contrast_warnings`; it also covers the ratio labels.
+
 ## [0.9.0] - synthesis targets belong to the whole design
 
 Needle synthesis draws from a material pool, runs through incoherent
