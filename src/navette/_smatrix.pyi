@@ -382,6 +382,8 @@ class MeritSpec:
         retardance: bool = ...,
         ratio: Literal["s/p", "p/s", "diattenuation", "psi_r", "psi_t"] | None = ...,
         dispersion: Literal[1, 2, 3, 4] | None = ...,
+        stokes: Literal["s0", "s1", "s2", "s3", "dop"] | None = ...,
+        stokes_input: tuple[float, float, float] | None = ...,
         point_weights: FloatArray | None = ...,
     ) -> None: ...
     def merit(self, sim: SimCurves, missing_penalty: float) -> float: ...

@@ -144,6 +144,33 @@ intensity: linear, ``nf = 1``, no wrap. The LM Jacobian and the needle
 fold chain through the stencil's transpose, so both are analytic. The
 values depend on the simulated grid's spacing, exactly as the engine's do.
 
+Stokes labels (``polarization="u"``, ``phase=False``, front only, and a
+``stokes_input`` on the target):
+
+==============  ==================================================
+label           meaning
+==============  ==================================================
+``"S0R"``       total intensity of r_f's output, ``S0``
+``"S1R"``       ``S1`` (p − s); ``"S2R"`` ``S2``; ``"S3R"`` ``S3``
+``"DOPR"``      degree of polarization ``√(S1²+S2²+S3²)/S0``
+``"S0T"``       the same for t_f, through ``"DOPT"``
+==============  ==================================================
+
+``stokes_input`` is the input state as a normalized Stokes vector
+``(q1, q2, q3)``, ``|q| <= 1``; with ``Xs``, ``Xp`` the intensities and
+``Δ`` the retardance, ``S0 = Xp(1+q1)/2 + Xs(1−q1)/2``,
+``S1 = Xp(1+q1)/2 − Xs(1−q1)/2``,
+``S2 = σ√(XsXp)(q2 cos Δ − q3 sin Δ)``,
+``S3 = σ√(XsXp)(q2 sin Δ + q3 cos Δ)`` (``σ = −1`` for R, ``+1`` for T,
+the engine's handedness). For ``(0, 1, 0)`` these are half the engine's
+``S0_R``…``S3_T`` and the DOP is its ``DOP_R``/``DOP_T``. They key on the
+p curve and are normalized linearly. ``S2``/``S3`` also read the
+retardance, so they are phase demands for the incoherent-film rule
+(dropped there); ``S0``, ``S1`` and DOP read intensities only — DOP does
+not depend on ``Δ`` — and reach through. The LM Jacobian and the needle
+fold are analytic: intensity tangents per polarization, plus a phase pair
+on each of p and s for ``S2``/``S3``.
+
 Any other label raises ``ValueError`` — the synthesis side speaks this fixed
 vocabulary (the weaver itself accepts anything). Targets with
 ``phase=True`` become phase demands on the mapped curve's S-matrix element

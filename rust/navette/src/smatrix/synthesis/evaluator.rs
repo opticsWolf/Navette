@@ -1197,6 +1197,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1261,6 +1262,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1394,6 +1396,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -1513,6 +1516,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1555,6 +1559,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -1657,6 +1662,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -1718,6 +1724,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2650,6 +2657,159 @@ mod tests {
             }
         }
 
+        /// W8 forward: the ten Stokes labels, compiled with target 0 and
+        /// tolerance 1, leave residuals equal to the Stokes vector of the
+        /// output for the target's input state, computed here as a
+        /// coherency matrix `M·J·Mᴴ` from the engine's own `Rs`, `Rp`, `Ts`,
+        /// `Tp` and retardances, at 45° and 70°. For the engine's implicit
+        /// input `(0, 1, 0)` they are half the engine's `S0_R…S3_T` and equal
+        /// its `DOP_R`/`DOP_T`.
+        #[test]
+        fn stokes_follows_the_engine() {
+            use crate::smatrix::core_engine::{
+                REQ_DOP_R, REQ_DOP_T, REQ_RETARD_R, REQ_RETARD_T, REQ_RP, REQ_RS, REQ_S0_R,
+                REQ_S0_T, REQ_S1_R, REQ_S1_T, REQ_S2_R, REQ_S2_T, REQ_S3_R, REQ_S3_T, REQ_TP,
+                REQ_TS,
+            };
+            use crate::smatrix::synthesis::merit::StokesQuantity;
+            use crate::smatrix::synthesis::targets::{TargetSet, compile_merit_spec};
+            use num_complex::Complex64;
+            let stack = stack3(118.0, 203.0, 64.0);
+            let sa = stack.solver_arrays();
+            let (nl, nw) = (sa.n_layers as usize, WLS.len());
+            let indices: Vec<Complex64> = (0..nl * nw)
+                .map(|i| {
+                    let (l, w) = (i / nw, i % nw);
+                    let b = (w * nl + l) * 2;
+                    Complex64::new(sa.n_stack_cache[b], sa.n_stack_cache[b + 1])
+                })
+                .collect();
+            for angle_deg in [45.0, 70.0] {
+                let (sol, _) = crate::smatrix::solver::solve_arrays(
+                    &indices,
+                    &sa.thicknesses,
+                    &vec![false; nl],
+                    &sa.rough_types,
+                    &sa.rough_vals,
+                    &WLS,
+                    &[deg(angle_deg)],
+                    REQ_RS
+                        | REQ_RP
+                        | REQ_TS
+                        | REQ_TP
+                        | REQ_RETARD_R
+                        | REQ_RETARD_T
+                        | REQ_S0_R
+                        | REQ_S1_R
+                        | REQ_S2_R
+                        | REQ_S3_R
+                        | REQ_S0_T
+                        | REQ_S1_T
+                        | REQ_S2_T
+                        | REQ_S3_T
+                        | REQ_DOP_R
+                        | REQ_DOP_T,
+                    2,
+                )
+                .unwrap();
+                let engine = |key: &str| -> Vec<f64> {
+                    sol.f64maps
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .unwrap_or_else(|| panic!("engine has no {key}"))
+                        .1
+                        .clone()
+                };
+                for input in [
+                    [0.0, 1.0, 0.0],
+                    [0.3, -0.5, 0.6],
+                    [0.0, 0.0, 1.0],
+                    [-0.2, 0.1, 0.0],
+                ] {
+                    for (side, sigma, xs, xp, ret) in [
+                        (
+                            "R",
+                            -1.0,
+                            engine("Rs"),
+                            engine("Rp"),
+                            engine("Retardance_R"),
+                        ),
+                        ("T", 1.0, engine("Ts"), engine("Tp"), engine("Retardance_T")),
+                    ] {
+                        // Output coherency J' = M J Mᴴ, M = diag(√Xs, √Xp e^{iΔ}).
+                        let want = |i: usize| -> [f64; 5] {
+                            let [q1, q2, q3] = input;
+                            let a_s = Complex64::new(xs[i].sqrt(), 0.0);
+                            let a_p = Complex64::from_polar(xp[i].sqrt(), ret[i]);
+                            let j_ps = Complex64::new(q2, q3) * 0.5;
+                            let (pp, ss) = (xp[i] * (1.0 + q1) * 0.5, xs[i] * (1.0 - q1) * 0.5);
+                            let ps = a_p * a_s.conj() * j_ps;
+                            let s = [pp + ss, pp - ss, sigma * 2.0 * ps.re, sigma * 2.0 * ps.im];
+                            let dop =
+                                ((s[1] * s[1] + s[2] * s[2] + s[3] * s[3]).sqrt() / s[0]).min(1.0);
+                            [s[0], s[1], s[2], s[3], dop]
+                        };
+                        for (qi, (q, name)) in [
+                            (StokesQuantity::S0, "S0"),
+                            (StokesQuantity::S1, "S1"),
+                            (StokesQuantity::S2, "S2"),
+                            (StokesQuantity::S3, "S3"),
+                            (StokesQuantity::Dop, "DOP"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let label = format!("{name}{side}");
+                            let (zeros, ones) = (vec![0.0; nw], vec![1.0; nw]);
+                            let set = TargetSet::from_value(serde_json::json!({
+                                "spectral": [{
+                                    "wavelengths": WLS, "values": zeros, "tolerances": ones,
+                                    "angle_deg": angle_deg, "polarization": "u",
+                                    "spectral": label, "stokes_input": input,
+                                }],
+                            }))
+                            .unwrap();
+                            let mut ctx = ctx3(compile_merit_spec(&set).unwrap());
+                            ctx.sin_theta = vec![deg(angle_deg).get().sin()];
+                            let t = &ctx.spec.targets()[0];
+                            assert_eq!(t.stokes.map(|s| s.quantity), Some(q), "{label}");
+                            assert_eq!(t.transform, SimTransform::Linear, "{label}");
+                            assert_eq!(t.norm_factor, 1.0, "{label}");
+                            let mut r = Vec::new();
+                            ctx.spec
+                                .residuals(&ctx.simulate(&stack).unwrap(), &mut r)
+                                .unwrap();
+                            assert_eq!(r.len(), nw);
+                            let engine_key = if q == StokesQuantity::Dop {
+                                format!("DOP_{side}")
+                            } else {
+                                format!("{name}_{side}")
+                            };
+                            let e = engine(&engine_key);
+                            for i in 0..nw {
+                                let w = want(i)[qi];
+                                assert!(
+                                    (r[i] - w).abs() < 1e-10,
+                                    "{label} {input:?} at {angle_deg} deg, point {i}: {} vs {w}",
+                                    r[i]
+                                );
+                                if input == [0.0, 1.0, 0.0] {
+                                    let scale = if q == StokesQuantity::Dop { 1.0 } else { 0.5 };
+                                    assert!(
+                                        (r[i] - scale * e[i]).abs() < 1e-9,
+                                        "{label} at {angle_deg} deg, point {i}: {} vs engine \
+                                         {engine_key} {}",
+                                        r[i],
+                                        e[i]
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         /// W8 forward: the eight dispersion labels, s and p, compiled with
         /// target 0 and tolerance 1, leave residuals equal to the engine's
         /// own `GD…FOD` of r_f / t_f on the same stack, at 0° and 45°.
@@ -2759,6 +2919,7 @@ mod tests {
                 retardance: true,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -2926,6 +3087,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -3028,6 +3190,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -3909,6 +4072,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -4138,7 +4302,8 @@ mod needle_oracle {
         ColorDemand, ColorDistance, ColorQuantity, ColorReference, E313_CX_D65_10, E313_CZ_D65_10,
     };
     use crate::smatrix::synthesis::merit::{
-        ConstraintKind, IntensityRatio, MeritKey, MeritTarget, SimTransform,
+        ConstraintKind, IntensityRatio, MeritKey, MeritTarget, SimTransform, StokesDemand,
+        StokesQuantity,
     };
     use crate::smatrix::synthesis::needle_pass::{
         NeedlePassInput, build_needle_targets, build_scan_sites, needle_pass_scan,
@@ -4203,6 +4368,8 @@ mod needle_oracle {
         log: bool,
         /// W8: a dispersion demand of this ω order (fs^n, linear).
         disp: Option<u8>,
+        /// W8: a Stokes demand on p key `curve`.
+        stokes: Option<StokesDemand>,
     }
 
     fn d(curve: CurveId, target: f64) -> D {
@@ -4219,6 +4386,7 @@ mod needle_oracle {
             weighted: false,
             log: false,
             disp: None,
+            stokes: None,
         }
     }
 
@@ -4257,6 +4425,14 @@ mod needle_oracle {
         }
     }
 
+    /// W8: a Stokes demand of `quantity` for `input` on p key `curve`.
+    fn sto(curve: CurveId, quantity: StokesQuantity, input: [f64; 3], target: f64) -> D {
+        D {
+            stokes: Some(StokesDemand { quantity, input }),
+            ..d(curve, target)
+        }
+    }
+
     fn add(spec: &mut MeritSpec, angle: Radians, x: D) {
         let n = WLS.len();
         let tol = x.disp.map_or(0.05, |o| 10f64.powi(o as i32));
@@ -4291,6 +4467,7 @@ mod needle_oracle {
             retardance: x.retardance,
             ratio: x.ratio,
             dispersion: x.disp,
+            stokes: x.stokes,
             point_weights: if x.weighted {
                 (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into()
             } else {
@@ -4947,6 +5124,100 @@ mod needle_oracle {
             ),
             ("GDR + GDDR + Rs phase", mixed),
         ]
+    }
+
+    /// W8: every Stokes quantity on R and T for partially and fully
+    /// polarized inputs, the kinds that activate, integral, weighted, and
+    /// mixed with a retardance and an intensity demand on one element.
+    fn stokes_cases(angle: Radians) -> Vec<(&'static str, MeritSpec)> {
+        use ConstraintKind::*;
+        use CurveId::*;
+        use StokesQuantity::*;
+        let (part, circ, lin) = ([0.3, -0.5, 0.6], [0.0, 0.6, 0.8], [-0.2, 0.1, -0.4]);
+        let one = |x: D| {
+            let mut s = MeritSpec::new();
+            add(&mut s, angle, x);
+            s
+        };
+        let mut mixed = MeritSpec::new();
+        add(&mut mixed, angle, sto(Rp, S2, part, 0.05));
+        add(&mut mixed, angle, sto(Rp, S3, circ, -0.03));
+        add(&mut mixed, angle, ret(Rp, 0.5));
+        add(&mut mixed, angle, d(Rp, 0.1));
+        vec![
+            ("S0R", one(sto(Rp, S0, part, 0.1))),
+            ("S1R", one(sto(Rp, S1, part, 0.02))),
+            ("S2R", one(sto(Rp, S2, part, 0.05))),
+            ("S3R", one(sto(Rp, S3, part, -0.04))),
+            ("DOPR", one(sto(Rp, Dop, part, 0.6))),
+            ("S0T", one(sto(Tp, S0, lin, 0.8))),
+            ("S1T", one(sto(Tp, S1, lin, -0.1))),
+            ("S2T", one(sto(Tp, S2, circ, 0.3))),
+            ("S3T", one(sto(Tp, S3, circ, 0.5))),
+            ("DOPT", one(sto(Tp, Dop, lin, 0.3))),
+            (
+                "S2T above",
+                one(D {
+                    kind: Above,
+                    ..sto(Tp, S2, part, 0.9)
+                }),
+            ),
+            (
+                "S3R range weighted",
+                one(D {
+                    kind: Range,
+                    band: 0.01,
+                    weighted: true,
+                    ..sto(Rp, S3, circ, 0.2)
+                }),
+            ),
+            (
+                "S1T integral",
+                one(D {
+                    integral: true,
+                    ..sto(Tp, S1, part, 0.2)
+                }),
+            ),
+            (
+                "S2R integral weighted",
+                one(D {
+                    integral: true,
+                    weighted: true,
+                    ..sto(Rp, S2, lin, 0.05)
+                }),
+            ),
+            (
+                "DOPR integral",
+                one(D {
+                    integral: true,
+                    ..sto(Rp, Dop, lin, 0.2)
+                }),
+            ),
+            ("S2R + S3R + RetR + Rp", mixed),
+        ]
+    }
+
+    #[test]
+    fn stokes_p_is_the_merit_slope_at_45_and_70_deg() {
+        for angle in [deg(45.0), deg(70.0)] {
+            for (name, spec) in stokes_cases(angle) {
+                check(name, spec, angle);
+            }
+        }
+    }
+
+    /// `S0`, `S1` and DOP read intensities only, so they reach through an
+    /// incoherent plate; `S2` and `S3` read the retardance and do not.
+    #[test]
+    fn stokes_intensity_quantities_reach_through_an_incoherent_plate() {
+        for angle in [deg(30.0), deg(60.0)] {
+            for (name, spec) in stokes_cases(angle) {
+                if spec.uses_phase() {
+                    continue;
+                }
+                check_on(name, plate(), spec, angle);
+            }
+        }
     }
 
     #[test]

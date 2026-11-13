@@ -55,11 +55,13 @@ class SpectralTarget:
                        GDDR | GDDT      group-delay dispersion (fs²)
                        TODR | TODT      third-order dispersion (fs³)
                        FODR | FODT      fourth-order dispersion (fs⁴)
+                       S0R … S3R, DOPR  Stokes vector / DOP of r_f for an input
+                       S0T … S3T, DOPT  the same, t_f
         polarization:  s | p | u        u = unpolarized (the s/p mean)
 
     giving ``Rs``…``Au``, ``RBs``…``ABu``, the two differential labels,
-    the four retardance labels, the eight ratio labels and the eight
-    dispersion labels.
+    the four retardance labels, the eight ratio labels, the eight
+    dispersion labels and the ten Stokes labels.
     Any other pair raises at construction. ``A`` is derived as 1 − R − T on
     the shared grid, so a missing companion curve fails the whole key group.
 
@@ -99,6 +101,21 @@ class SpectralTarget:
     normalized or wrapped. Like the engine's, they are coherent-stack
     quantities, and the simulated grid must be fine enough to resolve them
     (one wavelength gives zero).
+
+    ``S0R``…``S3R``/``DOPR`` and ``S0T``…``S3T``/``DOPT`` are the Stokes
+    vector and degree of polarization of the light r_f / t_f returns for
+    the input state ``stokes_input``, a normalized Stokes vector
+    ``(q1, q2, q3)`` with ``|q| <= 1`` (required for these labels, refused
+    for any other). The axes are the engine's: ``(1, 0, 0)`` is p,
+    ``(-1, 0, 0)`` s, and ``(0, 1, 0)`` the engine's own ``Es = Ep`` input,
+    for which the values are half the engine's ``S0_R``…``S3_T`` (the input
+    carries ``S0 = 1``) and the DOP is the engine's ``DOP_R``/``DOP_T``.
+    Partially polarized input (``|q| < 1``) is what gives DOP its meaning:
+    a coherent stack keeps a fully polarized input fully polarized. They
+    take ``polarization="u"`` and ``phase=False`` and are normalized
+    linearly (S1–S3 are signed). ``S2``/``S3`` read the retardance and are
+    dropped across an incoherent film; ``S0``, ``S1`` and DOP read only
+    the intensities and reach through one.
     See ``docs/spectralweave-target-kinds.md`` for the sign convention
     (the reference is ``+kD``, the conjugate of Macleod) and the needle
     ``gain_shift_phi`` bookkeeping.
@@ -152,6 +169,9 @@ class SpectralTarget:
     #: most one.
     weights:      Union[np.ndarray, None] = None
     weight_profile: Union["WeightProfile", str, None] = None
+    #: W8: the input polarization of a Stokes label (``S0R``…``DOPT``), as
+    #: a normalized Stokes vector ``(q1, q2, q3)`` with ``|q| <= 1``.
+    stokes_input: Union[tuple, None] = None
     #: The angle of incidence, in degrees or in radians: give exactly one
     #: (keyword-only). It is kept as given; the native layer converts.
     angle_deg:    Union[float, None] = field(default=None, kw_only=True)
@@ -166,6 +186,7 @@ class SpectralTarget:
         return {
             **_dump_environment(self.environment),
             **_dump_weights(self.weights, self.weight_profile),
+            **_dump_stokes_input(self.stokes_input),
             "wavelengths": np.ascontiguousarray(np.asarray(self.wavelengths, dtype=np.float64)).ravel().tolist(),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
             "tolerances": np.ascontiguousarray(np.asarray(self.tolerances, dtype=np.float64)).ravel().tolist(),
@@ -223,6 +244,9 @@ class AngularTarget:
     #: most one.
     weights:      Union[np.ndarray, None] = None
     weight_profile: Union["WeightProfile", str, None] = None
+    #: W8: the input polarization of a Stokes label, as on
+    #: :class:`SpectralTarget`.
+    stokes_input: Union[tuple, None] = None
     #: The angle grid, in degrees or in radians: give exactly one
     #: (keyword-only). It is kept as given; the native layer converts.
     angles_deg:   Union[np.ndarray, None] = field(default=None, kw_only=True)
@@ -237,6 +261,7 @@ class AngularTarget:
         return {
             **_dump_environment(self.environment),
             **_dump_weights(self.weights, self.weight_profile),
+            **_dump_stokes_input(self.stokes_input),
             "wavelength": float(self.wavelength),
             **_dump_angle("angles", self.angles_deg, self.angles_rad),
             "values": np.ascontiguousarray(np.asarray(self.values, dtype=np.float64)).ravel().tolist(),
@@ -387,6 +412,15 @@ def _dump_environment(env):
     if not isinstance(env, str) or not env:
         raise ValueError("environment must be a non-empty name, or None.")
     return {"environment": env}
+
+
+def _dump_stokes_input(q) -> dict:
+    """W8: ``stokes_input``, emitted only when set (every other label's
+    document is unchanged). Its checks (three finite numbers, ``|q| <= 1``,
+    a Stokes label) run at compile."""
+    if q is None:
+        return {}
+    return {"stokes_input": [float(x) for x in q]}
 
 
 def _dump_weights(weights, profile) -> dict:

@@ -35,7 +35,10 @@ ROOT = Path(__file__).resolve().parent.parent
 DOC = ROOT / "docs" / "spectralweave-target-kinds.md"
 BEGIN, END = "<!-- target-matrix:begin -->", "<!-- target-matrix:end -->"
 
-#: (demand, label cell, [(spectral, pol, phase)]) - the doc's rows.
+#: A partially polarized input for the Stokes rows.
+Q = (0.3, 0.5, 0.2)
+
+#: (demand, label cell, [(spectral, pol, phase[, stokes_input])]) - the doc's rows.
 ROWS = [
     ("intensity, front", "`R`, `T` × s/p/u",
      [(sp, pol, False) for sp in ("R", "T") for pol in "spu"]),
@@ -61,6 +64,10 @@ ROWS = [
      "`phase=True`",
      [(sp, pol, True) for sp in ("GDR", "GDT", "GDDR", "GDDT", "TODR", "TODT", "FODR", "FODT")
       for pol in "sp"]),
+    ("Stokes intensity / DOP", "`S0R`, `S1R`, `DOPR`, `S0T`, `S1T`, `DOPT`, u, `stokes_input`",
+     [(sp, "u", False, Q) for sp in ("S0R", "S1R", "DOPR", "S0T", "S1T", "DOPT")]),
+    ("Stokes S2/S3", "`S2R`, `S3R`, `S2T`, `S3T`, u, `stokes_input`",
+     [(sp, "u", False, Q) for sp in ("S2R", "S3R", "S2T", "S3T")]),
 ]
 #: Colour: `ColorTarget` curves.
 COLOR_ROW = ("colour (`ColorTarget`)", "front `R` / `T`",
@@ -70,7 +77,9 @@ COLOR_ROW = ("colour (`ColorTarget`)", "front `R` / `T`",
 UNLISTED = [("A", "s", True), ("AB", "u", True), ("R", "u", True),
             ("PDrs", "s", True), ("PDrp", "p", True),
             ("RatioR", "u", True), ("DiattT", "s", False), ("PsiR", "u", True),
-            ("GDR", "u", True), ("GDDT", "s", False)]
+            ("GDR", "u", True), ("GDDT", "s", False),
+            ("S0R", "u", False), ("DOPT", "u", True, Q), ("S2R", "p", False, Q),
+            ("R", "u", False, Q), ("S1T", "u", False, (1.0, 1.0, 0.0))]
 
 WL = np.linspace(400.0, 700.0, 16)
 ANG = np.array([30.0])
@@ -112,10 +121,10 @@ def _scores(make, stack) -> bool:
     return False
 
 
-def _spectral(sp, pol, phase):
+def _spectral(sp, pol, phase, q=None):
   from navette.spectralweave.target import SpectralTarget
   return lambda: SpectralTarget(WL, np.zeros(WL.size), np.full(WL.size, 0.1), pol, sp,
-                        kind="e", angle_deg=float(ANG[0]), phase=phase)
+                        kind="e", angle_deg=float(ANG[0]), phase=phase, stokes_input=q)
 
 
 def _color(curve):

@@ -43,11 +43,28 @@ All notable changes to Navette are recorded here. Work items reference
   every phase demand, a dispersion demand is dropped across an
   incoherent plate. `MeritSpec.add_target` takes `dispersion=1..4` on a
   phase demand with `transform="linear"`.
+- **Stokes / DOP targets: `S0R`…`S3R`, `DOPR`, `S0T`…`S3T`, `DOPT`**
+  (W8.6), `polarization="u"`. The Stokes vector and degree of
+  polarization of the light r_f / t_f returns for an input state, the
+  new `stokes_input` field on `SpectralTarget` and `AngularTarget`: a
+  normalized Stokes vector `(q1, q2, q3)` with `|q| <= 1`, so partially
+  polarized input is allowed (`(1, 0, 0)` is p, `(-1, 0, 0)` s). For
+  `(0, 1, 0)` the values are half the engine's `S0_R`…`S3_T` (the input
+  carries S0 = 1) and the DOP equals `DOP_R`/`DOP_T`. DOP does not depend
+  on the retardance, so `S0`, `S1` and DOP score through incoherent
+  plates; `S2`/`S3` read the retardance and are dropped there like any
+  phase demand. Linear normalization; every kind, `band`, point weights
+  and `integral` apply. The LM Jacobian is analytic; the needle folds
+  intensity pairs per branch plus, for `S2`/`S3`, a phase pair on p and
+  s (pinned by the needle oracle). `MeritSpec.add_target` takes
+  `stokes="s0" | "s1" | "s2" | "s3" | "dop"` with
+  `stokes_input=(q1, q2, q3)` on an `Rp`/`Tp` key.
 
 ### Changed (breaking)
 
-- `MeritTarget` (Rust) has a new field `dispersion: Option<u8>`; struct
-  literals need `dispersion: None`.
+- `MeritTarget` (Rust) has new fields `dispersion: Option<u8>` and
+  `stokes: Option<StokesDemand>`; struct literals need
+  `dispersion: None, stokes: None`.
 
 - `retardance_warnings` (Rust, `synthesis::targets`) is now
   `sp_contrast_warnings`; it also covers the ratio labels.

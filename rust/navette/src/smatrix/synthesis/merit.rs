@@ -700,6 +700,15 @@ pub struct MeritTarget {
     /// `Linear` transform (no wrap); excludes `differential_passes`,
     /// `retardance` and `ratio`. `n` in 1..=4; `None` for every other demand.
     pub dispersion: Option<u8>,
+    /// W8 Stokes demand (`S0R…DOPR`, `S0T…DOPT`): sample a Stokes
+    /// parameter or the degree of polarization of the light the key's
+    /// element returns for the demand's input state (see [`StokesDemand`]).
+    /// The key is a front p curve (`Rp`, `Tp`), read with its s partner;
+    /// `S2` and `S3` also read both complex rows. Not a phase demand
+    /// (`phase` false) and needs the `Linear` transform; excludes
+    /// `differential_passes`, `retardance`, `ratio` and `dispersion`.
+    /// `None` for every other demand.
+    pub stokes: Option<StokesDemand>,
     /// User weight (default 1): multiplies this frame's merit sum.
     /// Applied at the residual level (`r × √(weight/count)`) so values,
     /// LM Jacobians and the needle fold stay consistent by construction.
@@ -726,6 +735,13 @@ impl MeritTarget {
     #[inline]
     pub fn point_weight(&self, i: usize) -> f64 {
         self.point_weights.get(i).copied().unwrap_or(1.0)
+    }
+
+    /// Whether this demand reads a complex row: a phase demand, or a
+    /// Stokes demand on a quantity that reads the retardance. These are
+    /// the demands an incoherent film drops.
+    pub fn reads_complex(&self) -> bool {
+        self.phase || self.stokes.is_some_and(|sd| sd.reads_phase())
     }
 }
 
@@ -988,6 +1004,39 @@ impl MeritSpec {
                 return Err("dispersion excludes differential_passes, retardance and ratio".into());
             }
         }
+        if let Some(sd) = target.stokes {
+            let curve = self.keys[target.key_idx as usize].curve;
+            if target.phase
+                || target.differential_passes.is_some()
+                || target.retardance
+                || target.ratio.is_some()
+                || target.dispersion.is_some()
+            {
+                return Err(
+                    "a Stokes demand excludes phase, differential_passes, retardance, \
+                     ratio and dispersion"
+                        .into(),
+                );
+            }
+            if !matches!(curve, CurveId::Rp | CurveId::Tp) {
+                return Err(format!(
+                    "Stokes demand on {curve:?}: the key must be a front p intensity (Rp, Tp)"
+                ));
+            }
+            if target.transform != SimTransform::Linear {
+                return Err("a Stokes demand needs the linear transform".into());
+            }
+            let [q1, q2, q3] = sd.input;
+            if !(q1.is_finite() && q2.is_finite() && q3.is_finite())
+                || q1 * q1 + q2 * q2 + q3 * q3 > 1.0 + 1e-9
+            {
+                return Err(format!(
+                    "Stokes input must be a normalized Stokes vector (q1, q2, q3) \
+                     with |q| <= 1 (got {:?})",
+                    sd.input
+                ));
+            }
+        }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
         if !target.weight.is_finite() || target.weight < 0.0 {
@@ -1048,6 +1097,12 @@ impl MeritSpec {
             if let Some((s, _)) = ratio_partner(t, curve) {
                 rows.push(s);
             }
+            if let Some((s, sd, _)) = stokes_partner(t, curve) {
+                rows.push(s);
+                if sd.reads_phase() {
+                    set = set.with_complex(&[curve, s]);
+                }
+            }
             for c in rows.clone() {
                 if let Some((cs, cp)) = c.unpolarized_parts() {
                     rows.extend([cs, cp]);
@@ -1085,7 +1140,7 @@ impl MeritSpec {
     /// assembly for intensity-only specs — virtually-free values are always
     /// built, requested ones only on demand.
     pub fn uses_phase(&self) -> bool {
-        self.targets.iter().any(|t| t.phase)
+        self.targets.iter().any(MeritTarget::reads_complex)
     }
 
     /// `uses_phase`, for the demands of environment `env` alone (D4): a
@@ -1093,16 +1148,18 @@ impl MeritSpec {
     pub fn uses_phase_in(&self, env: usize) -> bool {
         self.targets
             .iter()
-            .any(|t| t.phase && t.env_idx as usize == env)
+            .any(|t| t.reads_complex() && t.env_idx as usize == env)
     }
 
-    /// D4: remove the phase demands of every environment `lose_phase`
-    /// marks, and return them. The key groups stay registered; a group
-    /// left with no demand scores nothing (`residuals_into` filters by
-    /// demand), so dropping cannot shift another demand's residuals.
+    /// D4: remove the demands that read a phase (phase demands, and the
+    /// Stokes demands that read a retardance) of every environment
+    /// `lose_phase` marks, and return them. The key groups stay
+    /// registered; a group left with no demand scores nothing
+    /// (`residuals_into` filters by demand), so dropping cannot shift
+    /// another demand's residuals.
     pub fn drop_phase_demands(&mut self, lose_phase: &[bool]) -> Vec<MeritTarget> {
         self.drop_targets(|t, _| {
-            t.phase && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false)
+            t.reads_complex() && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false)
         })
     }
 
@@ -1168,6 +1225,11 @@ impl MeritSpec {
             } else {
                 provides.has_intensity(key.curve)
                     && ratio_partner(t, key.curve).is_none_or(|(s, _)| provides.has_intensity(s))
+                    && stokes_partner(t, key.curve).is_none_or(|(s, sd, _)| {
+                        provides.has_intensity(s)
+                            && (!sd.reads_phase()
+                                || (provides.has_complex(key.curve) && provides.has_complex(s)))
+                    })
             };
             if !ok {
                 let what = if t.differential_passes.is_some() {
@@ -1176,6 +1238,8 @@ impl MeritSpec {
                     "retardance"
                 } else if t.ratio.is_some() {
                     "intensity ratio"
+                } else if t.stokes.is_some() {
+                    "Stokes"
                 } else if t.dispersion.is_some() {
                     "dispersion"
                 } else if t.phase {
@@ -1500,6 +1564,10 @@ impl MeritSpec {
                 /// The dispersion row on the simulated grid, sampled like
                 /// an intensity.
                 Dispersion(Vec<f64>),
+                /// A Stokes demand: its handedness sign, the s and p
+                /// intensity rows, and the p and s complex rows when the
+                /// quantity reads the retardance.
+                Stokes(StokesDemand, f64, &'a [f64], &'a [f64], Option<CRows<'a>>),
             }
             let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
                 let arc = if id.is_back() {
@@ -1522,6 +1590,13 @@ impl MeritSpec {
                 TargetInput::Phase(crow(key.curve)?)
             } else if let Some((s, f)) = ratio_partner(t, key.curve) {
                 TargetInput::Ratio(f, irow(s)?, irow(key.curve)?)
+            } else if let Some((s, sd, sigma)) = stokes_partner(t, key.curve) {
+                let c = if sd.reads_phase() {
+                    Some((crow(key.curve)?, crow(s)?))
+                } else {
+                    None
+                };
+                TargetInput::Stokes(sd, sigma, irow(s)?, irow(key.curve)?, c)
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 TargetInput::Absorption(irow(rc)?, irow(tc)?)
             } else {
@@ -1660,6 +1735,16 @@ impl MeritSpec {
                     TargetInput::Ratio(f, srow, prow) => {
                         let xs = sample(srow, i, &mut sim_idx);
                         f.value(xs, sample(prow, i, &mut sim_idx))
+                    }
+                    TargetInput::Stokes(sd, sigma, srow, prow, c) => {
+                        // Every row walks the same bracket (shared state).
+                        let xs = sample(srow, i, &mut sim_idx);
+                        let xp = sample(prow, i, &mut sim_idx);
+                        let z = c.map_or(Complex64::new(0.0, 0.0), |(pc, sc)| {
+                            let zp = sample_c(pc, i, &mut sim_idx);
+                            zp * sample_c(sc, i, &mut sim_idx).conj()
+                        });
+                        sd.value(*sigma, xs, xp, z)
                     }
                     TargetInput::Phase(crow) => {
                         let mut a = sample_c(crow, i, &mut sim_idx).arg();
@@ -2027,6 +2112,15 @@ impl MeritSpec {
             arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
                 .ok_or(key.curve)
         };
+        let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
+            let arc = if id.is_back() {
+                sim.complex_back_curve(id)
+            } else {
+                sim.complex_curve(id)
+            };
+            arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
+                .ok_or(key.curve)
+        };
 
         for t in self
             .targets
@@ -2057,7 +2151,10 @@ impl MeritSpec {
                     return Err(key.curve);
                 }
                 (0.0, Vec::new())
-            } else if let Some((s, _)) = ratio_partner(t, key.curve) {
+            } else if let Some(s) = ratio_partner(t, key.curve)
+                .map(|(s, _)| s)
+                .or(stokes_partner(t, key.curve).map(|(s, _, _)| s))
+            {
                 // Not linear: the signs are placeholders, each point's
                 // own partials replace them below.
                 (
@@ -2070,6 +2167,13 @@ impl MeritSpec {
                 (0.0, vec![(key.curve, irow(key.curve)?, 1.0)])
             };
             let ratio = ratio_partner(t, key.curve).map(|(_, f)| f);
+            // A Stokes demand on S2, S3 or DOP also reads the p and s
+            // complex rows; a missing one errors here, as it does there.
+            let stokes = stokes_partner(t, key.curve);
+            let stokes_c: Option<CRows> = match stokes {
+                Some((s, sd, _)) if sd.reads_phase() => Some((crow(key.curve)?, crow(s)?)),
+                _ => None,
+            };
 
             if t_wl.is_empty() {
                 continue;
@@ -2116,15 +2220,43 @@ impl MeritSpec {
             // ∂raw/∂channel per point: the signs for a linear combination,
             // the partials at the sampled values for a ratio.
             let mut dchs: Vec<[f64; 2]> = Vec::with_capacity(t_wl.len());
+            // A Stokes demand's retardance partial, spread onto the p and s
+            // complex rows: `a_Δ·∂arg` per row, `(Re, Im)` for p then s.
+            let mut phs: Vec<[f64; 4]> = Vec::new();
             for i in 0..t_wl.len() {
                 let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
-                let (raw, dch) = match ratio {
-                    Some(f) => {
+                let (raw, dch) = match (ratio, stokes) {
+                    (Some(f), _) => {
                         let (xs, xp) = (r.read(channels[0].1), r.read(channels[1].1));
                         let (a_s, a_p) = f.partials(xs, xp);
                         (f.value(xs, xp), [a_s, a_p])
                     }
-                    None => {
+                    (None, Some((_, sd, sigma))) => {
+                        let (xs, xp) = (r.read(channels[0].1), r.read(channels[1].1));
+                        let read_c = |row: &[Complex64]| match r {
+                            SampleRef::Direct(j) => row[j],
+                            SampleRef::Interp(j, f) => row[j] + (row[j + 1] - row[j]) * f,
+                        };
+                        let (zp, zs) = stokes_c.map_or(
+                            (Complex64::new(0.0, 0.0), Complex64::new(0.0, 0.0)),
+                            |(pc, sc)| (read_c(pc), read_c(sc)),
+                        );
+                        let z = zp * zs.conj();
+                        let (v, [a_s, a_p, a_d]) = sd.value_partials(sigma, xs, xp, z);
+                        // ∂arg z / ∂(Re z, Im z) = (Im c, Re c), c = conj(z)/|z|².
+                        let d_arg = |z: Complex64| {
+                            let c = z.conj() / z.norm_sqr();
+                            (c.im, c.re)
+                        };
+                        phs.push(if a_d != 0.0 && z.norm_sqr() > 0.0 {
+                            let ((p_re, p_im), (s_re, s_im)) = (d_arg(zp), d_arg(zs));
+                            [a_d * p_re, a_d * p_im, -a_d * s_re, -a_d * s_im]
+                        } else {
+                            [0.0; 4]
+                        });
+                        (v, [a_s, a_p])
+                    }
+                    (None, None) => {
                         let mut dch = [0.0; 2];
                         for (j, c) in channels.iter().enumerate() {
                             dch[j] = c.2;
@@ -2163,14 +2295,13 @@ impl MeritSpec {
                 let mut terms: Vec<CurveTerm> = Vec::new();
                 for i in 0..t_wl.len() {
                     let dt = d_transform(t.transform, raws[i], t.norm_factor);
-                    push_terms(
-                        &mut terms,
-                        &channels,
-                        dchs[i],
-                        ang_row,
-                        &refs[i],
-                        rscale * dk * dt * t.point_weight(i) / w_sum,
-                    );
+                    let scale = rscale * dk * dt * t.point_weight(i) / w_sum;
+                    push_terms(&mut terms, &channels, dchs[i], ang_row, &refs[i], scale);
+                    if let (Some(&ph), Some((s, _, _))) = (phs.get(i), stokes) {
+                        push_retardance_terms(
+                            &mut terms, key.curve, s, ang_row, &refs[i], scale, ph,
+                        );
+                    }
                 }
                 out.rows.push(terms);
             } else {
@@ -2180,14 +2311,13 @@ impl MeritSpec {
                     let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
                     let dt = d_transform(t.transform, raws[i], t.norm_factor);
                     let mut terms: Vec<CurveTerm> = Vec::new();
-                    push_terms(
-                        &mut terms,
-                        &channels,
-                        dchs[i],
-                        ang_row,
-                        &refs[i],
-                        rscale * t.point_weight(i).sqrt() * dk * dt,
-                    );
+                    let scale = rscale * t.point_weight(i).sqrt() * dk * dt;
+                    push_terms(&mut terms, &channels, dchs[i], ang_row, &refs[i], scale);
+                    if let (Some(&ph), Some((s, _, _))) = (phs.get(i), stokes) {
+                        push_retardance_terms(
+                            &mut terms, key.curve, s, ang_row, &refs[i], scale, ph,
+                        );
+                    }
                     out.rows.push(terms);
                 }
             }
@@ -2334,6 +2464,177 @@ impl IntensityRatio {
 /// exists when `t.ratio` is set).
 pub(crate) fn ratio_partner(t: &MeritTarget, curve: CurveId) -> Option<(CurveId, IntensityRatio)> {
     t.ratio.zip(curve.retardance_partner()).map(|(f, s)| (s, f))
+}
+
+/// The p and s complex rows a Stokes demand reads its retardance from.
+pub(crate) type CRows<'a> = (&'a [Complex64], &'a [Complex64]);
+
+/// W8: which quantity a [`StokesDemand`] reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StokesQuantity {
+    /// The total intensity `S0`.
+    S0,
+    /// `S1`: p minus s.
+    S1,
+    /// `S2`: +45° minus −45°.
+    S2,
+    /// `S3`: the circular component.
+    S3,
+    /// The degree of polarization `√(S1² + S2² + S3²)/S0`, at most 1.
+    Dop,
+}
+
+impl StokesQuantity {
+    /// Parse the raw door's spelling: `s0`, `s1`, `s2`, `s3`, `dop`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "s0" => Some(StokesQuantity::S0),
+            "s1" => Some(StokesQuantity::S1),
+            "s2" => Some(StokesQuantity::S2),
+            "s3" => Some(StokesQuantity::S3),
+            "dop" => Some(StokesQuantity::Dop),
+            _ => None,
+        }
+    }
+}
+
+/// W8: a Stokes parameter, or the degree of polarization, of the light one
+/// front element (`r` or `t`) returns for a given input state.
+///
+/// `input` is the input's normalized Stokes vector `(q1, q2, q3) =
+/// (S1, S2, S3)/S0` (`S0 = 1`, `|q| ≤ 1`). Partially polarized input is
+/// allowed, and is what gives DOP its meaning: through a coherent stack a
+/// fully polarized input stays fully polarized. The axes are the engine's:
+/// `q1 = 1` is p, `q1 = −1` is s, and `q = (0, 1, 0)` (`E_s = E_p`, in phase)
+/// is the input the engine's `S0_R…DOP_T` maps assume, at half their
+/// intensity scale. With `X_s`, `X_p` the element's intensities and
+/// `Δ = arg(z_p·conj(z_s))` its retardance,
+///
+/// ```text
+///     S0 = X_p·(1+q1)/2 + X_s·(1−q1)/2     S2 = σ·√(X_s·X_p)·(q2·cos Δ − q3·sin Δ)
+///     S1 = X_p·(1+q1)/2 − X_s·(1−q1)/2     S3 = σ·√(X_s·X_p)·(q2·sin Δ + q3·cos Δ)
+/// ```
+///
+/// with `σ = −1` for reflection and `+1` for transmission (the engine's
+/// handedness), and DOP `= min(1, √(S1² + S2² + S3²)/(S0 + RATIO_EPS))`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct StokesDemand {
+    pub quantity: StokesQuantity,
+    /// The input state `(q1, q2, q3)`.
+    pub input: [f64; 3],
+}
+
+impl StokesDemand {
+    /// Whether the quantity reads the retardance, and so the complex rows:
+    /// `S2` and `S3` do. `S0`, `S1` and DOP read intensities only, DOP
+    /// because `S2² + S3² = X_s·X_p·(q2² + q3²)` whatever `Δ` is.
+    pub fn reads_phase(&self) -> bool {
+        matches!(self.quantity, StokesQuantity::S2 | StokesQuantity::S3)
+    }
+
+    /// `S0…S3` at `(X_s, X_p, z = z_p·conj(z_s))`, and each one's partials
+    /// in `(X_s, X_p, Δ)`.
+    fn parts(&self, sigma: f64, xs: f64, xp: f64, z: Complex64) -> ([f64; 4], [[f64; 3]; 4]) {
+        let [q1, q2, q3] = self.input;
+        let (a, b) = (0.5 * (1.0 + q1), 0.5 * (1.0 - q1));
+        let (sin, cos) = z.arg().sin_cos();
+        let m = (xs * xp).max(0.0).sqrt();
+        let (dm_s, dm_p) = if m > 0.0 {
+            (0.5 * xp / m, 0.5 * xs / m)
+        } else {
+            (0.0, 0.0)
+        };
+        // z = 0 has no phase and no derivative in Δ.
+        let ph = if z.norm_sqr() > 0.0 { sigma * m } else { 0.0 };
+        let c = q2 * cos - q3 * sin;
+        let sn = q2 * sin + q3 * cos;
+        (
+            [
+                a * xp + b * xs,
+                a * xp - b * xs,
+                sigma * m * c,
+                sigma * m * sn,
+            ],
+            [
+                [b, a, 0.0],
+                [-b, a, 0.0],
+                [sigma * c * dm_s, sigma * c * dm_p, -ph * sn],
+                [sigma * sn * dm_s, sigma * sn * dm_p, ph * c],
+            ],
+        )
+    }
+
+    /// The quantity at intensities `(xs, xp)` and `z = z_p·conj(z_s)`
+    /// (unused by `S0`, `S1`); `sigma` is −1 for reflection, +1 for
+    /// transmission.
+    #[inline]
+    pub fn value(&self, sigma: f64, xs: f64, xp: f64, z: Complex64) -> f64 {
+        self.value_partials(sigma, xs, xp, z).0
+    }
+
+    /// The quantity and its partials `(∂/∂X_s, ∂/∂X_p, ∂/∂Δ)`. The `√`
+    /// partials are 0 where `X_s·X_p = 0`, `∂/∂Δ` is 0 where `z = 0`, and
+    /// DOP has no partials on its clamp (DOP = 1) or where it is 0.
+    pub fn value_partials(&self, sigma: f64, xs: f64, xp: f64, z: Complex64) -> (f64, [f64; 3]) {
+        let (s, j) = self.parts(sigma, xs, xp, z);
+        match self.quantity {
+            StokesQuantity::S0 => (s[0], j[0]),
+            StokesQuantity::S1 => (s[1], j[1]),
+            StokesQuantity::S2 => (s[2], j[2]),
+            StokesQuantity::S3 => (s[3], j[3]),
+            StokesQuantity::Dop => {
+                let l = (s[1] * s[1] + s[2] * s[2] + s[3] * s[3]).sqrt();
+                let d = s[0] + RATIO_EPS;
+                let v = l / d;
+                if v.is_nan() || v >= 1.0 || l == 0.0 {
+                    return (v.min(1.0), [0.0; 3]);
+                }
+                let mut g = [0.0; 3];
+                for (k, gk) in g.iter_mut().enumerate() {
+                    *gk = (s[1] * j[1][k] + s[2] * j[2][k] + s[3] * j[3][k]) / (l * d)
+                        - l * j[0][k] / (d * d);
+                }
+                (v, g)
+            }
+        }
+    }
+}
+
+/// The s curve, demand and handedness sign of a Stokes target on p key
+/// `curve`; `None` for every other target (registration guarantees a front
+/// p key when `t.stokes` is set).
+pub(crate) fn stokes_partner(
+    t: &MeritTarget,
+    curve: CurveId,
+) -> Option<(CurveId, StokesDemand, f64)> {
+    let sigma = if matches!(curve, CurveId::Tp | CurveId::TBp) {
+        1.0
+    } else {
+        -1.0
+    };
+    t.stokes
+        .zip(curve.retardance_partner())
+        .map(|(sd, s)| (s, sd, sigma))
+}
+
+/// A Stokes point's retardance partial on the p and s complex rows:
+/// `ph = [Re, Im]` coefficients for p, then s, each times `scale`.
+fn push_retardance_terms(
+    terms: &mut Vec<CurveTerm>,
+    p: CurveId,
+    s: CurveId,
+    angle_row: usize,
+    r: &SampleRef,
+    scale: f64,
+    ph: [f64; 4],
+) {
+    if scale == 0.0 {
+        return;
+    }
+    push_part_terms(terms, p, TermPart::Re, angle_row, r, scale * ph[0]);
+    push_part_terms(terms, p, TermPart::Im, angle_row, r, scale * ph[1]);
+    push_part_terms(terms, s, TermPart::Re, angle_row, r, scale * ph[2]);
+    push_part_terms(terms, s, TermPart::Im, angle_row, r, scale * ph[3]);
 }
 
 /// [`push_terms`] for one curve and part: `scale` spread over the simulated
@@ -2842,6 +3143,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2873,6 +3175,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -4883,6 +5186,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight,
@@ -5617,6 +5921,217 @@ mod tests {
                     }
                     assert!(live > 100, "{f:?} on {p:?}: only {live} live entries");
                 }
+            }
+        }
+
+        /// W8: [`ratio_sim`]'s intensities plus smooth p and s complex rows
+        /// for the front R and T elements, whose retardance crosses ±π at
+        /// some points. `bump` moves one part of one entry of one row.
+        fn stokes_sim(bump: Option<(CurveId, TermPart, usize, f64)>) -> SimCurves {
+            let mut sim = ratio_sim(match bump {
+                Some((id, TermPart::Value, flat, h)) => Some((id, flat, h)),
+                _ => None,
+            });
+            for (id, phase0, amp0) in [
+                (CurveId::Rp, 0.4, 0.7),
+                (CurveId::Rs, -2.5, 0.5),
+                (CurveId::Tp, 1.1, 0.6),
+                (CurveId::Ts, -1.9, 0.8),
+            ] {
+                let mut c: Vec<Complex64> = (0..NA * NW)
+                    .map(|k| {
+                        let a = phase0 + 0.35 * ((k as f64) * 0.3 + amp0).sin();
+                        Complex64::from_polar(amp0 + 0.1 * (k as f64 * 0.5).cos(), a)
+                    })
+                    .collect();
+                match bump {
+                    Some((b, TermPart::Re, flat, h)) if b == id => c[flat].re += h,
+                    Some((b, TermPart::Im, flat, h)) if b == id => c[flat].im += h,
+                    _ => {}
+                }
+                sim.set_complex(id, Arc::from(c)).unwrap();
+            }
+            sim
+        }
+
+        /// W8: a Stokes demand's rows land on both intensity rows and, for
+        /// `S2` and `S3`, on Re/Im of both complex rows (DOP does not
+        /// depend on the retardance; its complex rows stay unread), against
+        /// `residuals()` differenced in every entry of all four. Every
+        /// quantity, partially and fully polarized inputs, R and T, pointwise
+        /// and integral, aligned and off-grid, two kinds, both angles.
+        #[test]
+        fn stokes_rows_are_a_finite_difference_of_all_four_rows() {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            for p in [CurveId::Rp, CurveId::Tp] {
+                let s_id = p.retardance_partner().unwrap();
+                for quantity in [
+                    StokesQuantity::S0,
+                    StokesQuantity::S1,
+                    StokesQuantity::S2,
+                    StokesQuantity::S3,
+                    StokesQuantity::Dop,
+                ] {
+                    for input in [[0.3, -0.5, 0.6], [0.0, 0.6, 0.8], [-0.2, 0.1, -0.4]] {
+                        let sd = StokesDemand { quantity, input };
+                        let mut spec = MeritSpec::new();
+                        for angle in [Radians::ZERO, deg(30.0)] {
+                            let k = spec.add_key(MeritKey { angle, curve: p });
+                            for (grid, integral, kind, tgt) in [
+                                (wl(), false, ConstraintKind::Exact, 0.05),
+                                (off.clone(), false, ConstraintKind::Exact, -0.02),
+                                (wl(), true, ConstraintKind::Exact, 0.1),
+                                (off.clone(), false, ConstraintKind::CenterBand, 0.03),
+                            ] {
+                                let n = grid.len();
+                                let mut t = target(
+                                    k as u32,
+                                    grid,
+                                    kind,
+                                    SimTransform::Linear,
+                                    integral,
+                                    1.3,
+                                );
+                                t.stokes = Some(sd);
+                                t.normalized_targets = vec![tgt; n].into();
+                                t.point_weights =
+                                    (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                                spec.add_target(t).unwrap();
+                            }
+                        }
+                        let need = spec.required_rows();
+                        assert!(need.has_intensity(p) && need.has_intensity(s_id));
+                        assert_eq!(need.has_complex(p), sd.reads_phase());
+                        assert_eq!(need.has_complex(s_id), sd.reads_phase());
+                        assert_eq!(spec.uses_phase(), sd.reads_phase());
+
+                        let sens = spec.curve_sensitivity(&stokes_sim(None)).unwrap();
+                        assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+                        let column = |curve: CurveId, part: TermPart, flat: usize| -> Vec<f64> {
+                            sens.rows
+                                .iter()
+                                .map(|terms| {
+                                    terms
+                                        .iter()
+                                        .filter(|t| {
+                                            t.curve == curve
+                                                && t.part == part
+                                                && t.angle_row * NW + t.wavelength == flat
+                                        })
+                                        .map(|t| t.d_residual)
+                                        .sum()
+                                })
+                                .collect()
+                        };
+                        let h = 1e-7;
+                        let mut live = [0usize; 2];
+                        for curve in [p, s_id] {
+                            for part in [TermPart::Value, TermPart::Re, TermPart::Im] {
+                                for flat in 0..NA * NW {
+                                    let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                                    spec.residuals(
+                                        &stokes_sim(Some((curve, part, flat, h))),
+                                        &mut rp,
+                                    )
+                                    .unwrap();
+                                    spec.residuals(
+                                        &stokes_sim(Some((curve, part, flat, -h))),
+                                        &mut rm,
+                                    )
+                                    .unwrap();
+                                    let a = column(curve, part, flat);
+                                    for (i, ((x, u), v)) in a.iter().zip(&rp).zip(&rm).enumerate() {
+                                        let y = (u - v) / (2.0 * h);
+                                        let dev = (x - y).abs() / y.abs().max(1.0);
+                                        assert!(
+                                            dev < 1e-6,
+                                            "{quantity:?} {input:?} on {p:?}: row {i}, \
+                                             {curve:?} {part:?}[{flat}]: {x} vs {y}"
+                                        );
+                                        if y.abs() > 1e-9 {
+                                            live[(part != TermPart::Value) as usize] += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // A fully polarized input keeps DOP on its clamp
+                        // at 1, which has no slope.
+                        let full = (input.iter().map(|q| q * q).sum::<f64>() - 1.0).abs() < 1e-12;
+                        if !(quantity == StokesQuantity::Dop && full) {
+                            assert!(live[0] > 100, "{quantity:?} on {p:?}: live {live:?}");
+                        }
+                        assert_eq!(live[1] > 100, sd.reads_phase(), "{quantity:?}: {live:?}");
+                    }
+                }
+            }
+        }
+
+        /// W8: registration refuses a Stokes demand off a front p key, with
+        /// a phase flag or another demand form, off the linear transform, or
+        /// with an input outside the Poincaré ball.
+        #[test]
+        fn stokes_registration_refusals() {
+            let sd = StokesDemand {
+                quantity: StokesQuantity::S2,
+                input: [0.0, 1.0, 0.0],
+            };
+            let try_add = |curve: CurveId, f: &dyn Fn(&mut MeritTarget)| -> Result<(), String> {
+                let mut spec = MeritSpec::new();
+                let k = spec.add_key(MeritKey {
+                    angle: Radians::ZERO,
+                    curve,
+                });
+                let mut t = target(
+                    k as u32,
+                    wl(),
+                    ConstraintKind::Exact,
+                    SimTransform::Linear,
+                    false,
+                    1.0,
+                );
+                t.stokes = Some(sd);
+                f(&mut t);
+                spec.add_target(t)
+            };
+            assert!(try_add(CurveId::Rp, &|_| {}).is_ok());
+            assert!(try_add(CurveId::Tp, &|_| {}).is_ok());
+            for bad in [
+                CurveId::Rs,
+                CurveId::Ru,
+                CurveId::RBp,
+                CurveId::TBp,
+                CurveId::Ap,
+            ] {
+                assert!(
+                    try_add(bad, &|_| {}).unwrap_err().contains("front p"),
+                    "{bad:?}"
+                );
+            }
+            assert!(
+                try_add(CurveId::Rp, &|t| t.phase = true)
+                    .unwrap_err()
+                    .contains("excludes")
+            );
+            assert!(
+                try_add(CurveId::Rp, &|t| t.ratio = Some(IntensityRatio::SOverP))
+                    .unwrap_err()
+                    .contains("excludes")
+            );
+            assert!(
+                try_add(CurveId::Rp, &|t| t.transform = SimTransform::Log)
+                    .unwrap_err()
+                    .contains("linear")
+            );
+            for input in [[0.8, 0.8, 0.0], [f64::NAN, 0.0, 0.0]] {
+                assert!(
+                    try_add(CurveId::Rp, &|t| t.stokes = Some(StokesDemand {
+                        quantity: StokesQuantity::Dop,
+                        input
+                    }))
+                    .unwrap_err()
+                    .contains("|q| <= 1")
+                );
             }
         }
 

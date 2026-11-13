@@ -40,8 +40,8 @@ use crate::smatrix::needle_operator::{
 };
 use crate::smatrix::synthesis::color_merit::eval_color_covered;
 use crate::smatrix::synthesis::merit::{
-    CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, Radians, SimCurves,
-    dispersion_adjoint, dispersion_omega, dispersion_row,
+    CRows, CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, Radians, SimCurves,
+    StokesDemand, dispersion_adjoint, dispersion_omega, dispersion_row, stokes_partner,
 };
 use crate::structure::Span;
 
@@ -490,6 +490,108 @@ fn emit_ratio(
     }
 }
 
+/// The operating point of a Stokes demand at `twl_i`: the quantity, its
+/// partials in `(X_s, X_p, Δ)`, the intensities, and the p and s
+/// amplitudes (zero when the quantity reads no retardance).
+fn stokes_op(
+    rows: &OpRows,
+    sim: &SimCurves,
+    twl_i: f64,
+) -> Option<(f64, [f64; 3], [f64; 2], [Complex64; 2])> {
+    let OpRows::Stokes(sd, sigma, s, p, c) = rows else {
+        return None;
+    };
+    let xs = interp_clamped(&sim.wavelengths, s, twl_i);
+    let xp = interp_clamped(&sim.wavelengths, p, twl_i);
+    let zero = Complex64::new(0.0, 0.0);
+    let (zp, zs) = c.map_or((zero, zero), |(pc, sc)| {
+        (
+            cinterp_clamped(&sim.wavelengths, pc, twl_i),
+            cinterp_clamped(&sim.wavelengths, sc, twl_i),
+        )
+    });
+    let (f, a) = sd.value_partials(*sigma, xs, xp, zp * zs.conj());
+    Some((f, a, [xs, xp], [zs, zp]))
+}
+
+/// The operating rows of a Stokes demand on p key `key` with s partner
+/// `s`: both intensities, plus both amplitudes when the quantity reads the
+/// retardance. `None` when any of them is missing.
+fn stokes_rows<'a>(
+    sim: &'a SimCurves,
+    key: &MeritKey,
+    s: CurveId,
+    sd: StokesDemand,
+    sigma: f64,
+) -> Option<OpRows<'a>> {
+    let int = |id| match op_rows(sim, id, key.angle, false) {
+        Some(OpRows::Intensity(r)) => Some(r),
+        _ => None,
+    };
+    let cpx = |id| match op_rows(sim, id, key.angle, true) {
+        Some(OpRows::Phase(c)) => Some(c),
+        _ => None,
+    };
+    let c = if sd.reads_phase() {
+        Some((cpx(key.curve)?, cpx(s)?))
+    } else {
+        None
+    };
+    Some(OpRows::Stokes(sd, sigma, int(s)?, int(key.curve)?, c))
+}
+
+/// Emit a Stokes demand `w·(S − rt)²` (W8) at point `k`.
+///
+/// `dM/dδ = 2w·(S − rt)·(a_s·∂Xs + a_p·∂Xp + a_Δ·(∂φp − ∂φs))` with the
+/// partials at the operating point. The intensity share folds as
+/// [`emit_ratio`] folds a ratio, one tangent pair per branch on `bucket`.
+/// The retardance share `g = 2w·(S − rt)·a_Δ` lands on the element's phase
+/// bucket `phi` in gradient form, as [`emit_dispersion`] lands its slopes:
+/// `(φp − sign(g)·PHASE_PAIR_MAX, |g|)` on p and `(φs + sign(g)·PHASE_PAIR_MAX,
+/// |g|)` on s, whose kernels return `g·∂φp` and `−g·∂φs`. Without an
+/// operating point nothing is emitted (no target-only form); a phase share
+/// with either amplitude at the kernel's zero floor is dropped.
+#[allow(clippy::too_many_arguments)]
+fn emit_stokes(
+    folds: &mut [PolFold; 2],
+    bucket: BucketKind,
+    phi: Option<BucketKind>,
+    k: usize,
+    rt: f64,
+    w: f64,
+    op: &Option<OpRows>,
+    sim: Option<&SimCurves>,
+    twl_i: f64,
+) {
+    let Some((f, [a_s, a_p, a_d], [xs, xp], z)) = sim
+        .zip(op.as_ref())
+        .and_then(|(sim, rows)| stokes_op(rows, sim, twl_i))
+    else {
+        return;
+    };
+    for (b, x, a) in [(0, xs, a_s), (1, xp, a_p)] {
+        if a == 0.0 || !a.is_finite() {
+            continue;
+        }
+        let p = folds[b].pair_mut(bucket);
+        let w_b = 2.0 * w * a * a;
+        p.1[k] += w_b;
+        p.0[k] += w_b * (x - (f - rt) / a);
+    }
+    let g = 2.0 * w * (f - rt) * a_d;
+    let Some(phi) = phi else { return };
+    if g == 0.0 || !g.is_finite() || z.iter().any(|z| z.norm_sqr() <= 1e-20) {
+        return;
+    }
+    // Branch 0 is s (−g), branch 1 is p (+g).
+    for (b, sign) in [(0, -1.0), (1, 1.0)] {
+        let gb = sign * g;
+        let p = folds[b].pair_mut(phi);
+        p.1[k] += gb.abs();
+        p.0[k] += gb.abs() * (z[b].arg() - gb.signum() * PHASE_PAIR_MAX);
+    }
+}
+
 /// The slope accumulator of a dispersion demand: one entry per simulated
 /// point when the demand has an operating point, empty otherwise.
 fn dispersion_acc(op: &Option<OpRows>) -> Vec<f64> {
@@ -583,6 +685,10 @@ enum OpRows<'a> {
     /// Dispersion (W8): the `Dⁿφ` row on the simulated grid, then the
     /// key's complex row it was differentiated from.
     Dispersion(Vec<f64>, &'a [Complex64]),
+    /// Stokes (W8): the demand, its handedness sign, the s partner's and
+    /// the key's p intensity rows, and the p and s complex rows when the
+    /// quantity reads the retardance.
+    Stokes(StokesDemand, f64, &'a [f64], &'a [f64], Option<CRows<'a>>),
 }
 
 /// Operating-point sample in demand space (Δφ with the reference subtracted
@@ -643,6 +749,7 @@ fn sample_op_value(
             interp_clamped(&sim.wavelengths, p, twl_i),
         ),
         OpRows::Dispersion(g, _) => interp_clamped(&sim.wavelengths, g, twl_i),
+        OpRows::Stokes(..) => stokes_op(rows, sim, twl_i).map_or(0.0, |(f, ..)| f),
     }
 }
 
@@ -808,12 +915,20 @@ pub fn build_needle_targets_env(
                             }
                             _ => None,
                         },
-                        None => match (op_rows(sim, key.curve, key.angle, t.phase), t.dispersion) {
-                            (Some(OpRows::Phase(c)), Some(order)) => {
-                                let omega = dispersion_omega(&sim.wavelengths);
-                                Some(OpRows::Dispersion(dispersion_row(c, &omega, order), c))
+                        None => match stokes_partner(t, key.curve) {
+                            Some((s, sd, sigma)) => stokes_rows(sim, key, s, sd, sigma),
+                            None => {
+                                match (op_rows(sim, key.curve, key.angle, t.phase), t.dispersion) {
+                                    (Some(OpRows::Phase(c)), Some(order)) => {
+                                        let omega = dispersion_omega(&sim.wavelengths);
+                                        Some(OpRows::Dispersion(
+                                            dispersion_row(c, &omega, order),
+                                            c,
+                                        ))
+                                    }
+                                    (rows, _) => rows,
+                                }
                             }
-                            (rows, _) => rows,
                         },
                     },
                 },
@@ -992,6 +1107,19 @@ pub fn build_needle_targets_env(
                 emit_retardance(&mut folds, bucket, k, rt_kernel, w, ops);
             } else if let Some(f) = t.ratio {
                 emit_ratio(&mut folds, bucket, k, rt_kernel, w, f, ops);
+            } else if t.stokes.is_some() {
+                let phi = key.curve.phase_channel().map(BucketKind::Phi);
+                emit_stokes(
+                    &mut folds,
+                    bucket,
+                    phi,
+                    k,
+                    rt_kernel,
+                    w,
+                    &op,
+                    current_sim,
+                    twl_i,
+                );
             } else {
                 emit(&mut folds, route, bucket, k, rt_kernel, w, ops);
             }
@@ -1390,6 +1518,19 @@ fn fold_integral_demand(
             emit_retardance(folds, bucket, k, rt_kernel, w_j, ops);
         } else if let Some(f) = t.ratio {
             emit_ratio(folds, bucket, k, rt_kernel, w_j, f, ops);
+        } else if t.stokes.is_some() {
+            let phi = key.curve.phase_channel().map(BucketKind::Phi);
+            emit_stokes(
+                folds,
+                bucket,
+                phi,
+                k,
+                rt_kernel,
+                w_j,
+                op,
+                current_sim,
+                twl_i,
+            );
         } else {
             emit(folds, route, bucket, k, rt_kernel, w_j, ops);
         }
@@ -2272,6 +2413,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2297,6 +2439,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2334,6 +2477,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2389,6 +2533,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2488,6 +2633,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2583,6 +2729,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 1.0,
@@ -2749,6 +2896,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 3.0,
@@ -2784,6 +2932,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral: false,
                 weight: 2.0,
@@ -2834,6 +2983,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
@@ -2975,6 +3125,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -3242,6 +3393,7 @@ mod tests {
                 retardance: false,
                 ratio: None,
                 dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight: 1.0,
@@ -3665,6 +3817,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 50.0,

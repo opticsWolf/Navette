@@ -151,7 +151,7 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | Psi_R, Psi_T | from the Rs/Rp (Ts/Tp) intensities: the engine's `atan √(p/s)` | tangent pair on the s and p intensity buckets, as the ratios | **done (W8.4)**: `PsiR`, `PsiT`; no complex operator needed, scores through plates |
 | Rs/Rp ratio, extinction ratio, diattenuation | from intensities | tangent pair on the s and p intensity buckets (W5) | **done (W8.3)**: `RatioR/T` = s/p, `ExtR/T` = p/s, `DiattR/T` = (p − s)/(p + s), front only, `u` |
 | retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **done (W8a)**: pair fold on the per-branch phase buckets |
-| DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
+| DOP, Stokes S0-S3 (for a given input state) | S0, S1, DOP from the two intensities (DOP is independent of Δ); S2, S3 also from the complex rows (Δ) | ratio pairs per branch; S2/S3 add a gradient-form phase pair on p and s | **done (W8.6)**: `S0R`…`S3R`, `DOPR`, `S0T`…`S3T`, `DOPT`, a `stokes_input` normalized Stokes vector on the target, a `stokes` demand on the p key; analytic LM Jacobian |
 | GD, GDD, TOD, FOD (R/T, s/p) | from the kept r_f / t_f complex rows: unwrap, then the engine's `grad_nonuniform` n times in ω (bit-equal to `dispmaps`) | phase pairs at every simulated point through the stencil's transpose, `g = (Dⁿ)ᵀc` | **done (W8.5)**: `GDR/T`…`FODR/T` × s/p, a `dispersion` order on the phase demand (no new curve ids); analytic LM Jacobian, no FD |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
 | any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **done for intensities (W6 first cut, 2026-11-11)**: R/T/A, RB/TB/AB and colour through a fixed plate; phase on a stack with a spacer stays out (dropped at run setup with a warning since 2026-11-12) |
@@ -874,10 +874,10 @@ plus a per-point tolerance (W4) is the user-side mitigation.
 
 ## 5. Further and future gaps (not in W1-W7)
 
-1. **Polarization targets in synthesis**: DOP (retardance and Delta
-   moved into W8a; Rs/Rp ratio, extinction ratio and diattenuation
-   done in W8.3, Psi in W8.4). Needs an input state on the target,
-   complex rows (W2.3 gives r_s, r_p) and gradient-form folds (W5).
+1. **Polarization targets in synthesis**: done (retardance and Delta
+   in W8a; Rs/Rp ratio, extinction ratio and diattenuation in W8.3, Psi
+   in W8.4, DOP/Stokes for an input state in W8.6). Open: Stokes of the
+   back elements.
 1b. **Differential phase on reflection (PDrs, PDrp) — deferred
    (decision 2026-11-09).** `reference_phase` already takes `passes = 2`;
    the open question is the reference plane of the round trip

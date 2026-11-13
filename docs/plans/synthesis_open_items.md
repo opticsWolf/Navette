@@ -234,11 +234,17 @@ The dispersion is computed in the merit from the complex rows the
 evaluator already keeps (unwrap, then the engine's stencil n times in ω),
 a `dispersion` order on the phase demand instead of new curve ids; the
 LM Jacobian and the needle fold chain through the stencil's transpose,
-so neither needed FD nor the engine's Q-row sensitivities.
-Open, in plan order:
-1. DOP / Stokes for a given input state: needs an input-polarization
-   field on the target.
-2. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+so neither needed FD nor the engine's Q-row sensitivities; W8.6
+DOP/Stokes (S0R…S3R, DOPR, S0T…S3T, DOPT) for an input state given as a
+normalized Stokes vector `stokes_input` on the target (partial
+polarization allowed). DOP turns out not to depend on the retardance
+(S2² + S3² = Xs·Xp·(q2² + q3²)), so S0, S1 and DOP read intensities only
+and score through plates; S2/S3 read the retardance and are dropped
+there. Analytic Jacobian; the needle fold is the ratio pairs plus, for
+S2/S3, a gradient-form phase pair on each of p and s.
+Open:
+1. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+2. Stokes of the back elements (RB/TB).
 
 ### Further gaps (plan §5)
 - Angle-cone and bandwidth-averaged targets (W4 point weights are the

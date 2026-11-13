@@ -40,6 +40,8 @@ regenerates it).
 | ellipsometric Ψ | `PsiR`, `PsiT`, u | yes | yes |
 | differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
 | phase dispersion | `GDR`, `GDT`, `GDDR`, `GDDT`, `TODR`, `TODT`, `FODR`, `FODT` × s/p, `phase=True` | yes | no² |
+| Stokes intensity / DOP | `S0R`, `S1R`, `DOPR`, `S0T`, `S1T`, `DOPT`, u, `stokes_input` | yes | yes |
+| Stokes S2/S3 | `S2R`, `S3R`, `S2T`, `S3T`, u, `stokes_input` | yes | no² |
 | colour (`ColorTarget`) | front `R` / `T` | yes | yes |
 <!-- target-matrix:end -->
 
@@ -48,8 +50,8 @@ point weights and `integral`; intensity rows take linear or log
 normalization, phase rows linear or phase. Colour is `Exact` and linear
 only (*Color demands*). Not available in synthesis (the engine computes
 them, the merit does not): differential phase in reflection (`PDrs`,
-`PDrp`), dispersion of the back elements, degree of polarization and
-Stokes parameters, and the `complex` transform.
+`PDrp`), dispersion of the back elements, Stokes parameters of the back
+elements, and the `complex` transform.
 
 1. Not computable when the exit medium absorbs over the demand's
    wavelengths: light coming from inside an absorbing half-space has no
@@ -338,6 +340,39 @@ wrap (pinned by the oracle for every order, both sides, a back element,
 the kinds that activate, the integral and point weights). With no
 operating point a dispersion demand folds nothing. Like every phase
 demand it is dropped across an incoherent plate.
+
+**Stokes demands** (`S0R`…`S3R`, `DOPR`, `S0T`…`S3T`, `DOPT`, pol. u)
+score the output Stokes vector of r_f / t_f for the input state
+`stokes_input` $= (q_1, q_2, q_3)$, a normalized Stokes vector with
+$S_0 = 1$ and $|q| \le 1$ (partial polarization allowed; required for
+these labels, refused for every other). The axes are the engine's:
+$(1,0,0)$ is p, $(-1,0,0)$ s, $(0,1,0)$ the engine's own $E_s = E_p$
+input. With $A = (1+q_1)/2$, $B = (1-q_1)/2$, $m = \sqrt{X_s X_p}$,
+$\Delta = \arg(z_p \bar z_s)$ and $\sigma = -1$ for R, $+1$ for T (the
+engine's handedness),
+
+$$S_0 = A X_p + B X_s,\quad S_1 = A X_p - B X_s,\quad
+S_2 = \sigma m\,(q_2\cos\Delta - q_3\sin\Delta),\quad
+S_3 = \sigma m\,(q_2\sin\Delta + q_3\cos\Delta),$$
+
+and DOP $= \min(1, \sqrt{S_1^2+S_2^2+S_3^2}/(S_0 + 10^{-20}))$. For
+$(0,1,0)$ these are half the engine's `S0_R`…`S3_T` (its input carries
+$S_0 = 2$) and the DOP is its `DOP_R`/`DOP_T` (pinned against the
+engine and against the coherency matrix at 45° and 70°). Since
+$S_2^2 + S_3^2 = X_s X_p (q_2^2 + q_3^2)$, DOP does not depend on
+$\Delta$: `S0`, `S1` and DOP read the two intensities only and score
+through a plate; `S2`/`S3` read the retardance, so they are phase
+demands for footnote 2. A fully polarized input stays fully polarized
+through a coherent stack, so DOP is 1 and flat there — its partials on
+the clamp are 0, and DOP only means something for $|q| < 1$. Linear
+normalization only (S1–S3 are signed). The LM Jacobian is analytic. The
+needle fold emits the ratio pairs on the intensities (the log fold per
+branch, as above) and, for `S2`/`S3`, with
+$g = 2\,w\,(f_{op} - c)\,\partial f/\partial\Delta$, the phase pairs
+$(\varphi_p - \operatorname{sign}(g)\cdot 0.5, |g|)$ and
+$(\varphi_s + \operatorname{sign}(g)\cdot 0.5, |g|)$ — gradient form, as
+for dispersion (pinned by the oracle at 45° and 70° and, for the
+intensity quantities, through a plate).
 
 Spectral-label mapping for the converter (`TargetCollection` → `MeritSpec`):
 `R/T/A` × s/p/u → front demands, `RB/TB/AB` × s/p/u → back demands;

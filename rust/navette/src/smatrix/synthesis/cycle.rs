@@ -2090,6 +2090,7 @@ mod tests {
             retardance: false,
             ratio: None,
             dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
