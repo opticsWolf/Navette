@@ -7,29 +7,15 @@ All notable changes to Navette are recorded here. Work items reference
 
 ## [Unreleased]
 
-### Added
+## [0.9.0] - synthesis targets belong to the whole design
 
-- **The supported-target matrix is measured, not written.**
-  `tools/check_target_matrix.py` compiles and scores every label on a
-  coherent stack, a stack with a plate and an absorbing exit, and
-  rewrites the table in `docs/spectralweave-target-kinds.md`
-  (`--write`). CI fails when the table and the code disagree, or when a
-  label compiles that no row lists. The table now shows that `AB` and
-  back-side phase are dropped on an absorbing exit, like `RB`/`TB`
-  intensity.
-
-### Changed
-
-- **Doors called in a loop warn once.** `Navette_Structure` and
-  `Navette_Architect` `get_solver_inputs`/`get_error_solver_inputs`, `MeritSpec.merit`/
-  `residuals`, `build_needle_targets` and `calculate_merit` remember the
-  warnings they last emitted (per object) and stay silent while the same
-  set comes back, even under an "always" warnings filter; a changed set
-  warns again (and for the structure doors, one that was fixed and then
-  comes back). A Monte-Carlo loop over `error_inputs` used to
-  repeat the validation warnings on every sample. `solve_structure` no
-  longer re-validates in Python before the input doors, which gate the
-  same issues themselves.
+Needle synthesis draws from a material pool, runs through incoherent
+plates, scores every target type (retardance, log-normalized, weighted
+points) and checks once, at setup, what the complete stack can answer:
+a demand it cannot is dropped with one warning instead of failing a
+solve. Angles are radians inside and named at every door; a material
+is its label. Several of these break call sites; see *Changed
+(breaking)*.
 
 ### Changed (breaking)
 
@@ -319,6 +305,15 @@ All notable changes to Navette are recorded here. Work items reference
 
 ### Added
 
+- **The supported-target matrix is measured, not written.**
+  `tools/check_target_matrix.py` compiles and scores every label on a
+  coherent stack, a stack with a plate and an absorbing exit, and
+  rewrites the table in `docs/spectralweave-target-kinds.md`
+  (`--write`). CI fails when the table and the code disagree, or when a
+  label compiles that no row lists. The table now shows that `AB` and
+  back-side phase are dropped on an absorbing exit, like `RB`/`TB`
+  intensity.
+
 - **`DesignStack.coating_thickness()`**: the summed thickness of the
   coherent films, the figure the synthesis budget and run results use
   (`total_thickness()` also counts incoherent plates).
@@ -513,6 +508,17 @@ All notable changes to Navette are recorded here. Work items reference
   TiO2/SiO2 broadband AR.
 
 ### Changed
+
+- **Doors called in a loop warn once.** `Navette_Structure` and
+  `Navette_Architect` `get_solver_inputs`/`get_error_solver_inputs`, `MeritSpec.merit`/
+  `residuals`, `build_needle_targets` and `calculate_merit` remember the
+  warnings they last emitted (per object) and stay silent while the same
+  set comes back, even under an "always" warnings filter; a changed set
+  warns again (and for the structure doors, one that was fixed and then
+  comes back). A Monte-Carlo loop over `error_inputs` used to
+  repeat the validation warnings on every sample. `solve_structure` no
+  longer re-validates in Python before the input doors, which gate the
+  same issues themselves.
 
 - **Roughness is capped by film thickness.** Each interface is solved
   with `min(sigma, d / roughness_cap)` over the films on both sides
