@@ -1,7 +1,9 @@
 # Synthesis: open items, inconsistencies and decisions
 
 Status 2026-11-11, branch `needle-material-pool`, after W6 (first cut) and
-the integral phase fold. Sources: `synthesis_targets_plan.md` (W1-W8, §4-§7),
+the integral phase fold. Updated 2026-11-13: demands a stack cannot
+answer (phase through a plate, back incidence from an absorbing exit)
+are dropped once at run setup with a warning, not refused (`af521f5`). Sources: `synthesis_targets_plan.md` (W1-W8, §4-§7),
 the W6 work and a read of the code paths it touched. Each item says where
 it lives, what is wrong or missing, and what would close it.
 
@@ -73,7 +75,8 @@ digest moved. Still named "total": the budget knob
 
 `simulate_inner` takes `D = Σ thicknesses[1..nl-1]` for differential
 phase. On a stack with a plate this would include it. It cannot be
-reached today: every phase demand is refused on an incoherent stack.
+reached today: every phase demand on an incoherent stack is dropped at
+run setup (refused by a bare `SmatrixContext`).
 It matters if phase demands inside the first block are ever allowed
 (§3, W6 follow-up 3).
 Checked 2026-11-12: it does not block that. The only differential
@@ -252,7 +255,9 @@ The problem: an incoherent plate (or any spacer) scrambles the phase of
 everything that crosses it. A phase demand on such a stack is either
 undefined (transmission through the plate) or defined only for one
 coherent block (front reflection off the first block, back reflection
-off the last). Today every phase demand on such a stack is refused.
+off the last). When this was written every phase demand on such a
+stack was refused; since step 1 (and 2026-11-12, both run doors) it is
+dropped at run setup with one warning.
 
 Proposal, in two steps:
 
@@ -328,8 +333,11 @@ can be coated, provided each starts with at least one film.
   release ritual (7 version sites, fingerprints) not yet run.
 - User docs (done 2026-11-12: README, target-kinds *What synthesis
   can target*): the supported-target matrix, the "seed a film on each face"
-  rule for plates (W6 item 4), and the refused combination (phase
-  through a plate, and any phase demand in a joint run with a plate).
+  rule for plates (W6 item 4), and the combination that cannot be
+  synthesized (phase through a plate). Updated 2026-11-13: such
+  demands, and back demands on an absorbing exit, are dropped at run
+  setup with one warning per kind; a run refuses only when nothing is
+  left (`driver::drop_infeasible`).
 - Python door fix with W6 item 2: `run_needle(environments=…)` added
   the run's `ambient`/`substrate` row to every environment, so an
   environment with its own `layer_type` 0/2 row was refused ("at most

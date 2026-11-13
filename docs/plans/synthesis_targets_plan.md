@@ -153,7 +153,7 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
 | GD, GDD, TOD, FOD (R/T, s/p) | **not computed** in the synthesis evaluator (engine `dispmaps`) | **exists** in the engine (`phase_dispersion_sensitivity`, NREQ_DGD…DFOD) | **harder**: port the dispersion forward into `simulate_inner`, add curve ids, map the fold to Q rows; LM via FD first |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
-| any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **done for intensities (W6 first cut, 2026-11-11)**: R/T/A, RB/TB/AB and colour through a fixed plate; phase on a stack with a spacer stays refused |
+| any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **done for intensities (W6 first cut, 2026-11-11)**: R/T/A, RB/TB/AB and colour through a fixed plate; phase on a stack with a spacer stays out (dropped at run setup with a warning since 2026-11-12) |
 | angle-cone or bandwidth-averaged R/T | — | linear in the pointwise terms | **moderate**: needs point weights (W4) and a quadrature on the solver grid |
 
 ### 1.4 Weighting (a)
