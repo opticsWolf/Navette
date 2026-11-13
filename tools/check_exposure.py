@@ -127,6 +127,10 @@ ALLOWLIST = {
     # `channel_request` will be reachable there through the dataset's
     # channel name, never on its own.
     "channel_request",
+    # Dispersion doors (fit plan phase 2): bound with the rest of the fit
+    # API in phase 5 as `navette.fit.fit_dispersion` / `table_to_model`;
+    # remove them here when they are.
+    "fit_dispersion", "table_to_model",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

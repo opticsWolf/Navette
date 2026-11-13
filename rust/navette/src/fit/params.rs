@@ -389,7 +389,8 @@ impl Parameter {
 
 /// Default `[lb, ub]` of an address's kind: the gates `Layer::validate`,
 /// `InhMode::issues`, `GradientSpec::issues` and `Group::validate` enforce.
-/// Material parameters are unbounded until phase 2's per-model table.
+/// A material parameter's bounds depend on its spec's model: the fit asks
+/// [`material_bounds`] for those, and this arm is only the fallback.
 pub(crate) fn default_bounds(addr: &ParamAddr, x0: f64) -> (f64, f64) {
     const OPEN: f64 = 1e-9;
     match addr {
@@ -414,6 +415,37 @@ pub(crate) fn default_bounds(addr: &ParamAddr, x0: f64) -> (f64, f64) {
     }
 }
 
+/// Default `[lb, ub]` of a material parameter: `leaf` is the last key on
+/// its path in a spec of `model` (`fraction`, `C1`, `osc` for any entry of
+/// an oscillator table). Physical sign constraints only: mixing fractions
+/// and depolarisation in `[0, 1]`, Sellmeier terms, Urbach tails, gaps and
+/// Drude terms non-negative, oscillator entries (energies, widths,
+/// strengths) and Urbach energies strictly positive, so a width never
+/// reaches the pole at zero. Anything else (Cauchy `B`/`C`, `epsilon_inf`,
+/// `n_inf`) is unbounded. A model that needs a negative oscillator
+/// strength sets that parameter's bounds itself.
+pub(crate) fn material_bounds(model: &str, leaf: &str) -> (f64, f64) {
+    const POS: (f64, f64) = (f64::MIN_POSITIVE, f64::INFINITY);
+    const NONNEG: (f64, f64) = (0.0, f64::INFINITY);
+    const OPEN: (f64, f64) = (f64::NEG_INFINITY, f64::INFINITY);
+    let ema = matches!(
+        model,
+        "Bruggeman" | "MaxwellGarnett" | "Looyenga" | "Lichtenecker" | "MoriTanaka" | "PowerLaw"
+    );
+    match leaf {
+        "fraction" | "L" if ema => (0.0, 1.0),
+        "alpha" if ema => (-1.0, 1.0),
+        "osc" | "ib" | "Eu" | "lambda_g" | "n_factor" => POS,
+        "A" if model == "Cauchy" || model == "CauchyUrbach" => POS,
+        "n" if model == "Konstant" => POS,
+        "k" | "k_factor" | "alpha0" | "Eg" | "Et" | "omega_p" | "wp" | "gamma" | "gamma_drude"
+        | "B1" | "B2" | "B3" | "C1" | "C2" | "C3" => NONNEG,
+        // UBF oscillators are dicts, so their entries arrive by name.
+        "Ec" | "Gamma" | "A" if model == "UBF" => POS,
+        _ => OPEN,
+    }
+}
+
 /// Default scale: 1 % of the start in the linear coordinate (at least
 /// 1e-3, so a zero start still moves), 0.01 in the log coordinate.
 pub(crate) fn default_scale(transform: Transform, x0: f64) -> f64 {
@@ -426,6 +458,23 @@ pub(crate) fn default_scale(transform: Transform, x0: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_bounds_follow_the_model() {
+        let pos = (f64::MIN_POSITIVE, f64::INFINITY);
+        assert_eq!(material_bounds("Bruggeman", "fraction"), (0.0, 1.0));
+        assert_eq!(material_bounds("MoriTanaka", "L"), (0.0, 1.0));
+        assert_eq!(material_bounds("PowerLaw", "alpha"), (-1.0, 1.0));
+        assert_eq!(material_bounds("TaucLorentz", "osc"), pos);
+        assert_eq!(material_bounds("UBF", "Gamma"), pos);
+        assert_eq!(material_bounds("Cauchy", "A"), pos);
+        assert_eq!(material_bounds("Sellmeier", "C3"), (0.0, f64::INFINITY));
+        let open = (f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(material_bounds("Cauchy", "B"), open);
+        assert_eq!(material_bounds("Lorentz", "epsilon_inf"), open);
+        // `fraction` outside a mixer means nothing in particular.
+        assert_eq!(material_bounds("Konstant", "fraction"), open);
+    }
 
     #[test]
     fn addresses_round_trip_through_text() {

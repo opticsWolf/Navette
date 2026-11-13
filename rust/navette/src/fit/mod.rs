@@ -12,15 +12,21 @@
 //! - [`params`]: addresses ([`ParamAddr`]), [`Parameter`] with bounds,
 //!   scale and transform.
 //! - [`model`]: [`FitModel`], the `Send + Sync` mirror of an architect.
-//! - [`data`]: [`SpectrumData`] and the residual row convention.
-//! - [`forward`]: [`StackForward`], one evaluation through the solver.
+//! - [`data`]: [`SpectrumData`], [`NkData`] and the residual row convention.
+//! - [`forward`]: [`StackForward`], one evaluation through the solver;
+//!   [`DispersionForward`], material specs on measured nk grids. Both feed
+//!   one residual vector, so a joint fit is one problem.
 //! - [`fit()`]: one least-squares stage over the free parameters, and the
-//!   [`FitReport`] (χ², covariance, correlations, parameters at bounds).
+//!   [`FitReport`] (χ², AIC/BIC, covariance, correlations, parameters at
+//!   bounds).
+//! - [`dispersion`]: the doors [`fit_dispersion`] (one spec against nk
+//!   data) and [`table_to_model`] (rank model candidates for a table).
 //!
-//! Phase 1 of `docs/plans/general_fit_plan.md`: one stage, FD Jacobian,
+//! Phases 1-2 of `docs/plans/general_fit_plan.md`: one stage, FD Jacobian,
 //! one sample. Stages, ties, priors and several samples are phase 3.
 
 pub mod data;
+pub mod dispersion;
 pub mod forward;
 pub mod model;
 pub mod params;
@@ -28,15 +34,16 @@ mod stats;
 
 use std::collections::HashSet;
 
-pub use data::{SpectrumData, channel_request};
-pub use forward::StackForward;
+pub use data::{NkColumn, NkData, NkQuantity, SpectrumData, channel_request};
+pub use dispersion::{CandidateFit, fit_dispersion, table_to_model};
+pub use forward::{DispersionForward, StackForward};
 pub use model::FitModel;
 pub use params::{ParamAddr, ParamKind, Parameter, Transform};
 
 use crate::lsq::backends::{LsqBackend, solve_least_squares};
 use crate::lsq::lm::{LmConfig, LmTermination, NoJacobian, build_jacobian};
 use model::Target;
-use params::{default_bounds, default_scale};
+use params::{default_bounds, default_scale, material_bounds};
 
 /// What to fit: a model, the data it must reproduce, and which of its
 /// scalars may move.
@@ -44,6 +51,9 @@ use params::{default_bounds, default_scale};
 pub struct FitProblem {
     pub model: FitModel,
     pub data: Vec<SpectrumData>,
+    /// Measured optical constants of the model's materials; their rows
+    /// follow the spectra's.
+    pub nk_data: Vec<NkData>,
     /// Free and fixed parameters. A fixed one is written once and held.
     pub parameters: Vec<Parameter>,
     /// `solve_arrays`' mode: 0 front block, 1 coherency matrix, 2 fully
@@ -58,17 +68,27 @@ impl FitProblem {
         Self {
             model,
             data,
+            nk_data: Vec::new(),
             parameters,
             coherence_mode: 0,
             lsq: LmConfig::default(),
         }
     }
 
+    /// A problem against nk data only (a dispersion fit).
+    pub fn dispersion(model: FitModel, nk_data: Vec<NkData>, parameters: Vec<Parameter>) -> Self {
+        Self {
+            nk_data,
+            ..Self::new(model, Vec::new(), parameters)
+        }
+    }
+
     /// The model's curves at the start values, one vector per dataset at
-    /// its kept points (the dataset values are not read).
+    /// its kept points (the dataset values are not read): the spectra, then
+    /// the nk datasets with their columns in order.
     pub fn simulate(&self) -> Result<Vec<Vec<f64>>, String> {
         let c = Compiled::new(self)?;
-        c.forward.simulate(&c.base)
+        c.simulate(&c.base)
     }
 }
 
@@ -110,6 +130,12 @@ pub struct FitReport {
     pub chi2: f64,
     /// χ² / (m − n_free); NaN when m <= n_free.
     pub chi2_reduced: f64,
+    /// `m·ln(χ²/m) + 2·n_free`: the Gaussian AIC with the noise scale
+    /// estimated by the fit, so a ranking of models on the same data does
+    /// not depend on how σ was set. Only differences mean anything.
+    pub aic: f64,
+    /// `m·ln(χ²/m) + n_free·ln m`, likewise.
+    pub bic: f64,
     pub n_residuals: usize,
     pub n_free: usize,
     /// `n_free × n_free`, row-major, free parameters in problem order, in
@@ -165,10 +191,13 @@ struct Rows {
 struct Compiled {
     /// The model with every start value written in.
     base: FitModel,
-    forward: StackForward,
+    stack: Option<StackForward>,
+    dispersion: Option<DispersionForward>,
     free: Vec<Free>,
     /// Per parameter (problem order): start, lb, ub, index into `free`.
     resolved: Vec<(f64, f64, f64, Option<usize>)>,
+    /// Spectra, then nk datasets.
+    ids: Vec<String>,
     rows: Vec<Rows>,
 }
 
@@ -194,7 +223,10 @@ impl Compiled {
             };
             base.write(&target, x0)
                 .map_err(|e| format!("{addr}: {e}"))?;
-            let (dlb, dub) = default_bounds(addr, x0);
+            let (dlb, dub) = match base.material_slot(&target) {
+                Some((model, leaf)) => material_bounds(&model, &leaf),
+                None => default_bounds(addr, x0),
+            };
             let mut lb = p.lb.unwrap_or(dlb);
             let ub = p.ub.unwrap_or(dub);
             if p.transform == Transform::Log {
@@ -234,8 +266,25 @@ impl Compiled {
             resolved.push((x0, lb, ub, index));
         }
         base.check()?;
-        let forward = StackForward::new(&base, &problem.data, problem.coherence_mode, &live)?;
-        let rows = problem
+        if problem.data.is_empty() && problem.nk_data.is_empty() {
+            return Err("fit: no data".into());
+        }
+        let stack = if problem.data.is_empty() {
+            None
+        } else {
+            Some(StackForward::new(
+                &base,
+                &problem.data,
+                problem.coherence_mode,
+                &live,
+            )?)
+        };
+        let dispersion = if problem.nk_data.is_empty() {
+            None
+        } else {
+            Some(DispersionForward::new(&base, &problem.nk_data)?)
+        };
+        let mut rows: Vec<Rows> = problem
             .data
             .iter()
             .map(|d| {
@@ -248,13 +297,50 @@ impl Compiled {
                 }
             })
             .collect();
+        rows.extend(problem.nk_data.iter().map(|d| {
+            let kept = d.kept();
+            let sw = d.weight.sqrt();
+            Rows {
+                values: d
+                    .columns
+                    .iter()
+                    .flat_map(|c| kept.iter().map(|&i| c.values[i]))
+                    .collect(),
+                inv_sigma: d
+                    .columns
+                    .iter()
+                    .flat_map(|c| kept.iter().map(move |&i| sw / c.sigma_at(i)))
+                    .collect(),
+                angular: false,
+            }
+        }));
+        let ids = problem
+            .data
+            .iter()
+            .map(|d| d.id.clone())
+            .chain(problem.nk_data.iter().map(|d| d.id.clone()))
+            .collect();
         Ok(Self {
             base,
-            forward,
+            stack,
+            dispersion,
             free,
             resolved,
+            ids,
             rows,
         })
+    }
+
+    /// Spectra, then nk datasets.
+    fn simulate(&self, model: &FitModel) -> Result<Vec<Vec<f64>>, String> {
+        let mut sims = match &self.stack {
+            Some(s) => s.simulate(model)?,
+            None => Vec::new(),
+        };
+        if let Some(d) = &self.dispersion {
+            sims.extend(d.simulate(model)?);
+        }
+        Ok(sims)
     }
 
     fn model_at(&self, u: &[f64]) -> Result<FitModel, String> {
@@ -267,7 +353,7 @@ impl Compiled {
 
     /// Raw `sim - value` per dataset (wrapped where angular).
     fn deviations(&self, model: &FitModel) -> Result<Vec<Vec<f64>>, String> {
-        let sims = self.forward.simulate(model)?;
+        let sims = self.simulate(model)?;
         Ok(sims
             .iter()
             .zip(&self.rows)
@@ -296,11 +382,31 @@ impl Compiled {
     }
 }
 
+/// Every row of a trial point the forward model refuses: large enough
+/// that no step lands there, small enough that χ² stays finite.
+const REFUSED_RESIDUAL: f64 = 1e100;
+
 /// Fit the free parameters of `problem` in one least-squares stage.
 pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
     let c = Compiled::new(problem)?;
     let n = c.free.len();
-    let residuals = |u: &[f64], out: &mut Vec<f64>| c.residuals(u, out);
+    // The start is evaluated strictly: a model that cannot be evaluated
+    // there is the caller's error. A trial point the forward model refuses
+    // later (a Sellmeier pole moved into the range, say) costs a large
+    // residual instead, so the solver rejects that step rather than the
+    // whole fit. The solution and its Jacobian are strict again.
+    let strict = |u: &[f64], out: &mut Vec<f64>| c.residuals(u, out);
+    let mut r0 = Vec::new();
+    strict(&vec![0.0; n], &mut r0)?;
+    let m0 = r0.len();
+    let trial = |u: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+        if c.residuals(u, out).is_err() {
+            out.clear();
+            out.resize(m0, REFUSED_RESIDUAL);
+        }
+        Ok(())
+    };
+    let residuals = strict;
 
     let (u, termination, iterations, evals, backend) = if n == 0 {
         (
@@ -320,7 +426,7 @@ pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
             }
         }
         let r = solve_least_squares(
-            &residuals,
+            &trial,
             None::<&NoJacobian>,
             &vec![0.0; n],
             &lb,
@@ -340,19 +446,22 @@ pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
     } else {
         f64::NAN
     };
+    let (mf, nf) = (m as f64, n as f64);
+    let aic = mf * (chi2 / mf).ln() + 2.0 * nf;
+    let bic = mf * (chi2 / mf).ln() + nf * mf.ln();
 
     let dev = c.deviations(&model)?;
     let mut offset = 0;
-    let datasets = problem
-        .data
+    let datasets = c
+        .ids
         .iter()
         .zip(&dev)
-        .map(|(d, dv)| {
+        .map(|(id, dv)| {
             let k = dv.len();
             let share = r[offset..offset + k].iter().map(|x| x * x).sum();
             offset += k;
             DatasetFit {
-                id: d.id.clone(),
+                id: id.clone(),
                 n_points: k,
                 chi2: share,
                 rms: (dv.iter().map(|x| x * x).sum::<f64>() / k as f64).sqrt(),
@@ -426,6 +535,8 @@ pub fn fit(problem: &FitProblem) -> Result<FitReport, String> {
         datasets,
         chi2,
         chi2_reduced,
+        aic,
+        bic,
         n_residuals: m,
         n_free: n,
         covariance,

@@ -10,8 +10,14 @@
 //! (Delta, phases, differential phase) wrap `sim - value` into `(-pi, pi]`
 //! first, so a Delta measured as `-179 deg` against a model at `+179 deg`
 //! costs 2 deg, not 358.
+//!
+//! [`NkData`] carries measured optical constants of one material (n/k,
+//! ε₁/ε₂, or one of them) for dispersion fits; its rows follow the same
+//! convention, column after column.
 
 use std::f64::consts::PI;
+
+use num_complex::Complex64;
 
 use crate::smatrix::angle::Radians;
 use crate::smatrix::core_engine::*;
@@ -131,12 +137,7 @@ impl SpectrumData {
 
     /// Indices of the points inside the window.
     pub(crate) fn kept(&self) -> Vec<usize> {
-        (0..self.wavelengths.len())
-            .filter(|&i| match self.window {
-                Some((lo, hi)) => lo <= self.wavelengths[i] && self.wavelengths[i] <= hi,
-                None => true,
-            })
-            .collect()
+        kept(&self.wavelengths, self.window)
     }
 
     /// Refuse, naming the dataset, anything that cannot make residuals.
@@ -173,6 +174,198 @@ impl SpectrumData {
         }
         if let Some(v) = self.values.iter().find(|v| !v.is_finite()) {
             return Err(bad(format!("value {v} is not finite")));
+        }
+        if !(self.weight > 0.0 && self.weight.is_finite()) {
+            return Err(bad(format!(
+                "weight {} is not a positive finite number",
+                self.weight
+            )));
+        }
+        if let Some((lo, hi)) = self.window
+            && !(lo <= hi)
+        {
+            return Err(bad(format!("window ({lo}, {hi}) is empty")));
+        }
+        if self.kept().is_empty() {
+            return Err(bad("no point inside the window".into()));
+        }
+        Ok(())
+    }
+}
+
+fn kept(wavelengths: &[f64], window: Option<(f64, f64)>) -> Vec<usize> {
+    (0..wavelengths.len())
+        .filter(|&i| match window {
+            Some((lo, hi)) => lo <= wavelengths[i] && wavelengths[i] <= hi,
+            None => true,
+        })
+        .collect()
+}
+
+/// What one column of an [`NkData`] holds, from `n + ik` (`ε = (n + ik)²`,
+/// so `ε₂ = 2nk >= 0` for an absorbing material).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NkQuantity {
+    N,
+    K,
+    Eps1,
+    Eps2,
+}
+
+impl NkQuantity {
+    pub fn of(self, nk: Complex64) -> f64 {
+        match self {
+            NkQuantity::N => nk.re,
+            NkQuantity::K => nk.im,
+            NkQuantity::Eps1 => (nk * nk).re,
+            NkQuantity::Eps2 => (nk * nk).im,
+        }
+    }
+}
+
+/// One measured optical-constant curve of an [`NkData`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct NkColumn {
+    pub quantity: NkQuantity,
+    pub values: Vec<f64>,
+    /// One value for every point, or one per point.
+    pub sigma: Vec<f64>,
+}
+
+impl NkColumn {
+    pub fn new(quantity: NkQuantity, values: Vec<f64>, sigma: f64) -> Self {
+        Self {
+            quantity,
+            values,
+            sigma: vec![sigma],
+        }
+    }
+
+    pub fn sigma_at(&self, i: usize) -> f64 {
+        if self.sigma.len() == 1 {
+            self.sigma[0]
+        } else {
+            self.sigma[i]
+        }
+    }
+}
+
+/// Measured optical constants of one material of the model: n and k, ε₁
+/// and ε₂, or any one of them, on their own wavelengths. Rows are
+/// `sqrt(weight) * (sim - value) / sigma`, column after column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NkData {
+    pub id: String,
+    /// The model's material these values describe.
+    pub material: String,
+    /// nm.
+    pub wavelengths: Vec<f64>,
+    pub columns: Vec<NkColumn>,
+    pub weight: f64,
+    /// Keep only points with `lo <= wavelength <= hi` (nm).
+    pub window: Option<(f64, f64)>,
+}
+
+impl NkData {
+    /// Any columns, weight 1, no window.
+    pub fn new(
+        id: impl Into<String>,
+        material: impl Into<String>,
+        wavelengths: Vec<f64>,
+        columns: Vec<NkColumn>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            material: material.into(),
+            wavelengths,
+            columns,
+            weight: 1.0,
+            window: None,
+        }
+    }
+
+    /// n and k, one sigma each.
+    pub fn nk(
+        id: impl Into<String>,
+        material: impl Into<String>,
+        wavelengths: Vec<f64>,
+        n: Vec<f64>,
+        k: Vec<f64>,
+        sigma_n: f64,
+        sigma_k: f64,
+    ) -> Self {
+        let columns = vec![
+            NkColumn::new(NkQuantity::N, n, sigma_n),
+            NkColumn::new(NkQuantity::K, k, sigma_k),
+        ];
+        Self::new(id, material, wavelengths, columns)
+    }
+
+    /// ε₁ and ε₂, one sigma each.
+    pub fn eps(
+        id: impl Into<String>,
+        material: impl Into<String>,
+        wavelengths: Vec<f64>,
+        eps1: Vec<f64>,
+        eps2: Vec<f64>,
+        sigma1: f64,
+        sigma2: f64,
+    ) -> Self {
+        let columns = vec![
+            NkColumn::new(NkQuantity::Eps1, eps1, sigma1),
+            NkColumn::new(NkQuantity::Eps2, eps2, sigma2),
+        ];
+        Self::new(id, material, wavelengths, columns)
+    }
+
+    /// Indices of the points inside the window.
+    pub(crate) fn kept(&self) -> Vec<usize> {
+        kept(&self.wavelengths, self.window)
+    }
+
+    /// Refuse, naming the dataset, anything that cannot make residuals.
+    pub fn check(&self) -> Result<(), String> {
+        let bad = |why: String| format!("nk dataset {:?}: {why}", self.id);
+        let n = self.wavelengths.len();
+        if n == 0 {
+            return Err(bad("no points".into()));
+        }
+        if self.columns.is_empty() {
+            return Err(bad("no columns".into()));
+        }
+        for (c, col) in self.columns.iter().enumerate() {
+            if self.columns[..c].iter().any(|o| o.quantity == col.quantity) {
+                return Err(bad(format!("{:?} is given twice", col.quantity)));
+            }
+            if col.values.len() != n {
+                return Err(bad(format!(
+                    "{} {:?} values for {n} wavelengths",
+                    col.values.len(),
+                    col.quantity
+                )));
+            }
+            if col.sigma.len() != 1 && col.sigma.len() != n {
+                return Err(bad(format!(
+                    "{} {:?} sigmas for {n} points; give one, or one per point",
+                    col.sigma.len(),
+                    col.quantity
+                )));
+            }
+            if let Some(s) = col.sigma.iter().find(|s| !(**s > 0.0 && s.is_finite())) {
+                return Err(bad(format!("sigma {s} is not a positive finite number")));
+            }
+            if let Some(v) = col.values.iter().find(|v| !v.is_finite()) {
+                return Err(bad(format!("value {v} is not finite")));
+            }
+        }
+        if let Some(w) = self
+            .wavelengths
+            .iter()
+            .find(|w| !(**w > 0.0 && w.is_finite()))
+        {
+            return Err(bad(format!(
+                "wavelength {w} is not a positive finite number"
+            )));
         }
         if !(self.weight > 0.0 && self.weight.is_finite()) {
             return Err(bad(format!(

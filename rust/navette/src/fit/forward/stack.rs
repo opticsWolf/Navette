@@ -167,7 +167,7 @@ impl StackForward {
     }
 }
 
-fn evaluate(entry: &Entry, grid: &[f64]) -> Result<Vec<Complex64>, String> {
+pub(super) fn evaluate(entry: &Entry, grid: &[f64]) -> Result<Vec<Complex64>, String> {
     match entry {
         Entry::Spec(spec) => spec.evaluate(grid),
         Entry::Array(nk) if nk.len() == grid.len() => Ok(nk.clone()),

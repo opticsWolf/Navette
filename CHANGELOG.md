@@ -35,6 +35,27 @@ Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
   covariance `(JᵀJ)⁻¹·chi2_red` from a QR of J, standard errors, the
   correlation matrix, parameters at bounds, and the fitted model.
 - `SpecProvider::entries()` reads a provider's library.
+- **Dispersion-model fitting** (fit plan phase 2, Rust). `NkData` holds
+  measured optical constants of one material (n and k, ε₁ and ε₂, or any
+  one of them, each with its σ); `DispersionForward` evaluates the spec on
+  those wavelengths and feeds the same residual vector as the stack, so a
+  `FitProblem` with `nk_data` fits a material alone or **jointly** with
+  spectra (a film's thickness from R, its Cauchy `A` from an nk table, in
+  one fit). `FitModel::from_materials` builds a model with no stack.
+- Material parameters get per-model default bounds: EMA `fraction` and
+  Mori-Tanaka `L` in `[0, 1]`, power-law `alpha` in `[-1, 1]`, oscillator
+  entries, Urbach `Eu` and `lambda_g` strictly positive, Sellmeier terms,
+  gaps, `alpha0` and Drude terms non-negative; the rest stays open.
+- `fit_dispersion(spec, data, parameters, lsq)` fits one spec (by default
+  every number in it; a mixer's constituents stay held) and returns the
+  fitted spec with the report; write it back with `SpecProvider::upsert`.
+  `table_to_model(table, candidates, lsq)` fits each candidate model to a
+  `Table` material and ranks them by BIC.
+- `FitReport` gains `aic` and `bic` (Gaussian, noise scale estimated, so a
+  ranking does not depend on how σ was set).
+- A trial step the forward model refuses (a Sellmeier pole moved into the
+  range) is a rejected step, not a failed fit; the start and the solution
+  are still evaluated strictly.
 
 ### Changed (breaking)
 

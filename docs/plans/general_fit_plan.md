@@ -10,7 +10,8 @@ change). Work branch: `dev_fit`.
 |---|---|
 | 0 rename | done (`dev_fit`) |
 | 1 parameters, `StackForward`, one stage | done (`dev_fit`) |
-| 2-7 | not started |
+| 2 dispersion fitting | done (`dev_fit`) |
+| 3-7 | not started |
 
 Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
 (`FitModel`: the architect's traversal with each entry's structure row,
@@ -19,6 +20,27 @@ clones it, writes the parameters, and expands. A layer address names a
 *structure* row, so a shared or repeated structure is one parameter.
 Recovery is calibrated: over 40 noise seeds, 118 of 120 fitted values
 of the three-parameter test land within 2σ, mean χ²_red 0.999.
+
+Phase 2 kept dispersion fitting inside the same engine: `NkData` rows
+follow the spectra in one residual vector, so a joint fit needs nothing
+extra. Choices made here:
+
+- AIC/BIC are the noise-scale-estimated Gaussian forms
+  (`m·ln(χ²/m) + k·penalty`), so `table_to_model`, whose table has no σ,
+  ranks independently of the σ it assumes.
+- `fit_dispersion` frees every number by default, except a `Table`'s data
+  and a mixer's constituents (an air inclusion's `n` would only trade
+  against the fraction).
+- A trial point the forward model refuses becomes a rejected step
+  instead of a failed fit.
+- Bruggeman's Newton stop (|Δε| ≤ 1e-9) leaves an error of order 1e-18,
+  so the FD derivative in the fraction matches the closed form to 1e-6
+  relative for steps from 1e-3 to 1e-6, and to 1e-5 (round-off) down to
+  1e-8; the fit's own step is about 2e-8.
+
+Calibration over 200 seeds: Cauchy 564/600 and Tauc-Lorentz (ε data)
+950/1000 within 2σ, mean χ²_red 1.000. The Sellmeier test holds `C2`,
+because the two UV poles trade off almost exactly.
 
 ## 0. Decisions (review of 2026-11-07)
 

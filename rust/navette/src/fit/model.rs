@@ -183,6 +183,17 @@ impl FitModel {
         }
     }
 
+    /// Materials only, no stack: a dispersion fit against nk data.
+    pub fn from_materials(materials: HashMap<String, Entry>) -> Self {
+        Self {
+            entries: Vec::new(),
+            origin: Vec::new(),
+            structures: Vec::new(),
+            groups: HashMap::new(),
+            materials,
+        }
+    }
+
     /// The chain as `expand` takes it.
     pub fn entries(&self) -> &[(Layer, bool)] {
         &self.entries
@@ -411,6 +422,42 @@ impl FitModel {
             }
         }
         Ok(())
+    }
+
+    /// For a material target: the model of the innermost spec holding the
+    /// scalar, and the last key on the way to it (`fraction`, `C1`, `osc`).
+    pub(crate) fn material_slot(&self, target: &Target) -> Option<(String, String)> {
+        let Target::Material {
+            material,
+            key,
+            pointer,
+        } = target
+        else {
+            return None;
+        };
+        let Some(Entry::Spec(spec)) = self.materials.get(material) else {
+            return None;
+        };
+        let mut model = spec.model.clone();
+        let mut leaf = key.clone();
+        let mut cur = &spec.params[key];
+        for seg in pointer.split('/').skip(1) {
+            match seg.parse::<usize>() {
+                Ok(i) => cur = &cur[i],
+                Err(_) => {
+                    if seg == "params" {
+                        // Entering a nested spec: its own model rules below.
+                        if let Some(m) = cur.get("model").and_then(Value::as_str) {
+                            model = m.to_string();
+                        }
+                    } else {
+                        leaf = seg.to_string();
+                    }
+                    cur = &cur[seg];
+                }
+            }
+        }
+        Some((model, leaf))
     }
 }
 
