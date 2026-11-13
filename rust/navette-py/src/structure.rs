@@ -89,6 +89,36 @@ pub(crate) fn emit_warnings(py: Python<'_>, what: &str, warnings: &[String]) -> 
     Ok(())
 }
 
+/// Warn-once memory for a door that callers put in a loop (a Monte-Carlo
+/// `error_inputs`, an LM driving `merit`): the warnings are emitted when
+/// they first appear or change, and a call that finds the same set again
+/// stays silent. Python's own registry would hide most repeats, but not
+/// under an "always" filter, and not the `warnings.warn` cost per call.
+/// A call with no warnings resets it, so a problem fixed and then
+/// reintroduced warns again.
+#[derive(Default)]
+pub(crate) struct WarnOnce(std::sync::Mutex<Vec<String>>);
+
+impl WarnOnce {
+    /// True when `warnings` differ from the last set seen; records them.
+    pub(crate) fn fresh(&self, warnings: &[String]) -> bool {
+        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_slice() == warnings {
+            return false;
+        }
+        *last = warnings.to_vec();
+        true
+    }
+
+    /// [`emit_warnings`], when the set is [`Self::fresh`].
+    pub(crate) fn emit(&self, py: Python<'_>, what: &str, warnings: &[String]) -> PyResult<()> {
+        if self.fresh(warnings) {
+            emit_warnings(py, what, warnings)?;
+        }
+        Ok(())
+    }
+}
+
 /// Recursively convert Python values to JSON (dict/list/tuple/str/int/
 /// float/bool/None/numpy arrays; nested spec dicts pass through as maps).
 pub(crate) fn py_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
@@ -1377,6 +1407,7 @@ fn program_to_dict(py: Python<'_>, prog: navette::config::LoadedProgram) -> PyRe
             PyStructure {
                 inner: shared,
                 materials: Some(mats.clone_ref(py)),
+                warned: WarnOnce::default(),
             },
         )?;
     }
@@ -1389,6 +1420,7 @@ fn program_to_dict(py: Python<'_>, prog: navette::config::LoadedProgram) -> PyRe
                 PyArchitect {
                     inner: a,
                     materials: None,
+                    warned: WarnOnce::default(),
                 },
             )?;
         }
@@ -1508,6 +1540,7 @@ fn load_structure_section(
         PyStructure {
             inner: shared,
             materials: None,
+            warned: WarnOnce::default(),
         },
     )
 }
@@ -1542,6 +1575,7 @@ fn load_named_structures_section(
             PyStructure {
                 inner: shared,
                 materials: None,
+                warned: WarnOnce::default(),
             },
         )?;
     }
@@ -1573,6 +1607,7 @@ fn load_architect_section(
         PyArchitect {
             inner: arch,
             materials: None,
+            warned: WarnOnce::default(),
         },
     )
 }
@@ -1936,6 +1971,8 @@ fn resolve_inputs(snapshot: &DictProvider) -> PyResult<Vec<f64>> {
 pub struct PyStructure {
     inner: SharedStructure,
     materials: Option<Py<PyAny>>,
+    /// Last warnings the input doors emitted (warn once per change).
+    warned: WarnOnce,
 }
 
 #[pymethods]
@@ -1961,6 +1998,7 @@ impl PyStructure {
                     .collect(),
             ))),
             materials,
+            warned: WarnOnce::default(),
         }
     }
 
@@ -2064,7 +2102,7 @@ impl PyStructure {
             let borrowed = self.inner.borrow();
             let warnings =
                 ver(borrowed.gate(&borrowed.validate(Some(&snapshot)), "Navette_Structure"))?;
-            emit_warnings(py, "Navette_Structure", &warnings)?;
+            self.warned.emit(py, "Navette_Structure", &warnings)?;
             let seq: Vec<(Layer, bool)> = borrowed
                 .layers
                 .iter()
@@ -2097,7 +2135,7 @@ impl PyStructure {
             let borrowed = self.inner.borrow();
             let warnings =
                 ver(borrowed.gate(&borrowed.validate(Some(&snapshot)), "Navette_Structure"))?;
-            emit_warnings(py, "Navette_Structure", &warnings)?;
+            self.warned.emit(py, "Navette_Structure", &warnings)?;
             let seq: Vec<(Layer, bool)> = borrowed
                 .layers
                 .iter()
@@ -2218,6 +2256,7 @@ impl PyStructure {
         Ok(Self {
             inner: Rc::new(RefCell::new(ver(Structure::from_state(&v))?)),
             materials,
+            warned: WarnOnce::default(),
         })
     }
 
@@ -2225,6 +2264,7 @@ impl PyStructure {
         Self {
             inner: Rc::new(RefCell::new(self.inner.borrow().clone())),
             materials: self.materials.as_ref().map(|m| m.clone_ref(py)),
+            warned: WarnOnce::default(),
         }
     }
 
@@ -2332,6 +2372,8 @@ fn carried_snapshot_of(
 pub struct PyArchitect {
     inner: Architect,
     materials: Option<Py<PyAny>>,
+    /// Last warnings the input doors emitted (warn once per change).
+    warned: WarnOnce,
 }
 
 #[pymethods]
@@ -2342,6 +2384,7 @@ impl PyArchitect {
         Self {
             inner: Architect::new(),
             materials,
+            warned: WarnOnce::default(),
         }
     }
 
@@ -2422,7 +2465,7 @@ impl PyArchitect {
     fn solver_inputs(&self, py: Python<'_>) -> PyResult<PySolverArrays> {
         let (snapshot, wl) = architect_snapshot_of(&self.inner, &self.materials, py)?;
         let warnings = gate_arch_issues(&self.inner.validate(Some(&snapshot)))?;
-        emit_warnings(py, "Navette_Architect", &warnings)?;
+        self.warned.emit(py, "Navette_Architect", &warnings)?;
         let seq = self.inner.iter_entries();
         let merged = self.inner.merged_groups().map_err(|e| {
             PyValueError::new_err(format!(
@@ -2446,7 +2489,7 @@ impl PyArchitect {
     fn error_inputs(&self, py: Python<'_>, rng: Option<u64>) -> PyResult<PySolverArrays> {
         let (snapshot, wl) = architect_snapshot_of(&self.inner, &self.materials, py)?;
         let warnings = gate_arch_issues(&self.inner.validate(Some(&snapshot)))?;
-        emit_warnings(py, "Navette_Architect", &warnings)?;
+        self.warned.emit(py, "Navette_Architect", &warnings)?;
         let seq = self.inner.iter_entries();
         let merged = self.inner.merged_groups().map_err(|e| {
             PyValueError::new_err(format!(
@@ -2607,6 +2650,7 @@ impl PyArchitect {
         Ok(Self {
             inner: ver(Architect::from_state(&v))?,
             materials,
+            warned: WarnOnce::default(),
         })
     }
 
@@ -2649,6 +2693,7 @@ impl PyArchitect {
             .map(|rc| PyStructure {
                 inner: rc,
                 materials: None,
+                warned: WarnOnce::default(),
             })
             .collect()
     }

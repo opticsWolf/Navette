@@ -10,6 +10,7 @@ use navette::spectralweave::opticalweaver::{wl_bits_eq, OpticalKey, SpectralData
 use navette::spectralweave::targetweaver::{ResolvedNormMode, TargetKind, TargetWeaver};
 
 use super::spectralweave_optical::PyOpticalWeaver;
+use super::structure::WarnOnce;
 
 // ---------------------------------------------------------------------------
 // Python bindings
@@ -18,6 +19,8 @@ use super::spectralweave_optical::PyOpticalWeaver;
 /// Optimization target store plus merit evaluation.
 pub struct PyTargetWeaver {
     pub(crate) inner: Arc<TargetWeaver>,
+    /// `calculate_merit`'s missing-key warning, once per distinct message.
+    warned: WarnOnce,
 }
 
 #[pymethods]
@@ -28,6 +31,7 @@ impl PyTargetWeaver {
     fn new(cache_size: usize, tolerance_floor: f64) -> Self {
         PyTargetWeaver {
             inner: Arc::new(TargetWeaver::new(cache_size, tolerance_floor)),
+            warned: WarnOnce::default(),
         }
     }
 
@@ -359,6 +363,8 @@ pub fn calculate_merit(
         .collect();
 
     let merit = py.detach(move || merit_sum(&sim_core, &tw_core, missing_penalty));
+    // Once per distinct message on this target weaver: a fit loop calling
+    // this every iteration hears it the first time only.
     if let Some(first) = missing.first() {
         let (angle, polarization, spectral) = first.as_tuple();
         let msg = format!(
@@ -367,13 +373,15 @@ missing_penalty, e.g. ({angle}, {polarization:?}, {spectral:?}). Keys match bit 
 bit and target angles are radians: key the simulation weaver in radians",
             missing.len()
         );
-        let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
-        PyErr::warn(
-            py,
-            &user_warning,
-            std::ffi::CString::new(msg)?.as_c_str(),
-            1,
-        )?;
+        if target_weaver.warned.fresh(std::slice::from_ref(&msg)) {
+            let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
+            PyErr::warn(
+                py,
+                &user_warning,
+                std::ffi::CString::new(msg)?.as_c_str(),
+                1,
+            )?;
+        }
     }
     Ok(merit)
 }

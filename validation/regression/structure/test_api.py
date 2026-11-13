@@ -555,6 +555,18 @@ def test_orphan_group_is_warning_and_solves():
     assert st.get_solver_inputs().thicknesses.tolist() == [50.0]
 
 
+def test_input_doors_warn_once_in_a_loop():
+  # A Monte-Carlo loop calls the input doors per sample: the structure
+  # remembers what it said, so the warning comes once, even under "always".
+  st = Navette_Structure([Layer(50.0, "TiO2")], {"Nobody": Group("Nobody")}, MATS)
+  with warnings.catch_warnings(record=True) as seen:
+    warnings.simplefilter("always")
+    for seed in range(5):
+      st.get_error_solver_inputs(rng=seed)
+      st.get_solver_inputs()
+  assert sum("Nobody" in str(w.message) for w in seen) == 1, [str(w.message) for w in seen]
+
+
 def test_errors_still_block():
   """The solve gate still blocks on errors the layer gate cannot see.
 

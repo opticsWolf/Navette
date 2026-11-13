@@ -561,15 +561,19 @@ def test_dispersive_rotation_door():
               f"msg={msg[:60]!r}")
     # The merit door's guard: a hand-built scalar SimCurves on a differential
     # spec warns; a full-length row does not.
+    # In a loop it warns once: the spec remembers, even under "always".
+    scalar_sim = sim_curves_from_arrays(
+        wl, {}, {"Ts": t}, total_d=d, n_front=1.0, angles_deg=np.array([th]))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        spec.merit(sim_curves_from_arrays(
-            wl, {}, {"Ts": t}, total_d=d, n_front=1.0, angles_deg=np.array([th])), 1e6)
+        for _ in range(3):
+            spec.merit(scalar_sim, 1e6)
+            spec.residuals(scalar_sim)
     m_texts = [str(w.message) for w in caught
                if issubclass(w.category, UserWarning)
                and "scalar reference index" in str(w.message)]
-    check("merit door warns on a scalar reference",
-          len(m_texts) >= 1 and m_texts[0].isascii(),
+    check("merit door warns once on a scalar reference",
+          len(m_texts) == 1 and m_texts[0].isascii(),
           f"n={len(m_texts)}")
     # The demand is front-only (both labels are front), so the warning
     # reports n_front alone - no spurious n_back half (review G1).

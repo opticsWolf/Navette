@@ -129,8 +129,9 @@ def solve_structure(
   from navette._structure import solve_arrays_fn as _solve_arrays  # lazy: needs native
   from navette._smatrix import solver_rt_request as _rt_request  # lazy: needs native
 
-  if isinstance(source, Navette_Structure):
-    gate_validation(source.validate(), "solve_structure")
+  # The input doors gate validation themselves (errors raise, warnings
+  # warn once per change), so a solve loop neither re-validates here nor
+  # re-warns on every call.
   sa = source.get_error_solver_inputs(rng=rng) if errors \
     else source.get_solver_inputs()
   wl = np.ascontiguousarray(np.asarray(wavelengths, dtype=np.float64)).ravel()

@@ -7,6 +7,19 @@ All notable changes to Navette are recorded here. Work items reference
 
 ## [Unreleased]
 
+### Changed
+
+- **Doors called in a loop warn once.** `Navette_Structure` and
+  `Navette_Architect` `get_solver_inputs`/`get_error_solver_inputs`, `MeritSpec.merit`/
+  `residuals`, `build_needle_targets` and `calculate_merit` remember the
+  warnings they last emitted (per object) and stay silent while the same
+  set comes back, even under an "always" warnings filter; a changed set
+  warns again (and for the structure doors, one that was fixed and then
+  comes back). A Monte-Carlo loop over `error_inputs` used to
+  repeat the validation warnings on every sample. `solve_structure` no
+  longer re-validates in Python before the input doors, which gate the
+  same issues themselves.
+
 ### Changed (breaking)
 
 - **A demand the complete stack cannot answer is dropped once, with a

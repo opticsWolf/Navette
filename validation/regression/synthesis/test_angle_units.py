@@ -390,3 +390,14 @@ def test_a_simulation_keyed_otherwise_warns():
   stale.set_data((30.0, "s", "R"), np.full_like(WL, 0.5), WL)
   with pytest.warns(UserWarning, match="no simulated curve.*radians"):
     assert calculate_merit(stale, _weaver(), 7.0) == 7.0
+
+
+def test_the_missing_key_warning_fires_once_per_weaver_in_a_loop():
+  stale = OpticalWeaver()
+  stale.set_data((30.0, "s", "R"), np.full_like(WL, 0.5), WL)
+  tw = _weaver()
+  with warnings.catch_warnings(record=True) as seen:
+    warnings.simplefilter("always")
+    for _ in range(5):
+      assert calculate_merit(stale, tw, 7.0) == 7.0
+  assert sum("no simulated curve" in str(w.message) for w in seen) == 1

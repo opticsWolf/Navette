@@ -15,6 +15,8 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
+use crate::structure::WarnOnce;
+
 use navette::smatrix::synthesis::merit::{
     ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves, SimTransform,
 };
@@ -165,6 +167,8 @@ impl PySimCurves {
 /// Flat optimization targets (see `MeritSpec` in the core).
 pub struct PyMeritSpec {
     inner: MeritSpec,
+    /// The scalar-reference warning, once per distinct message.
+    warned: WarnOnce,
 }
 
 impl PyMeritSpec {
@@ -173,7 +177,10 @@ impl PyMeritSpec {
     }
 
     pub(crate) fn from_inner(inner: MeritSpec) -> Self {
-        PyMeritSpec { inner }
+        PyMeritSpec {
+            inner,
+            warned: WarnOnce::default(),
+        }
     }
 }
 
@@ -204,9 +211,7 @@ pub(crate) fn compile_merit_spec(py: Python<'_>, request_json: &str) -> PyResult
 impl PyMeritSpec {
     #[new]
     fn new() -> Self {
-        PyMeritSpec {
-            inner: MeritSpec::new(),
-        }
+        PyMeritSpec::from_inner(MeritSpec::new())
     }
 
     /// Register a `(angle, curve)` demand group; returns its key index.
@@ -296,7 +301,7 @@ impl PyMeritSpec {
 
     /// Scalar merit: Σ residual² + `missing_penalty` per missing key group.
     fn merit(&self, py: Python<'_>, sim: &PySimCurves, missing_penalty: f64) -> PyResult<f64> {
-        warn_scalar_reference(py, &self.inner, &sim.inner)?;
+        warn_scalar_reference(py, self, &sim.inner)?;
         let inner = &self.inner;
         let sim_inner = &sim.inner;
         Ok(py.detach(move || inner.merit(sim_inner, missing_penalty)))
@@ -308,7 +313,7 @@ impl PyMeritSpec {
         py: Python<'_>,
         sim: &PySimCurves,
     ) -> PyResult<Py<PyArray<f64, numpy::Ix1>>> {
-        warn_scalar_reference(py, &self.inner, &sim.inner)?;
+        warn_scalar_reference(py, self, &sim.inner)?;
         let mut out = Vec::new();
         self.inner
             .residuals(&sim.inner, &mut out)
@@ -391,9 +396,11 @@ pub(crate) fn rotate_rows(rows: Vec<Complex64>, rot: Vec<Complex64>) -> PyResult
 /// medium is a hand-built `SimCurves` with a scalar row. The door cannot
 /// know the stack it was not given - whether a constant medium is really
 /// air - so this is a warning, never silent and never a refusal (ground
-/// rule 6; air stays a legitimate scalar). Python's warning registry
-/// dedupes per call site, so an LM loop sees it once.
-fn warn_scalar_reference(py: Python<'_>, spec: &MeritSpec, sim: &SimCurves) -> PyResult<()> {
+/// rule 6; air stays a legitimate scalar). The spec remembers what it
+/// said ([`WarnOnce`]), so an LM loop hears it once even under an
+/// "always" filter.
+fn warn_scalar_reference(py: Python<'_>, owner: &PyMeritSpec, sim: &SimCurves) -> PyResult<()> {
+    let spec = &owner.inner;
     if !spec.uses_differential() {
         return Ok(());
     }
@@ -423,6 +430,9 @@ per-wavelength array (SimCurves n_front/n_back or \
 apply_reference_rotation)",
         sides
     );
+    if !owner.warned.fresh(std::slice::from_ref(&msg)) {
+        return Ok(());
+    }
     let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
     PyErr::warn(
         py,
@@ -459,7 +469,7 @@ pub fn build_needle_targets(
     let a = crate::angles::pick_grid("angles", angles_deg, angles_rad)?;
     let w = wavelengths.as_slice()?.to_vec();
     if let Some(s) = sim {
-        warn_scalar_reference(py, &spec.inner, &s.inner)?;
+        warn_scalar_reference(py, spec, &s.inner)?;
     }
     let nt = py
         .detach({
