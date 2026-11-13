@@ -16,7 +16,7 @@ n = [1.0] + [H, L] * 8 + [1.52]                # ambient, 16 films, glass
 d = [0.0] + [lam0 / (4 * H), lam0 / (4 * L)] * 8 + [0.0]
 nk = np.array(n, dtype=complex)[:, None] * np.ones_like(wl)
 
-mirror = ScatterMatrix(nk, d, wavelengths=wl, angles=[0.0, 45.0])
+mirror = ScatterMatrix(nk, d, wavelengths=wl, angles_deg=[0.0, 45.0])
 out = mirror.compute(Request.RS | Request.RP)  # arrays of shape (angles, wavelengths)
 print(f"peak Rs at normal incidence: {out['Rs'][0].max():.4f}")
 # --- end snippet ---

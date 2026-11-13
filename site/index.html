@@ -55,7 +55,7 @@
       <div class="hero-bg" aria-hidden="true"></div>
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow"><span class="pill" id="version-pill">v0.8.0</span> Rust core · Python API · LGPL-3.0</p>
+          <p class="eyebrow"><span class="pill" id="version-pill">v0.9.0</span> Rust core · Python API · LGPL-3.0</p>
           <h1>Weaving thin-film systems <em>that perform.</em></h1>
           <p class="lede">
             Navette is a scattering-matrix engine for light in layered media. It stays stable
@@ -255,7 +255,7 @@
         </div>
 
         <div class="pillars">
-          <div><h4>Joint targets</h4><p>Spectral, angular and CIE colour demands in one merit, with analytic chain-rule terms in the needle gradient.</p></div>
+          <div><h4>Joint targets</h4><p>Spectral, angular and CIE colour demands in one merit, with analytic chain-rule terms in the needle gradient. Targets include phase, retardance, s/p ratios, Ψ, GD…FOD and Stokes/DOP for an input state.</p></div>
           <div><h4>Several surroundings</h4><p>A design segment defined once and optimised against every environment, for example bare and laminated, at the same time.</p></div>
           <div><h4>Graded media</h4><p>Mixture gradients are a layer property. A graded span's thickness is one parameter, not one per sublayer.</p></div>
           <div><h4>Tolerances as a model</h4><p>Six error channels × four laws, for Monte-Carlo runs of what the coater will actually deposit.</p></div>
@@ -353,7 +353,7 @@ n = [<span class="n">1.0</span>] + [H, L] * <span class="n">8</span> + [<span cl
 d = [<span class="n">0.0</span>] + [lam0 / (<span class="n">4</span> * H), lam0 / (<span class="n">4</span> * L)] * <span class="n">8</span> + [<span class="n">0.0</span>]
 nk = np.array(n, dtype=complex)[:, <span class="k">None</span>] * np.ones_like(wl)
 
-mirror = ScatterMatrix(nk, d, wavelengths=wl, angles=[<span class="n">0.0</span>, <span class="n">45.0</span>])
+mirror = ScatterMatrix(nk, d, wavelengths=wl, angles_deg=[<span class="n">0.0</span>, <span class="n">45.0</span>])
 out = mirror.compute(Request.RS | Request.RP)  <span class="c"># arrays of shape (angles, wavelengths)</span>
 print(<span class="s">f"peak Rs at normal incidence: {out['Rs'][0].max():.4f}"</span>)</code></pre>
             <div class="code-out">peak Rs at normal incidence: 0.9987</div>
@@ -366,7 +366,7 @@ print(<span class="s">f"peak Rs at normal incidence: {out['Rs'][0].max():.4f}"</
   <footer class="footer">
     <div class="wrap footer-inner">
       <div class="brand small"><svg viewBox="0 0 32 32" aria-hidden="true"><use href="#shuttle"/></svg><span>Navette</span></div>
-      <p>LGPL-3.0-or-later. Every figure on this page was computed by navette <span id="data-version">0.8.0</span> from
+      <p>LGPL-3.0-or-later. Every figure on this page was computed by navette <span id="data-version">0.9.0</span> from
         <a href="https://github.com/opticsWolf/Navette/blob/main/site/scripts/build_data.py">build_data.py</a>.</p>
     </div>
   </footer>

@@ -55,7 +55,7 @@ def solve(n_rows, d, wl, angles, **kw):
     n = np.vstack([np.broadcast_to(np.asarray(v, dtype=complex), wl.shape)
                    for v in n_rows])
     return ScatterMatrix(n, list(d), wavelengths=list(wl),
-                         angles=list(np.atleast_1d(angles)), **kw)
+                         angles_deg=list(np.atleast_1d(angles)), **kw)
 
 
 def example(name):
