@@ -3,7 +3,8 @@
 Status: **in progress.** W1, W2 (including the back-channel deposits,
 step 4), W3 (item 1; item 2 kept open, item 3 by W5), W4, W5, W7 and W8a
 are implemented (2026-11-10); W6 has a first cut, intensity-only
-(2026-11-11); W8b-c are open. Drafted 2026-11-09. Everything still open,
+(2026-11-11); the W8 intensity ratios, Psi and GD…FOD are done
+(2026-11-13); the rest of W8 is open. Drafted 2026-11-09. Everything still open,
 the inconsistencies found on the way, and the decisions needed are
 collected in `synthesis_open_items.md`.
 
@@ -147,11 +148,11 @@ bits; needle gradients in `needle_engine.rs` NREQ_* bits)
 | φ_RS, φ_RP, φ_TS, φ_TP, φ_RB*, φ_TB* | = phase targets above | phi channels | covered above |
 | PD on reflection (PDrs, PDrp; `passes = 2`) | needs r_f (W2) | phi + gain shift (`reference_phase` handles 2 passes) | **deferred** (decision 2026-11-09): reference-plane question for the round trip stays open, see §5 |
 | Delta_R, Delta_T | from the retardance curve | as retardance | **done (W8a)**: constant offset of retardance (`Delta_R = Ret_R − π`, `Delta_T = Ret_T`, wrapped), two extra labels |
-| Psi_R, Psi_T | from rp/rs (W2) | gradient form on complex amplitudes (new small operator `p_coherent_grad_c_from_fields`: Re(conj(g)·∂a)) | **moderate**: blocked by W1 + W2 + new operator |
-| Rs/Rp ratio, extinction ratio, diattenuation | from intensities | gradient form on R/T (W5) | **moderate**: blocked by W1/W5 |
+| Psi_R, Psi_T | from the Rs/Rp (Ts/Tp) intensities: the engine's `atan √(p/s)` | tangent pair on the s and p intensity buckets, as the ratios | **done (W8.4)**: `PsiR`, `PsiT`; no complex operator needed, scores through plates |
+| Rs/Rp ratio, extinction ratio, diattenuation | from intensities | tangent pair on the s and p intensity buckets (W5) | **done (W8.3)**: `RatioR/T` = s/p, `ExtR/T` = p/s, `DiattR/T` = (p − s)/(p + s), front only, `u` |
 | retardance Ret_R, Ret_T (φp − φs) | Ret_T from the t_f rows kept today; Ret_R needs r_f (W2) | gradient form on two phases (+g on p, −g on s) | **done (W8a)**: pair fold on the per-branch phase buckets |
-| DOP, Stokes S0-S3 (for a given input state) | from complex rows | gradient form, complex | **moderate**: needs an input-polarization field on the target; blocked by W1/W2/W5 |
-| GD, GDD, TOD, FOD (R/T, s/p) | **not computed** in the synthesis evaluator (engine `dispmaps`) | **exists** in the engine (`phase_dispersion_sensitivity`, NREQ_DGD…DFOD) | **harder**: port the dispersion forward into `simulate_inner`, add curve ids, map the fold to Q rows; LM via FD first |
+| DOP, Stokes S0-S3 (for a given input state) | S0, S1, DOP from the two intensities (DOP is independent of Δ); S2, S3 also from the complex rows (Δ) | ratio pairs per branch; S2/S3 add a gradient-form phase pair on p and s | **done (W8.6)**: `S0R`…`S3R`, `DOPR`, `S0T`…`S3T`, `DOPT`, a `stokes_input` normalized Stokes vector on the target, a `stokes` demand on the p key; analytic LM Jacobian |
+| GD, GDD, TOD, FOD (R/T, s/p) | from the kept r_f / t_f complex rows: unwrap, then the engine's `grad_nonuniform` n times in ω (bit-equal to `dispmaps`) | phase pairs at every simulated point through the stencil's transpose, `g = (Dⁿ)ᵀc` | **done (W8.5)**: `GDR/T`…`FODR/T` × s/p, a `dispersion` order on the phase demand (no new curve ids); analytic LM Jacobian, no FD |
 | cross_R, cross_T (cross-polarized) | — | — | **not meaningful** for isotropic stacks (identically zero); blocked by the absence of anisotropic media in synthesis |
 | any channel through an incoherent layer / real substrate back face | — | multiblock operators exist (`p_function_multiblock`) for R/T/A/RB/TB/AB | **done for intensities (W6 first cut, 2026-11-11)**: R/T/A, RB/TB/AB and colour through a fixed plate; phase on a stack with a spacer stays out (dropped at run setup with a warning since 2026-11-12) |
 | angle-cone or bandwidth-averaged R/T | — | linear in the pointwise terms | **moderate**: needs point weights (W4) and a quadrature on the solver grid |
@@ -520,9 +521,9 @@ every bucket the pairs already have (U sharing, A from companions, the
 back side) instead of only the front R/T grad buckets. The integral
 fold takes `q_j` per point (gap ÷ q_j, weight × q_j²; Linear has q = 1,
 bit for bit). No op point, or `s` at the 1e-12 clamp: nothing folds.
-`complex` stays refused. Ratio, extinction and contrast targets remain
-open and would use the same tangent construction (or the grad bucket
-where a pair has no single curve). Tests: needle-oracle Log cases (every
+`complex` stays refused. Ratio, extinction and diattenuation targets
+use the same tangent construction, one pair per branch: on branch b
+with partial `a_b`, `(X_b − (f − c)/a_b, 2w·a_b²)` (W8.3, 2026-11-13). Tests: needle-oracle Log cases (every
 kind, U, A, RB, weighted, integral), and
 `validation/smoke/test_needle_log_targets.py` (a log AR target through
 `run_needle`, re-scored by the engine).
@@ -873,19 +874,18 @@ plus a per-point tolerance (W4) is the user-side mitigation.
 
 ## 5. Further and future gaps (not in W1-W7)
 
-1. **Ellipsometric and polarization targets in synthesis**: Psi,
-   Rs/Rp ratio, extinction ratio, DOP (retardance and Delta moved into
-   W8a). Need `CurveId`s, complex rows (W2.3 gives r_s, r_p), and
-   gradient-form folds (W5). Natural next step after W5.
+1. **Polarization targets in synthesis**: done (retardance and Delta
+   in W8a; Rs/Rp ratio, extinction ratio and diattenuation in W8.3, Psi
+   in W8.4, DOP/Stokes for an input state in W8.6). Open: Stokes of the
+   back elements.
 1b. **Differential phase on reflection (PDrs, PDrp) — deferred
    (decision 2026-11-09).** `reference_phase` already takes `passes = 2`;
    the open question is the reference plane of the round trip
    (implementation_plan_pd.md:721). Revisit once a user case fixes the
    convention; the fold is the existing phi pair plus the gain shift.
-2. **Dispersion targets**: GD/GDD/TOD on reflection or transmission
-   (chirped mirrors). The engine computes them (`dispmaps`); synthesis
-   needs curve ids, a merit form and the needle derivative of GD (phase
-   derivative in λ). Larger research item.
+2. **Dispersion targets**: done for the front elements in W8.5
+   (`GDR/T`…`FODR/T`). Open: the back elements (RB/TB), and dispersion
+   across an incoherent plate (dropped there, like every phase demand).
 3. **Angle- and bandwidth-averaged targets**: cone of incidence, finite
    spectral bandwidth. Integration weights over (θ, λ) on the solver grid;
    W4's point weights are the building block.

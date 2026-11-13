@@ -140,7 +140,7 @@ halves stay pinned, so a sliver left by an insertion is kept.
 
 ### W5, transforms in the needle
 - `complex` transform: refused at the first fold (no fold form exists).
-- Ratio, extinction and contrast targets: not started; would reuse the
+- Ratio, extinction and diattenuation targets: done (W8.3), on the
   tangent-pair construction.
 
 ### W6, incoherent synthesis (first cut, this change)
@@ -224,17 +224,27 @@ bucket (FD oracle, 0° and 30°); LM with the analytic Jacobian (item
   differ per entry); only the flat scan shares sweeps.
 
 ### W8, new target types
-Done: W8a retardance (RetR/RetT, DeltaR/DeltaT). Open, in plan order:
-1. Rs/Rp ratio, extinction ratio, diattenuation (tangent pair or grad
-   bucket).
-2. Psi_R/Psi_T: needs a complex gradient operator
-   (`p_coherent_grad_c_from_fields`).
-3. DOP / Stokes for a given input state: needs an input-polarization
-   field on the target.
-4. GD…FOD: port the engine's dispersion forward into `simulate_inner`,
-   add curve ids, fold onto the existing Q-row sensitivities; LM by FD
-   first.
-5. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+Done: W8a retardance (RetR/RetT, DeltaR/DeltaT); W8.3 intensity ratios
+(RatioR/T = s/p, ExtR/T = p/s, DiattR/T), tangent pair per branch;
+W8.4 Psi (PsiR/PsiT). The engine's Psi is atan √(p/s) of the
+intensities, so it is one more ratio on the same tangent pair: the
+complex gradient operator the plan expected is not needed, and it
+scores through plates; W8.5 GD…FOD (GDR/T, GDDR/T, TODR/T, FODR/T × s/p).
+The dispersion is computed in the merit from the complex rows the
+evaluator already keeps (unwrap, then the engine's stencil n times in ω),
+a `dispersion` order on the phase demand instead of new curve ids; the
+LM Jacobian and the needle fold chain through the stencil's transpose,
+so neither needed FD nor the engine's Q-row sensitivities; W8.6
+DOP/Stokes (S0R…S3R, DOPR, S0T…S3T, DOPT) for an input state given as a
+normalized Stokes vector `stokes_input` on the target (partial
+polarization allowed). DOP turns out not to depend on the retardance
+(S2² + S3² = Xs·Xp·(q2² + q3²)), so S0, S1 and DOP read intensities only
+and score through plates; S2/S3 read the retardance and are dropped
+there. Analytic Jacobian; the needle fold is the ratio pairs plus, for
+S2/S3, a gradient-form phase pair on each of p and s.
+Open:
+1. PDrs/PDrp: deferred (reference plane of the round trip, D3).
+2. Stokes of the back elements (RB/TB).
 
 ### Further gaps (plan §5)
 - Angle-cone and bandwidth-averaged targets (W4 point weights are the

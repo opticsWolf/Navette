@@ -36,7 +36,12 @@ regenerates it).
 | phase of one element, front | `R`, `T` × s/p, `phase=True` | yes | no² |
 | phase of one element, back | `RB`, `TB` × s/p, `phase=True` | yes¹ | no² |
 | retardance | `RetR`, `RetT`, `DeltaR`, `DeltaT`, u, `phase=True` | yes | no² |
+| intensity ratio | `RatioR`, `RatioT`, `ExtR`, `ExtT`, `DiattR`, `DiattT`, u | yes | yes |
+| ellipsometric Ψ | `PsiR`, `PsiT`, u | yes | yes |
 | differential phase | `PDts`, `PDtp`, `phase=True` | yes | no² |
+| phase dispersion | `GDR`, `GDT`, `GDDR`, `GDDT`, `TODR`, `TODT`, `FODR`, `FODT` × s/p, `phase=True` | yes | no² |
+| Stokes intensity / DOP | `S0R`, `S1R`, `DOPR`, `S0T`, `S1T`, `DOPT`, u, `stokes_input` | yes | yes |
+| Stokes S2/S3 | `S2R`, `S3R`, `S2T`, `S3T`, u, `stokes_input` | yes | no² |
 | colour (`ColorTarget`) | front `R` / `T` | yes | yes |
 <!-- target-matrix:end -->
 
@@ -45,9 +50,8 @@ point weights and `integral`; intensity rows take linear or log
 normalization, phase rows linear or phase. Colour is `Exact` and linear
 only (*Color demands*). Not available in synthesis (the engine computes
 them, the merit does not): differential phase in reflection (`PDrs`,
-`PDrp`), Ψ, group delay and higher dispersion orders, degree of
-polarization and Stokes parameters, ratio and extinction targets, and
-the `complex` transform.
+`PDrp`), dispersion of the back elements, Stokes parameters of the back
+elements, and the `complex` transform.
 
 1. Not computable when the exit medium absorbs over the demand's
    wavelengths: light coming from inside an absorbing half-space has no
@@ -285,6 +289,90 @@ is flat there). `"auto"` resolves to log for any curve spanning 100× or
 more, so this is what makes such targets usable in needle runs at all.
 Phase demands must carry raw values with `norm_factor == 1` (the phase
 arm scales nothing — the converter unscales the resolved triple).
+
+**Intensity-ratio demands** (`RatioR/T` = s/p, `ExtR/T` = p/s,
+`DiattR/T` = $(p-s)/(p+s)$, `PsiR/T` = $\arctan\sqrt{p/s}$) read both
+front intensities $X_s, X_p$ of one quantity and score $f(X_s, X_p)$;
+each ratio's denominator carries the engine's $10^{-20}$ guard, so
+`DiattR` equals the engine's `Diattenuation_R` to rounding. Ψ is the
+engine's `Psi_R`/`Psi_T` (radians, not wrapped): it depends on the
+intensities only, so it needs no complex rows and scores through a
+plate. Below the engine's floor on $X_s$ ($10^{-12}$ for R,
+$10^{-20}$ for T) Ψ is $\pi/2$ and flat, and at $X_p = 0$ its
+partials are taken as 0. The merit Jacobian takes the partials
+$a_s = \partial f/\partial X_s$, $a_p = \partial f/\partial X_p$ per
+point. The needle fold is the log fold applied to each branch: with the
+kind table's centre or edge $c$ (in $f$ units, after $nf$) and weight
+$w$, branch $b \in \{s, p\}$ emits
+
+$$t_{b,k} = X_{b,op} - (f_{op} - c)/a_b, \qquad w_{b,k} = 2\,w\,a_b^2,$$
+
+into the s and p buckets of the same quantity. The two pairs together
+have the ratio residual's value and gradient at the operating point
+(pinned by the oracle for every kind, log, the integral and through a
+plate). With no operating point a ratio folds nothing, and a branch with
+$a_b = 0$ emits nothing. At normal incidence $X_s = X_p$ for every
+stack, the value is fixed and a demand there only compiles with a
+warning.
+
+**Dispersion demands** (`GDR/T`, `GDDR/T`, `TODR/T`, `FODR/T` × s/p)
+score $G = D^n \varphi$: the unwrapped $\arg$ of the s or p element of
+r_f / t_f on the *simulated* grid, differentiated $n = 1..4$ times in
+$\omega = 2\pi c/\lambda$ (rad/fs) with the engine's own stencil
+(`grad_nonuniform`, three points, one-sided at the ends), so $G$ is the
+engine's `GD_R_s`…`FOD_T_p` bit for bit, in fs$^n$. The target points
+then sample $G$ like an intensity row: linear, $nf = 1$, no wrap. A
+dispersion demand therefore depends on the simulated grid's spacing, as
+the engine's maps do, and a one-wavelength grid gives 0. With $s_i$ the
+sampling weights of point $i$, the merit row reads the phase with
+$(D^n)^\mathsf{T} s_i$, and each simulated point enters through
+$\partial\arg z/\partial(\operatorname{Re} z, \operatorname{Im} z)$: the
+LM Jacobian is analytic. The needle fold collects the slopes
+$c_j = \sum_i 2\,w_i\,(G_{i,op} - t_i)\,s_{ij}$ of the demand's points
+on the simulated grid, pulls them back to $g = (D^n)^\mathsf{T} c$, and
+emits at each simulated point the phase pair
+
+$$t_{j} = \varphi_{j,op} - \operatorname{sign}(g_j)\cdot 0.5, \qquad w_j = |g_j|,$$
+
+whose kernel slope $2\,w_j\,(\varphi_j - t_j)\,\partial\varphi_j$ is
+$g_j\,\partial\varphi_j$: gradient form in a pair, inside the kernel's
+wrap (pinned by the oracle for every order, both sides, a back element,
+the kinds that activate, the integral and point weights). With no
+operating point a dispersion demand folds nothing. Like every phase
+demand it is dropped across an incoherent plate.
+
+**Stokes demands** (`S0R`…`S3R`, `DOPR`, `S0T`…`S3T`, `DOPT`, pol. u)
+score the output Stokes vector of r_f / t_f for the input state
+`stokes_input` $= (q_1, q_2, q_3)$, a normalized Stokes vector with
+$S_0 = 1$ and $|q| \le 1$ (partial polarization allowed; required for
+these labels, refused for every other). The axes are the engine's:
+$(1,0,0)$ is p, $(-1,0,0)$ s, $(0,1,0)$ the engine's own $E_s = E_p$
+input. With $A = (1+q_1)/2$, $B = (1-q_1)/2$, $m = \sqrt{X_s X_p}$,
+$\Delta = \arg(z_p \bar z_s)$ and $\sigma = -1$ for R, $+1$ for T (the
+engine's handedness),
+
+$$S_0 = A X_p + B X_s,\quad S_1 = A X_p - B X_s,\quad
+S_2 = \sigma m\,(q_2\cos\Delta - q_3\sin\Delta),\quad
+S_3 = \sigma m\,(q_2\sin\Delta + q_3\cos\Delta),$$
+
+and DOP $= \min(1, \sqrt{S_1^2+S_2^2+S_3^2}/(S_0 + 10^{-20}))$. For
+$(0,1,0)$ these are half the engine's `S0_R`…`S3_T` (its input carries
+$S_0 = 2$) and the DOP is its `DOP_R`/`DOP_T` (pinned against the
+engine and against the coherency matrix at 45° and 70°). Since
+$S_2^2 + S_3^2 = X_s X_p (q_2^2 + q_3^2)$, DOP does not depend on
+$\Delta$: `S0`, `S1` and DOP read the two intensities only and score
+through a plate; `S2`/`S3` read the retardance, so they are phase
+demands for footnote 2. A fully polarized input stays fully polarized
+through a coherent stack, so DOP is 1 and flat there — its partials on
+the clamp are 0, and DOP only means something for $|q| < 1$. Linear
+normalization only (S1–S3 are signed). The LM Jacobian is analytic. The
+needle fold emits the ratio pairs on the intensities (the log fold per
+branch, as above) and, for `S2`/`S3`, with
+$g = 2\,w\,(f_{op} - c)\,\partial f/\partial\Delta$, the phase pairs
+$(\varphi_p - \operatorname{sign}(g)\cdot 0.5, |g|)$ and
+$(\varphi_s + \operatorname{sign}(g)\cdot 0.5, |g|)$ — gradient form, as
+for dispersion (pinned by the oracle at 45° and 70° and, for the
+intensity quantities, through a plate).
 
 Spectral-label mapping for the converter (`TargetCollection` → `MeritSpec`):
 `R/T/A` × s/p/u → front demands, `RB/TB/AB` × s/p/u → back demands;

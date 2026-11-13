@@ -688,6 +688,27 @@ pub struct MeritTarget {
     /// and excludes `differential_passes` (rejected otherwise): the two
     /// polarizations share one propagation reference, which cancels.
     pub retardance: bool,
+    /// W8 intensity ratio (`RatioR`/`ExtR`/`DiattR` and their T labels):
+    /// sample `f(X_s, X_p)` of the key's p intensity and its s partner
+    /// ([`CurveId::retardance_partner`]) instead of `X_p`. Excludes `phase`
+    /// (rejected otherwise). `None` for every other demand.
+    pub ratio: Option<IntensityRatio>,
+    /// W8 phase dispersion (`GD…FOD`): the `n`-th derivative of the key
+    /// element's unwrapped phase in ω (fs^n), the engine's own
+    /// [`crate::smatrix::core_engine::dispersion_channel`] over the simulated
+    /// grid, then sampled like an intensity row. Requires `phase` and the
+    /// `Linear` transform (no wrap); excludes `differential_passes`,
+    /// `retardance` and `ratio`. `n` in 1..=4; `None` for every other demand.
+    pub dispersion: Option<u8>,
+    /// W8 Stokes demand (`S0R…DOPR`, `S0T…DOPT`): sample a Stokes
+    /// parameter or the degree of polarization of the light the key's
+    /// element returns for the demand's input state (see [`StokesDemand`]).
+    /// The key is a front p curve (`Rp`, `Tp`), read with its s partner;
+    /// `S2` and `S3` also read both complex rows. Not a phase demand
+    /// (`phase` false) and needs the `Linear` transform; excludes
+    /// `differential_passes`, `retardance`, `ratio` and `dispersion`.
+    /// `None` for every other demand.
+    pub stokes: Option<StokesDemand>,
     /// User weight (default 1): multiplies this frame's merit sum.
     /// Applied at the residual level (`r × √(weight/count)`) so values,
     /// LM Jacobians and the needle fold stay consistent by construction.
@@ -714,6 +735,13 @@ impl MeritTarget {
     #[inline]
     pub fn point_weight(&self, i: usize) -> f64 {
         self.point_weights.get(i).copied().unwrap_or(1.0)
+    }
+
+    /// Whether this demand reads a complex row: a phase demand, or a
+    /// Stokes demand on a quantity that reads the retardance. These are
+    /// the demands an incoherent film drops.
+    pub fn reads_complex(&self) -> bool {
+        self.phase || self.stokes.is_some_and(|sd| sd.reads_phase())
     }
 }
 
@@ -938,6 +966,77 @@ impl MeritSpec {
                 ));
             }
         }
+        if target.ratio.is_some() {
+            let curve = self.keys[target.key_idx as usize].curve;
+            if target.phase || target.retardance {
+                return Err(
+                    "intensity ratio with phase: a ratio of intensities has no phase".into(),
+                );
+            }
+            if curve.retardance_partner().is_none() {
+                return Err(format!(
+                    "intensity ratio on {curve:?}: the key must be a p intensity \
+                     (Rp, Tp, RBp, TBp)"
+                ));
+            }
+            let on_t = matches!(curve, CurveId::Tp | CurveId::TBp);
+            if let Some(f) = target.ratio
+                && f.transmission().is_some_and(|t| t != on_t)
+            {
+                return Err(format!(
+                    "{f:?} on {curve:?}: Psi_R reads a reflection key (Rp, RBp), \
+                     Psi_T a transmission key (Tp, TBp)"
+                ));
+            }
+        }
+        if let Some(order) = target.dispersion {
+            if !(1..=4).contains(&order) {
+                return Err(format!(
+                    "dispersion order must be 1..=4 (GD..FOD), got {order}"
+                ));
+            }
+            if !target.phase || target.transform != SimTransform::Linear {
+                return Err(
+                    "dispersion needs phase and the linear transform (fs^n, no wrap)".into(),
+                );
+            }
+            if target.differential_passes.is_some() || target.retardance || target.ratio.is_some() {
+                return Err("dispersion excludes differential_passes, retardance and ratio".into());
+            }
+        }
+        if let Some(sd) = target.stokes {
+            let curve = self.keys[target.key_idx as usize].curve;
+            if target.phase
+                || target.differential_passes.is_some()
+                || target.retardance
+                || target.ratio.is_some()
+                || target.dispersion.is_some()
+            {
+                return Err(
+                    "a Stokes demand excludes phase, differential_passes, retardance, \
+                     ratio and dispersion"
+                        .into(),
+                );
+            }
+            if !matches!(curve, CurveId::Rp | CurveId::Tp) {
+                return Err(format!(
+                    "Stokes demand on {curve:?}: the key must be a front p intensity (Rp, Tp)"
+                ));
+            }
+            if target.transform != SimTransform::Linear {
+                return Err("a Stokes demand needs the linear transform".into());
+            }
+            let [q1, q2, q3] = sd.input;
+            if !(q1.is_finite() && q2.is_finite() && q3.is_finite())
+                || q1 * q1 + q2 * q2 + q3 * q3 > 1.0 + 1e-9
+            {
+                return Err(format!(
+                    "Stokes input must be a normalized Stokes vector (q1, q2, q3) \
+                     with |q| <= 1 (got {:?})",
+                    sd.input
+                ));
+            }
+        }
         // Weight/count trust boundary (bindings + converter pass user
         // values straight through; garbage here means NaN merits).
         if !target.weight.is_finite() || target.weight < 0.0 {
@@ -995,6 +1094,15 @@ impl MeritSpec {
                 continue;
             }
             let mut rows = rows_of(curve);
+            if let Some((s, _)) = ratio_partner(t, curve) {
+                rows.push(s);
+            }
+            if let Some((s, sd, _)) = stokes_partner(t, curve) {
+                rows.push(s);
+                if sd.reads_phase() {
+                    set = set.with_complex(&[curve, s]);
+                }
+            }
             for c in rows.clone() {
                 if let Some((cs, cp)) = c.unpolarized_parts() {
                     rows.extend([cs, cp]);
@@ -1032,7 +1140,7 @@ impl MeritSpec {
     /// assembly for intensity-only specs — virtually-free values are always
     /// built, requested ones only on demand.
     pub fn uses_phase(&self) -> bool {
-        self.targets.iter().any(|t| t.phase)
+        self.targets.iter().any(MeritTarget::reads_complex)
     }
 
     /// `uses_phase`, for the demands of environment `env` alone (D4): a
@@ -1040,16 +1148,18 @@ impl MeritSpec {
     pub fn uses_phase_in(&self, env: usize) -> bool {
         self.targets
             .iter()
-            .any(|t| t.phase && t.env_idx as usize == env)
+            .any(|t| t.reads_complex() && t.env_idx as usize == env)
     }
 
-    /// D4: remove the phase demands of every environment `lose_phase`
-    /// marks, and return them. The key groups stay registered; a group
-    /// left with no demand scores nothing (`residuals_into` filters by
-    /// demand), so dropping cannot shift another demand's residuals.
+    /// D4: remove the demands that read a phase (phase demands, and the
+    /// Stokes demands that read a retardance) of every environment
+    /// `lose_phase` marks, and return them. The key groups stay
+    /// registered; a group left with no demand scores nothing
+    /// (`residuals_into` filters by demand), so dropping cannot shift
+    /// another demand's residuals.
     pub fn drop_phase_demands(&mut self, lose_phase: &[bool]) -> Vec<MeritTarget> {
         self.drop_targets(|t, _| {
-            t.phase && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false)
+            t.reads_complex() && lose_phase.get(t.env_idx as usize).copied().unwrap_or(false)
         })
     }
 
@@ -1114,12 +1224,24 @@ impl MeritSpec {
                 provides.has_intensity(rc) && provides.has_intensity(tc)
             } else {
                 provides.has_intensity(key.curve)
+                    && ratio_partner(t, key.curve).is_none_or(|(s, _)| provides.has_intensity(s))
+                    && stokes_partner(t, key.curve).is_none_or(|(s, sd, _)| {
+                        provides.has_intensity(s)
+                            && (!sd.reads_phase()
+                                || (provides.has_complex(key.curve) && provides.has_complex(s)))
+                    })
             };
             if !ok {
                 let what = if t.differential_passes.is_some() {
                     "differential phase"
                 } else if t.retardance {
                     "retardance"
+                } else if t.ratio.is_some() {
+                    "intensity ratio"
+                } else if t.stokes.is_some() {
+                    "Stokes"
+                } else if t.dispersion.is_some() {
+                    "dispersion"
                 } else if t.phase {
                     "phase"
                 } else {
@@ -1437,6 +1559,15 @@ impl MeritSpec {
                 Absorption(&'a [f64], &'a [f64]),
                 Phase(&'a [Complex64]),
                 Retardance(&'a [Complex64], &'a [Complex64]),
+                /// The s and p rows of an intensity ratio.
+                Ratio(IntensityRatio, &'a [f64], &'a [f64]),
+                /// The dispersion row on the simulated grid, sampled like
+                /// an intensity.
+                Dispersion(Vec<f64>),
+                /// A Stokes demand: its handedness sign, the s and p
+                /// intensity rows, and the p and s complex rows when the
+                /// quantity reads the retardance.
+                Stokes(StokesDemand, f64, &'a [f64], &'a [f64], Option<CRows<'a>>),
             }
             let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
                 let arc = if id.is_back() {
@@ -1449,8 +1580,23 @@ impl MeritSpec {
             };
             let input: TargetInput = if let Some(s) = retardance_partner(t, key.curve) {
                 TargetInput::Retardance(crow(key.curve)?, crow(s)?)
+            } else if let Some(order) = t.dispersion {
+                TargetInput::Dispersion(dispersion_row(
+                    crow(key.curve)?,
+                    &dispersion_omega(sim_wl),
+                    order,
+                ))
             } else if t.phase {
                 TargetInput::Phase(crow(key.curve)?)
+            } else if let Some((s, f)) = ratio_partner(t, key.curve) {
+                TargetInput::Ratio(f, irow(s)?, irow(key.curve)?)
+            } else if let Some((s, sd, sigma)) = stokes_partner(t, key.curve) {
+                let c = if sd.reads_phase() {
+                    Some((crow(key.curve)?, crow(s)?))
+                } else {
+                    None
+                };
+                TargetInput::Stokes(sd, sigma, irow(s)?, irow(key.curve)?, c)
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 TargetInput::Absorption(irow(rc)?, irow(tc)?)
             } else {
@@ -1582,8 +1728,23 @@ impl MeritSpec {
             for i in 0..t_wl.len() {
                 let sim_raw = match &input {
                     TargetInput::Intensity(row) => sample(row, i, &mut sim_idx),
+                    TargetInput::Dispersion(row) => sample(row, i, &mut sim_idx),
                     TargetInput::Absorption(r, tt) => {
                         1.0 - sample(r, i, &mut sim_idx) - sample(tt, i, &mut sim_idx)
+                    }
+                    TargetInput::Ratio(f, srow, prow) => {
+                        let xs = sample(srow, i, &mut sim_idx);
+                        f.value(xs, sample(prow, i, &mut sim_idx))
+                    }
+                    TargetInput::Stokes(sd, sigma, srow, prow, c) => {
+                        // Every row walks the same bracket (shared state).
+                        let xs = sample(srow, i, &mut sim_idx);
+                        let xp = sample(prow, i, &mut sim_idx);
+                        let z = c.map_or(Complex64::new(0.0, 0.0), |(pc, sc)| {
+                            let zp = sample_c(pc, i, &mut sim_idx);
+                            zp * sample_c(sc, i, &mut sim_idx).conj()
+                        });
+                        sd.value(*sigma, xs, xp, z)
                     }
                     TargetInput::Phase(crow) => {
                         let mut a = sample_c(crow, i, &mut sim_idx).arg();
@@ -1951,6 +2112,15 @@ impl MeritSpec {
             arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
                 .ok_or(key.curve)
         };
+        let crow = |id: CurveId| -> Result<&[Complex64], CurveId> {
+            let arc = if id.is_back() {
+                sim.complex_back_curve(id)
+            } else {
+                sim.complex_curve(id)
+            };
+            arc.map(|c| &c[ang_row * n_wav..(ang_row + 1) * n_wav])
+                .ok_or(key.curve)
+        };
 
         for t in self
             .targets
@@ -1981,10 +2151,28 @@ impl MeritSpec {
                     return Err(key.curve);
                 }
                 (0.0, Vec::new())
+            } else if let Some(s) = ratio_partner(t, key.curve)
+                .map(|(s, _)| s)
+                .or(stokes_partner(t, key.curve).map(|(s, _, _)| s))
+            {
+                // Not linear: the signs are placeholders, each point's
+                // own partials replace them below.
+                (
+                    0.0,
+                    vec![(s, irow(s)?, 1.0), (key.curve, irow(key.curve)?, 1.0)],
+                )
             } else if let Some((rc, tc)) = key.curve.absorption_companions() {
                 (1.0, vec![(rc, irow(rc)?, -1.0), (tc, irow(tc)?, -1.0)])
             } else {
                 (0.0, vec![(key.curve, irow(key.curve)?, 1.0)])
+            };
+            let ratio = ratio_partner(t, key.curve).map(|(_, f)| f);
+            // A Stokes demand on S2, S3 or DOP also reads the p and s
+            // complex rows; a missing one errors here, as it does there.
+            let stokes = stokes_partner(t, key.curve);
+            let stokes_c: Option<CRows> = match stokes {
+                Some((s, sd, _)) if sd.reads_phase() => Some((crow(key.curve)?, crow(s)?)),
+                _ => None,
             };
 
             if t_wl.is_empty() {
@@ -2012,6 +2200,8 @@ impl MeritSpec {
                         out.uncovered.push(out.rows.len());
                         out.rows.push(Vec::new());
                     }
+                } else if let Some(order) = t.dispersion {
+                    dispersion_rows_into(sim, key, ang_row, t, order, out);
                 } else {
                     phase_rows_into(sim, key, ang_row, t, out);
                 }
@@ -2027,13 +2217,59 @@ impl MeritSpec {
             let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
             let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
             let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+            // ∂raw/∂channel per point: the signs for a linear combination,
+            // the partials at the sampled values for a ratio.
+            let mut dchs: Vec<[f64; 2]> = Vec::with_capacity(t_wl.len());
+            // A Stokes demand's retardance partial, spread onto the p and s
+            // complex rows: `a_Δ·∂arg` per row, `(Re, Im)` for p then s.
+            let mut phs: Vec<[f64; 4]> = Vec::new();
             for i in 0..t_wl.len() {
                 let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
-                let raw = konst
-                    + channels
-                        .iter()
-                        .map(|(_, row, sgn)| sgn * r.read(row))
-                        .sum::<f64>();
+                let (raw, dch) = match (ratio, stokes) {
+                    (Some(f), _) => {
+                        let (xs, xp) = (r.read(channels[0].1), r.read(channels[1].1));
+                        let (a_s, a_p) = f.partials(xs, xp);
+                        (f.value(xs, xp), [a_s, a_p])
+                    }
+                    (None, Some((_, sd, sigma))) => {
+                        let (xs, xp) = (r.read(channels[0].1), r.read(channels[1].1));
+                        let read_c = |row: &[Complex64]| match r {
+                            SampleRef::Direct(j) => row[j],
+                            SampleRef::Interp(j, f) => row[j] + (row[j + 1] - row[j]) * f,
+                        };
+                        let (zp, zs) = stokes_c.map_or(
+                            (Complex64::new(0.0, 0.0), Complex64::new(0.0, 0.0)),
+                            |(pc, sc)| (read_c(pc), read_c(sc)),
+                        );
+                        let z = zp * zs.conj();
+                        let (v, [a_s, a_p, a_d]) = sd.value_partials(sigma, xs, xp, z);
+                        // ∂arg z / ∂(Re z, Im z) = (Im c, Re c), c = conj(z)/|z|².
+                        let d_arg = |z: Complex64| {
+                            let c = z.conj() / z.norm_sqr();
+                            (c.im, c.re)
+                        };
+                        phs.push(if a_d != 0.0 && z.norm_sqr() > 0.0 {
+                            let ((p_re, p_im), (s_re, s_im)) = (d_arg(zp), d_arg(zs));
+                            [a_d * p_re, a_d * p_im, -a_d * s_re, -a_d * s_im]
+                        } else {
+                            [0.0; 4]
+                        });
+                        (v, [a_s, a_p])
+                    }
+                    (None, None) => {
+                        let mut dch = [0.0; 2];
+                        for (j, c) in channels.iter().enumerate() {
+                            dch[j] = c.2;
+                        }
+                        let raw = konst
+                            + channels
+                                .iter()
+                                .map(|(_, row, sgn)| sgn * r.read(row))
+                                .sum::<f64>();
+                        (raw, dch)
+                    }
+                };
+                dchs.push(dch);
                 let target_scaled = t.normalized_targets[i];
                 let diff = match t.transform {
                     SimTransform::Phase => {
@@ -2059,13 +2295,13 @@ impl MeritSpec {
                 let mut terms: Vec<CurveTerm> = Vec::new();
                 for i in 0..t_wl.len() {
                     let dt = d_transform(t.transform, raws[i], t.norm_factor);
-                    push_terms(
-                        &mut terms,
-                        &channels,
-                        ang_row,
-                        &refs[i],
-                        rscale * dk * dt * t.point_weight(i) / w_sum,
-                    );
+                    let scale = rscale * dk * dt * t.point_weight(i) / w_sum;
+                    push_terms(&mut terms, &channels, dchs[i], ang_row, &refs[i], scale);
+                    if let (Some(&ph), Some((s, _, _))) = (phs.get(i), stokes) {
+                        push_retardance_terms(
+                            &mut terms, key.curve, s, ang_row, &refs[i], scale, ph,
+                        );
+                    }
                 }
                 out.rows.push(terms);
             } else {
@@ -2075,13 +2311,13 @@ impl MeritSpec {
                     let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
                     let dt = d_transform(t.transform, raws[i], t.norm_factor);
                     let mut terms: Vec<CurveTerm> = Vec::new();
-                    push_terms(
-                        &mut terms,
-                        &channels,
-                        ang_row,
-                        &refs[i],
-                        rscale * t.point_weight(i).sqrt() * dk * dt,
-                    );
+                    let scale = rscale * t.point_weight(i).sqrt() * dk * dt;
+                    push_terms(&mut terms, &channels, dchs[i], ang_row, &refs[i], scale);
+                    if let (Some(&ph), Some((s, _, _))) = (phs.get(i), stokes) {
+                        push_retardance_terms(
+                            &mut terms, key.curve, s, ang_row, &refs[i], scale, ph,
+                        );
+                    }
                     out.rows.push(terms);
                 }
             }
@@ -2099,12 +2335,14 @@ impl MeritSpec {
     }
 }
 
-/// Append ∂r/∂value for every (channel × simulated point) this sample reads.
+/// Append ∂r/∂value for every (channel × simulated point) this sample reads,
+/// channel `j` scaled by its `∂raw/∂channel` in `dch[j]`.
 /// Terms that are structurally zero are dropped rather than stored: a caller
 /// multiplying them by ∂(curve)/∂θ would only be adding zeros.
 fn push_terms(
     terms: &mut Vec<CurveTerm>,
     channels: &[(CurveId, &[f64], f64)],
+    dch: [f64; 2],
     angle_row: usize,
     r: &SampleRef,
     scale: f64,
@@ -2112,9 +2350,291 @@ fn push_terms(
     if scale == 0.0 {
         return;
     }
-    for &(curve, _, sgn) in channels {
-        push_part_terms(terms, curve, TermPart::Value, angle_row, r, scale * sgn);
+    for (j, &(curve, _, _)) in channels.iter().enumerate() {
+        push_part_terms(terms, curve, TermPart::Value, angle_row, r, scale * dch[j]);
     }
+}
+
+/// W8: an intensity ratio of one element's s and p intensities, `X_s` and
+/// `X_p`. The small `RATIO_EPS` in each denominator is the engine's own
+/// guard for diattenuation (`s1 / (s0 + 1e-20)`); it keeps the ratio and
+/// its partials finite where an intensity vanishes, and leaves them smooth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IntensityRatio {
+    /// `X_s / X_p` (`RatioR`, `RatioT`).
+    SOverP,
+    /// `X_p / X_s`, the extinction ratio (`ExtR`, `ExtT`).
+    POverS,
+    /// `(X_p − X_s) / (X_p + X_s)`, the engine's `Diattenuation_R/_T`
+    /// (`DiattR`, `DiattT`).
+    Diattenuation,
+    /// `atan(√(X_p / X_s))`, the engine's `Psi_R` (`PsiR`): `π/2`, flat,
+    /// where `X_s < RS_FLOOR`.
+    PsiR,
+    /// The engine's `Psi_T` (`PsiT`), the same with `TS_FLOOR`.
+    PsiT,
+}
+
+/// Denominator guard of [`IntensityRatio`] (the engine's diattenuation guard).
+pub const RATIO_EPS: f64 = 1e-20;
+
+impl IntensityRatio {
+    /// Parse the raw door's spelling: `s/p`, `p/s`, `diattenuation`,
+    /// `psi_r`, `psi_t`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "s/p" => Some(IntensityRatio::SOverP),
+            "p/s" => Some(IntensityRatio::POverS),
+            "diattenuation" => Some(IntensityRatio::Diattenuation),
+            "psi_r" => Some(IntensityRatio::PsiR),
+            "psi_t" => Some(IntensityRatio::PsiT),
+            _ => None,
+        }
+    }
+
+    /// The Ψ floor on `X_s` (the engine's); 0 for the ratios proper.
+    fn psi_floor(self) -> f64 {
+        match self {
+            IntensityRatio::PsiR => crate::smatrix::core_engine::RS_FLOOR,
+            IntensityRatio::PsiT => crate::smatrix::core_engine::TS_FLOOR,
+            _ => 0.0,
+        }
+    }
+
+    /// Whether this ratio reads transmission (`Some(true)`), reflection
+    /// (`Some(false)`) or either (`None`).
+    pub fn transmission(self) -> Option<bool> {
+        match self {
+            IntensityRatio::PsiR => Some(false),
+            IntensityRatio::PsiT => Some(true),
+            _ => None,
+        }
+    }
+
+    /// The ratio at intensities `(xs, xp)`.
+    #[inline]
+    pub fn value(self, xs: f64, xp: f64) -> f64 {
+        match self {
+            IntensityRatio::SOverP => xs / (xp + RATIO_EPS),
+            IntensityRatio::POverS => xp / (xs + RATIO_EPS),
+            IntensityRatio::Diattenuation => (xp - xs) / (xp + xs + RATIO_EPS),
+            IntensityRatio::PsiR | IntensityRatio::PsiT => {
+                if xs < self.psi_floor() {
+                    std::f64::consts::FRAC_PI_2
+                } else {
+                    (xp / xs).sqrt().atan()
+                }
+            }
+        }
+    }
+
+    /// `(∂f/∂xs, ∂f/∂xp)` at `(xs, xp)`. Ψ is flat below its floor, and
+    /// at `X_p = 0`, where its slope in `X_p` is infinite, both partials
+    /// are taken as 0.
+    #[inline]
+    pub fn partials(self, xs: f64, xp: f64) -> (f64, f64) {
+        match self {
+            IntensityRatio::PsiR | IntensityRatio::PsiT => {
+                if xs < self.psi_floor() || xp <= 0.0 {
+                    return (0.0, 0.0);
+                }
+                // ψ = atan(u), u = √(xp/xs): dψ = du/(1+u²), 1+u² = (xs+xp)/xs.
+                let h = 0.5 / (xs + xp);
+                (-h * (xp / xs).sqrt(), h * (xs / xp).sqrt())
+            }
+            IntensityRatio::SOverP => {
+                let d = xp + RATIO_EPS;
+                (1.0 / d, -xs / (d * d))
+            }
+            IntensityRatio::POverS => {
+                let d = xs + RATIO_EPS;
+                (-xp / (d * d), 1.0 / d)
+            }
+            IntensityRatio::Diattenuation => {
+                let d = xp + xs + RATIO_EPS;
+                let d2 = d * d;
+                (-(2.0 * xp + RATIO_EPS) / d2, (2.0 * xs + RATIO_EPS) / d2)
+            }
+        }
+    }
+}
+
+/// The s curve and ratio of an intensity-ratio target on p key `curve`;
+/// `None` for every other target (registration guarantees the partner
+/// exists when `t.ratio` is set).
+pub(crate) fn ratio_partner(t: &MeritTarget, curve: CurveId) -> Option<(CurveId, IntensityRatio)> {
+    t.ratio.zip(curve.retardance_partner()).map(|(f, s)| (s, f))
+}
+
+/// The p and s complex rows a Stokes demand reads its retardance from.
+pub(crate) type CRows<'a> = (&'a [Complex64], &'a [Complex64]);
+
+/// W8: which quantity a [`StokesDemand`] reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StokesQuantity {
+    /// The total intensity `S0`.
+    S0,
+    /// `S1`: p minus s.
+    S1,
+    /// `S2`: +45° minus −45°.
+    S2,
+    /// `S3`: the circular component.
+    S3,
+    /// The degree of polarization `√(S1² + S2² + S3²)/S0`, at most 1.
+    Dop,
+}
+
+impl StokesQuantity {
+    /// Parse the raw door's spelling: `s0`, `s1`, `s2`, `s3`, `dop`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "s0" => Some(StokesQuantity::S0),
+            "s1" => Some(StokesQuantity::S1),
+            "s2" => Some(StokesQuantity::S2),
+            "s3" => Some(StokesQuantity::S3),
+            "dop" => Some(StokesQuantity::Dop),
+            _ => None,
+        }
+    }
+}
+
+/// W8: a Stokes parameter, or the degree of polarization, of the light one
+/// front element (`r` or `t`) returns for a given input state.
+///
+/// `input` is the input's normalized Stokes vector `(q1, q2, q3) =
+/// (S1, S2, S3)/S0` (`S0 = 1`, `|q| ≤ 1`). Partially polarized input is
+/// allowed, and is what gives DOP its meaning: through a coherent stack a
+/// fully polarized input stays fully polarized. The axes are the engine's:
+/// `q1 = 1` is p, `q1 = −1` is s, and `q = (0, 1, 0)` (`E_s = E_p`, in phase)
+/// is the input the engine's `S0_R…DOP_T` maps assume, at half their
+/// intensity scale. With `X_s`, `X_p` the element's intensities and
+/// `Δ = arg(z_p·conj(z_s))` its retardance,
+///
+/// ```text
+///     S0 = X_p·(1+q1)/2 + X_s·(1−q1)/2     S2 = σ·√(X_s·X_p)·(q2·cos Δ − q3·sin Δ)
+///     S1 = X_p·(1+q1)/2 − X_s·(1−q1)/2     S3 = σ·√(X_s·X_p)·(q2·sin Δ + q3·cos Δ)
+/// ```
+///
+/// with `σ = −1` for reflection and `+1` for transmission (the engine's
+/// handedness), and DOP `= min(1, √(S1² + S2² + S3²)/(S0 + RATIO_EPS))`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct StokesDemand {
+    pub quantity: StokesQuantity,
+    /// The input state `(q1, q2, q3)`.
+    pub input: [f64; 3],
+}
+
+impl StokesDemand {
+    /// Whether the quantity reads the retardance, and so the complex rows:
+    /// `S2` and `S3` do. `S0`, `S1` and DOP read intensities only, DOP
+    /// because `S2² + S3² = X_s·X_p·(q2² + q3²)` whatever `Δ` is.
+    pub fn reads_phase(&self) -> bool {
+        matches!(self.quantity, StokesQuantity::S2 | StokesQuantity::S3)
+    }
+
+    /// `S0…S3` at `(X_s, X_p, z = z_p·conj(z_s))`, and each one's partials
+    /// in `(X_s, X_p, Δ)`.
+    fn parts(&self, sigma: f64, xs: f64, xp: f64, z: Complex64) -> ([f64; 4], [[f64; 3]; 4]) {
+        let [q1, q2, q3] = self.input;
+        let (a, b) = (0.5 * (1.0 + q1), 0.5 * (1.0 - q1));
+        let (sin, cos) = z.arg().sin_cos();
+        let m = (xs * xp).max(0.0).sqrt();
+        let (dm_s, dm_p) = if m > 0.0 {
+            (0.5 * xp / m, 0.5 * xs / m)
+        } else {
+            (0.0, 0.0)
+        };
+        // z = 0 has no phase and no derivative in Δ.
+        let ph = if z.norm_sqr() > 0.0 { sigma * m } else { 0.0 };
+        let c = q2 * cos - q3 * sin;
+        let sn = q2 * sin + q3 * cos;
+        (
+            [
+                a * xp + b * xs,
+                a * xp - b * xs,
+                sigma * m * c,
+                sigma * m * sn,
+            ],
+            [
+                [b, a, 0.0],
+                [-b, a, 0.0],
+                [sigma * c * dm_s, sigma * c * dm_p, -ph * sn],
+                [sigma * sn * dm_s, sigma * sn * dm_p, ph * c],
+            ],
+        )
+    }
+
+    /// The quantity at intensities `(xs, xp)` and `z = z_p·conj(z_s)`
+    /// (unused by `S0`, `S1`); `sigma` is −1 for reflection, +1 for
+    /// transmission.
+    #[inline]
+    pub fn value(&self, sigma: f64, xs: f64, xp: f64, z: Complex64) -> f64 {
+        self.value_partials(sigma, xs, xp, z).0
+    }
+
+    /// The quantity and its partials `(∂/∂X_s, ∂/∂X_p, ∂/∂Δ)`. The `√`
+    /// partials are 0 where `X_s·X_p = 0`, `∂/∂Δ` is 0 where `z = 0`, and
+    /// DOP has no partials on its clamp (DOP = 1) or where it is 0.
+    pub fn value_partials(&self, sigma: f64, xs: f64, xp: f64, z: Complex64) -> (f64, [f64; 3]) {
+        let (s, j) = self.parts(sigma, xs, xp, z);
+        match self.quantity {
+            StokesQuantity::S0 => (s[0], j[0]),
+            StokesQuantity::S1 => (s[1], j[1]),
+            StokesQuantity::S2 => (s[2], j[2]),
+            StokesQuantity::S3 => (s[3], j[3]),
+            StokesQuantity::Dop => {
+                let l = (s[1] * s[1] + s[2] * s[2] + s[3] * s[3]).sqrt();
+                let d = s[0] + RATIO_EPS;
+                let v = l / d;
+                if v.is_nan() || v >= 1.0 || l == 0.0 {
+                    return (v.min(1.0), [0.0; 3]);
+                }
+                let mut g = [0.0; 3];
+                for (k, gk) in g.iter_mut().enumerate() {
+                    *gk = (s[1] * j[1][k] + s[2] * j[2][k] + s[3] * j[3][k]) / (l * d)
+                        - l * j[0][k] / (d * d);
+                }
+                (v, g)
+            }
+        }
+    }
+}
+
+/// The s curve, demand and handedness sign of a Stokes target on p key
+/// `curve`; `None` for every other target (registration guarantees a front
+/// p key when `t.stokes` is set).
+pub(crate) fn stokes_partner(
+    t: &MeritTarget,
+    curve: CurveId,
+) -> Option<(CurveId, StokesDemand, f64)> {
+    let sigma = if matches!(curve, CurveId::Tp | CurveId::TBp) {
+        1.0
+    } else {
+        -1.0
+    };
+    t.stokes
+        .zip(curve.retardance_partner())
+        .map(|(sd, s)| (s, sd, sigma))
+}
+
+/// A Stokes point's retardance partial on the p and s complex rows:
+/// `ph = [Re, Im]` coefficients for p, then s, each times `scale`.
+fn push_retardance_terms(
+    terms: &mut Vec<CurveTerm>,
+    p: CurveId,
+    s: CurveId,
+    angle_row: usize,
+    r: &SampleRef,
+    scale: f64,
+    ph: [f64; 4],
+) {
+    if scale == 0.0 {
+        return;
+    }
+    push_part_terms(terms, p, TermPart::Re, angle_row, r, scale * ph[0]);
+    push_part_terms(terms, p, TermPart::Im, angle_row, r, scale * ph[1]);
+    push_part_terms(terms, s, TermPart::Re, angle_row, r, scale * ph[2]);
+    push_part_terms(terms, s, TermPart::Im, angle_row, r, scale * ph[3]);
 }
 
 /// [`push_terms`] for one curve and part: `scale` spread over the simulated
@@ -2156,6 +2676,41 @@ pub(crate) fn retardance_partner(t: &MeritTarget, curve: CurveId) -> Option<Curv
     } else {
         None
     }
+}
+
+/// ω = 2πc/λ (rad/fs, λ in nm) of the simulated grid: the engine's
+/// dispersion axis.
+pub(crate) fn dispersion_omega(sim_wl: &[f64]) -> Vec<f64> {
+    use crate::smatrix::optics_core::C_NM_PER_FS;
+    sim_wl
+        .iter()
+        .map(|&l| std::f64::consts::TAU * C_NM_PER_FS / l)
+        .collect()
+}
+
+/// The `order`-th ω derivative (fs^order) of `crow`'s unwrapped phase over
+/// the simulated grid: the engine's
+/// [`crate::smatrix::core_engine::dispersion_channel`] for one angle row.
+pub(crate) fn dispersion_row(crow: &[Complex64], omega: &[f64], order: u8) -> Vec<f64> {
+    use crate::smatrix::optics_core::grad_nonuniform;
+    let phi: Vec<f64> = crow.iter().map(|z| z.arg()).collect();
+    let mut row = crate::smatrix::core_engine::unwrap(&phi);
+    for _ in 0..order {
+        row = grad_nonuniform(&row, omega);
+    }
+    row
+}
+
+/// `(Dⁿ)ᵀ c`: a sensitivity `c` on the dispersion row, chained back onto
+/// the unwrapped phase at each simulated point. Unwrapping adds a constant
+/// per point, so `∂φ_unwrapped = ∂arg`.
+pub(crate) fn dispersion_adjoint(c: &[f64], omega: &[f64], order: u8) -> Vec<f64> {
+    use crate::smatrix::optics_core::grad_nonuniform_adjoint;
+    let mut g = c.to_vec();
+    for _ in 0..order {
+        g = grad_nonuniform_adjoint(&g, omega);
+    }
+    g
 }
 
 /// The rows of one phase target, in `residuals_into`'s order. A back
@@ -2327,6 +2882,106 @@ fn phase_rows_into(
     }
 }
 
+/// The rows of one dispersion target (`t.dispersion = Some(n)`), in
+/// `residuals_into`'s order. The residual samples `G = Dⁿ φ` (the unwrapped
+/// phase differentiated `n` times in ω over the simulated grid), so a row
+/// that reads `G` with weights `s` reads the phase with `(Dⁿ)ᵀ s`, and each
+/// simulated point `j` enters through `∂arg z_j / ∂(Re z_j, Im z_j)`.
+fn dispersion_rows_into(
+    sim: &SimCurves,
+    key: &MeritKey,
+    ang_row: usize,
+    t: &MeritTarget,
+    order: u8,
+    out: &mut MeritSensitivity,
+) {
+    let sim_wl: &[f64] = &sim.wavelengths;
+    let n_wav = sim_wl.len();
+    let t_wl: &[f64] = &t.wavelengths;
+    let full = if key.curve.is_back() {
+        sim.complex_back_curve(key.curve)
+    } else {
+        sim.complex_curve(key.curve)
+    };
+    let full = full.expect("dispersion_rows_into: complex row checked by the caller");
+    let prow = &full[ang_row * n_wav..(ang_row + 1) * n_wav];
+    let omega = dispersion_omega(sim_wl);
+    let g_row = dispersion_row(prow, &omega, order);
+    let (aligned, offset) = alignment(t_wl, sim_wl);
+    let rscale = (t.weight / t.count_norm.unwrap_or(1.0)).sqrt();
+
+    let mut refs: Vec<SampleRef> = Vec::with_capacity(t_wl.len());
+    let mut raws: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut diffs: Vec<f64> = Vec::with_capacity(t_wl.len());
+    let mut sim_idx = 0usize;
+    for i in 0..t_wl.len() {
+        let r = resolve_sample(t_wl, sim_wl, i, &mut sim_idx, aligned, offset);
+        let raw = r.read(&g_row);
+        refs.push(r);
+        raws.push(raw);
+        diffs.push(raw * t.norm_factor - t.normalized_targets[i]);
+    }
+
+    // One row from its per-point scales: spread onto G by the sample
+    // weights, pull back through (Dⁿ)ᵀ, then through arg at each point.
+    let row_terms = |scales: &[(usize, f64)]| -> Vec<CurveTerm> {
+        let mut c = vec![0.0; n_wav];
+        for &(i, scale) in scales {
+            match refs[i] {
+                SampleRef::Direct(j) => c[j] += scale,
+                SampleRef::Interp(j, f) => {
+                    c[j] += scale * (1.0 - f);
+                    c[j + 1] += scale * f;
+                }
+            }
+        }
+        let g = dispersion_adjoint(&c, &omega, order);
+        let mut terms: Vec<CurveTerm> = Vec::new();
+        for (j, (&gj, z)) in g.iter().zip(prow).enumerate() {
+            if gj == 0.0 || z.norm_sqr() == 0.0 {
+                continue;
+            }
+            let cz = z.conj() / z.norm_sqr();
+            for (part, d) in [(TermPart::Re, cz.im), (TermPart::Im, cz.re)] {
+                let w = gj * d;
+                if w != 0.0 {
+                    terms.push(CurveTerm {
+                        curve: key.curve,
+                        angle_row: ang_row,
+                        wavelength: j,
+                        d_residual: w,
+                        part,
+                    });
+                }
+            }
+        }
+        terms
+    };
+
+    if t.integral {
+        let (mean_d, mean_tol, mean_bw, w_sum) = weighted_means(t, &diffs);
+        let dk = d_kind_residual(t.kind, mean_d, mean_tol, mean_bw);
+        let scales: Vec<(usize, f64)> = (0..t_wl.len())
+            .map(|i| {
+                let dt = d_transform(t.transform, raws[i], t.norm_factor);
+                (i, rscale * dk * dt * t.point_weight(i) / w_sum)
+            })
+            .collect();
+        out.rows.push(row_terms(&scales));
+    } else {
+        for i in 0..t_wl.len() {
+            let tol = t.tolerances[i];
+            let bw = t.band.get(i).copied().unwrap_or(0.0);
+            let dk = d_kind_residual(t.kind, diffs[i], tol, bw);
+            let dt = d_transform(t.transform, raws[i], t.norm_factor);
+            out.rows.push(row_terms(&[(
+                i,
+                rscale * t.point_weight(i).sqrt() * dk * dt,
+            )]));
+        }
+    }
+}
+
 /// An integral target's point-weighted means of its diffs, tolerances and
 /// band, and the weight sum: the residual pass's accumulation, in the same
 /// order, so the derivative rows see the values the residual saw.
@@ -2486,6 +3141,9 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
+            dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -2515,6 +3173,9 @@ mod tests {
             phase: true,
             differential_passes: None,
             retardance: false,
+            ratio: None,
+            dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             integral: false,
             weight: 1.0,
@@ -4523,6 +5184,9 @@ mod tests {
                 phase: false,
                 differential_passes: None,
                 retardance: false,
+                ratio: None,
+                dispersion: None,
+                stokes: None,
                 point_weights: Vec::new().into(),
                 integral,
                 weight,
@@ -5000,6 +5664,587 @@ mod tests {
         fn retardance_rows_are_a_finite_difference_of_both_complex_rows() {
             check_retardance_rows(CurveId::Rp);
             check_retardance_rows(CurveId::TBp);
+        }
+
+        /// A complex row whose phase winds through ±π several times along
+        /// each angle row (steps of about 2.4 rad, inside unwrap's π), so the
+        /// dispersion forward unwraps for real. `bump` moves one part of one
+        /// entry.
+        fn disp_sim(id: CurveId, bump: Option<(TermPart, usize, f64)>) -> SimCurves {
+            let mut sim = base_sim();
+            let mut c: Vec<Complex64> = (0..NA * NW)
+                .map(|k| {
+                    let j = (k % NW) as f64;
+                    let a = -0.8 + 2.4 * j + 0.15 * (j * j) / NW as f64 + 0.3 * (k / NW) as f64;
+                    Complex64::from_polar(0.6 + 0.1 * (k as f64 * 0.5).cos(), a)
+                })
+                .collect();
+            match bump {
+                Some((TermPart::Re, flat, h)) => c[flat].re += h,
+                Some((TermPart::Im, flat, h)) => c[flat].im += h,
+                _ => {}
+            }
+            sim.set_complex(id, Arc::from(c)).unwrap();
+            sim
+        }
+
+        /// W8: the dispersion forward is the engine's `dispersion_channel`
+        /// row, and its rows (through `(Dⁿ)ᵀ` and `arg`) are `residuals()`
+        /// differenced in Re/Im of every grid amplitude. Every order,
+        /// pointwise and integral, aligned and off-grid, two kinds, both
+        /// angles, a front and a back key.
+        #[test]
+        fn dispersion_rows_are_a_finite_difference_of_the_complex_row() {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            for id in [CurveId::Rs, CurveId::TBp] {
+                let base = disp_sim(id, None);
+                // The forward against the engine's own post-pass.
+                let full = if id.is_back() {
+                    base.complex_back_curve(id)
+                } else {
+                    base.complex_curve(id)
+                }
+                .unwrap();
+                let phi: Vec<f64> = full.iter().map(|z| z.arg()).collect();
+                let omega = dispersion_omega(&base.wavelengths);
+                let engine = crate::smatrix::core_engine::dispersion_channel(&phi, &omega, NA, NW);
+                for order in 1..=4u8 {
+                    let want = match order {
+                        1 => &engine.0,
+                        2 => &engine.1,
+                        3 => &engine.2,
+                        _ => &engine.3,
+                    };
+                    for a in 0..NA {
+                        let got = dispersion_row(&full[a * NW..(a + 1) * NW], &omega, order);
+                        assert_eq!(got.as_slice(), &want[a * NW..(a + 1) * NW]);
+                    }
+                }
+                for order in 1..=4u8 {
+                    let scale = 10f64.powi(order as i32);
+                    let mut spec = MeritSpec::new();
+                    for angle in [Radians::ZERO, deg(30.0)] {
+                        let k = spec.add_key(MeritKey { angle, curve: id });
+                        for (grid, integral, kind) in [
+                            (wl(), false, ConstraintKind::Exact),
+                            (off.clone(), false, ConstraintKind::Exact),
+                            (wl(), true, ConstraintKind::Exact),
+                            (off.clone(), false, ConstraintKind::CenterBand),
+                        ] {
+                            let n = grid.len();
+                            let mut t =
+                                target(k as u32, grid, kind, SimTransform::Linear, integral, 1.3);
+                            t.phase = true;
+                            t.dispersion = Some(order);
+                            t.normalized_targets = vec![0.3 * scale; n].into();
+                            t.tolerances = vec![scale; n].into();
+                            t.band = vec![0.2 * scale; n].into();
+                            t.point_weights =
+                                (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                            spec.add_target(t).unwrap();
+                        }
+                    }
+                    assert!(spec.required_rows().has_complex(id));
+                    let sens = spec.curve_sensitivity(&base).unwrap();
+                    assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+                    let h = 1e-7;
+                    let mut live = 0usize;
+                    for part in [TermPart::Re, TermPart::Im] {
+                        for flat in 0..NA * NW {
+                            let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                            spec.residuals(&disp_sim(id, Some((part, flat, h))), &mut rp)
+                                .unwrap();
+                            spec.residuals(&disp_sim(id, Some((part, flat, -h))), &mut rm)
+                                .unwrap();
+                            for (i, terms) in sens.rows.iter().enumerate() {
+                                let x: f64 = terms
+                                    .iter()
+                                    .filter(|t| {
+                                        t.curve == id
+                                            && t.part == part
+                                            && t.angle_row * NW + t.wavelength == flat
+                                    })
+                                    .map(|t| t.d_residual)
+                                    .sum();
+                                let y = (rp[i] - rm[i]) / (2.0 * h);
+                                let dev = (x - y).abs() / y.abs().max(1.0);
+                                assert!(
+                                    dev < 1e-5,
+                                    "{id:?} order {order} row {i}, {part:?}[{flat}]: {x} vs {y}"
+                                );
+                                if y.abs() > 1e-9 {
+                                    live += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert!(live > 100, "{id:?} order {order}: only {live} live entries");
+                }
+            }
+        }
+
+        /// W8: a dispersion demand is phase-only, linear, and alone.
+        #[test]
+        fn dispersion_registration_refusals() {
+            let mut spec = MeritSpec::new();
+            let k = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rp,
+            }) as u32;
+            let mk = |phase: bool, transform: SimTransform, order: u8| {
+                let mut t = target(k, wl(), ConstraintKind::Exact, transform, false, 1.0);
+                t.phase = phase;
+                t.dispersion = Some(order);
+                t
+            };
+            assert!(spec.add_target(mk(true, SimTransform::Linear, 2)).is_ok());
+            for (t, what) in [
+                (mk(false, SimTransform::Linear, 2), "phase"),
+                (mk(true, SimTransform::Phase, 2), "linear"),
+                (mk(true, SimTransform::Linear, 0), "1..=4"),
+                (mk(true, SimTransform::Linear, 5), "1..=4"),
+            ] {
+                let e = spec.add_target(t).unwrap_err();
+                assert!(e.contains(what), "{e}");
+            }
+            let mut t = mk(true, SimTransform::Linear, 1);
+            t.retardance = true;
+            assert!(spec.add_target(t).unwrap_err().contains("excludes"));
+        }
+
+        /// W8: smooth, positive, mutually distinct s and p intensity rows
+        /// for the ratio demands; `bump` moves one entry of one row.
+        fn ratio_sim(bump: Option<(CurveId, usize, f64)>) -> SimCurves {
+            let mut sim = base_sim();
+            let ids = [
+                CurveId::Rs,
+                CurveId::Rp,
+                CurveId::Ts,
+                CurveId::Tp,
+                CurveId::RBs,
+                CurveId::RBp,
+            ];
+            for (j, id) in ids.into_iter().enumerate() {
+                let mut v: Vec<f64> = (0..NA * NW)
+                    .map(|k| 0.12 + 0.07 * j as f64 + 0.05 * ((k as f64) * 0.4 + j as f64).sin())
+                    .collect();
+                if let Some((b, flat, h)) = bump
+                    && b == id
+                {
+                    v[flat] += h;
+                }
+                sim.set_curve(id, Arc::from(v)).unwrap();
+            }
+            sim
+        }
+
+        /// W8: an intensity-ratio demand reads `f(X_s, X_p)` and its rows
+        /// land on both intensity rows with the ratio's partials, against
+        /// `residuals()` differenced in every entry of either row. Every
+        /// ratio, linear and log, pointwise and integral, aligned and
+        /// off-grid, two kinds, both angles, a front and a back key.
+        #[test]
+        fn ratio_rows_are_a_finite_difference_of_both_intensity_rows() {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            for p in [CurveId::Rp, CurveId::Tp, CurveId::RBp] {
+                let s_id = p.retardance_partner().unwrap();
+                for f in [
+                    IntensityRatio::SOverP,
+                    IntensityRatio::POverS,
+                    IntensityRatio::Diattenuation,
+                    IntensityRatio::PsiR,
+                    IntensityRatio::PsiT,
+                ] {
+                    if f.transmission().is_some_and(|t| t != (p == CurveId::Tp)) {
+                        continue;
+                    }
+                    let mut spec = MeritSpec::new();
+                    for angle in [Radians::ZERO, deg(30.0)] {
+                        let k = spec.add_key(MeritKey { angle, curve: p });
+                        for (grid, integral, kind, transform) in [
+                            (wl(), false, ConstraintKind::Exact, SimTransform::Linear),
+                            (off.clone(), false, ConstraintKind::Exact, SimTransform::Log),
+                            (wl(), true, ConstraintKind::Exact, SimTransform::Linear),
+                            (
+                                off.clone(),
+                                false,
+                                ConstraintKind::CenterBand,
+                                SimTransform::Linear,
+                            ),
+                        ] {
+                            let n = grid.len();
+                            let mut t = target(k as u32, grid, kind, transform, integral, 1.3);
+                            t.ratio = Some(f);
+                            let level = f.value(0.2, 0.3);
+                            t.normalized_targets = vec![
+                                if transform == SimTransform::Log {
+                                    level.abs().log10()
+                                } else {
+                                    level
+                                };
+                                n
+                            ]
+                            .into();
+                            t.point_weights =
+                                (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                            spec.add_target(t).unwrap();
+                        }
+                    }
+                    let need = spec.required_rows();
+                    assert!(need.has_intensity(p) && need.has_intensity(s_id));
+
+                    let sim = ratio_sim(None);
+                    let sens = spec.curve_sensitivity(&sim).unwrap();
+                    assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+                    let h = 1e-7;
+                    let mut live = 0usize;
+                    for curve in [p, s_id] {
+                        for flat in 0..NA * NW {
+                            let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                            spec.residuals(&ratio_sim(Some((curve, flat, h))), &mut rp)
+                                .unwrap();
+                            spec.residuals(&ratio_sim(Some((curve, flat, -h))), &mut rm)
+                                .unwrap();
+                            let a = analytic_column(&sens, NW, curve, flat);
+                            for (i, ((x, u), v)) in a.iter().zip(&rp).zip(&rm).enumerate() {
+                                let y = (u - v) / (2.0 * h);
+                                let dev = (x - y).abs() / y.abs().max(1.0);
+                                assert!(
+                                    dev < 1e-6,
+                                    "{f:?} on {p:?}: row {i}, {curve:?}[{flat}]: {x} vs {y}"
+                                );
+                                if y.abs() > 1e-9 {
+                                    live += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert!(live > 100, "{f:?} on {p:?}: only {live} live entries");
+                }
+            }
+        }
+
+        /// W8: [`ratio_sim`]'s intensities plus smooth p and s complex rows
+        /// for the front R and T elements, whose retardance crosses ±π at
+        /// some points. `bump` moves one part of one entry of one row.
+        fn stokes_sim(bump: Option<(CurveId, TermPart, usize, f64)>) -> SimCurves {
+            let mut sim = ratio_sim(match bump {
+                Some((id, TermPart::Value, flat, h)) => Some((id, flat, h)),
+                _ => None,
+            });
+            for (id, phase0, amp0) in [
+                (CurveId::Rp, 0.4, 0.7),
+                (CurveId::Rs, -2.5, 0.5),
+                (CurveId::Tp, 1.1, 0.6),
+                (CurveId::Ts, -1.9, 0.8),
+            ] {
+                let mut c: Vec<Complex64> = (0..NA * NW)
+                    .map(|k| {
+                        let a = phase0 + 0.35 * ((k as f64) * 0.3 + amp0).sin();
+                        Complex64::from_polar(amp0 + 0.1 * (k as f64 * 0.5).cos(), a)
+                    })
+                    .collect();
+                match bump {
+                    Some((b, TermPart::Re, flat, h)) if b == id => c[flat].re += h,
+                    Some((b, TermPart::Im, flat, h)) if b == id => c[flat].im += h,
+                    _ => {}
+                }
+                sim.set_complex(id, Arc::from(c)).unwrap();
+            }
+            sim
+        }
+
+        /// W8: a Stokes demand's rows land on both intensity rows and, for
+        /// `S2` and `S3`, on Re/Im of both complex rows (DOP does not
+        /// depend on the retardance; its complex rows stay unread), against
+        /// `residuals()` differenced in every entry of all four. Every
+        /// quantity, partially and fully polarized inputs, R and T, pointwise
+        /// and integral, aligned and off-grid, two kinds, both angles.
+        #[test]
+        fn stokes_rows_are_a_finite_difference_of_all_four_rows() {
+            let off: Vec<f64> = (0..NW - 1).map(|i| 512.5 + 25.0 * i as f64).collect();
+            for p in [CurveId::Rp, CurveId::Tp] {
+                let s_id = p.retardance_partner().unwrap();
+                for quantity in [
+                    StokesQuantity::S0,
+                    StokesQuantity::S1,
+                    StokesQuantity::S2,
+                    StokesQuantity::S3,
+                    StokesQuantity::Dop,
+                ] {
+                    for input in [[0.3, -0.5, 0.6], [0.0, 0.6, 0.8], [-0.2, 0.1, -0.4]] {
+                        let sd = StokesDemand { quantity, input };
+                        let mut spec = MeritSpec::new();
+                        for angle in [Radians::ZERO, deg(30.0)] {
+                            let k = spec.add_key(MeritKey { angle, curve: p });
+                            for (grid, integral, kind, tgt) in [
+                                (wl(), false, ConstraintKind::Exact, 0.05),
+                                (off.clone(), false, ConstraintKind::Exact, -0.02),
+                                (wl(), true, ConstraintKind::Exact, 0.1),
+                                (off.clone(), false, ConstraintKind::CenterBand, 0.03),
+                            ] {
+                                let n = grid.len();
+                                let mut t = target(
+                                    k as u32,
+                                    grid,
+                                    kind,
+                                    SimTransform::Linear,
+                                    integral,
+                                    1.3,
+                                );
+                                t.stokes = Some(sd);
+                                t.normalized_targets = vec![tgt; n].into();
+                                t.point_weights =
+                                    (0..n).map(|i| 0.5 + i as f64).collect::<Vec<_>>().into();
+                                spec.add_target(t).unwrap();
+                            }
+                        }
+                        let need = spec.required_rows();
+                        assert!(need.has_intensity(p) && need.has_intensity(s_id));
+                        assert_eq!(need.has_complex(p), sd.reads_phase());
+                        assert_eq!(need.has_complex(s_id), sd.reads_phase());
+                        assert_eq!(spec.uses_phase(), sd.reads_phase());
+
+                        let sens = spec.curve_sensitivity(&stokes_sim(None)).unwrap();
+                        assert!(sens.is_complete(), "uncovered {:?}", sens.uncovered);
+                        let column = |curve: CurveId, part: TermPart, flat: usize| -> Vec<f64> {
+                            sens.rows
+                                .iter()
+                                .map(|terms| {
+                                    terms
+                                        .iter()
+                                        .filter(|t| {
+                                            t.curve == curve
+                                                && t.part == part
+                                                && t.angle_row * NW + t.wavelength == flat
+                                        })
+                                        .map(|t| t.d_residual)
+                                        .sum()
+                                })
+                                .collect()
+                        };
+                        let h = 1e-7;
+                        let mut live = [0usize; 2];
+                        for curve in [p, s_id] {
+                            for part in [TermPart::Value, TermPart::Re, TermPart::Im] {
+                                for flat in 0..NA * NW {
+                                    let (mut rp, mut rm) = (Vec::new(), Vec::new());
+                                    spec.residuals(
+                                        &stokes_sim(Some((curve, part, flat, h))),
+                                        &mut rp,
+                                    )
+                                    .unwrap();
+                                    spec.residuals(
+                                        &stokes_sim(Some((curve, part, flat, -h))),
+                                        &mut rm,
+                                    )
+                                    .unwrap();
+                                    let a = column(curve, part, flat);
+                                    for (i, ((x, u), v)) in a.iter().zip(&rp).zip(&rm).enumerate() {
+                                        let y = (u - v) / (2.0 * h);
+                                        let dev = (x - y).abs() / y.abs().max(1.0);
+                                        assert!(
+                                            dev < 1e-6,
+                                            "{quantity:?} {input:?} on {p:?}: row {i}, \
+                                             {curve:?} {part:?}[{flat}]: {x} vs {y}"
+                                        );
+                                        if y.abs() > 1e-9 {
+                                            live[(part != TermPart::Value) as usize] += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // A fully polarized input keeps DOP on its clamp
+                        // at 1, which has no slope.
+                        let full = (input.iter().map(|q| q * q).sum::<f64>() - 1.0).abs() < 1e-12;
+                        if !(quantity == StokesQuantity::Dop && full) {
+                            assert!(live[0] > 100, "{quantity:?} on {p:?}: live {live:?}");
+                        }
+                        assert_eq!(live[1] > 100, sd.reads_phase(), "{quantity:?}: {live:?}");
+                    }
+                }
+            }
+        }
+
+        /// W8: registration refuses a Stokes demand off a front p key, with
+        /// a phase flag or another demand form, off the linear transform, or
+        /// with an input outside the Poincaré ball.
+        #[test]
+        fn stokes_registration_refusals() {
+            let sd = StokesDemand {
+                quantity: StokesQuantity::S2,
+                input: [0.0, 1.0, 0.0],
+            };
+            let try_add = |curve: CurveId, f: &dyn Fn(&mut MeritTarget)| -> Result<(), String> {
+                let mut spec = MeritSpec::new();
+                let k = spec.add_key(MeritKey {
+                    angle: Radians::ZERO,
+                    curve,
+                });
+                let mut t = target(
+                    k as u32,
+                    wl(),
+                    ConstraintKind::Exact,
+                    SimTransform::Linear,
+                    false,
+                    1.0,
+                );
+                t.stokes = Some(sd);
+                f(&mut t);
+                spec.add_target(t)
+            };
+            assert!(try_add(CurveId::Rp, &|_| {}).is_ok());
+            assert!(try_add(CurveId::Tp, &|_| {}).is_ok());
+            for bad in [
+                CurveId::Rs,
+                CurveId::Ru,
+                CurveId::RBp,
+                CurveId::TBp,
+                CurveId::Ap,
+            ] {
+                assert!(
+                    try_add(bad, &|_| {}).unwrap_err().contains("front p"),
+                    "{bad:?}"
+                );
+            }
+            assert!(
+                try_add(CurveId::Rp, &|t| t.phase = true)
+                    .unwrap_err()
+                    .contains("excludes")
+            );
+            assert!(
+                try_add(CurveId::Rp, &|t| t.ratio = Some(IntensityRatio::SOverP))
+                    .unwrap_err()
+                    .contains("excludes")
+            );
+            assert!(
+                try_add(CurveId::Rp, &|t| t.transform = SimTransform::Log)
+                    .unwrap_err()
+                    .contains("linear")
+            );
+            for input in [[0.8, 0.8, 0.0], [f64::NAN, 0.0, 0.0]] {
+                assert!(
+                    try_add(CurveId::Rp, &|t| t.stokes = Some(StokesDemand {
+                        quantity: StokesQuantity::Dop,
+                        input
+                    }))
+                    .unwrap_err()
+                    .contains("|q| <= 1")
+                );
+            }
+        }
+
+        /// W8: the residual reads the ratio of the two rows, with the
+        /// engine's diattenuation guard, and registration refuses a ratio
+        /// on anything but a p key or with phase.
+        #[test]
+        fn ratio_demand_reads_the_ratio_and_refuses_bad_keys() {
+            let sim = ratio_sim(None);
+            let (xs, xp) = (
+                sim.curve(CurveId::Rs).unwrap()[3],
+                sim.curve(CurveId::Rp).unwrap()[3],
+            );
+            for (f, want) in [
+                (IntensityRatio::SOverP, xs / xp),
+                (IntensityRatio::POverS, xp / xs),
+                (IntensityRatio::Diattenuation, (xp - xs) / (xp + xs)),
+                (IntensityRatio::PsiR, (xp / xs).sqrt().atan()),
+            ] {
+                let mut spec = MeritSpec::new();
+                let k = spec.add_key(MeritKey {
+                    angle: Radians::ZERO,
+                    curve: CurveId::Rp,
+                });
+                let mut t = target(
+                    k as u32,
+                    wl(),
+                    ConstraintKind::Exact,
+                    SimTransform::Linear,
+                    false,
+                    1.0,
+                );
+                t.ratio = Some(f);
+                t.normalized_targets = vec![0.0; NW].into();
+                t.tolerances = vec![1.0; NW].into();
+                spec.add_target(t).unwrap();
+                let mut r = Vec::new();
+                spec.residuals(&sim, &mut r).unwrap();
+                assert!((r[3] - want).abs() < 1e-12, "{f:?}: {} vs {want}", r[3]);
+            }
+            let mut spec = MeritSpec::new();
+            let ks = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rs,
+            });
+            let kp = spec.add_key(MeritKey {
+                angle: Radians::ZERO,
+                curve: CurveId::Rp,
+            });
+            let mut t = target(
+                ks as u32,
+                wl(),
+                ConstraintKind::Exact,
+                SimTransform::Linear,
+                false,
+                1.0,
+            );
+            t.ratio = Some(IntensityRatio::SOverP);
+            assert!(spec.add_target(t).unwrap_err().contains("p intensity"));
+            let mut t = target(
+                kp as u32,
+                wl(),
+                ConstraintKind::Exact,
+                SimTransform::Phase,
+                false,
+                1.0,
+            );
+            t.ratio = Some(IntensityRatio::SOverP);
+            t.phase = true;
+            assert!(spec.add_target(t).unwrap_err().contains("no phase"));
+            let mut t = target(
+                kp as u32,
+                wl(),
+                ConstraintKind::Exact,
+                SimTransform::Linear,
+                false,
+                1.0,
+            );
+            t.ratio = Some(IntensityRatio::PsiT);
+            assert!(spec.add_target(t).unwrap_err().contains("transmission key"));
+        }
+
+        /// W8.4: Ψ is the engine's, floor included: `π/2` and flat below
+        /// `RS_FLOOR` / `TS_FLOOR`, and its partials are a finite
+        /// difference of the value above it.
+        #[test]
+        fn psi_is_the_engines_with_its_floor() {
+            use crate::smatrix::core_engine::{RS_FLOOR, TS_FLOOR};
+            use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+            for (f, floor) in [
+                (IntensityRatio::PsiR, RS_FLOOR),
+                (IntensityRatio::PsiT, TS_FLOOR),
+            ] {
+                assert_eq!(f.value(0.5 * floor, 0.3), FRAC_PI_2);
+                assert_eq!(f.partials(0.5 * floor, 0.3), (0.0, 0.0));
+                assert!((f.value(0.3, 0.3) - FRAC_PI_4).abs() < 1e-15);
+                assert_eq!(f.value(0.3, 0.0), 0.0);
+                assert_eq!(f.partials(0.3, 0.0), (0.0, 0.0));
+                for (xs, xp) in [(0.2, 0.05), (0.04, 0.6), (3e-3, 2e-4)] {
+                    let (a_s, a_p) = f.partials(xs, xp);
+                    let h = 1e-6 * xs.min(xp);
+                    let fs = (f.value(xs + h, xp) - f.value(xs - h, xp)) / (2.0 * h);
+                    let fp = (f.value(xs, xp + h) - f.value(xs, xp - h)) / (2.0 * h);
+                    assert!(
+                        (a_s - fs).abs() < 1e-6 * fs.abs(),
+                        "{f:?} {xs} {xp}: {a_s} vs {fs}"
+                    );
+                    assert!(
+                        (a_p - fp).abs() < 1e-6 * fp.abs(),
+                        "{f:?} {xs} {xp}: {a_p} vs {fp}"
+                    );
+                }
+            }
         }
 
         #[test]

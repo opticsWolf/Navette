@@ -11,7 +11,9 @@ All notable changes to Navette are recorded here. Work items reference
 
 Needle synthesis draws from a material pool, runs through incoherent
 plates, scores every target type (retardance, log-normalized, weighted
-points) and checks once, at setup, what the complete stack can answer:
+points), gains the polarization and dispersion targets (s/p ratios,
+extinction, diattenuation, Ψ, GD…FOD, Stokes and DOP for an input state)
+and checks once, at setup, what the complete stack can answer:
 a demand it cannot is dropped with one warning instead of failing a
 solve. Angles are radians inside and named at every door; a material
 is its label. Several of these break call sites; see *Changed
@@ -226,6 +228,13 @@ is its label. Several of these break call sites; see *Changed
   from CI. `bench_eval` reports
   `n_pool_materials` in place of its contrast count.
 
+- `MeritTarget` (Rust) has new fields `dispersion: Option<u8>` and
+  `stokes: Option<StokesDemand>`; struct literals need
+  `dispersion: None, stokes: None`.
+
+- `retardance_warnings` (Rust, `synthesis::targets`) is now
+  `sp_contrast_warnings`; it also covers the ratio labels.
+
 ### Fixed
 
 - **A masked host shifted the needle P of every later host** (1.1 /
@@ -304,6 +313,57 @@ is its label. Several of these break call sites; see *Changed
   the integral fold are unchanged.
 
 ### Added
+
+- **Intensity-ratio targets: `RatioR`, `RatioT`, `ExtR`, `ExtT`,
+  `DiattR`, `DiattT`** (W8.3). Synthesis scores the front s/p intensity
+  ratio (`Ratio` = s/p), the extinction ratio (`Ext` = p/s) and the
+  diattenuation (p − s)/(p + s), each denominator guarded by the
+  engine's 1e-20, so `DiattR`/`DiattT` equal the engine's
+  `Diattenuation_R`/`Diattenuation_T`. They take `polarization="u"` and
+  no phase; every kind, `band`, point weights, log normalization and
+  `integral` apply, and they score through incoherent plates. The merit
+  Jacobian carries the ratio's partials; the needle folds each demand as
+  one tangent pair per branch on the s and p intensity buckets (pinned
+  by the needle oracle, P = dM/dδ). A demand at normal incidence, where
+  s and p coincide and the value cannot move, compiles with a warning.
+  `MeritSpec.add_target` takes `ratio="s/p" | "p/s" | "diattenuation"`
+  on a p intensity key.
+- **Ellipsometric Ψ targets: `PsiR`, `PsiT`** (W8.4). The engine's
+  `Psi_R`/`Psi_T`, `atan √(p/s)` of the front intensities in radians,
+  `π/2` and flat below its Rs (1e-12) or Ts (1e-20) floor. Ψ depends
+  on the intensities only, so it rides the intensity-ratio machinery
+  (merit partials, one tangent pair per branch) and scores through
+  incoherent plates. `MeritSpec.add_target` takes `ratio="psi_r"` on
+  `Rp`/`RBp` and `ratio="psi_t"` on `Tp`/`TBp`.
+- **Phase-dispersion targets: `GDR`, `GDT`, `GDDR`, `GDDT`, `TODR`,
+  `TODT`, `FODR`, `FODT`** (W8.5), × s/p, `phase=True`. The group delay
+  and its ω derivatives (fs^n) of r_f / t_f: the merit unwraps the
+  element's phase over the simulated grid and differentiates it 1–4
+  times in ω = 2πc/λ with the engine's own stencil, so the values equal
+  the engine's `GD_R_s`…`FOD_T_p` bit for bit, then samples them like an
+  intensity (linear, no normalization, no wrap). Every kind, `band`,
+  point weights and `integral` apply. The LM Jacobian and the needle
+  fold chain through the stencil's transpose, so both are analytic
+  (pinned against finite differences and by the needle oracle). Like
+  every phase demand, a dispersion demand is dropped across an
+  incoherent plate. `MeritSpec.add_target` takes `dispersion=1..4` on a
+  phase demand with `transform="linear"`.
+- **Stokes / DOP targets: `S0R`…`S3R`, `DOPR`, `S0T`…`S3T`, `DOPT`**
+  (W8.6), `polarization="u"`. The Stokes vector and degree of
+  polarization of the light r_f / t_f returns for an input state, the
+  new `stokes_input` field on `SpectralTarget` and `AngularTarget`: a
+  normalized Stokes vector `(q1, q2, q3)` with `|q| <= 1`, so partially
+  polarized input is allowed (`(1, 0, 0)` is p, `(-1, 0, 0)` s). For
+  `(0, 1, 0)` the values are half the engine's `S0_R`…`S3_T` (the input
+  carries S0 = 1) and the DOP equals `DOP_R`/`DOP_T`. DOP does not depend
+  on the retardance, so `S0`, `S1` and DOP score through incoherent
+  plates; `S2`/`S3` read the retardance and are dropped there like any
+  phase demand. Linear normalization; every kind, `band`, point weights
+  and `integral` apply. The LM Jacobian is analytic; the needle folds
+  intensity pairs per branch plus, for `S2`/`S3`, a phase pair on p and
+  s (pinned by the needle oracle). `MeritSpec.add_target` takes
+  `stokes="s0" | "s1" | "s2" | "s3" | "dop"` with
+  `stokes_input=(q1, q2, q3)` on an `Rp`/`Tp` key.
 
 - **The supported-target matrix is measured, not written.**
   `tools/check_target_matrix.py` compiles and scores every label on a

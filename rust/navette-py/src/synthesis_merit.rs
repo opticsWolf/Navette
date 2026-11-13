@@ -18,7 +18,8 @@ use pyo3::types::{PyAny, PyDict};
 use crate::structure::WarnOnce;
 
 use navette::smatrix::synthesis::merit::{
-    ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, SimCurves, SimTransform,
+    ConstraintKind, CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, SimCurves,
+    SimTransform, StokesDemand, StokesQuantity,
 };
 use navette::smatrix::synthesis::needle_pass::build_needle_targets as core_fold;
 
@@ -43,6 +44,14 @@ fn parse_transform(s: &str) -> PyResult<SimTransform> {
     SimTransform::from_str(s).ok_or_else(|| {
         PyValueError::new_err(format!(
             "Invalid transform '{s}' (use 'linear', 'log', 'phase' or 'complex')"
+        ))
+    })
+}
+
+fn parse_ratio(s: &str) -> PyResult<IntensityRatio> {
+    IntensityRatio::from_str(s).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "Invalid ratio '{s}' (use 's/p', 'p/s', 'diattenuation', 'psi_r' or 'psi_t')"
         ))
     })
 }
@@ -196,7 +205,7 @@ pub(crate) fn compile_merit_spec(py: Python<'_>, request_json: &str) -> PyResult
     // Warned, not refused (W8a): a retardance demand at 0 deg only is
     // unreachable, not malformed.
     let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
-    for msg in navette::smatrix::synthesis::targets::retardance_warnings(&set) {
+    for msg in navette::smatrix::synthesis::targets::sp_contrast_warnings(&set) {
         PyErr::warn(
             py,
             &user_warning,
@@ -231,13 +240,24 @@ impl PyMeritSpec {
     #[pyo3(signature = (key_idx, wavelengths, normalized, tolerances, kind, transform,
                         norm_factor, band=None, phase=false, differential_passes=None,
                         weight=1.0, count_norm=None, integral=false, retardance=false,
+                        ratio=None, dispersion=None, stokes=None, stokes_input=None,
                         point_weights=None))]
     /// Append one target frame. Arrays are per-point values on `wavelengths`.
     /// `differential_passes` (None = absolute phase; 1.0 = `PDts`/`PDtp`
     /// transmitted) subtracts the equivalent-medium reference (see
     /// `SimCurves` metadata); requires `phase=true`. `retardance` samples
     /// `arg(z_p · conj(z_s))` on a p key (`Rp`/`Tp`/`RBp`/`TBp`); requires
-    /// `phase=true` and no `differential_passes`.
+    /// `phase=true` and no `differential_passes`. `ratio` (`"s/p"`,
+    /// `"p/s"`, `"diattenuation"`, `"psi_r"` or `"psi_t"`) samples that
+    /// ratio of the p key's intensity and its s partner instead; it
+    /// excludes `phase`. `dispersion` (1..=4: GD, GDD, TOD, FOD, in fs^n)
+    /// samples that ω derivative of the key's unwrapped phase over the
+    /// simulated grid; it requires `phase=true` and `transform="linear"`.
+    /// `stokes` (`"s0"`..`"s3"`, `"dop"`) samples that Stokes quantity of
+    /// the light a front p key's element (`Rp`/`Tp`) returns for
+    /// `stokes_input`, the input as a normalized Stokes vector
+    /// `(q1, q2, q3)`, `|q| <= 1`; the two come together, exclude `phase`
+    /// and need `transform="linear"`.
     /// `weight` scales the frame's merit sum; `count_norm` (target-level
     /// point count, resolved by the converter) divides it. `integral`
     /// constrains the mean of the scaled diffs (single residual).
@@ -260,8 +280,28 @@ impl PyMeritSpec {
         count_norm: Option<f64>,
         integral: bool,
         retardance: bool,
+        ratio: Option<String>,
+        dispersion: Option<u8>,
+        stokes: Option<String>,
+        stokes_input: Option<[f64; 3]>,
         point_weights: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<()> {
+        let stokes = match (stokes.as_deref(), stokes_input) {
+            (None, None) => None,
+            (Some(q), Some(input)) => Some(StokesDemand {
+                quantity: StokesQuantity::from_str(q).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "stokes must be one of 's0', 's1', 's2', 's3', 'dop' (got {q:?})"
+                    ))
+                })?,
+                input,
+            }),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "stokes and stokes_input come together",
+                ));
+            }
+        };
         let pw: Vec<f64> = match point_weights {
             Some(a) => a.as_slice()?.to_vec(),
             None => Vec::new(),
@@ -291,6 +331,9 @@ impl PyMeritSpec {
                 phase,
                 differential_passes,
                 retardance,
+                ratio: ratio.as_deref().map(parse_ratio).transpose()?,
+                dispersion,
+                stokes,
                 weight,
                 count_norm,
                 integral,

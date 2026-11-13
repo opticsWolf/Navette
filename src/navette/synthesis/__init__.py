@@ -102,6 +102,75 @@ Delta target is compiled as the retardance target shifted by its offset,
 so one forward and one needle fold serve all four. At normal incidence the
 retardance is identically 0: a demand at 0° only compiles with a warning.
 
+Intensity-ratio labels (``polarization="u"``, ``phase=False``, front only):
+
+==============  ==================================================
+label           meaning
+==============  ==================================================
+``"RatioR"``    ``Rs / Rp``
+``"RatioT"``    ``Ts / Tp``
+``"ExtR"``      ``Rp / Rs``, the extinction ratio
+``"ExtT"``      ``Tp / Ts``
+``"DiattR"``    ``(Rp − Rs)/(Rp + Rs)``, the engine's ``Diattenuation_R``
+``"DiattT"``    ``(Tp − Ts)/(Tp + Ts)``, the engine's ``Diattenuation_T``
+``"PsiR"``      ``atan √(Rp/Rs)``, the engine's ``Psi_R`` (radians)
+``"PsiT"``      ``atan √(Tp/Ts)``, the engine's ``Psi_T``
+==============  ==================================================
+
+They key on the p curve and read its s partner too; each ratio's
+denominator carries the engine's 1e-20 guard, and Ψ is ``π/2`` (flat)
+below the engine's floor on Rs (1e-12) or Ts (1e-20). The needle folds a ratio through its
+tangent at the operating point, as it does the log transform. At normal
+incidence s and p are equal and the value cannot move: a demand at 0°
+only compiles with a warning.
+
+Dispersion labels (``polarization="s"`` or ``"p"``, ``phase=True`` required,
+front only):
+
+==============  ==================================================
+label           meaning
+==============  ==================================================
+``"GDR"``       group delay ``dφ/dω`` of r_f (fs), the engine's ``GD_R_s/p``
+``"GDT"``       group delay of t_f, the engine's ``GD_T_s/p``
+``"GDDR"``      ``d²φ/dω²`` (fs²), ``GDD_R_s/p``; ``"GDDT"`` likewise
+``"TODR"``      ``d³φ/dω³`` (fs³), ``TOD_R_s/p``; ``"TODT"`` likewise
+``"FODR"``      ``d⁴φ/dω⁴`` (fs⁴), ``FOD_R_s/p``; ``"FODT"`` likewise
+==============  ==================================================
+
+They key on the s or p curve. The merit unwraps the element's phase over
+the simulated grid and differentiates it with the engine's own stencil
+(``grad_nonuniform``, ω = 2πc/λ), then samples the result like an
+intensity: linear, ``nf = 1``, no wrap. The LM Jacobian and the needle
+fold chain through the stencil's transpose, so both are analytic. The
+values depend on the simulated grid's spacing, exactly as the engine's do.
+
+Stokes labels (``polarization="u"``, ``phase=False``, front only, and a
+``stokes_input`` on the target):
+
+==============  ==================================================
+label           meaning
+==============  ==================================================
+``"S0R"``       total intensity of r_f's output, ``S0``
+``"S1R"``       ``S1`` (p − s); ``"S2R"`` ``S2``; ``"S3R"`` ``S3``
+``"DOPR"``      degree of polarization ``√(S1²+S2²+S3²)/S0``
+``"S0T"``       the same for t_f, through ``"DOPT"``
+==============  ==================================================
+
+``stokes_input`` is the input state as a normalized Stokes vector
+``(q1, q2, q3)``, ``|q| <= 1``; with ``Xs``, ``Xp`` the intensities and
+``Δ`` the retardance, ``S0 = Xp(1+q1)/2 + Xs(1−q1)/2``,
+``S1 = Xp(1+q1)/2 − Xs(1−q1)/2``,
+``S2 = σ√(XsXp)(q2 cos Δ − q3 sin Δ)``,
+``S3 = σ√(XsXp)(q2 sin Δ + q3 cos Δ)`` (``σ = −1`` for R, ``+1`` for T,
+the engine's handedness). For ``(0, 1, 0)`` these are half the engine's
+``S0_R``…``S3_T`` and the DOP is its ``DOP_R``/``DOP_T``. They key on the
+p curve and are normalized linearly. ``S2``/``S3`` also read the
+retardance, so they are phase demands for the incoherent-film rule
+(dropped there); ``S0``, ``S1`` and DOP read intensities only — DOP does
+not depend on ``Δ`` — and reach through. The LM Jacobian and the needle
+fold are analytic: intensity tangents per polarization, plus a phase pair
+on each of p and s for ``S2``/``S3``.
+
 Any other label raises ``ValueError`` — the synthesis side speaks this fixed
 vocabulary (the weaver itself accepts anything). Targets with
 ``phase=True`` become phase demands on the mapped curve's S-matrix element

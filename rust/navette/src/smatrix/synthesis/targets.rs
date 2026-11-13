@@ -14,7 +14,8 @@ use serde::Deserialize;
 
 use super::color_merit::{ColorDemand, ColorDistance, ColorQuantity, ColorReference};
 use super::merit::{
-    ConstraintKind, CurveId, MeritKey, MeritSpec, MeritTarget, Radians, SimTransform,
+    ConstraintKind, CurveId, IntensityRatio, MeritKey, MeritSpec, MeritTarget, Radians,
+    SimTransform, StokesDemand, StokesQuantity,
 };
 use super::weights::{ProfileRef, WeightProfile, check_point_weights};
 use crate::color::tables::default_tables;
@@ -72,6 +73,11 @@ pub struct SpectralTarget {
     /// the set's `weight_profiles`. Exclusive with `weights`.
     #[serde(default)]
     pub weight_profile: Option<ProfileRef>,
+    /// W8: the input polarization of a Stokes label (`S0R`…`DOPT`), as a
+    /// normalized Stokes vector `(q1, q2, q3)` with `|q| <= 1` (see
+    /// [`StokesDemand`]). Required for those labels, refused for any other.
+    #[serde(default)]
+    pub stokes_input: Option<[f64; 3]>,
 }
 
 /// One angular constraint curve (value vs angle at fixed wavelength).
@@ -120,6 +126,10 @@ pub struct AngularTarget {
     /// name from the set's `weight_profiles`. Exclusive with `weights`.
     #[serde(default)]
     pub weight_profile: Option<ProfileRef>,
+    /// W8: the input polarization of a Stokes label, as on
+    /// [`SpectralTarget::stokes_input`].
+    #[serde(default)]
+    pub stokes_input: Option<[f64; 3]>,
 }
 
 /// Scalar (broadcast) or per-point band half-widths.
@@ -458,6 +468,36 @@ fn curve_id(spectral: &str, polarization: &str) -> Result<String, String> {
         }
         return Ok(curve.to_string());
     }
+    if let Some((curve, _)) = ratio(spectral) {
+        if polarization != "u" {
+            return Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} is a ratio of the s and p intensities; pass polarization=\"u\"."
+            ));
+        }
+        return Ok(curve.to_string());
+    }
+    if let Some((curve, _)) = stokes(spectral) {
+        if polarization != "u" {
+            return Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} reads both polarizations for its input state; pass polarization=\"u\"."
+            ));
+        }
+        return Ok(curve.to_string());
+    }
+    if let Some((side, _)) = dispersion(spectral) {
+        return match (side, polarization) {
+            ("R", "s") => Ok("Rs".to_string()),
+            ("R", "p") => Ok("Rp".to_string()),
+            ("T", "s") => Ok("Ts".to_string()),
+            ("T", "p") => Ok("Tp".to_string()),
+            _ => Err(format!(
+                "Cannot convert spectral={spectral:?}, polarization={polarization:?}: \
+         {spectral:?} is the dispersion of one amplitude; pass polarization=\"s\" or \"p\"."
+            )),
+        };
+    }
     let curve = match (spectral, polarization) {
         ("R", "s") => "Rs",
         ("R", "p") => "Rp",
@@ -511,11 +551,94 @@ fn retardance(spectral: &str) -> Option<(&'static str, f64)> {
     }
 }
 
+/// Intensity-ratio labels (W8): spectral → (host p CurveId, ratio). Each
+/// reads the p intensity and its s partner of one element: `Ratio*` is
+/// `X_s / X_p`, `Ext*` the extinction ratio `X_p / X_s`, `Diatt*` the
+/// engine's `Diattenuation_R`/`_T`, `(X_p − X_s) / (X_p + X_s)`.
+fn ratio(spectral: &str) -> Option<(&'static str, IntensityRatio)> {
+    match spectral {
+        "RatioR" => Some(("Rp", IntensityRatio::SOverP)),
+        "RatioT" => Some(("Tp", IntensityRatio::SOverP)),
+        "ExtR" => Some(("Rp", IntensityRatio::POverS)),
+        "ExtT" => Some(("Tp", IntensityRatio::POverS)),
+        "DiattR" => Some(("Rp", IntensityRatio::Diattenuation)),
+        "DiattT" => Some(("Tp", IntensityRatio::Diattenuation)),
+        "PsiR" => Some(("Rp", IntensityRatio::PsiR)),
+        "PsiT" => Some(("Tp", IntensityRatio::PsiT)),
+        _ => None,
+    }
+}
+
+/// Phase-dispersion labels (W8): spectral → (front side "R"/"T", ω
+/// derivative order). `GD*` is the group delay in fs, `GDD*` fs², `TOD*`
+/// fs³, `FOD*` fs⁴: the engine's `GD_R_s`…`FOD_T_p` of the s or p
+/// amplitude the polarization picks.
+fn dispersion(spectral: &str) -> Option<(&'static str, u8)> {
+    match spectral {
+        "GDR" => Some(("R", 1)),
+        "GDT" => Some(("T", 1)),
+        "GDDR" => Some(("R", 2)),
+        "GDDT" => Some(("T", 2)),
+        "TODR" => Some(("R", 3)),
+        "TODT" => Some(("T", 3)),
+        "FODR" => Some(("R", 4)),
+        "FODT" => Some(("T", 4)),
+        _ => None,
+    }
+}
+
+/// Stokes labels (W8): spectral → (host p CurveId, quantity). Each reads
+/// the s and p intensities of one front element, and `S2`/`S3` also its
+/// retardance, for the target's `stokes_input`: the engine's
+/// `S0_R`…`DOP_T` generalized to any input state.
+fn stokes(spectral: &str) -> Option<(&'static str, StokesQuantity)> {
+    let (q, side) = match spectral {
+        "S0R" => (StokesQuantity::S0, "Rp"),
+        "S1R" => (StokesQuantity::S1, "Rp"),
+        "S2R" => (StokesQuantity::S2, "Rp"),
+        "S3R" => (StokesQuantity::S3, "Rp"),
+        "DOPR" => (StokesQuantity::Dop, "Rp"),
+        "S0T" => (StokesQuantity::S0, "Tp"),
+        "S1T" => (StokesQuantity::S1, "Tp"),
+        "S2T" => (StokesQuantity::S2, "Tp"),
+        "S3T" => (StokesQuantity::S3, "Tp"),
+        "DOPT" => (StokesQuantity::Dop, "Tp"),
+        _ => return None,
+    };
+    Some((side, q))
+}
+
+/// The Stokes demand of a target: `None` for any other label, an error for
+/// a Stokes label without its input state or an input on any other label.
+fn stokes_demand(
+    spectral: &str,
+    input: Option<[f64; 3]>,
+    phase: bool,
+) -> Result<Option<StokesDemand>, String> {
+    match (stokes(spectral), input) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(format!(
+            "spectral={spectral:?} takes no stokes_input: only the Stokes labels \
+             (S0R..DOPR, S0T..DOPT) read an input polarization."
+        )),
+        (Some(_), None) => Err(format!(
+            "spectral={spectral:?} needs stokes_input, the input polarization as a \
+             normalized Stokes vector (q1, q2, q3)."
+        )),
+        (Some(_), Some(_)) if phase => Err(format!(
+            "spectral={spectral:?} is a Stokes quantity: it is not a phase; drop phase=True."
+        )),
+        (Some((_, quantity)), Some(input)) => Ok(Some(StokesDemand { quantity, input })),
+    }
+}
+
 /// Labels that are phase quantities by definition: ingestion forces phase
-/// normalization (raw radians, nf = 1) and compilation requires
+/// normalization (raw values, nf = 1) and compilation requires
 /// `phase=True`.
 fn phase_only(spectral: &str) -> bool {
-    differential(spectral).is_some() || retardance(spectral).is_some()
+    differential(spectral).is_some()
+        || retardance(spectral).is_some()
+        || dispersion(spectral).is_some()
 }
 
 fn allclose(a: &[f64], b: &[f64]) -> bool {
@@ -558,6 +681,9 @@ fn ingest_spectral(weaver: &TargetWeaver, t: &SpectralTarget) -> Result<(), Stri
         .ok_or_else(|| "Invalid kind (use 'e', 'a', 'b', 'r', or 'c')".to_string())?;
     let mode = if phase_only(&t.spectral) {
         "phase"
+    } else if stokes(&t.spectral).is_some() {
+        // S1..S3 are signed: never log.
+        "linear"
     } else {
         t.normalization_mode.as_str()
     };
@@ -597,6 +723,9 @@ fn ingest_angular(weaver: &TargetWeaver, t: &AngularTarget) -> Result<(), String
         .ok_or_else(|| "Invalid kind (use 'e', 'a', 'b', 'r', or 'c')".to_string())?;
     let mode = if phase_only(&t.spectral) {
         "phase"
+    } else if stokes(&t.spectral).is_some() {
+        // S1..S3 are signed: never log.
+        "linear"
     } else {
         t.normalization_mode.as_str()
     };
@@ -799,18 +928,25 @@ pub fn check_color_demand(t: &ColorTargetJson) -> Result<ColorDemand, String> {
     )
 }
 
-/// One line per retardance demand whose every angle is normal incidence,
-/// where s and p coincide and the retardance is identically 0: the demand
-/// compiles (it is not wrong, only unreachable) and the caller warns.
-pub fn retardance_warnings(set: &TargetSet) -> Vec<String> {
+/// One line per s-against-p demand (retardance, intensity ratio) whose
+/// every angle is normal incidence, where s and p coincide: a retardance
+/// is identically 0, a ratio 1, a diattenuation 0 and Ψ π/4. The demand compiles
+/// (it is not wrong, only unreachable) and the caller warns.
+pub fn sp_contrast_warnings(set: &TargetSet) -> Vec<String> {
     let flat = |spectral: &str, angles: &[Radians]| {
-        retardance(spectral).is_some() && angles.iter().all(|a| a.get() == 0.0)
+        (retardance(spectral).is_some() || ratio(spectral).is_some())
+            && angles.iter().all(|a| a.get() == 0.0)
     };
     let mut out = Vec::new();
     let line = |what: String, spectral: &str| {
+        let fixed = if ratio(spectral).is_some() {
+            "the s and p intensities are equal"
+        } else {
+            "the retardance is identically 0"
+        };
         format!(
             "{what}: {spectral} at normal incidence only - s and p coincide there, \
-             so the retardance is identically 0 and the demand cannot move"
+             so {fixed} and the demand cannot move"
         )
     };
     for (i, t) in set.spectral.iter().enumerate() {
@@ -1021,6 +1157,7 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
                     &set.spectral[ti].polarization,
                     set.spectral[ti].phase,
                     set.spectral[ti].weight,
+                    set.spectral[ti].stokes_input,
                 ),
                 env_of(
                     set.spectral[ti].environment.as_ref(),
@@ -1031,7 +1168,13 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             let ai = ti & 0x7fff_ffff;
             let a = &set.angular[ai];
             (
-                (&a.spectral, &a.polarization, a.phase, a.weight),
+                (
+                    &a.spectral,
+                    &a.polarization,
+                    a.phase,
+                    a.weight,
+                    a.stokes_input,
+                ),
                 env_of(a.environment.as_ref(), &format!("angular[{ai}]"))?,
             )
         };
@@ -1040,9 +1183,20 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         let mut nf = e.norm_factor;
         let diff = differential(t.0);
         let ret = retardance(t.0);
+        let rat = ratio(t.0).map(|(_, f)| f);
+        if t.2 && rat.is_some() {
+            return Err(format!(
+                "spectral={:?} is an intensity ratio: it has no phase; drop phase=True.",
+                t.0
+            ));
+        }
+        let disp = dispersion(t.0).map(|(_, n)| n);
+        let sto = stokes_demand(t.0, t.4, t.2)?;
         if !t.2 && phase_only(t.0) {
             let what = if diff.is_some() {
                 "differential-phase"
+            } else if disp.is_some() {
+                "a phase dispersion"
             } else {
                 "a retardance"
             };
@@ -1060,10 +1214,12 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
         };
         let (norm, band, mode, out_nf) = if t.2 {
             nf = nf.max(1e-300);
+            // Dispersion is a derivative in fs^n, not an angle: linear, no wrap.
+            let mode = if disp.is_some() { "linear" } else { "phase" };
             (
                 e.targets.iter().map(|x| shift(x / nf)).collect(),
                 e.band.iter().map(|x| x / nf).collect(),
-                "phase".to_string(),
+                mode.to_string(),
                 1.0,
             )
         } else {
@@ -1105,6 +1261,9 @@ pub fn compile_merit_spec(set: &TargetSet) -> Result<MeritSpec, String> {
             phase: t.2,
             differential_passes: diff.map(|(_, _, p)| p),
             retardance: ret.is_some(),
+            ratio: rat,
+            dispersion: disp,
+            stokes: sto,
             point_weights: Arc::from(point_weights),
             weight: t.3,
             count_norm: e.count_norm,
@@ -1169,6 +1328,7 @@ mod tests {
             weights: None,
             weight_profile: None,
             integral: false,
+            stokes_input: None,
         }
     }
 
@@ -1285,6 +1445,9 @@ mod tests {
             phase: false,
             differential_passes: None,
             retardance: false,
+            ratio: None,
+            dispersion: None,
+            stokes: None,
             point_weights: Vec::new().into(),
             weight: 1.0,
             count_norm: None,
@@ -1574,6 +1737,181 @@ mod tests {
             err.contains("retardance") && err.contains("phase=True"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn intensity_ratio_labels_compile() {
+        use crate::smatrix::synthesis::merit::IntensityRatio;
+        let target = |label: &str, pol: &str| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: pol.to_string(),
+            angle: deg(45.0),
+            ..spec_target()
+        };
+        let cases = [
+            ("RatioR", CurveId::Rp, IntensityRatio::SOverP),
+            ("RatioT", CurveId::Tp, IntensityRatio::SOverP),
+            ("ExtR", CurveId::Rp, IntensityRatio::POverS),
+            ("ExtT", CurveId::Tp, IntensityRatio::POverS),
+            ("DiattR", CurveId::Rp, IntensityRatio::Diattenuation),
+            ("DiattT", CurveId::Tp, IntensityRatio::Diattenuation),
+            ("PsiR", CurveId::Rp, IntensityRatio::PsiR),
+            ("PsiT", CurveId::Tp, IntensityRatio::PsiT),
+        ];
+        for (label, host, f) in cases {
+            let spec = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, "u")],
+                ..base_set()
+            })
+            .unwrap();
+            let t = &spec.targets()[0];
+            assert_eq!(spec.keys()[t.key_idx as usize].curve, host, "{label}");
+            assert_eq!(t.ratio, Some(f), "{label}");
+            assert!(!t.phase && !t.retardance, "{label}");
+            for pol in ["s", "p"] {
+                let err = compile_merit_spec(&TargetSet {
+                    spectral: vec![target(label, pol)],
+                    ..base_set()
+                })
+                .unwrap_err();
+                assert!(err.contains("\"u\""), "{label}/{pol}: {err}");
+            }
+        }
+        let err = compile_merit_spec(&TargetSet {
+            spectral: vec![SpectralTarget {
+                phase: true,
+                ..target("ExtR", "u")
+            }],
+            ..base_set()
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("intensity ratio") && err.contains("phase"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn dispersion_labels_compile() {
+        use crate::smatrix::synthesis::merit::SimTransform;
+        let target = |label: &str, pol: &str, phase: bool| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: pol.to_string(),
+            angle: deg(45.0),
+            phase,
+            // fs^n values far from the phase range: no normalization, no wrap.
+            values: vec![250.0; spec_target().values.len()],
+            ..spec_target()
+        };
+        let cases = [
+            ("GDR", "Rs", "Rp", 1),
+            ("GDT", "Ts", "Tp", 1),
+            ("GDDR", "Rs", "Rp", 2),
+            ("GDDT", "Ts", "Tp", 2),
+            ("TODR", "Rs", "Rp", 3),
+            ("TODT", "Ts", "Tp", 3),
+            ("FODR", "Rs", "Rp", 4),
+            ("FODT", "Ts", "Tp", 4),
+        ];
+        for (label, host_s, host_p, order) in cases {
+            for (pol, host) in [("s", host_s), ("p", host_p)] {
+                let spec = compile_merit_spec(&TargetSet {
+                    spectral: vec![target(label, pol, true)],
+                    ..base_set()
+                })
+                .unwrap();
+                let t = &spec.targets()[0];
+                assert_eq!(
+                    format!("{:?}", spec.keys()[t.key_idx as usize].curve),
+                    host,
+                    "{label}/{pol}"
+                );
+                assert_eq!(t.dispersion, Some(order), "{label}");
+                assert!(t.phase && !t.retardance && t.ratio.is_none(), "{label}");
+                assert_eq!(t.transform, SimTransform::Linear, "{label}");
+                assert_eq!(t.norm_factor, 1.0, "{label}");
+                assert!(t.normalized_targets.iter().all(|&x| x == 250.0), "{label}");
+            }
+            let err = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, "u", true)],
+                ..base_set()
+            })
+            .unwrap_err();
+            assert!(err.contains("\"s\" or \"p\""), "{label}/u: {err}");
+            let err = compile_merit_spec(&TargetSet {
+                spectral: vec![target(label, "s", false)],
+                ..base_set()
+            })
+            .unwrap_err();
+            assert!(
+                err.contains("dispersion") && err.contains("phase=True"),
+                "{err}"
+            );
+        }
+    }
+
+    /// W8: the ten Stokes labels compile to a Stokes demand on the front p
+    /// key with the target's input state, linear even when the values
+    /// would pick log; they need polarization "u" and a `stokes_input`,
+    /// refuse phase=True, and no other label takes an input.
+    #[test]
+    fn stokes_labels_compile() {
+        use crate::smatrix::synthesis::merit::{SimTransform, StokesQuantity};
+        let input = [0.3, -0.5, 0.6];
+        let target = |label: &str, pol: &str, phase: bool, si: Option<[f64; 3]>| SpectralTarget {
+            spectral: label.to_string(),
+            polarization: pol.to_string(),
+            angle: deg(45.0),
+            phase,
+            stokes_input: si,
+            // A 1000x span: "auto" would resolve it to log.
+            values: vec![0.001, 1.0],
+            ..spec_target()
+        };
+        let compile = |t: SpectralTarget| {
+            compile_merit_spec(&TargetSet {
+                spectral: vec![t],
+                ..base_set()
+            })
+        };
+        for (label, host, q) in [
+            ("S0R", "Rp", StokesQuantity::S0),
+            ("S1R", "Rp", StokesQuantity::S1),
+            ("S2R", "Rp", StokesQuantity::S2),
+            ("S3R", "Rp", StokesQuantity::S3),
+            ("DOPR", "Rp", StokesQuantity::Dop),
+            ("S0T", "Tp", StokesQuantity::S0),
+            ("S1T", "Tp", StokesQuantity::S1),
+            ("S2T", "Tp", StokesQuantity::S2),
+            ("S3T", "Tp", StokesQuantity::S3),
+            ("DOPT", "Tp", StokesQuantity::Dop),
+        ] {
+            let spec = compile(target(label, "u", false, Some(input))).unwrap();
+            let t = &spec.targets()[0];
+            assert_eq!(
+                format!("{:?}", spec.keys()[t.key_idx as usize].curve),
+                host,
+                "{label}"
+            );
+            let sd = t.stokes.expect(label);
+            assert_eq!((sd.quantity, sd.input), (q, input), "{label}");
+            assert!(
+                !t.phase && t.ratio.is_none() && t.dispersion.is_none(),
+                "{label}"
+            );
+            assert_eq!(t.transform, SimTransform::Linear, "{label}");
+            for (pol, phase, si, want) in [
+                ("s", false, Some(input), "polarization=\"u\""),
+                ("u", false, None, "needs stokes_input"),
+                ("u", true, Some(input), "drop phase=True"),
+                ("u", false, Some([1.0, 1.0, 0.0]), "|q| <= 1"),
+            ] {
+                let err = compile(target(label, pol, phase, si)).unwrap_err();
+                assert!(err.contains(want), "{label}/{pol}: {err}");
+            }
+        }
+        let err = compile(target("R", "s", false, Some(input))).unwrap_err();
+        assert!(err.contains("takes no stokes_input"), "{err}");
     }
 
     fn color_target() -> ColorTargetJson {
