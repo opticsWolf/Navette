@@ -17,8 +17,8 @@
 //!
 //! Stage kinds: `lsq` (default), `scan` (a 1-D grid over one parameter,
 //! best point kept, then `lsq`), and `multi_start` (seeded uniform or
-//! Latin-hypercube starts in the bounds, `lsq` from each, best kept). The
-//! global stage is phase 6.
+//! Latin-hypercube starts in the bounds, `lsq` from each, best kept) and
+//! `global` (a population search over the same box, then `lsq`).
 
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -112,7 +112,7 @@ pub enum StageKind {
         #[serde(default)]
         seed: u64,
     },
-    /// A population search (basin, `opt-basin`) over the same box as
+    /// A population search ([`GlobalMethod`]) over the same box as
     /// `multi_start`, at most `budget` χ² evaluations, then `lsq` from the
     /// best point found (the current point if nothing beat it).
     Global {

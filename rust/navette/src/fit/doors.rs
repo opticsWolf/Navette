@@ -139,6 +139,7 @@ fn data_spec(d: &SpectrumData) -> DataSpec {
         weight: (d.weight != 1.0).then_some(d.weight),
         window: d.window,
         source: d.source.clone(),
+        instrument: d.instrument,
     }
 }
 

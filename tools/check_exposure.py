@@ -122,6 +122,11 @@ ALLOWLIST = {
     # arm of that dispatch, reachable from Python as
     # `LmConfig(backend="trf")`. It takes the same two Rust traits.
     "trust_region_reflective",
+    # Native differential evolution (fit plan phase 7): the `de` / `de_best`
+    # global stage of a fit strategy, reachable from Python as
+    # `Stage(kind={"global": {"method": "de"}})` through the fit doors. It takes a Rust
+    # cost closure, so there is nothing to bind on its own.
+    "minimize",
     # General fit engine: `navette.fit` reaches it through the JSON doors
     # of `navette::fit::doors` / `fit::request` (bound in `_fit`), so these
     # are the doors' plumbing, never called on their own. A dataset's

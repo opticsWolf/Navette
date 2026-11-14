@@ -18,6 +18,7 @@
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
+use serde::{Deserialize, Serialize};
 
 use crate::smatrix::angle::Radians;
 use crate::smatrix::core_engine::*;
@@ -88,6 +89,121 @@ pub(crate) fn wrap_angle(d: f64) -> f64 {
     if w <= -PI { w + 2.0 * PI } else { w }
 }
 
+/// How the instrument that took a curve departs from an ideal one. Each
+/// field is fittable as `data[id].<field>`; the identity changes nothing.
+///
+/// - `angle_offset` (rad): the sample sat at `angle + angle_offset`.
+/// - `wavelength_shift` (nm): the point read at `λ` was taken at
+///   `λ + wavelength_shift`.
+/// - `scale`, `offset`: the instrument reported `scale · value + offset`
+///   (a baseline or reference error).
+/// - `bandwidth` (nm, FWHM): each point averages the intensity over a
+///   Gaussian slit of that width (7-point Gauss-Hermite rule).
+///   Intensity channels only (Rs ... A_avg); a phase or a ratio does not
+///   average that way.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Instrument {
+    pub angle_offset: f64,
+    pub wavelength_shift: f64,
+    pub scale: f64,
+    pub offset: f64,
+    pub bandwidth: f64,
+}
+
+impl Default for Instrument {
+    fn default() -> Self {
+        Self {
+            angle_offset: 0.0,
+            wavelength_shift: 0.0,
+            scale: 1.0,
+            offset: 0.0,
+            bandwidth: 0.0,
+        }
+    }
+}
+
+/// The 7-point Gauss-Hermite rule: nodes `x` and weights `w / sqrt(pi)`,
+/// so `sum w f(mu + sqrt(2) sigma x)` is the mean of `f` under N(mu, sigma²).
+const HERMITE: [(f64, f64); 7] = [
+    (-2.651_961_356_835_233_5, 0.000_971_781_245_099_519_2),
+    (-1.673_551_628_767_471_4, 0.054_515_582_819_127_03),
+    (-0.816_287_882_858_964_7, 0.425_607_252_610_127_8),
+    (0.0, 0.810_264_617_556_807_3),
+    (0.816_287_882_858_964_7, 0.425_607_252_610_127_8),
+    (1.673_551_628_767_471_4, 0.054_515_582_819_127_03),
+    (2.651_961_356_835_233_5, 0.000_971_781_245_099_519_2),
+];
+
+/// Channels a slit averages: the intensities.
+const INTENSITIES: [&str; 9] = [
+    "Rs", "Rp", "Ts", "Tp", "R_avg", "T_avg", "A_s", "A_p", "A_avg",
+];
+
+impl Instrument {
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether the solve grid or angle departs from the curve's own.
+    pub(crate) fn moves_geometry(&self) -> bool {
+        self.angle_offset != 0.0 || self.wavelength_shift != 0.0 || self.bandwidth != 0.0
+    }
+
+    /// The wavelengths to solve at for the points `wl` and the weight of
+    /// each (`nodes` per point, point-major): `nodes` is 1, or 7 for a
+    /// slit.
+    pub(crate) fn sample(&self, wl: &[f64], nodes: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut grid = Vec::with_capacity(wl.len() * nodes);
+        let mut weights = Vec::with_capacity(wl.len() * nodes);
+        let s = std::f64::consts::SQRT_2 * self.bandwidth / (2.0 * (2.0 * 2f64.ln()).sqrt());
+        for &w in wl {
+            let mu = w + self.wavelength_shift;
+            if nodes == 1 {
+                grid.push(mu);
+                weights.push(1.0);
+            } else {
+                for (x, h) in HERMITE {
+                    grid.push(mu + s * x);
+                    weights.push(h / PI.sqrt());
+                }
+            }
+        }
+        (grid, weights)
+    }
+
+    /// Refuse values no instrument has, naming the dataset.
+    pub(crate) fn check(&self, id: &str, channel: &str) -> Result<(), String> {
+        let bad = |why: String| format!("dataset {id:?}: instrument {why}");
+        for (name, v) in [
+            ("angle_offset", self.angle_offset),
+            ("wavelength_shift", self.wavelength_shift),
+            ("scale", self.scale),
+            ("offset", self.offset),
+            ("bandwidth", self.bandwidth),
+        ] {
+            if !v.is_finite() {
+                return Err(bad(format!("{name} {v} is not finite")));
+            }
+        }
+        if self.bandwidth < 0.0 {
+            return Err(bad(format!("bandwidth {} is negative", self.bandwidth)));
+        }
+        if self.bandwidth != 0.0 && !INTENSITIES.contains(&channel) {
+            return Err(bad(format!(
+                "bandwidth averages intensities; {channel} is not one ({})",
+                INTENSITIES.join(", ")
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a slit may average `channel`.
+pub(crate) fn is_intensity(channel: &str) -> bool {
+    INTENSITIES.contains(&channel)
+}
+
 /// One measured curve: a channel at one angle over wavelengths.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpectrumData {
@@ -108,6 +224,8 @@ pub struct SpectrumData {
     /// How the values were read from the instrument's convention
     /// (`fit::convert`); `None` for data built in solver conventions.
     pub source: Option<String>,
+    /// The instrument's departures, start values for `data[id].*`.
+    pub instrument: Instrument,
 }
 
 impl SpectrumData {
@@ -132,6 +250,7 @@ impl SpectrumData {
             weight: 1.0,
             window: None,
             source: None,
+            instrument: Instrument::default(),
         }
     }
 
@@ -203,7 +322,7 @@ impl SpectrumData {
         if self.kept().is_empty() {
             return Err(bad("no point inside the window".into()));
         }
-        Ok(())
+        self.instrument.check(&self.id, &self.channel)
     }
 }
 

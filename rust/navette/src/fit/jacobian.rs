@@ -214,6 +214,9 @@ pub(super) struct FitJacobian<'a, 'w> {
     /// priors; and the total.
     offsets: Vec<usize>,
     prior_offset: usize,
+    smooth_offset: usize,
+    /// Per free parameter: it (or a follower) is a smoothed knot.
+    smooths: Vec<bool>,
     m: usize,
 }
 
@@ -227,6 +230,8 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
         }
         let prior_offset = m;
         m += c.n_priors();
+        let smooth_offset = m;
+        m += c.n_smooth();
 
         // What each environment depends on: its rows' materials, gradient
         // ends, and whatever its expansion asked the provider for.
@@ -262,6 +267,13 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
                     Target::Layer { entries, .. } => entries.iter().any(|e| ranges[s].contains(e)),
                     Target::Group { group, .. } => names[s].contains(group),
                     Target::Material { material, .. } => names[s].contains(material),
+                    Target::Data { dataset, .. } => c
+                        .stack
+                        .as_ref()
+                        .unwrap()
+                        .picks()
+                        .iter()
+                        .any(|p| p.solve == s && p.id == *dataset),
                 };
                 if hit && !solves_out.contains(&s) {
                     solves_out.push(s);
@@ -278,6 +290,17 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
         let mut reach_solves = Vec::with_capacity(c.free.len());
         let mut reach_nk = Vec::with_capacity(c.free.len());
         let mut drives = Vec::with_capacity(c.free.len());
+        let smooths = c
+            .free
+            .iter()
+            .map(|f| {
+                c.smooths(&f.target)
+                    || c.ties
+                        .iter()
+                        .filter(|t| t.driver == f.target)
+                        .any(|t| t.targets.iter().any(|(x, _, _)| c.smooths(x)))
+            })
+            .collect();
         for f in &c.free {
             let (mut rs, mut rn) = (Vec::new(), Vec::new());
             reach_of(&f.target, &mut rs, &mut rn);
@@ -294,13 +317,15 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
             reach_nk.push(rn);
             drives.push(driver);
         }
+        // A dataset solved on its own reads a moving grid: differenced.
         let chain_ok = (0..solves.len())
             .map(|s| {
                 let picks = c.stack.as_ref().unwrap().picks();
-                picks
-                    .iter()
-                    .filter(|p| p.solve == s)
-                    .all(|p| channel_slope(&p.channel, &[0.0; 4]).is_some())
+                solves[s].own.is_none()
+                    && picks
+                        .iter()
+                        .filter(|p| p.solve == s)
+                        .all(|p| channel_slope(&p.channel, &[0.0; 4]).is_some())
             })
             .collect();
         Ok(Self {
@@ -312,6 +337,8 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
             chain_ok,
             offsets,
             prior_offset,
+            smooth_offset,
+            smooths,
             m,
         })
     }
@@ -386,15 +413,20 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
             for &s in &self.reach_solves[j] {
                 let (sap, _) = stack.expand_solve(mp, s).ok()?;
                 let (sam, _) = stack.expand_solve(mm, s).ok()?;
+                // An instrument moves what the arrays cannot show.
                 let how = match &base_sa[s] {
-                    Some(b) => thickness_only(b, &sap, &sam, inv2h),
-                    None => None,
+                    Some(b) if !matches!(f.target, Target::Data { .. }) => {
+                        thickness_only(b, &sap, &sam, inv2h)
+                    }
+                    _ => None,
                 };
                 let how = match how {
                     Some(dt) => SolveColumn::Thickness(dt),
                     None => {
-                        let (p, m) =
-                            rayon::join(|| stack.read_solve(&sap, s), || stack.read_solve(&sam, s));
+                        let (p, m) = rayon::join(
+                            || stack.read_solve(mp, &sap, s),
+                            || stack.read_solve(mm, &sam, s),
+                        );
                         let (p, m) = (p.ok()?, m.ok()?);
                         let mut rows = Vec::new();
                         for ((d, sp), (_, sm)) in p.iter().zip(&m) {
@@ -421,6 +453,24 @@ impl<'a, 'w> FitJacobian<'a, 'w> {
             let rp = (f.x(up[j]) - p0) / s;
             let rm = (f.x(um[j]) - p0) / s;
             col.rows.push((self.prior_offset + k, (rp - rm) * inv2h));
+        }
+        if self.smooths[j] {
+            let owned;
+            let (mp, mm) = match &probes {
+                Some((mp, mm)) => (mp, mm),
+                None => {
+                    owned = (c.model_at(&up).ok()?, c.model_at(&um).ok()?);
+                    (&owned.0, &owned.1)
+                }
+            };
+            let (mut rp, mut rm) = (Vec::new(), Vec::new());
+            c.smooth_rows(mp, &mut rp).ok()?;
+            c.smooth_rows(mm, &mut rm).ok()?;
+            for (i, (p, m)) in rp.iter().zip(&rm).enumerate() {
+                if p != m {
+                    col.rows.push((self.smooth_offset + i, (p - m) * inv2h));
+                }
+            }
         }
         Some(col)
     }
@@ -584,13 +634,14 @@ impl JacobianSource for FitJacobian<'_, '_> {
                         .collect();
                     for (d, p) in picks.iter().enumerate().filter(|(_, p)| p.solve == s) {
                         let inv_sigma = &c.rows[d].inv_sigma;
+                        let scale = base.instrument(&p.id).map_or(1.0, |i| i.scale);
                         for (q, &w) in p.wav.iter().enumerate() {
                             let k = p.angle * nw + w;
                             let mut v = 0.0;
                             for &(i, dd) in &at {
                                 v += channel_slope(&p.channel, &slopes[k * ns + i]).unwrap() * dd;
                             }
-                            jac[(self.offsets[d] + q) * n + j] = v * inv_sigma[q];
+                            jac[(self.offsets[d] + q) * n + j] = scale * v * inv_sigma[q];
                         }
                     }
                 }
@@ -697,6 +748,22 @@ mod tests {
                 spec(
                     "Drude",
                     json!({"omega_p": 9.0, "gamma": 0.07, "epsilon_inf": 1.2}),
+                ),
+            ),
+            (
+                "knotty".to_string(),
+                spec(
+                    "Spline",
+                    json!({"wavelengths": [380.0, 500.0, 650.0, 800.0],
+                           "n": [2.4, 2.25, 2.2, 2.15], "k": [0.05, 0.01, 0.002, 0.001]}),
+                ),
+            ),
+            (
+                "kkfilm".to_string(),
+                spec(
+                    "BSplineEps",
+                    json!({"energies": [1.0, 2.5, 3.5, 4.5, 6.0, 8.0],
+                           "eps2": [0.0, 0.3, 1.5, 3.0, 1.0, 0.0], "epsilon_inf": 2.5}),
                 ),
             ),
         ]);
@@ -867,6 +934,58 @@ mod tests {
                 .unwrap(),
         ];
         close(&p, 1e-5);
+    }
+
+    #[test]
+    fn instrument_columns_and_the_datasets_they_move_stay_right() {
+        // d0 is read through a gain, d1 is tilted and blurred (solved on
+        // its own), d2 is plain and keeps the thickness chain.
+        let mut p = problem(
+            &[
+                ("default", "R_avg", 8.0),
+                ("default", "Tp", 45.0),
+                ("default", "Rs", 20.0),
+            ],
+            &[
+                "layer[main:1].thickness",
+                "data[d0].scale",
+                "data[d0].offset",
+                "data[d1].angle_offset",
+                "data[d1].bandwidth",
+                "data[d1].wavelength_shift",
+            ],
+        );
+        p.data[0].instrument.scale = 0.9;
+        p.data[0].instrument.offset = 0.01;
+        p.data[1].instrument.bandwidth = 4.0;
+        close(&p, 1e-5);
+    }
+
+    #[test]
+    fn free_form_knots_and_their_smoothness_rows_stay_right() {
+        let mut p = problem(
+            &[("default", "R_avg", 8.0), ("default", "Tp", 50.0)],
+            &[
+                "material[knotty].n[1]",
+                "material[knotty].k[0]",
+                "material[kkfilm].eps2[2]",
+                "layer[main:1].thickness",
+            ],
+        );
+        p.model = model_with(vec![
+            Layer::film(80.0, "knotty"),
+            Layer::film(120.0, "SiO2"),
+            Layer::film(60.0, "kkfilm"),
+        ]);
+        p.smoothness = vec![
+            crate::fit::Smoothness::new("knotty", "n", 0.01),
+            crate::fit::Smoothness::new("knotty", "k", 0.01),
+            crate::fit::Smoothness::new("kkfilm", "eps2", 0.1),
+        ];
+        close(&p, 1e-5);
+        // Two rows for each list of four, four for the six coefficients.
+        let c = Compiled::new(&p).unwrap();
+        assert_eq!(c.n_smooth(), 2 + 2 + 4);
     }
 
     #[test]

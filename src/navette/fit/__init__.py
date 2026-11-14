@@ -205,6 +205,12 @@ class Dataset:
     ``Delta_R``, ...); ``sigma`` one number or one per point. ``env``
     defaults to the problem's first environment. Instrument data goes
     through :func:`to_solver` first.
+
+    ``instrument`` holds the instrument's departures, any of
+    ``angle_offset`` (rad), ``wavelength_shift`` (nm), ``scale``,
+    ``offset`` and ``bandwidth`` (nm FWHM, intensity channels only); unset
+    fields are the identity. Each is a fit parameter
+    ``data[<id>].<field>``.
     """
 
     id: str
@@ -217,6 +223,7 @@ class Dataset:
     weight: float = 1.0
     window: Optional[Tuple[float, float]] = None
     source: Optional[str] = None
+    instrument: Optional[Dict[str, float]] = None
 
     def to_json(self) -> Dict[str, Any]:
         sigma = float(self.sigma) if np.ndim(self.sigma) == 0 else _floats(self.sigma)
@@ -227,6 +234,8 @@ class Dataset:
             "sigma": sigma,
             "window": list(self.window) if self.window is not None else None,
             "source": self.source,
+            "instrument": ({k: float(v) for k, v in self.instrument.items()}
+                           if self.instrument else None),
         })
         if self.weight != 1.0:
             d["weight"] = float(self.weight)
@@ -247,6 +256,7 @@ class Dataset:
             angle_deg=angle, env=d.get("env"), weight=d.get("weight", 1.0),
             window=tuple(d["window"]) if d.get("window") else None,
             source=d.get("source"),
+            instrument=dict(d["instrument"]) if d.get("instrument") else None,
         )
 
 
@@ -296,8 +306,9 @@ class Stage:
     ``kind`` is ``None`` (least squares), ``{"scan": {"param": sel,
     "points": n}}``, ``{"multi_start": {"starts": n, "sampler":
     "lhs", "seed": 0}}`` or ``{"global": {"method": "de", "budget": n,
-    "seed": 0}}`` (``"de"``, ``"de_inject"`` or ``"cma_es"``; needs the
-    ``opt-basin`` build). ``repeat`` is ``{"until_no_gain": {"rel": 1e-3,
+    "seed": 0}}`` (``"de"``, the default, and ``"de_best"`` are native
+    differential evolution; ``"basin_de"``, ``"de_inject"`` and
+    ``"cma_es"`` need the ``opt-basin`` build). ``repeat`` is ``{"until_no_gain": {"rel": 1e-3,
     "max": 5}}``; ``accept`` ``"if_better"`` rolls a stage back that did
     not lower its chi2. ``lsq`` overrides solver settings (``backend``,
     ``max_iterations``, ``max_evals``, ``ftol``, ``xtol``, ``gtol``,
@@ -364,6 +375,10 @@ class FitProblem:
     ``groups``, ``structures``, ``architect``) without a ``fit`` entry.
     ``sets`` names unions of selectors for stages (``{"H": ["tag=H"]}``).
     ``lsq`` holds the solver settings every stage starts from.
+    ``smoothness`` holds ``(material, param, sigma)`` triples: one residual
+    row ``(v[i-1] - 2 v[i] + v[i+1]) / sigma`` per inner knot of a
+    free-form material's list (``PointWise``/``Spline`` ``n``, ``k``;
+    ``BSplineEps`` ``eps2``).
     """
 
     model: Mapping[str, Any]
@@ -372,6 +387,7 @@ class FitProblem:
     environments: Sequence[Environment] = ()
     nk_data: Sequence[NkDataset] = ()
     ties: Sequence[Tie] = ()
+    smoothness: Sequence[Tuple[str, str, float]] = ()
     sets: Mapping[str, Sequence[str]] = field(default_factory=dict)
     strategy: Optional[Strategy] = None
     coherence_mode: int = 0
@@ -394,6 +410,10 @@ class FitProblem:
             section["nk_data"] = [d.to_json() for d in self.nk_data]
         if self.ties:
             section["ties"] = [t.to_json() for t in self.ties]
+        if self.smoothness:
+            section["smoothness"] = [
+                {"material": m, "param": p, "sigma": float(s)} for m, p, s in self.smoothness
+            ]
         if self.sets:
             section["sets"] = [{"name": k, "members": list(v)} for k, v in self.sets.items()]
         if strategy is not None:
@@ -435,6 +455,9 @@ class FitProblem:
             environments=[Environment.from_json(e) for e in section.get("environments", [])],
             nk_data=[NkDataset.from_json(d) for d in section.get("nk_data", [])],
             ties=[Tie.from_json(t) for t in section.get("ties", [])],
+            smoothness=[
+                (s["material"], s["param"], s["sigma"]) for s in section.get("smoothness", [])
+            ],
             sets={s["name"]: list(s["members"]) for s in section.get("sets", [])},
             strategy=Strategy.from_json(strategy) if strategy else None,
             coherence_mode=section.get("coherence_mode", 0),
@@ -611,9 +634,11 @@ def fit(problem: FitProblem, strategy: Optional[Strategy] = None,
 
     ``progress(event)`` gets a dict per stage start (``event ==
     "stage_start"``, ``stage``, ``name``, ``free``), per lower chi2 in a
-    stage (``"improved"``, ``stage``, ``evals``, ``chi2``) and per stage end
-    (``"stage_end"``, ``chi2``, ``accepted``). It may be called from
-    several threads during a multi-start stage. Raising in it stops the
+    stage's least squares (``"improved"``, ``stage``, ``evals``, ``chi2``),
+    per lower chi2 in a global stage's search (``"searched"``, same keys)
+    and per stage end (``"stage_end"``, ``chi2``, ``accepted``). It may be
+    called from several threads during a multi-start or global stage.
+    Raising in it stops the
     fit; the error comes back as a ``ValueError`` naming it.
     """
     out = _native().fit_program_json(problem.to_json(strategy), progress)

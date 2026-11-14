@@ -768,15 +768,18 @@ fn deg_rad(d: f64) -> f64 {
 
 #[cfg(not(feature = "opt-basin"))]
 #[test]
-fn a_global_stage_without_basin_says_so() {
+fn a_basin_stage_without_basin_says_so_and_de_runs() {
     let data = measure(&hlh(), &[("R", "default", "R_avg", 8.0)], 0.002, 3);
     let p = FitProblem::new(hlh(), data, params(&["layer[main:1].thickness"]));
-    let s = Strategy::from_json(
-        r#"{"name": "g", "stages": [{"name": "g", "free": ["*"], "kind": {"global": {"budget": 50}}}]}"#,
-    )
-    .unwrap();
-    let e = run_strategy(&p, &s, &[]).unwrap_err();
+    let stage = |method: &str| {
+        Strategy::from_json(&format!(
+            r#"{{"name": "g", "stages": [{{"name": "g", "free": ["*"], "kind": {{"global": {{"method": "{method}", "budget": 50}}}}}}]}}"#
+        ))
+        .unwrap()
+    };
+    let e = run_strategy(&p, &stage("basin_de"), &[]).unwrap_err();
     assert!(e.contains("opt-basin"), "{e}");
+    run_strategy(&p, &stage("de"), &[]).unwrap();
 }
 
 #[test]

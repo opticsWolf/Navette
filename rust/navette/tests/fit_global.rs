@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-//! Fit engine, phase 6 (`docs/plans/general_fit_plan.md`): the `global`
-//! stage. The phase-4 coating (H L H L, four thicknesses and two index
-//! factors free) from starts drawn at random over a 0.5-1.8× thickness
-//! and ±10 % index box: every global method followed by its polish
-//! reaches the noise floor from every start. Least squares alone does
-//! too there (two curves over 400-900 nm pin that stack); the same
+//! Fit engine, phases 6 and 7 (`docs/plans/general_fit_plan.md`): the
+//! `global` stage. The phase-4 coating (H L H L, four thicknesses and two
+//! index factors free) from starts drawn at random over a 0.5-1.8×
+//! thickness and ±10 % index box: every global method followed by its
+//! polish reaches the noise floor from every start. Least squares alone
+//! does too there (two curves over 400-900 nm pin that stack); the same
 //! design four times thicker, read through one curve, is rugged enough
 //! to catch it, and differential evolution still is not caught.
-#![cfg(feature = "opt-basin")]
+//!
+//! Navette's own DE runs in every build; basin's methods need
+//! `opt-basin`, and with it the native DE is checked against basin's on
+//! success rate and evaluations to a given chi2 over many seeds.
+// The comparison helpers serve the basin tests only.
+#![cfg_attr(not(feature = "opt-basin"), allow(dead_code, unused_imports))]
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -16,8 +21,8 @@ use rand::{Rng, SeedableRng};
 use serde_json::json;
 
 use navette::fit::{
-    FitModel, FitProblem, GlobalMethod, Parameter, SpectrumData, Stage, StageKind, Strategy,
-    draw_truth, evaluate, run_strategy,
+    FitModel, FitProblem, GlobalMethod, Parameter, Progress, SpectrumData, Stage, StageKind,
+    Strategy, Watcher, draw_truth, evaluate, run_strategy, run_strategy_watched,
 };
 use navette::smatrix::angle::Radians;
 use navette::structure::enums::{ErrorMask, LayerType};
@@ -146,16 +151,33 @@ fn strategy(kind: StageKind) -> Strategy {
     }
 }
 
-fn global(method: GlobalMethod, budget: usize) -> Strategy {
+fn global_seeded(method: GlobalMethod, budget: usize, seed: u64) -> Strategy {
     strategy(StageKind::Global {
         method,
         budget,
-        seed: 3,
+        seed,
         population: None,
     })
 }
 
+fn global(method: GlobalMethod, budget: usize) -> Strategy {
+    global_seeded(method, budget, 3)
+}
+
 const SEEDS: [u64; 6] = [1, 2, 3, 4, 5, 6];
+
+/// One seed's truth draw: the problem and chi2 at the truth.
+fn truth_and_floor(scale: f64, one_curve: bool, seed: u64) -> (FitProblem, f64) {
+    let truth = draw_truth(&problem(scale, one_curve), seed).unwrap();
+    let mut at_truth = truth.problem.clone();
+    at_truth.model = truth.model.clone();
+    for q in &mut at_truth.parameters {
+        q.fixed = true;
+        q.value = None;
+    }
+    let floor = evaluate(&at_truth).unwrap().chi2;
+    (random_start(&truth.problem, scale, seed), floor)
+}
 
 /// Per seed, χ² of `strategy` from the random start over χ² at the
 /// truth: at most 1 means the global minimum (the truth's basin, noise
@@ -164,15 +186,7 @@ fn vs_truth(scale: f64, one_curve: bool, strategy: &Strategy) -> Vec<f64> {
     SEEDS
         .iter()
         .map(|&seed| {
-            let truth = draw_truth(&problem(scale, one_curve), seed).unwrap();
-            let mut at_truth = truth.problem.clone();
-            at_truth.model = truth.model.clone();
-            for q in &mut at_truth.parameters {
-                q.fixed = true;
-                q.value = None;
-            }
-            let floor = evaluate(&at_truth).unwrap().chi2;
-            let p = random_start(&truth.problem, scale, seed);
+            let (p, floor) = truth_and_floor(scale, one_curve, seed);
             let r = run_strategy(&p, strategy, &[]).unwrap();
             r.report.chi2 / floor
         })
@@ -192,8 +206,20 @@ fn differential_evolution_solves_the_phase_4_coating_from_every_start() {
 }
 
 #[test]
-fn memetic_de_and_cma_es_too() {
-    for method in [GlobalMethod::DeInject, GlobalMethod::CmaEs] {
+fn greedy_de_too() {
+    let c = vs_truth(1.0, false, &global(GlobalMethod::DeBest, 3000));
+    eprintln!("de_best {c:?}");
+    assert!(c.iter().all(solved), "{c:?}");
+}
+
+#[cfg(feature = "opt-basin")]
+#[test]
+fn basin_de_memetic_de_and_cma_es_too() {
+    for method in [
+        GlobalMethod::BasinDe,
+        GlobalMethod::DeInject,
+        GlobalMethod::CmaEs,
+    ] {
         let c = vs_truth(1.0, false, &global(method, 3000));
         eprintln!("{method:?} {c:?}");
         assert!(c.iter().all(solved), "{method:?}: {c:?}");
@@ -218,4 +244,76 @@ fn a_rugged_stack_catches_least_squares_but_not_de() {
     eprintln!("rugged: lsq {lsq:?}\nrugged: de {de:?}");
     assert!(lsq.iter().filter(|c| **c > 3.0).count() >= 2, "{lsq:?}");
     assert!(de.iter().all(solved), "{de:?}");
+}
+
+/// One run's outcome on the problem at `scale` / `one_curve`: solved after
+/// the polish, the evaluations the global search spent before its chi2
+/// first fell to `factor` times the truth's (`None`: never), and the best
+/// chi2 the search itself reached, over the truth's.
+fn outcome(
+    method: GlobalMethod,
+    (scale, one_curve): (f64, bool),
+    seed: u64,
+    budget: usize,
+    factor: f64,
+) -> (bool, Option<usize>, f64) {
+    let (p, floor) = truth_and_floor(scale, one_curve, seed);
+    let seen = std::sync::Mutex::new((None::<usize>, f64::INFINITY));
+    let w = Watcher::new(|e| {
+        if let Progress::Searched { evals, chi2, .. } = e {
+            let mut s = seen.lock().unwrap();
+            s.1 = s.1.min(*chi2);
+            if *chi2 <= factor * floor {
+                s.0 = Some(s.0.map_or(*evals, |v| v.min(*evals)));
+            }
+        }
+        Ok(())
+    });
+    let s = global_seeded(method, budget, 100 + seed);
+    let r = run_strategy_watched(&p, &s, &[], Some(&w)).unwrap();
+    drop(w);
+    let (reached, best) = seen.into_inner().unwrap();
+    (solved(&(r.report.chi2 / floor)), reached, best / floor)
+}
+
+/// Over `seeds`: runs solved, median evaluations to `factor` (a run that
+/// never got there counts as the whole budget) and the median of the
+/// search's best chi2 over the truth's.
+fn stats(
+    method: GlobalMethod,
+    problem: (f64, bool),
+    budget: usize,
+    factor: f64,
+) -> (usize, usize, f64) {
+    let runs: Vec<_> = (1..=16)
+        .map(|s| outcome(method, problem, s, budget, factor))
+        .collect();
+    let solved = runs.iter().filter(|r| r.0).count();
+    let mut evals: Vec<usize> = runs.iter().map(|r| r.1.unwrap_or(budget)).collect();
+    evals.sort_unstable();
+    let mut best: Vec<f64> = runs.iter().map(|r| r.2).collect();
+    best.sort_by(f64::total_cmp);
+    eprintln!("{method:?} {problem:?}: {solved}/16 solved, evals {evals:?}, best {best:?}");
+    (solved, evals[8], best[8])
+}
+
+/// The plan's acceptance check for the native DE, against basin's DE on
+/// 16 seeds each: on the phase-4 coating, no more evaluations (median, 25 %
+/// slack for the different random streams) to reach ten times the truth's
+/// chi2; on the rugged stack, at least basin's success rate and a search
+/// result no worse (median, same slack).
+#[cfg(feature = "opt-basin")]
+#[test]
+fn native_de_is_not_worse_than_basin_de() {
+    let (ns, ne, _) = stats(GlobalMethod::De, (1.0, false), 3000, 10.0);
+    let (bs, be, _) = stats(GlobalMethod::BasinDe, (1.0, false), 3000, 10.0);
+    assert!(ns >= bs, "phase 4: native {ns} solved vs basin {bs}");
+    assert!(
+        ne as f64 <= 1.25 * be as f64,
+        "phase 4: native {ne} evals vs basin {be}"
+    );
+    let (ns, _, nb) = stats(GlobalMethod::De, (4.0, true), 4000, 10.0);
+    let (bs, _, bb) = stats(GlobalMethod::BasinDe, (4.0, true), 4000, 10.0);
+    assert!(ns >= bs, "rugged: native {ns} solved vs basin {bs}");
+    assert!(nb <= 1.25 * bb, "rugged: native best {nb} vs basin {bb}");
 }

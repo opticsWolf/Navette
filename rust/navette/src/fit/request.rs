@@ -20,6 +20,7 @@
 //!                    {"select": "kind=thickness"}],
 //!     "ties": [{"driver": "layer[a:1].thickness",
 //!               "targets": [{"target": "layer[b:1].thickness"}]}],
+//!     "smoothness": [{"material": "film", "param": "n", "sigma": 0.01}],
 //!     "sets": [{"name": "H", "members": ["tag=H"]}],
 //!     "strategy": {"name": "...", "stages": [...]},
 //!     "coherence_mode": 0,
@@ -41,6 +42,8 @@
 //!   over [`FitModel::addresses`] (addresses declared elsewhere in the list
 //!   are skipped). The other keys (`value`, `lb`, `ub`, `scale`, `log`,
 //!   `fixed`, `tags`, `prior: [p0, sigma]`) apply to every expanded one.
+//! - `smoothness`: second-difference rows over a free-form material's
+//!   knot values ([`Smoothness`](super::Smoothness)).
 //! - `strategy`: stages to run; without one, everything free is fitted in
 //!   one stage.
 
@@ -56,12 +59,12 @@ use crate::smatrix::angle::Radians;
 use crate::structure::Layer;
 use crate::structure::enums::LayerType;
 
-use super::data::{NkColumn, NkData, NkQuantity, SpectrumData};
+use super::data::{Instrument, NkColumn, NkData, NkQuantity, SpectrumData};
 use super::model::{FitModel, Segment};
 use super::params::{Parameter, Tie, Transform};
 use super::sets::{ParamSet, select};
 use super::strategy::{StageLsq, Strategy, StrategyReport, run_strategy_watched};
-use super::{FitProblem, FitReport, Progress, Watcher, evaluate, fit_watched};
+use super::{FitProblem, FitReport, Progress, Smoothness, Watcher, evaluate, fit_watched};
 
 /// A program's `fit` section.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -76,6 +79,8 @@ pub struct FitSection {
     pub parameters: Vec<ParamSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ties: Vec<TieSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smoothness: Vec<Smoothness>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sets: Vec<ParamSet>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,6 +158,10 @@ pub struct DataSpec {
     pub window: Option<(f64, f64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The instrument's departures (`angle_offset` rad, `wavelength_shift`
+    /// nm, `scale`, `offset`, `bandwidth` nm FWHM); the identity if unset.
+    #[serde(default, skip_serializing_if = "Instrument::is_identity")]
+    pub instrument: Instrument,
 }
 
 /// One column of an nk dataset: `n`, `k`, `eps1` or `eps2`.
@@ -317,6 +326,7 @@ pub fn request_from_program(program: &LoadedProgram) -> Result<FitRequest, Strin
     let mut problem = FitProblem::new(model, data, parameters);
     problem.nk_data = nk_data;
     problem.ties = ties;
+    problem.smoothness = section.smoothness.clone();
     problem.coherence_mode = section.coherence_mode;
     problem.lsq = lm_config(&section.lsq)?;
     Ok(FitRequest {
@@ -399,6 +409,7 @@ pub(crate) fn spectrum(d: &DataSpec, fallback: &str) -> Result<SpectrumData, Str
     }
     s.window = d.window;
     s.source = d.source.clone();
+    s.instrument = d.instrument;
     s.check()?;
     Ok(s)
 }

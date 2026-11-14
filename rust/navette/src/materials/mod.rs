@@ -31,6 +31,7 @@ pub mod sellmeier;
 // Next-phase scaffolds (documented contracts, no behaviour yet).
 pub mod cody_lorentz;
 pub mod forouhi_bloomer;
+pub mod freeform;
 pub mod kk;
 pub mod table;
 pub mod tauc_lorentz;

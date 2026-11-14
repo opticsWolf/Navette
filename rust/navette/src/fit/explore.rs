@@ -472,7 +472,7 @@ fn draw(addr: &ParamAddr, x0: f64, group: Option<&Group>, rng: &mut StdRng) -> f
                 x0 + Group::apply_error(0.0, law, params, rng)
             }
         }
-        ParamAddr::Material { .. } => x0,
+        ParamAddr::Material { .. } | ParamAddr::Data { .. } => x0,
     }
 }
 

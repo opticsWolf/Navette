@@ -80,6 +80,9 @@ MODELS: Tuple[str, ...] = (
   "MoriTanaka",
   "PowerLaw",
   "Roughness",
+  "PointWise",
+  "Spline",
+  "BSplineEps",
 )
 
 
@@ -97,6 +100,12 @@ class MaterialSpec:
   - EMA composites nest specs: ``host`` / ``inclusion`` are :class:`MaterialSpec`
   - Table: ``n_data`` / ``k_data`` as ``(wavelengths, values)`` pairs
     (linear interpolation; resample exotic tables offline)
+  - Free-form (fit parameters per knot, ``material[X].n[3]``):
+    PointWise ``wavelengths``, ``n``, ``k`` (linear, held at the ends);
+    Spline the same plus ``method`` (``pchip`` default, ``makima``,
+    ``linear``); BSplineEps ``energies`` (eV, at least 4), ``eps2``
+    (cubic B-spline coefficients, one per energy, zero outside) and
+    ``epsilon_inf``, eps1 by Kramers-Kronig
   """
 
   model: str
@@ -158,6 +167,19 @@ def evaluate(
   if model == "Konstant":
     n, k = req("n"), [float(p.get("k", 0.0))]
     return _native.konstant_nk(wl, n[0], k[0])
+  if model in ("PointWise", "Spline", "BSplineEps"):
+    def vec(name: str) -> np.ndarray:
+      if name not in p:
+        raise ValueError(f"{model} missing params: [{name}]")
+      return np.ascontiguousarray(np.asarray(p[name], dtype=np.float64))
+    if model == "BSplineEps":
+      return _native.bspline_eps_nk(
+        wl, vec("energies"), vec("eps2"), float(get("epsilon_inf", 1.0)))
+    k = vec("k") if "k" in p else None
+    if model == "PointWise":
+      return _native.point_wise_nk(wl, vec("wavelengths"), vec("n"), k)
+    return _native.spline_nk(
+      wl, vec("wavelengths"), vec("n"), k, str(get("method", "pchip")))
   if model == "Table":
     n_data = p.get("n_data")
     if n_data is None:

@@ -51,7 +51,7 @@ pub use convert::{
     AngleUnit, DeltaRange, DeltaSign, EllForm, InstrumentConvention, RawDataset, RawQuantity, Side,
     SigmaSource, ValueScale, WavelengthUnit, from_solver, to_solver,
 };
-pub use data::{NkColumn, NkData, NkQuantity, SpectrumData, channel_request};
+pub use data::{Instrument, NkColumn, NkData, NkQuantity, SpectrumData, channel_request};
 pub use dispersion::{CandidateFit, fit_dispersion, table_to_model};
 pub use explore::{
     BenchmarkEntry, BenchmarkReport, DEFAULT_ORDERING_CAP, Generated, RunScore, StrategyGen,
@@ -59,8 +59,8 @@ pub use explore::{
 };
 pub use forward::{DispersionForward, StackForward};
 pub use global::GlobalMethod;
-pub use model::{DEFAULT_ENV, FitModel, Segment};
-pub use params::{ParamAddr, ParamKind, Parameter, Tie, Transform};
+pub use model::{DEFAULT_ENV, FREEFORM_VALUES, FitModel, Segment};
+pub use params::{InstrumentField, ParamAddr, ParamKind, Parameter, Tie, Transform};
 pub use request::{FitRequest, FitSection, fit_program, request_from_json};
 pub use sets::{ParamSet, Selector, select};
 pub use strategy::{
@@ -86,6 +86,9 @@ pub struct FitProblem {
     pub parameters: Vec<Parameter>,
     /// Scalars that follow a driver; never parameters themselves.
     pub ties: Vec<Tie>,
+    /// Smoothness rows over free-form materials' values; they follow the
+    /// priors.
+    pub smoothness: Vec<Smoothness>,
     /// `solve_arrays`' mode: 0 front block, 1 coherency matrix, 2 fully
     /// coherent.
     pub coherence_mode: i32,
@@ -101,6 +104,7 @@ impl FitProblem {
             nk_data: Vec::new(),
             parameters,
             ties: Vec::new(),
+            smoothness: Vec::new(),
             coherence_mode: 0,
             lsq: LmConfig::default(),
         }
@@ -121,6 +125,49 @@ impl FitProblem {
         let c = Compiled::new(self)?;
         c.simulate(&c.base)
     }
+}
+
+/// A smoothness prior on a free-form material (§3.5.4): one residual row
+/// `(v[i-1] - 2 v[i] + v[i+1]) / sigma` per inner knot of the list
+/// `material[material].param` (a [`model::FREEFORM_VALUES`] list), fixed
+/// and free knots alike.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Smoothness {
+    pub material: String,
+    pub param: String,
+    pub sigma: f64,
+}
+
+impl Smoothness {
+    pub fn new(material: impl Into<String>, param: impl Into<String>, sigma: f64) -> Self {
+        Self {
+            material: material.into(),
+            param: param.into(),
+            sigma,
+        }
+    }
+}
+
+/// The values of `material[material].param` in `model`.
+fn knot_values(model: &FitModel, s: &Smoothness) -> Result<Vec<f64>, String> {
+    let what = format!("smoothness material[{}].{}", s.material, s.param);
+    let Some(crate::structure::Entry::Spec(spec)) = model.materials().get(&s.material) else {
+        return Err(format!("{what}: no material spec {:?}", s.material));
+    };
+    if !model::FREEFORM_VALUES.contains(&(spec.model.as_str(), s.param.as_str())) {
+        return Err(format!(
+            "{what}: {} {:?} is not a free-form list; those are {:?}",
+            spec.model,
+            s.param,
+            model::FREEFORM_VALUES
+        ));
+    }
+    spec.params
+        .get(&s.param)
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.iter().map(|x| x.as_f64()).collect::<Option<Vec<f64>>>())
+        .ok_or_else(|| format!("{what}: not a list of numbers"))
 }
 
 /// One parameter after the fit.
@@ -253,24 +300,39 @@ struct Compiled {
     /// Dataset id and source, data then nk data.
     ids: Vec<(String, Option<String>)>,
     rows: Vec<Rows>,
+    /// Smoothness priors and their row counts.
+    smooth: Vec<(Smoothness, usize)>,
 }
 
 impl Compiled {
     fn new(problem: &FitProblem) -> Result<Self, String> {
+        let mut ids = HashSet::new();
+        if let Some(d) = problem.data.iter().find(|d| !ids.insert(d.id.as_str())) {
+            return Err(format!("fit: two datasets are named {:?}", d.id));
+        }
         let mut base = problem.model.clone();
+        base.seed_instruments(&problem.data);
         let mut targets: Vec<Target> = Vec::new();
         let mut free = Vec::new();
         let mut resolved = Vec::new();
         let mut live = HashSet::new();
+        let mut moving = HashSet::new();
+        let mut note = |t: &Target| match t {
+            Target::Material { material, .. } => {
+                live.insert(material.clone());
+            }
+            Target::Data { dataset, field } if field.moves_geometry() => {
+                moving.insert(dataset.clone());
+            }
+            _ => {}
+        };
         for p in &problem.parameters {
             let addr = &p.addr;
             let target = base.resolve(addr)?;
             if targets.contains(&target) {
                 return Err(format!("{addr}: the same scalar is named twice"));
             }
-            if let Target::Material { material, .. } = &target {
-                live.insert(material.clone());
-            }
+            note(&target);
             let x0 = match p.value {
                 Some(v) => v,
                 None => base.read(&target)?,
@@ -302,7 +364,12 @@ impl Compiled {
                 if !(lb < ub) {
                     return Err(format!("{addr}: bounds [{lb}, {ub}] leave nothing to fit"));
                 }
-                let scale = p.scale.unwrap_or_else(|| default_scale(p.transform, x0));
+                let scale = p.scale.unwrap_or_else(|| match addr {
+                    ParamAddr::Data { field, .. } if p.transform == Transform::Linear => {
+                        field.scale()
+                    }
+                    _ => default_scale(p.transform, x0),
+                });
                 if !(scale > 0.0 && scale.is_finite()) {
                     return Err(format!(
                         "{addr}: scale {scale} is not a positive finite number"
@@ -345,9 +412,7 @@ impl Compiled {
                 if !(factor.is_finite() && offset.is_finite()) {
                     return Err(format!("tie: {addr}: factor and offset must be finite"));
                 }
-                if let Target::Material { material, .. } = &target {
-                    live.insert(material.clone());
-                }
+                note(&target);
                 followers.push(target.clone());
                 compiled.push((target, *factor, *offset));
             }
@@ -363,6 +428,23 @@ impl Compiled {
         }
         apply_ties(&mut base, &ties)?;
         base.check()?;
+        let mut smooth = Vec::new();
+        for s in &problem.smoothness {
+            if !(s.sigma.is_finite() && s.sigma > 0.0) {
+                return Err(format!(
+                    "smoothness material[{}].{}: sigma {} is not a positive finite number",
+                    s.material, s.param, s.sigma
+                ));
+            }
+            let n = knot_values(&base, s)?.len();
+            if n < 3 {
+                return Err(format!(
+                    "smoothness material[{}].{}: needs at least 3 knots, has {n}",
+                    s.material, s.param
+                ));
+            }
+            smooth.push((s.clone(), n - 2));
+        }
         if problem.data.is_empty() && problem.nk_data.is_empty() {
             return Err("fit: no data".into());
         }
@@ -374,6 +456,7 @@ impl Compiled {
                 &problem.data,
                 problem.coherence_mode,
                 &live,
+                &moving,
             )?)
         };
         let dispersion = if problem.nk_data.is_empty() {
@@ -426,6 +509,7 @@ impl Compiled {
             resolved,
             ids,
             rows,
+            smooth,
         })
     }
 
@@ -450,6 +534,25 @@ impl Compiled {
 
     fn n_priors(&self) -> usize {
         self.free.iter().filter(|f| f.prior.is_some()).count()
+    }
+
+    /// Smoothness rows of `model`, prior by prior.
+    fn smooth_rows(&self, model: &FitModel, out: &mut Vec<f64>) -> Result<(), String> {
+        for (s, _) in &self.smooth {
+            let v = knot_values(model, s)?;
+            out.extend(v.windows(3).map(|w| (w[0] - 2.0 * w[1] + w[2]) / s.sigma));
+        }
+        Ok(())
+    }
+
+    fn n_smooth(&self) -> usize {
+        self.smooth.iter().map(|(_, n)| n).sum()
+    }
+
+    /// `target` is a knot of a smoothed list.
+    fn smooths(&self, target: &Target) -> bool {
+        matches!(target, Target::Material { material, key, .. }
+            if self.smooth.iter().any(|(s, _)| s.material == *material && s.param == *key))
     }
 
     /// Spectra, then nk datasets.
@@ -493,11 +596,13 @@ impl Compiled {
 
     fn residuals(&self, u: &[f64], out: &mut Vec<f64>) -> Result<(), String> {
         out.clear();
-        let dev = self.deviations(&self.model_at(u)?)?;
+        let model = self.model_at(u)?;
+        let dev = self.deviations(&model)?;
         for (d, rows) in dev.iter().zip(&self.rows) {
             out.extend(d.iter().zip(&rows.inv_sigma).map(|(d, w)| d * w));
         }
         self.prior_rows(u, out);
+        self.smooth_rows(&model, out)?;
         if let Some(r) = out.iter().find(|r| !r.is_finite()) {
             return Err(format!("fit: non-finite residual {r}"));
         }
@@ -507,6 +612,9 @@ impl Compiled {
 
 /// The [`DatasetFit`] id of the prior rows, when any parameter has one.
 pub const PRIOR_ID: &str = "prior";
+
+/// The [`DatasetFit`] id of the smoothness rows, when there are any.
+pub const SMOOTH_ID: &str = "smoothness";
 
 /// Every row of a trial point the forward model refuses: large enough
 /// that no step lands there, small enough that χ² stays finite.
@@ -525,6 +633,13 @@ pub enum Progress {
     /// its points before: about once per accepted solver step. `evals`
     /// counts this run's evaluations so far.
     Improved {
+        stage: usize,
+        evals: usize,
+        chi2: f64,
+    },
+    /// A `global` stage's search found a lower χ² than any point before
+    /// it (the start included). `evals` counts the search's evaluations.
+    Searched {
         stage: usize,
         evals: usize,
         chi2: f64,
@@ -716,7 +831,10 @@ fn run(
         (r.x, r.termination, r.iterations, r.evals, r.backend)
     };
 
-    let model = c.model_at(&u)?;
+    // Instruments are seeded per dataset so `data[..]` resolves; the
+    // report keeps only those that depart from the identity.
+    let mut model = c.model_at(&u)?;
+    model.prune_instruments(&problem.data);
     let mut r = Vec::new();
     residuals(&u, &mut r)?;
     let m = r.len();
@@ -759,6 +877,17 @@ fn run(
             n_points: k,
             chi2: rows.iter().map(|x| x * x).sum(),
             rms: (rows.iter().map(|x| x * x).sum::<f64>() / k as f64).sqrt(),
+        });
+    }
+    let ks = c.n_smooth();
+    if ks > 0 {
+        let rows = &r[offset + k..offset + k + ks];
+        datasets.push(DatasetFit {
+            id: SMOOTH_ID.to_string(),
+            source: None,
+            n_points: ks,
+            chi2: rows.iter().map(|x| x * x).sum(),
+            rms: (rows.iter().map(|x| x * x).sum::<f64>() / ks as f64).sqrt(),
         });
     }
 

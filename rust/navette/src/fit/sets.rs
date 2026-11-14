@@ -6,16 +6,16 @@
 //! | Text | Picks |
 //! |---|---|
 //! | `*` | every parameter |
-//! | `kind=thickness` | by kind: `thickness`, `grading`, `roughness`, `interface`, `gradient`, `group`, `material` |
+//! | `kind=thickness` | by kind: `thickness`, `grading`, `roughness`, `interface`, `gradient`, `group`, `material`, `instrument` |
 //! | `tag=H` | parameters carrying the tag |
 //! | `set:dispersion_H` | the members of a set |
 //! | anything else | a glob on the address: `material[TiO2].*`, `group[*].n_factor`; `*` is any run, `?` one character, everything else literal |
 //!
 //! A **parameter set** is a named union of selectors: the unit a strategy
 //! orders. Built-in sets need no declaration: `thicknesses`, `grading`,
-//! `roughness`, `interfaces`, `gradients`, `groups`, `materials` (one per
-//! kind), and `material[X]` / `group[G]` for every material and group a
-//! parameter names. A user set of the same name wins.
+//! `roughness`, `interfaces`, `gradients`, `groups`, `materials`,
+//! `instruments` (one per kind), and `material[X]` / `group[G]` /
+//! `data[D]` for every material, group and dataset a parameter names. A user set of the same name wins.
 
 use serde::{Deserialize, Serialize};
 
@@ -79,10 +79,11 @@ fn parse_kind(kind: &str) -> Result<ParamKind, String> {
         "gradient" => ParamKind::Gradient,
         "group" => ParamKind::Group,
         "material" => ParamKind::Material,
+        "instrument" => ParamKind::Instrument,
         other => {
             return Err(format!(
                 "unknown kind {other:?}; one of thickness, grading, roughness, interface, \
-                 gradient, group, material"
+                 gradient, group, material, instrument"
             ));
         }
     })
@@ -108,12 +109,15 @@ fn builtin(name: &str) -> Option<Vec<Selector>> {
         "gradients" => Some(ParamKind::Gradient),
         "groups" => Some(ParamKind::Group),
         "materials" => Some(ParamKind::Material),
+        "instruments" => Some(ParamKind::Instrument),
         _ => None,
     };
     if let Some(k) = kind {
         return Some(vec![Selector::Kind(k)]);
     }
-    if (name.starts_with("material[") || name.starts_with("group[")) && name.ends_with(']') {
+    if (name.starts_with("material[") || name.starts_with("group[") || name.starts_with("data["))
+        && name.ends_with(']')
+    {
         return Some(vec![Selector::Glob(format!("{name}.*"))]);
     }
     None

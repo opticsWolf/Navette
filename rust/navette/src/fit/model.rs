@@ -24,7 +24,7 @@
 //! rows are surroundings, not addresses; their materials and groups are
 //! still the model's.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -38,7 +38,8 @@ use crate::structure::providers::Entry;
 use crate::structure::structure::Structure;
 use crate::structure::{Group, Layer};
 
-use super::params::{GroupField, LayerField, LayerRef, ParamAddr, PathSeg};
+use super::data::{Instrument, SpectrumData};
+use super::params::{GroupField, InstrumentField, LayerField, LayerRef, ParamAddr, PathSeg};
 
 /// Name and row materials of one structure in the model.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +50,16 @@ struct StructureRows {
 
 /// The environment an architect's or structure's own chain is named.
 pub const DEFAULT_ENV: &str = "default";
+
+/// `(model, param)` lists that are a free-form material's values, one fit
+/// parameter per knot (`material[X].n[3]`); smoothness rows run over them.
+pub const FREEFORM_VALUES: [(&str, &str); 5] = [
+    ("PointWise", "n"),
+    ("PointWise", "k"),
+    ("Spline", "n"),
+    ("Spline", "k"),
+    ("BSplineEps", "eps2"),
+];
 
 /// One piece of an environment's chain.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +98,9 @@ pub struct FitModel {
     structures: Vec<StructureRows>,
     groups: HashMap<String, Group>,
     materials: HashMap<String, Entry>,
+    /// Each dataset's instrument by dataset id, seeded from the data when
+    /// a problem compiles; a fitted model keeps its fitted values.
+    instruments: BTreeMap<String, Instrument>,
 }
 
 /// An address resolved against one model: where a write lands.
@@ -105,6 +119,10 @@ pub(crate) enum Target {
         material: String,
         key: String,
         pointer: String,
+    },
+    Data {
+        dataset: String,
+        field: InstrumentField,
     },
 }
 
@@ -171,6 +189,7 @@ impl FitModel {
             structures,
             groups,
             materials,
+            instruments: BTreeMap::new(),
         })
     }
 
@@ -203,6 +222,7 @@ impl FitModel {
             }],
             groups,
             materials,
+            instruments: BTreeMap::new(),
         })
     }
 
@@ -236,6 +256,7 @@ impl FitModel {
             structures: Vec::new(),
             groups: HashMap::new(),
             materials,
+            instruments: BTreeMap::new(),
         }
     }
 
@@ -354,6 +375,31 @@ impl FitModel {
         &self.materials
     }
 
+    /// The instrument of dataset `id`, once a problem has seeded it.
+    pub fn instrument(&self, id: &str) -> Option<&Instrument> {
+        self.instruments.get(id)
+    }
+
+    /// Seed each dataset's instrument from `data`, keeping any the model
+    /// already holds (a fitted model passed on to the next stage).
+    pub(crate) fn seed_instruments(&mut self, data: &[SpectrumData]) {
+        for d in data {
+            self.instruments.entry(d.id.clone()).or_insert(d.instrument);
+        }
+    }
+
+    /// Drop identity instruments that `data` would seed as the identity
+    /// too: an absent entry reads as the identity. One whose dataset
+    /// starts elsewhere stays, or a later seeding would restore the start.
+    pub(crate) fn prune_instruments(&mut self, data: &[SpectrumData]) {
+        self.instruments.retain(|id, i| {
+            !i.is_identity()
+                || data
+                    .iter()
+                    .any(|d| d.id == *id && !d.instrument.is_identity())
+        });
+    }
+
     pub fn structure_names(&self) -> Vec<&str> {
         self.structures.iter().map(|s| s.name.as_str()).collect()
     }
@@ -374,7 +420,8 @@ impl FitModel {
     /// The scalars a selector declaration (`{"select": "kind=thickness"}`)
     /// expands over, in a stable order: every film row's thickness,
     /// structure by structure; the factors and the thickness summand of
-    /// every group; every top-level number of every material spec. Other
+    /// every group; every top-level number of every material spec, and
+    /// every knot value of a free-form one ([`FREEFORM_VALUES`]). Other
     /// fields (grading, roughness, gradients, oscillator entries) are
     /// declared by address.
     pub fn addresses(&self) -> Vec<ParamAddr> {
@@ -420,6 +467,14 @@ impl FitModel {
                             material: name.clone(),
                             path: vec![PathSeg::Key(key.clone())],
                         });
+                    } else if let Some(list) = v.as_array()
+                        && FREEFORM_VALUES.contains(&(spec.model.as_str(), key.as_str()))
+                    {
+                        // A free-form model's values, knot by knot.
+                        out.extend((0..list.len()).map(|i| ParamAddr::Material {
+                            material: name.clone(),
+                            path: vec![PathSeg::Key(key.clone()), PathSeg::Index(i)],
+                        }));
                     }
                 }
             }
@@ -565,6 +620,18 @@ impl FitModel {
                     pointer,
                 }
             }
+            ParamAddr::Data { dataset, field } => {
+                if !self.instruments.contains_key(dataset) {
+                    return Err(format!(
+                        "{addr}: no dataset {dataset:?}; the problem has {:?}",
+                        self.instruments.keys().collect::<Vec<_>>()
+                    ));
+                }
+                Target::Data {
+                    dataset: dataset.clone(),
+                    field: *field,
+                }
+            }
         };
         self.read(&target).map_err(|e| format!("{addr}: {e}"))?;
         Ok(target)
@@ -576,7 +643,7 @@ impl FitModel {
         match target {
             Target::Layer { entries, .. } => self.groups.get(&self.entries[entries[0]].0.material),
             Target::Group { group, .. } => self.groups.get(group),
-            Target::Material { .. } => None,
+            Target::Material { .. } | Target::Data { .. } => None,
         }
     }
 
@@ -599,6 +666,9 @@ impl FitModel {
                     .pointer(pointer)
                     .and_then(Value::as_f64)
                     .ok_or_else(|| "not a number".to_string())
+            }
+            Target::Data { dataset, field } => {
+                Ok(*instrument_slot_ref(&self.instruments[dataset], *field))
             }
         }
     }
@@ -634,6 +704,16 @@ impl FitModel {
                     .and_then(|v| v.pointer_mut(pointer))
                     .ok_or("the address no longer resolves")?;
                 *slot = Value::from(value);
+            }
+            Target::Data { dataset, field } => {
+                let i = self
+                    .instruments
+                    .get_mut(dataset)
+                    .expect("resolved against this model");
+                if *field == InstrumentField::Bandwidth && value < 0.0 {
+                    return Err(format!("bandwidth {value} is negative"));
+                }
+                *instrument_slot(i, *field) = value;
             }
         }
         Ok(())
@@ -673,6 +753,26 @@ impl FitModel {
             }
         }
         Some((model, leaf))
+    }
+}
+
+fn instrument_slot(i: &mut Instrument, field: InstrumentField) -> &mut f64 {
+    match field {
+        InstrumentField::AngleOffset => &mut i.angle_offset,
+        InstrumentField::WavelengthShift => &mut i.wavelength_shift,
+        InstrumentField::Scale => &mut i.scale,
+        InstrumentField::Offset => &mut i.offset,
+        InstrumentField::Bandwidth => &mut i.bandwidth,
+    }
+}
+
+fn instrument_slot_ref(i: &Instrument, field: InstrumentField) -> &f64 {
+    match field {
+        InstrumentField::AngleOffset => &i.angle_offset,
+        InstrumentField::WavelengthShift => &i.wavelength_shift,
+        InstrumentField::Scale => &i.scale,
+        InstrumentField::Offset => &i.offset,
+        InstrumentField::Bandwidth => &i.bandwidth,
     }
 }
 

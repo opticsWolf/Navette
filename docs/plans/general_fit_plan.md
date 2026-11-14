@@ -15,7 +15,7 @@ change). Work branch: `dev_fit`.
 | 4 tournament, generated strategies, truth draws, benchmark | done (`dev_fit`) |
 | 5 Python door, program `fit` section (schema v4), docs | done (`dev_fit`) |
 | 6 fit Jacobian (block skipping, analytic thickness and nk columns), `global` stage on basin | done (`dev_fit`) |
-| 7 | not started |
+| 7 native DE, instrument parameters, free-form nk models | done (`dev_fit`) |
 
 Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
 (`FitModel`: the architect's traversal with each entry's structure row,
@@ -169,6 +169,65 @@ path stays as `lsq.jacobian = "fd"`. What it does and what it found:
 - Found on the way: a strategy's final report re-applied the declared
   start values over the fitted model when a parameter had an explicit
   `value`. Fixed; phase-4 problems never set one, so it had not shown.
+
+Phase 7 finished the plan's three remaining items:
+
+- **Native DE** in `lsq::de` (not `lsq::global::de`: one module was
+  enough): `DE/rand/1/bin` (`de`, now the default `GlobalMethod`) and
+  `DE/best/1/bin` (`de_best`), F dithered in [0.5, 1) per generation, CR
+  0.9, population max(10n, 8), reinit-per-coordinate repair, a seeded
+  `StdRng`, generations evaluated in parallel and collected in order
+  (same bits on any thread count), the start as member 0. It stops on the
+  budget or a collapsed population. The polish is the stage's own LSQ,
+  not an LM inside DE. basin's DE is now `basin_de`. A global stage
+  reports `Progress::Searched` (Python `"searched"`), so its evaluations
+  are counted apart from the polish's.
+- **Checked against basin** (`tests/fit_global.rs`, 16 seeds each). On
+  the phase-4 coating, budget 3000, both solve 16/16; the median number
+  of evaluations to reach 10× χ²(truth) is 2305 for native DE, against
+  basin's 3000 (it reaches the target only at the cap). On the rugged
+  case (4× thicker, one curve, budget 4000) native DE solves 11/16 and
+  basin 10/16; the median best χ² is 35.5× χ²(truth) for native DE and
+  46.7× for basin.
+- **Instrument parameters**: each dataset carries an `instrument`
+  (`angle_offset` rad, `wavelength_shift` nm, `scale`, `offset`,
+  `bandwidth` nm FWHM), addressed as `data[id].field`. The selector kind
+  is `instrument`, with the built-in sets `instruments` and `data[id]`.
+  The model reads `scale·v + offset`. A shift or an angle offset moves the
+  grid or angle the dataset is solved at, so a dataset whose geometry is
+  fitted, or departs from the identity, gets a solve of its own.
+  Bandwidth averages a Gaussian slit with 7-point Gauss-Hermite, on
+  intensity channels only. Its slope is zero at zero, so start it
+  positive. In the Jacobian, the thickness chain is multiplied by the
+  scale; own solves are differenced. `tests/fit_instrument.rs` recovers
+  each field within 2.5σ.
+  - Found on the way: seeding every dataset's instrument into the model
+    made reports carry identity entries; they are pruned when the data
+    agree. Duplicate dataset ids are now refused.
+- **Free-form nk** (§4.6), three new `MaterialSpec` models (26 in all,
+  Python mirrored):
+  - `PointWise` (linear, held at the ends);
+  - `Spline` (pchip, makima or linear through `UniInterpolator`);
+  - `BSplineEps`: ε₂ as a cubic B-spline in eV with one coefficient per
+    energy (not-a-knot placement), ε₁ from `kk_fft`. `kk.rs` needed no
+    further work.
+
+  Knot values are addresses (`material[X].n[3]`) and part of
+  `FitModel::addresses()`, so selectors expand them. Per-knot bounds are
+  n > 0, k ≥ 0 and ε₂ ≥ 0. The smoothness prior (§3.5.4) is
+  `FitProblem.smoothness` (the program section `smoothness`): rows after
+  the priors, reported as dataset `smoothness`.
+  - Found on the way: FD probes a k knot sitting on its zero bound just
+    below it, and the solver refuses negative k (gain). The fit stalled
+    at the iteration cap with no covariance. The kernels now read k and ε₂
+    as max(·, 0); after the fix, the same fit converged in 9 iterations.
+  - Recovery, `tests/fit_freeform.rs`:
+    - a 7-knot spline (n, k) and the thickness, within 3σ;
+    - 25 point-wise n, k with smoothness priors, max error 0.02 in n and
+      0.01 in k;
+    - three ε₂ coefficients, ε∞ and the thickness, within 3σ.
+  - `examples/fit_freeform.py` does the spline fit and a λ shift from
+    Python; the worst deviation is 2.4σ.
 
 ## 0. Decisions (review of 2026-11-07)
 
@@ -718,10 +777,10 @@ Two implementations of one `GlobalMethod` stage, in this order:
      `Direct`, `SimulatedAnnealing` as further references.
    The stage maps the normalised fit box straight onto basin's box and
    uses the χ² of the residual vector as the cost.
-2. **Hand-rolled DE in the default build** (phase 7, `lsq::global::de`):
+2. **Hand-rolled DE in the default build** (phase 7, `lsq::de`; done):
    `DE/rand/1/bin` and `DE/best/1/bin`, dithering, reinit-per-coordinate
    bound repair (basin's choice), synchronous generations evaluated in
-   parallel with ordered collection, an optional LM polish of the best
+   parallel with ordered collection; the stage's LSQ polishes the best
    member. No new dependency (uses the crate's existing RNG).
    - **Checked against the reference**: same benchmark functions and the
      phase-4 fit problems, compared on success rate and evaluations to a

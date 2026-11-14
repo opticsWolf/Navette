@@ -150,19 +150,41 @@ Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
   `examples/fit_perf.rs` measures both modes: a 20-layer coating fit
   (22 free) runs 2.9× faster, and the same with witness samples or an
   nk table runs 2.2× and 1.9× faster, with the same iterations and χ².
-- **`global` strategy stage** (behind `opt-basin`):
-  `{"global": {"method": "de" | "de_inject" | "cma_es", "budget": n}}`
-  searches the stage's box with basin's differential evolution, memetic
-  DE or bounded CMA-ES, then polishes with least squares. From random
-  starts it solves the phase-4 coating, and a thick variant where least
-  squares alone is caught every time. Without the feature, the stage asks
-  for a rebuild.
+- **`global` strategy stage**: `{"global": {"method": m, "budget": n}}`
+  searches the stage's box, then polishes with least squares. `de` (the
+  default) and `de_best` are native differential evolution (`lsq::de`,
+  fit plan phase 7) in every build; `basin_de`, `de_inject` (memetic DE)
+  and `cma_es` are basin's, behind `opt-basin`, and without the feature
+  the stage asks for a rebuild. From random starts it solves the phase-4
+  coating, and a thick variant where least squares alone is caught every
+  time. Over 16 seeds native DE matches or beats basin's DE: it reaches
+  10× χ²(truth) in a median 2305 evaluations where basin needs the whole
+  3000, and solves 11/16 thick cases to basin's 10/16. A global stage
+  reports `"searched"` progress events, apart from the polish's
+  `"improved"`.
+- **Instrument parameters** (fit plan phase 7). A dataset's `instrument`
+  holds `angle_offset` (rad), `wavelength_shift` (nm), `scale`, `offset`
+  and `bandwidth` (nm FWHM, a Gaussian slit on intensity channels), each
+  a fit parameter `data[<id>].<field>` (kind `instrument`, sets
+  `instruments` and `data[<id>]`). Python: `Dataset(instrument={...})`.
+  Bandwidth's slope is zero at zero, so start it positive.
+- **Free-form optical constants** (fit plan phase 7, §4.6): material
+  models `PointWise` (n, k at given wavelengths), `Spline` (n, k on
+  knots, pchip / makima / linear) and `BSplineEps` (ε₂ as a cubic
+  B-spline in eV, ε₁ by Kramers-Kronig). Every knot value is a fit
+  parameter (`material[X].n[3]`, bounded n > 0, k ≥ 0, ε₂ ≥ 0) and
+  expands under selectors. k and ε₂ read as max(value, 0). A smoothness
+  prior (`FitProblem.smoothness`, program `smoothness`: material, param,
+  sigma) adds second-difference rows, reported as dataset `smoothness`.
+  `examples/fit_freeform.py` fits a spline film and a wavelength shift.
 
 ### Fixed
 
 - A strategy whose parameters declared explicit start values reported
   the starts, not the fit: the final report wrote them back over the
   fitted model.
+- Two datasets with the same id in one fit are refused; before, the
+  second shadowed the first in the report.
 
 ### Changed (breaking)
 

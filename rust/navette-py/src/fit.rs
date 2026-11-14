@@ -37,6 +37,12 @@ fn event<'py>(py: Python<'py>, p: &Progress) -> PyResult<Bound<'py, PyDict>> {
             d.set_item("evals", evals)?;
             d.set_item("chi2", chi2)?;
         }
+        Progress::Searched { stage, evals, chi2 } => {
+            d.set_item("event", "searched")?;
+            d.set_item("stage", stage)?;
+            d.set_item("evals", evals)?;
+            d.set_item("chi2", chi2)?;
+        }
         Progress::StageEnd {
             stage,
             name,

@@ -12,6 +12,7 @@
 //! | gradient | `layer[...].gradient.f_start`, `.f_end`, `.rate`, `.f_min`, `.f_max` |
 //! | group | `group[TiO2].n_factor`, `.k_factor`, `.thick_factor`, `.thick_summand`, `.inh_delta_summand`, `.roughness_summand`, `.interface_summand` |
 //! | material | `material[TiO2].A`, `material[TiO2].osc[1][0]`, `material[porous].host.B1` |
+//! | instrument | `data[R8].angle_offset`, `.wavelength_shift`, `.scale`, `.offset`, `.bandwidth` |
 //!
 //! `layer[S:i]` is row `i` (0-based, ambient included) of structure `S`;
 //! `layer[S:#M_k]` is the `k`-th (1-based) row of material `M` in it. A
@@ -87,6 +88,61 @@ const GROUP_FIELDS: [(&str, GroupField); 7] = [
     ("interface_summand", GroupField::InterfaceSummand),
 ];
 
+/// A writable scalar of a dataset's [`Instrument`](super::data::Instrument).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstrumentField {
+    AngleOffset,
+    WavelengthShift,
+    Scale,
+    Offset,
+    Bandwidth,
+}
+
+const INSTRUMENT_FIELDS: [(&str, InstrumentField); 5] = [
+    ("angle_offset", InstrumentField::AngleOffset),
+    ("wavelength_shift", InstrumentField::WavelengthShift),
+    ("scale", InstrumentField::Scale),
+    ("offset", InstrumentField::Offset),
+    ("bandwidth", InstrumentField::Bandwidth),
+];
+
+impl InstrumentField {
+    /// Whether the field moves the solve grid or angle (not only the
+    /// reading of the result).
+    pub(crate) fn moves_geometry(self) -> bool {
+        matches!(
+            self,
+            InstrumentField::AngleOffset
+                | InstrumentField::WavelengthShift
+                | InstrumentField::Bandwidth
+        )
+    }
+
+    /// Default `[lb, ub]`: an angle off by up to 3 degrees, a wavelength
+    /// scale off by up to 5 nm, a scale within 20 %, an offset of up to
+    /// 0.1, a slit of up to 20 nm.
+    pub(crate) fn bounds(self) -> (f64, f64) {
+        match self {
+            InstrumentField::AngleOffset => (-0.0524, 0.0524),
+            InstrumentField::WavelengthShift => (-5.0, 5.0),
+            InstrumentField::Scale => (0.8, 1.2),
+            InstrumentField::Offset => (-0.1, 0.1),
+            InstrumentField::Bandwidth => (0.0, 20.0),
+        }
+    }
+
+    /// Default scale (solver step unit), whatever the start.
+    pub(crate) fn scale(self) -> f64 {
+        match self {
+            InstrumentField::AngleOffset => 1e-3,
+            InstrumentField::WavelengthShift => 0.1,
+            InstrumentField::Scale => 1e-2,
+            InstrumentField::Offset => 1e-3,
+            InstrumentField::Bandwidth => 0.5,
+        }
+    }
+}
+
 /// One step of a material address below the material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathSeg {
@@ -110,6 +166,11 @@ pub enum ParamAddr {
         material: String,
         path: Vec<PathSeg>,
     },
+    /// A dataset's instrument.
+    Data {
+        dataset: String,
+        field: InstrumentField,
+    },
 }
 
 /// What kind of quantity an address names (default bounds, selectors).
@@ -122,6 +183,7 @@ pub enum ParamKind {
     Gradient,
     Group,
     Material,
+    Instrument,
 }
 
 impl ParamAddr {
@@ -130,7 +192,7 @@ impl ParamAddr {
         let bad = |why: &str| format!("parameter address {text:?}: {why}");
         let (head, rest) = text
             .split_once('[')
-            .ok_or_else(|| bad("expected layer[...], group[...] or material[...]"))?;
+            .ok_or_else(|| bad("expected layer[...], group[...], material[...] or data[...]"))?;
         let (inner, tail) = rest.split_once(']').ok_or_else(|| bad("unclosed '['"))?;
         if inner.is_empty() {
             return Err(bad("empty name in brackets"));
@@ -204,7 +266,26 @@ impl ParamAddr {
                     path,
                 })
             }
-            _ => Err(bad("expected layer[...], group[...] or material[...]")),
+            "data" => {
+                let field = field.ok_or_else(|| bad("missing .field"))?;
+                let field = INSTRUMENT_FIELDS
+                    .iter()
+                    .find(|(name, _)| *name == field)
+                    .map(|(_, f)| *f)
+                    .ok_or_else(|| {
+                        bad(&format!(
+                            "unknown instrument field; known: {}",
+                            INSTRUMENT_FIELDS.map(|(n, _)| n).join(", ")
+                        ))
+                    })?;
+                Ok(ParamAddr::Data {
+                    dataset: inner.to_string(),
+                    field,
+                })
+            }
+            _ => Err(bad(
+                "expected layer[...], group[...], material[...] or data[...]",
+            )),
         }
     }
 
@@ -221,6 +302,7 @@ impl ParamAddr {
             },
             ParamAddr::Group { .. } => ParamKind::Group,
             ParamAddr::Material { .. } => ParamKind::Material,
+            ParamAddr::Data { .. } => ParamKind::Instrument,
         }
     }
 }
@@ -279,6 +361,14 @@ impl fmt::Display for ParamAddr {
                     }
                 }
                 Ok(())
+            }
+            ParamAddr::Data { dataset, field } => {
+                let name = INSTRUMENT_FIELDS
+                    .iter()
+                    .find(|(_, x)| x == field)
+                    .unwrap()
+                    .0;
+                write!(f, "data[{dataset}].{name}")
             }
         }
     }
@@ -459,6 +549,7 @@ pub(crate) fn default_bounds(addr: &ParamAddr, x0: f64) -> (f64, f64) {
             _ => (f64::NEG_INFINITY, f64::INFINITY),
         },
         ParamAddr::Material { .. } => (f64::NEG_INFINITY, f64::INFINITY),
+        ParamAddr::Data { field, .. } => field.bounds(),
     }
 }
 
@@ -484,7 +575,9 @@ pub(crate) fn material_bounds(model: &str, leaf: &str) -> (f64, f64) {
         "alpha" if ema => (-1.0, 1.0),
         "osc" | "ib" | "Eu" | "lambda_g" | "n_factor" => POS,
         "A" if model == "Cauchy" || model == "CauchyUrbach" => POS,
-        "n" if model == "Konstant" => POS,
+        "n" if matches!(model, "Konstant" | "PointWise" | "Spline") => POS,
+        // Free-form models: per knot, k and the ε₂ coefficients.
+        "eps2" if model == "BSplineEps" => NONNEG,
         "k" | "k_factor" | "alpha0" | "Eg" | "Et" | "omega_p" | "wp" | "gamma" | "gamma_drude"
         | "B1" | "B2" | "B3" | "C1" | "C2" | "C3" => NONNEG,
         // UBF oscillators are dicts, so their entries arrive by name.
@@ -516,6 +609,9 @@ mod tests {
         assert_eq!(material_bounds("UBF", "Gamma"), pos);
         assert_eq!(material_bounds("Cauchy", "A"), pos);
         assert_eq!(material_bounds("Sellmeier", "C3"), (0.0, f64::INFINITY));
+        assert_eq!(material_bounds("Spline", "n"), pos);
+        assert_eq!(material_bounds("PointWise", "k"), (0.0, f64::INFINITY));
+        assert_eq!(material_bounds("BSplineEps", "eps2"), (0.0, f64::INFINITY));
         let open = (f64::NEG_INFINITY, f64::INFINITY);
         assert_eq!(material_bounds("Cauchy", "B"), open);
         assert_eq!(material_bounds("Lorentz", "epsilon_inf"), open);

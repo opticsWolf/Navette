@@ -138,7 +138,7 @@ report = fit(problem, strategy)
 | Stage key | Meaning |
 |---|---|
 | `datasets`, `weights`, `window` | Restrict or reweight the data for this stage. |
-| `kind` | `"lsq"` (the default). `{"scan": {"param": sel, "points": n}}` tries `n` values of one parameter across its bounds, then runs LSQ. `{"multi_start": {"starts": n, "sampler": "lhs", "seed": 0}}` runs LSQ from `n` sampled points and keeps the best. `{"global": {"method": "de", "budget": n, "seed": 0}}` searches the same box with at most `n` chi2 evaluations, then runs LSQ from the best point found. `method` is `"de"` (differential evolution, the default), `"de_inject"` (DE with a Nelder-Mead polish of its best member) or `"cma_es"`; `population` overrides the method's population size. Needs a build with the `opt-basin` feature; without it the stage refuses. |
+| `kind` | `"lsq"` (the default). `{"scan": {"param": sel, "points": n}}` tries `n` values of one parameter across its bounds, then runs LSQ. `{"multi_start": {"starts": n, "sampler": "lhs", "seed": 0}}` runs LSQ from `n` sampled points and keeps the best. `{"global": {"method": "de", "budget": n, "seed": 0}}` searches the same box with at most `n` chi2 evaluations, then runs LSQ from the best point found. `method` is `"de"` (native differential evolution, DE/rand/1/bin, the default) or `"de_best"` (DE/best/1/bin, greedier), both in every build; `"basin_de"`, `"de_inject"` (DE with a Nelder-Mead polish of its best member) and `"cma_es"` are basin's and need a build with the `opt-basin` feature (without it the stage refuses). `population` overrides the method's population size. |
 | `lsq` | Solver settings for this stage. |
 | `repeat` | `"once"`, or `{"until_no_gain": {"rel": 1e-3, "max": 5}}`. |
 | `accept` | `"always"` or `"if_better"`. |
@@ -200,6 +200,30 @@ data = to_solver({"id": "R", "quantity": {"spectrum": "R_avg"}, "angle": 8.0,
 σ is given in the instrument's units and is converted with the values. It
 defaults to unit weight.
 
+### The instrument as fit parameters
+
+A real instrument also departs from its nominal settings. A `Dataset`'s
+`instrument` holds those departures, and each is a fit parameter
+`data[<id>].<field>`:
+
+| Field | Meaning | Default bounds |
+|---|---|---|
+| `angle_offset` | added to the angle of incidence, rad | ±0.0524 (3°) |
+| `wavelength_shift` | the point read at λ was taken at λ + shift, nm | ±5 |
+| `scale`, `offset` | the model reads `scale·v + offset` | [0.8, 1.2], ±0.1 |
+| `bandwidth` | Gaussian slit FWHM, nm; intensity channels only | [0, 20] |
+
+```python
+Dataset("T", "T_avg", wl, t, sigma=0.002, instrument={"bandwidth": 2.0})
+Parameter("data[T].bandwidth"), Parameter("data[T].wavelength_shift")
+```
+
+The selector kind is `instrument`, and the sets `instruments` and
+`data[<id>]` are built in. Bandwidth's slope is zero at zero, so a
+bandwidth fit should start from a positive value. A dataset whose
+angle or wavelengths move is solved on its own, which costs one more
+solve per evaluation.
+
 ## 5. Dispersion models
 
 - `fit_dispersion(spec, nk_data, parameters=None, lsq=None)` fits one
@@ -214,6 +238,32 @@ defaults to unit weight.
 To fit a film's dispersion together with its thickness, put the model's
 numbers (`material[M].*`) and the thickness in one `FitProblem`.
 `NkDataset`s and spectra can share that problem.
+
+### Free-form optical constants
+
+For a material no formula describes, three models make the optical
+constants themselves the parameters:
+
+| Model | Params | Between knots |
+|---|---|---|
+| `PointWise` | `wavelengths`, `n`, `k` | linear, held at the ends |
+| `Spline` | `wavelengths`, `n`, `k`, `method` | `pchip` (default), `makima`, `linear`; held at the ends |
+| `BSplineEps` | `energies` (eV, ≥ 4), `eps2`, `epsilon_inf` | ε₂ a cubic B-spline (zero outside), ε₁ by Kramers-Kronig |
+
+Each knot value is a parameter, `material[X].n[3]`, and a declaration
+`Parameter(select="material[X].*")` expands to every knot. Bounds are per knot:
+n > 0, k ≥ 0, ε₂ ≥ 0. k and ε₂ are read as max(value, 0). `PointWise`
+with one point per wavelength needs several independent measurements
+per wavelength (R and T, several angles) and a smoothness prior:
+
+```python
+FitProblem(..., smoothness=[("X", "n", 0.01), ("X", "k", 0.005)])
+```
+
+Each `(material, param, sigma)` adds one residual
+`(v[i-1] - 2 v[i] + v[i+1]) / sigma` per inner knot, fixed knots
+included. The report lists them as the dataset `smoothness`.
+`examples/fit_freeform.py` fits a spline film and a wavelength shift.
 
 ## 6. Saved fits: the program `fit` section
 
