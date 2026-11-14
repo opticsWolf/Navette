@@ -771,6 +771,21 @@ impl SmatrixContext {
         }
     }
 
+    /// A3: evaluate a batch of designs on the context's grid, in parallel.
+    ///
+    /// The GA bridge sees one call per generation instead of one call per
+    /// genome. Rayon owns the population fan-out here; each solve keeps the
+    /// solver's own grid parallelism, and Rayon merges the nested work in one
+    /// scheduler. Results are returned in input order; the first error aborts
+    /// the batch. (A fused population x grid kernel remains a later
+    /// optimisation; this is the additive batch door.)
+    pub fn evaluate_many(&self, stacks: &[DesignStack]) -> Result<Vec<f64>, String> {
+        stacks
+            .par_iter()
+            .map(|stack| self.evaluate_merit(stack))
+            .collect()
+    }
+
     /// `refine_thicknesses`, plus the solver's own account of the run.
     ///
     /// The report is `None` when there was nothing to optimize (no
@@ -5516,5 +5531,22 @@ mod needle_oracle {
         assert!(m1 < 0.5 * m0, "merit {m0} -> {m1}");
         let f = &st.films()[2];
         assert!(!f.coherent && f.d_nm == 200_000.0);
+    }
+
+    /// A3: the batch door is the serial door, in input order, and the empty
+    /// batch is empty (not an error).
+    #[test]
+    fn a3_evaluate_many_matches_serial_in_order() {
+        let mut spec = MeritSpec::new();
+        add(&mut spec, Radians::ZERO, d(CurveId::Ru, 0.02));
+        let c = ctx(spec, Radians::ZERO);
+        let stacks = [plate(), plate(), plate()];
+        let batch = c.evaluate_many(&stacks).unwrap();
+        let serial: Vec<f64> = stacks
+            .iter()
+            .map(|st| c.evaluate_merit(st).unwrap())
+            .collect();
+        assert_eq!(batch, serial);
+        assert!(c.evaluate_many(&[]).unwrap().is_empty());
     }
 }
