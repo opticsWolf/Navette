@@ -1443,6 +1443,33 @@ impl MeritSpec {
         Ok(total)
     }
 
+    /// A2 introspection: the squared-residual contribution of each target,
+    /// in target registration order.
+    ///
+    /// Colour demands are not represented as `MeritTarget` entries and are
+    /// therefore absent from the parts; a spec with colour demands has a
+    /// total that includes them, so callers must treat the sum as a
+    /// diagnostic rather than an identity. The method is cheap: it reuses
+    /// the same residual engine and performs no solve.
+    #[cfg(feature = "ga-introspect")]
+    pub fn try_merit_parts(&self, sims: &[SimCurves]) -> Result<Vec<(usize, f64)>, CurveId> {
+        self.check_sims(sims, "try_merit_parts");
+        let keys = self.keys.clone();
+        let mut parts = Vec::with_capacity(self.targets.len());
+        for (index, target) in self.targets.iter().enumerate() {
+            let one = Self {
+                keys: keys.clone(),
+                targets: vec![target.clone()],
+                color: Vec::new(),
+                n_envs: self.n_envs,
+                env_names: self.env_names.clone(),
+            };
+            let value = one.try_merit_multi(sims)?;
+            parts.push((index, value));
+        }
+        Ok(parts)
+    }
+
     /// Fixed-length residual vector (zeros where constraints are inactive).
     ///
     /// Returns `Err(missing CurveId)` if a demanded curve was not supplied.

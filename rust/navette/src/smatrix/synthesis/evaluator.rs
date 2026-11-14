@@ -19,7 +19,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use crate::lsq::backends::{LsqResult, solve_least_squares};
-use crate::lsq::lm::{JacobianMode, LmConfig, NoJacobian};
+use crate::lsq::lm::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
 use crate::lsq::pool::in_lm_pool;
 use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
@@ -33,6 +33,8 @@ use crate::smatrix::synthesis::environments::CompiledEnvironments;
 use crate::smatrix::synthesis::merit::{CurveId, CurveSet, MeritSpec, Radians, SimCurves};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
 use crate::smatrix::synthesis::thickness_jacobian::{ALL_SLOTS, BACK_SLOT, CurveDeposits};
+#[cfg(feature = "ga-introspect")]
+use crate::smatrix::synthesis::thickness_refine::ThicknessParam;
 use crate::smatrix::synthesis::thickness_refine::{
     ThicknessJacobian, apply_thickness_params, thickness_params,
 };
@@ -769,6 +771,72 @@ impl SmatrixContext {
                 .map(|(e, st)| self.simulate_env(st, e))
                 .collect(),
         }
+    }
+
+    /// A2 introspection: per-target squared-residual contributions.
+    ///
+    /// This is the `merit_parts()` half of the A2 amendment. It returns the
+    /// target index and its contribution for the current stack, with the same
+    /// missing-curve refusal as `evaluate_merit`.
+    #[cfg(feature = "ga-introspect")]
+    pub fn merit_parts(&self, stack: &DesignStack) -> Result<Vec<(usize, f64)>, String> {
+        let sims = match &self.envs {
+            None => vec![self.simulate(stack)?],
+            Some(_) => self.simulate_all(stack)?,
+        };
+        self.spec
+            .try_merit_parts(&sims)
+            .map_err(|curve| format!("merit parts: missing curve {curve:?}"))
+    }
+
+    /// A2 introspection: the analytic thickness residual Jacobian at the
+    /// current stack, as a row-major `rows × cols` matrix.
+    ///
+    /// `cols` is the LM free-thickness parameter count; `film_rows` names the
+    /// film row each column starts at (a scalable span contributes one column
+    /// and its first bulk row). `None` means the spec cannot use the analytic
+    /// path (colour demand, or a joint run, where the deposits are not yet
+    /// routed across environments); this is the same decline the LM records,
+    /// not a silent finite difference.
+    ///
+    /// The Jacobian prices thickness moves only. It is not a P(z) adjoint and
+    /// says nothing about insertion positions.
+    #[cfg(feature = "ga-introspect")]
+    pub fn thickness_residual_jacobian(
+        &self,
+        stack: &DesignStack,
+    ) -> Result<Option<(Vec<f64>, usize, usize, Vec<usize>)>, String> {
+        let params = thickness_params(stack);
+        if params.is_empty() {
+            return Ok(None);
+        }
+        let x0: Vec<f64> = params.iter().map(|p| p.value0(stack)).collect();
+        let film_rows = params
+            .iter()
+            .map(|p| match p {
+                ThicknessParam::Row(row) => *row,
+                ThicknessParam::Span { rows, .. } => rows.first().copied().unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+        let source = ThicknessJacobian::new(
+            self.clone(),
+            stack.clone(),
+            params.clone(),
+            self.wavls.len(),
+        );
+        let mut values = Vec::new();
+        let Some(rows) = source.fill(&x0, &mut values)? else {
+            return Ok(None);
+        };
+        let cols = params.len();
+        if values.len() != rows * cols {
+            return Err(format!(
+                "thickness Jacobian: {} values for {}x{cols}",
+                values.len(),
+                rows
+            ));
+        }
+        Ok(Some((values, rows, cols, film_rows)))
     }
 
     /// A3: evaluate a batch of designs on the context's grid, in parallel.

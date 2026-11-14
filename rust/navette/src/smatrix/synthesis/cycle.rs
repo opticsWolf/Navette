@@ -754,8 +754,8 @@ struct JointCandidate {
 
 /// Where a joint needle goes: inside a design film, or on a boundary
 /// locus as a new design film.
-#[derive(Clone, Copy, Debug)]
-enum JointSite {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JointSite {
     Interior {
         /// Index into `CompiledEnvironments::slots`.
         slot: usize,
@@ -773,6 +773,55 @@ struct JointSweep {
     gtot: f64,
     n_sites: usize,
     rough: Vec<(Gap, usize, f64)>,
+}
+
+/// One joint-site candidate from the public spectral scan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointNeedleCandidate {
+    pub site: JointSite,
+    /// Pool index of the winning needle material.
+    pub material: usize,
+    /// ΣP over environments; negative means an improvement.
+    pub p: f64,
+}
+
+/// Read-only result of [`joint_needle_scan`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointNeedleScan {
+    pub best: Option<JointNeedleCandidate>,
+    /// Gain shift summed over the K folds, for a convergence test.
+    pub gain_shift: f64,
+    /// Number of admissible interior design sites.
+    pub sites: usize,
+    /// Boundary loci left to a trial: (locus, pool index, start thickness).
+    pub rough: Vec<(Gap, usize, f64)>,
+}
+
+/// A2/F2.3 public door: the joint analytic sweep without insertion.
+///
+/// This is the spectral joint scan the bridge and a DQD loop need. It is
+/// read-only: it never inserts, polishes, or mutates the design. The best
+/// candidate is the most negative ΣP; `rough` lists boundary loci whose plane
+/// is not analytic and therefore needs a trial rather than a P score.
+pub fn joint_needle_scan<C: DesignContext + ?Sized>(
+    ctx: &C,
+    stack: &DesignStack,
+    spectral: &SpectralInputs,
+    pool: &MaterialPool,
+    cfg: &NeedleCycleConfig,
+) -> Result<JointNeedleScan, String> {
+    let mut refold_s = 0.0;
+    let sweep = joint_needle_sweep(ctx, stack, spectral, pool, cfg, &mut refold_s)?;
+    Ok(JointNeedleScan {
+        best: sweep.best.map(|candidate| JointNeedleCandidate {
+            site: candidate.site,
+            material: candidate.material,
+            p: candidate.p,
+        }),
+        gain_shift: sweep.gtot,
+        sites: sweep.n_sites,
+        rough: sweep.rough,
+    })
 }
 
 /// F2.3: the joint analytic sweep — K scans, one candidate.

@@ -30,6 +30,10 @@ opt-argmin = ["dep:argmin", "dep:argmin-math", "dep:nalgebra"]
 # Basin's Vec backend needs no optional linear-algebra features. Basin is
 # MIT/Apache-2.0 dual-licensed, compatible with LGPL-3.0-or-later.
 opt-basin = ["dep:basin"]
+# A2 introspection: cheap accessors into the already-built merit/LM problem
+# (per-target merit parts and the thickness residual Jacobian). Off by default
+# so the normal engine surface stays lean.
+ga-introspect = []
 
 [dependencies]
 rayon = { workspace = true }
