@@ -45,6 +45,9 @@ pub struct NeedleCandidate {
     /// Seed thickness the candidate was scored at.
     pub seed_nm: f64,
     /// Predicted merit change at `seed_nm` (negative = improvement).
+    ///
+    /// This is a delta, unlike [`NeedleCycleResult::predicted_improvement`],
+    /// which is positive for an improving insertion.
     pub predicted_delta_merit: f64,
 }
 
@@ -200,7 +203,7 @@ pub fn scan<C: DesignContext + ?Sized>(
                     material: material.material.clone(),
                     p: Some(p),
                     seed_nm: cfg.needle_seed_thickness_nm,
-                    predicted_delta_merit: -(p + phi_gain_shift) * cfg.needle_seed_thickness_nm,
+                    predicted_delta_merit: (p + phi_gain_shift) * cfg.needle_seed_thickness_nm,
                 });
             }
         }
