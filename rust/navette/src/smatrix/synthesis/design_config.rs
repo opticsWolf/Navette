@@ -804,6 +804,43 @@ pub(crate) fn eval_library(
     Ok(nk_table)
 }
 
+/// Evaluate one material-library entry on the simulation grid.
+///
+/// Public counterpart of the internal library evaluator, for consumers that
+/// own their own material pool (for example a GA decoder that needs the
+/// complex index on the same wavelength grid as the design stack). The
+/// returned `nk` values are in the same order as `wavelengths`.
+pub fn evaluate_material(def: &MaterialDef, wavelengths: &[f64]) -> Result<Vec<Complex64>, String> {
+    def.validate()?;
+    eval_material(def, wavelengths)
+}
+
+/// Evaluate an ordered material library, keyed by code (else name).
+///
+/// Unlike the internal `eval_library` map, this preserves the request order
+/// and returns the label with each spectrum. A caller can therefore build a
+/// decoder pool and a matching stack template without re-deriving labels.
+pub fn evaluate_library(
+    library: &[MaterialDef],
+    wavelengths: &[f64],
+) -> Result<Vec<(String, Vec<Complex64>)>, String> {
+    let mut evaluated = Vec::with_capacity(library.len());
+    let mut seen = std::collections::HashSet::new();
+    for def in library {
+        let label = def.code.as_deref().unwrap_or(&def.name).to_string();
+        if label.is_empty() {
+            return Err("material library: a material has an empty code and name".to_string());
+        }
+        if !seen.insert(label.clone()) {
+            return Err(format!(
+                "material library: duplicate material label {label:?}"
+            ));
+        }
+        evaluated.push((label, evaluate_material(def, wavelengths)?));
+    }
+    Ok(evaluated)
+}
+
 /// Assemble a design: evaluate the library, build films + groups, expand
 /// once via [`DesignStack::from_design`]. Returns `(stack, needle pool,
 /// warnings)` — warnings (homogenized graded films) are for the caller
@@ -1039,6 +1076,29 @@ mod tests {
                 k_data: None,
             },
         ]
+    }
+
+    #[test]
+    fn public_material_eval_preserves_library_order_and_labels() {
+        let evaluated = evaluate_library(&lib(), &[500.0, 600.0]).unwrap();
+        assert_eq!(evaluated.len(), 2);
+        assert_eq!(evaluated[0].0, "L");
+        assert_eq!(evaluated[1].0, "H");
+        assert_eq!(evaluated[0].1.len(), 2);
+        assert_eq!(evaluated[0].1[0].re, 1.45);
+        assert_eq!(evaluated[1].1[1].re, 2.1);
+
+        let one = evaluate_material(&lib()[1], &[550.0]).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].re, 2.1);
+    }
+
+    #[test]
+    fn public_material_eval_refuses_duplicate_labels() {
+        let mut library = lib();
+        library[1].code = Some("L".to_string());
+        let err = evaluate_library(&library, &[550.0]).unwrap_err();
+        assert!(err.contains("duplicate material label"), "{err}");
     }
 
     fn film(code: &str, d: f64) -> LayerRow {
