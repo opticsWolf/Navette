@@ -899,7 +899,7 @@ pub fn _smatrix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::synthesis_pipeline::PySmatrixContext>()?;
     m.add_class::<crate::synthesis_pipeline::PyLmConfig>()?;
     m.add_function(wrap_pyfunction!(
-        crate::synthesis_pipeline::available_optimizers,
+        crate::synthesis_pipeline::available_lsq_backends,
         m
     )?)?;
     m.add_class::<crate::synthesis_pipeline::PyPipelineConfig>()?;

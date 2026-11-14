@@ -194,10 +194,10 @@ def test_the_envelope_gate_is_a_range_with_two_sided_messages(tmp_path):
   the file, which are the only two remedies and are not interchangeable.
   """
   from navette.config.program import MIN_READABLE_PROGRAM_SCHEMA_VERSION
-  assert (MIN_READABLE_PROGRAM_SCHEMA_VERSION, PROGRAM_SCHEMA_VERSION) == (1, 3)
+  assert (MIN_READABLE_PROGRAM_SCHEMA_VERSION, PROGRAM_SCHEMA_VERSION) == (1, 4)
   with pytest.raises(ValueError, match="newer build"):
     load_program(_stamp(tmp_path, PROGRAM_SCHEMA_VERSION + 1), WL)
-  with pytest.raises(ValueError, match=r"reads 1..=3"):
+  with pytest.raises(ValueError, match=r"reads 1..=4"):
     load_program(_stamp(tmp_path, MIN_READABLE_PROGRAM_SCHEMA_VERSION - 1), WL)
 
 

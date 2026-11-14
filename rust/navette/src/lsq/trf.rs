@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette -- Rust Rewrite of Numba-optimized thin-film optical solver
 //!
-//! synthesis::trf — trust-region reflective, the bounded least-squares
+//! lsq::trf — trust-region reflective, the bounded least-squares
 //! reference method (Branch–Coleman–Li 1999; R4.6, review §3.6).
 //!
-//! `thick_opt`'s own docstring says it replaces
+//! `lsq::lm`'s own docstring says it replaces
 //! `scipy.optimize.least_squares(method="trf")`. What it actually implements
 //! is a Levenberg-Marquardt that keeps `lb ≤ x ≤ ub` by *vetoing and clamping
 //! the step it just solved* — bounds are applied after the fact, to a step
@@ -40,11 +40,11 @@
 //!   three candidates, the same Moré subproblem, the same ftol/xtol/gtol
 //!   tests. `validation/review/lm_check.py` part D asserts the tightest
 //!   agreement in the plan against `least_squares(method="trf")`.
-//! * **Bounds are native.** Unlike [`OptimizerBackend::MinpackLm`], this
+//! * **Bounds are native.** Unlike [`LsqBackend::MinpackLm`], this
 //!   backend needs no interior reparametrization, so it can land arbitrarily
 //!   close to a bound without the `tanh` map's vanishing gradient.
 //!
-//! [`OptimizerBackend::MinpackLm`]: super::optimizer::OptimizerBackend::MinpackLm
+//! [`LsqBackend::MinpackLm`]: super::backends::LsqBackend::MinpackLm
 //!
 //! # What it does *not* do
 //!
@@ -79,7 +79,7 @@
 //!   millions of rows. Thickness Jacobians are dense and have as many columns
 //!   as there are films.
 
-use super::thick_opt::{
+use super::lm::{
     JacobianSource, LmConfig, LmResult, LmTermination, back_substitute, build_jacobian,
     householder_qr_in_place,
 };
@@ -106,9 +106,9 @@ const ALPHA_MAX_ITER: usize = 10;
 /// Minimize ‖r(x)‖² over `lb ≤ x ≤ ub` by trust-region reflective.
 ///
 /// Same signature and same `LmResult` as
-/// [`levenberg_marquardt_with`](super::thick_opt::levenberg_marquardt_with),
+/// [`levenberg_marquardt_with`](super::lm::levenberg_marquardt_with),
 /// so the two are interchangeable behind
-/// [`run_optimizer`](super::optimizer::run_optimizer). `cost` is reported in
+/// [`solve_least_squares`](super::backends::solve_least_squares). `cost` is reported in
 /// this crate's convention (‖r‖², not the ½‖r‖² scipy carries internally) and
 /// `evals` counts every residual evaluation including the ones a differenced
 /// Jacobian spends, which is what `max_evals` is measured against.
@@ -990,7 +990,7 @@ fn jt_times(jac: &[f64], f: &[f64], m: usize, n: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::smatrix::synthesis::thick_opt::NoJacobian;
+    use crate::lsq::lm::NoJacobian;
 
     fn cfg() -> LmConfig {
         LmConfig {

@@ -2156,7 +2156,7 @@ mod tests {
             clamp_min_nm: 2.0,
             clamp_max_nm: 1000.0,
             thin_layer_policy: crate::smatrix::synthesis::config::ThinLayerPolicy::Remove,
-            lm: crate::smatrix::synthesis::thick_opt::LmConfig::default(),
+            lm: crate::lsq::lm::LmConfig::default(),
             clamp_accumulator: Default::default(),
             envs,
         }
@@ -2682,8 +2682,8 @@ mod tests {
     /// reach the same minimum (73.445 nm, 1e-6 apart) when they converge.
     #[test]
     fn a_joint_needle_over_identical_environments_lands_where_one_does() {
+        use crate::lsq::lm::LmConfig;
         use crate::smatrix::synthesis::driver::run_environments;
-        use crate::smatrix::synthesis::thick_opt::LmConfig;
         let lm = LmConfig {
             max_iterations: 2000,
             ..LmConfig::default()
@@ -3341,9 +3341,9 @@ mod tests {
     /// thickness), so no boundary would pass the convergence gate.
     #[test]
     fn a_joint_boundary_needle_over_identical_environments_lands_where_one_does() {
+        use crate::lsq::lm::LmConfig;
         use crate::smatrix::synthesis::cycle::NeedleCycleConfig;
         use crate::smatrix::synthesis::driver::run_environments;
-        use crate::smatrix::synthesis::thick_opt::LmConfig;
         let lm = LmConfig {
             max_iterations: 2000,
             ..LmConfig::default()
@@ -4272,7 +4272,7 @@ mod tests {
         // LM's lower bound, and the sweep clamps up.
         let mut stack = envs.stacks()[0].clone();
         let mut solver = ctx(env_spec(2), Some(Arc::new(envs)));
-        solver.optimize_thicknesses(&mut stack).unwrap();
+        solver.refine_thicknesses(&mut stack).unwrap();
         assert_eq!(
             stack.spans().len(),
             spans_before,

@@ -50,16 +50,16 @@ TEST_DIRS = ("rust/navette/tests", "rust/navette-py/tests")
 # shrinks toward empty, which is why F3.1 retires it. Measured at C3
 # (review C/E4 corrected the count): SEVEN files, ten literals -
 # tables.rs and solver.rs carry an em dash and a multiplication sign,
-# color_merit.rs and synthesis_pipeline.rs em dashes, jacobian.rs middle
-# dots and an em dash, optimizer.rs and trf.rs em dashes. All
+# color_merit.rs and synthesis_pipeline.rs em dashes, thickness_jacobian.rs middle
+# dots and an em dash, lsq backends.rs and trf.rs em dashes (moved in 0.10.0). All
 # cp1252-encodable, all advisory until F3.1's re-audit.
 NON_ASCII_ALLOWLIST = {
     "rust/navette/src/color/tables.rs",
     "rust/navette/src/smatrix/solver.rs",
     "rust/navette/src/smatrix/synthesis/color_merit.rs",
-    "rust/navette/src/smatrix/synthesis/jacobian.rs",
-    "rust/navette/src/smatrix/synthesis/optimizer.rs",
-    "rust/navette/src/smatrix/synthesis/trf.rs",
+    "rust/navette/src/smatrix/synthesis/thickness_jacobian.rs",
+    "rust/navette/src/lsq/backends.rs",
+    "rust/navette/src/lsq/trf.rs",
     "rust/navette-py/src/synthesis_pipeline.rs",
 }
 

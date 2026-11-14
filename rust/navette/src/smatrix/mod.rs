@@ -16,9 +16,9 @@
 pub mod angle;
 pub mod coherent_block;
 pub mod core_engine;
+pub mod eigenmodes;
 pub mod needle_engine;
 pub mod needle_operator;
 pub mod optics_core;
-pub mod optimizer;
 pub mod solver;
 pub mod synthesis;

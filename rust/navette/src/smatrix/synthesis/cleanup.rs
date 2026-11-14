@@ -96,7 +96,7 @@ pub fn remove_thin_layers<C: DesignContext + ?Sized>(
 
         // 4. Re-optimize after removal.
         if !stack.films().is_empty() {
-            ctx.optimize_thicknesses(stack)?;
+            ctx.refine_thicknesses(stack)?;
         }
     }
 
@@ -130,7 +130,7 @@ pub fn cleanup_design<C: DesignContext + ?Sized>(
 
     // Final re-optimize on the cleaned stack.
     let mf_after = if reoptimize && !stack.films().is_empty() {
-        ctx.optimize_thicknesses(stack)?
+        ctx.refine_thicknesses(stack)?
     } else {
         ctx.evaluate_merit(stack)?
     };
@@ -189,7 +189,7 @@ mod tests {
             Err("mock context has no simulator".into())
         }
 
-        fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
+        fn refine_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
             self.n_opt_calls += 1;
             for i in 0..stack.films().len() {
                 if stack.films()[i].optimize && i < self.targets.len() {

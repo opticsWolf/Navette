@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 """The bounded LM against ``scipy.optimize.least_squares`` (R4.4).
 
-``docs/`` has claimed scipy parity for ``synthesis/thick_opt.rs`` since it
+``docs/`` has claimed scipy parity for ``lsq/lm.rs`` since it
 replaced ``least_squares(method="trf")``; review §18.2 found no evidence it had
 ever been reproduced. ``validation/review/lm_check.py`` is the full harness
 (three film counts, far-start behaviour, the cargo tests' pinned optima
@@ -68,7 +68,7 @@ def bench():
         c = ctx()
         stack, _ = stack_from_layers(
             [(m, float(d)) for (m, _), d in zip(layers, x0)], _WL, {}, names=names)
-        cost = c.optimize_thicknesses(stack)
+        cost = c.refine_thicknesses(stack)
         return np.array([f["thickness"] for f in stack.films()]), float(cost)
 
     anchor, _ = scipy_from([d for _, d in _FILMS])
@@ -127,7 +127,7 @@ def test_a_far_start_still_improves_the_merit(bench):
 ])
 def test_the_cargo_tests_pinned_optima_are_what_scipy_finds(
         name, fun, x0, bounds, want, tol):
-    """The constants in ``thick_opt.rs``'s unit tests were written by hand.
+    """The constants in ``lsq/lm.rs``'s unit tests were written by hand.
 
     Without this, a wrong pin would be invisible: the solver agrees with it by
     construction. There is no Python entry point for the engine LM on an

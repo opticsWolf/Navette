@@ -106,22 +106,40 @@ ALLOWLIST = {
     "inflate_design", "qwot_nm", "qwot_to_thickness", "round_to_qwot",
     "thickness_to_qwot", "levenberg_marquardt",
     # analytic-Jacobian internals (R4.5): reachable from Python through the
-    # `jacobian="analytic"` LM path and `optimize_thicknesses_report`, never
+    # `jacobian="analytic"` LM path and `refine_thicknesses_report`, never
     # as standalone entry points. `levenberg_marquardt_with` needs a
     # `JacobianSource`, which is a Rust trait; `assemble_jacobian` and
     # `deposit_channel` are the two halves' seam, exercised by the cargo
     # cross-check against finite differences.
     "levenberg_marquardt_with", "assemble_jacobian", "deposit_channel",
     # backend dispatch (R4.4c): Python selects a backend by name on
-    # `LmConfig(optimizer=...)` and reads it back on the report; the dispatch
+    # `LmConfig(backend=...)` and reads it back on the report; the dispatch
     # itself takes a residual closure and a `JacobianSource`, both Rust
-    # traits, so there is nothing to bind. `available_optimizers` is the part
+    # traits, so there is nothing to bind. `available_lsq_backends` is the part
     # a caller actually needs and it is bound.
-    "run_optimizer",
+    "solve_least_squares",
     # Same story one level down: `trust_region_reflective` is the `Trf`
     # arm of that dispatch, reachable from Python as
-    # `LmConfig(optimizer="trf")`. It takes the same two Rust traits.
+    # `LmConfig(backend="trf")`. It takes the same two Rust traits.
     "trust_region_reflective",
+    # Native differential evolution (fit plan phase 7): the `de` / `de_best`
+    # global stage of a fit strategy, reachable from Python as
+    # `Stage(kind={"global": {"method": "de"}})` through the fit doors. It takes a Rust
+    # cost closure, so there is nothing to bind on its own.
+    "minimize",
+    # General fit engine: `navette.fit` reaches it through the JSON doors
+    # of `navette::fit::doors` / `fit::request` (bound in `_fit`), so these
+    # are the doors' plumbing, never called on their own. A dataset's
+    # channel name reaches `channel_request`, a `select` declaration
+    # `select`/`addresses`, a strategy `run_strategy[_watched]` and the
+    # progress callback `fit_watched`; the rest parse the request and
+    # write the report and curves JSON.
+    "channel_request", "select", "run_strategy", "run_strategy_watched",
+    "fit_watched", "request_from_json", "request_from_program",
+    "strategies_from_json", "report_json", "strategy_report_json",
+    "curves_json",
+    # bound as `truth_json_text` (Python `navette.fit.draw_truth`)
+    "draw_truth",
     # color batch helpers (via the per-model bindings)
     "broadcast_pair", "clip01", "gamma_srgb", "inverse_gamma_srgb",
     "lab_f", "lab_f_batch", "lab_f_inv", "lab_f_inv_batch",

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //! Aggregated PyO3 bindings for Navette — builds the single
-//! `navette._navette` extension containing all five native submodules:
+//! `navette._navette` extension containing its native submodules:
 //!
+//! - `_fit` — the general fit engine's JSON doors (over `navette::fit`)
 //! - `_color` — colorimetry (over `navette::color`)
 //! - `_interpolate` — univariate interpolation (over `navette::interpolate`)
 //! - `_smatrix` — S-matrix thin-film engine (over `navette::smatrix`)
@@ -46,6 +47,7 @@
 mod angles;
 mod color;
 mod config;
+mod fit;
 mod interpolate;
 mod materials;
 mod smatrix;
@@ -61,6 +63,7 @@ use pyo3::prelude::*;
 use pyo3::{wrap_pyfunction, wrap_pymodule};
 
 use crate::color::_color;
+use crate::fit::_fit;
 use crate::interpolate::_interpolate;
 use crate::materials::_materials;
 use crate::smatrix::_smatrix;
@@ -104,6 +107,7 @@ fn _navette(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pymodule!(structure::_structure))?;
     m.add_wrapped(wrap_pymodule!(_spectralweave))?;
     m.add_wrapped(wrap_pymodule!(_materials))?;
+    m.add_wrapped(wrap_pymodule!(_fit))?;
     m.add_function(wrap_pyfunction!(build_profile, m)?)?;
     Ok(())
 }

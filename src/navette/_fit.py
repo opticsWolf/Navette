@@ -1,0 +1,19 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: LGPL-3.0-or-later
+"""Shim: re-export the ``_fit`` submodule of the aggregated extension.
+
+The single ``navette._navette`` native module (built by ``maturin develop --release``
+from the repo root) hosts all engines as submodules; this file keeps the
+private ``navette._fit`` import path stable and lazily loads the
+extension only when this submodule is imported.
+"""
+
+from __future__ import annotations
+
+from navette._navette import _fit as _ext
+
+__all__ = [n for n in dir(_ext) if not n.startswith("_")]
+
+globals().update({n: getattr(_ext, n) for n in __all__})
+
+del _ext

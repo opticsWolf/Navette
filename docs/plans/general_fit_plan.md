@@ -1,7 +1,234 @@
 # General fit engine: thin films, groups and dispersion models together
 
-Status: **reviewed** (2026-11-07); decisions in §0. Nothing here is
-implemented.
+Status: **done**, released in 0.10.0 (2026-11-14); reviewed 2026-11-07,
+decisions in §0. Refreshed
+2026-11-13 against 0.9.0 (synthesis now runs through incoherent plates and
+scores ratio, Ψ, retardance, GD…FOD and Stokes/DOP targets; §1, §5.4).
+Target release: **0.10.0** (phase 0 renames public names, a breaking
+change). Work branch: `dev_fit`.
+
+| Phase | State |
+|---|---|
+| 0 rename | done (`dev_fit`) |
+| 1 parameters, `StackForward`, one stage | done (`dev_fit`) |
+| 2 dispersion fitting | done (`dev_fit`) |
+| 3 strategies, environments, ties, priors, converter | done (`dev_fit`) |
+| 4 tournament, generated strategies, truth draws, benchmark | done (`dev_fit`) |
+| 5 Python door, program `fit` section (schema v4), docs | done (`dev_fit`) |
+| 6 fit Jacobian (block skipping, analytic thickness and nk columns), `global` stage on basin | done (`dev_fit`) |
+| 7 native DE, instrument parameters, free-form nk models | done (`dev_fit`) |
+
+Phase 1 settled §3.4.1's open item: the fit owns a `Send + Sync` mirror
+(`FitModel`: the architect's traversal with each entry's structure row,
+the merged groups, the material entries by value), and an evaluation
+clones it, writes the parameters, and expands. A layer address names a
+*structure* row, so a shared or repeated structure is one parameter.
+Recovery is calibrated: over 40 noise seeds, 118 of 120 fitted values
+of the three-parameter test land within 2σ, mean χ²_red 0.999.
+
+Phase 2 kept dispersion fitting inside the same engine: `NkData` rows
+follow the spectra in one residual vector, so a joint fit needs nothing
+extra. Choices made here:
+
+- AIC/BIC are the noise-scale-estimated Gaussian forms
+  (`m·ln(χ²/m) + k·penalty`), so `table_to_model`, whose table has no σ,
+  ranks independently of the σ it assumes.
+- `fit_dispersion` frees every number by default, except a `Table`'s data
+  and a mixer's constituents (an air inclusion's `n` would only trade
+  against the fraction).
+- A trial point the forward model refuses becomes a rejected step
+  instead of a failed fit.
+- Bruggeman's Newton stop (|Δε| ≤ 1e-9) leaves an error of order 1e-18,
+  so the FD derivative in the fraction matches the closed form to 1e-6
+  relative for steps from 1e-3 to 1e-6, and to 1e-5 (round-off) down to
+  1e-8; the fit's own step is about 2e-8.
+
+Calibration over 200 seeds: Cauchy 564/600 and Tauc-Lorentz (ε data)
+950/1000 within 2σ, mean χ²_red 1.000. The Sellmeier test holds `C2`,
+because the two UV poles trade off almost exactly.
+
+Phase 3 kept every stage an ordinary `fit` of a copy of the problem:
+parameters outside the stage's selection are held at the model's current
+values, so a strategy adds no second solver and a stage's report is a
+plain `FitReport`. Choices made here:
+
+- Environments are named chains over one flat entry list; a structure
+  row keeps one address however many samples use it, fixed rows
+  (ambient, substrate, a cover) are held and not addressable, materials
+  and groups are shared.
+- A tie's follower is never a parameter, has one driver, and a driver
+  is never itself a follower. Priors are rows after the data, reported
+  as the `prior` dataset.
+- The converter presets are data (`fit/conventions.json`) with no vendor
+  names; σ defaults to unit weight and is set per call. tan Ψ/cos Δ
+  returns Δ in [0, π].
+
+Deferred from phase 3: declaring parameters by selector (enumerating a
+model's scalars for `{"select": ...}`), the `OptMask` default selection,
+and a per-environment `coherence_mode` (one mode for the problem today).
+
+Phase 4 (`fit::explore`) drew its truths in **parameter space**, not
+through `expand` with errors on: `expand` perturbs every traversal entry,
+each layer's index included, and most of that has no address, so a
+recovery score would have measured the model's blind spots instead of
+the strategy. A free parameter is drawn from its group's law (a layer
+channel as `expand` draws it; a group factor from the law's relative
+part, a summand from its absolute part); everything else holds. Choices
+made here:
+
+- `StrategyGen::Groupings` takes `variants` (one strategy each, a list of
+  blocks of sets) rather than one `blocks` list.
+- Rankings are deterministic: a benchmark ranks by failures, mean
+  recovery error (relative per parameter, RMS), evaluations, name; a
+  tournament by χ², evaluations, name. Wall times are reported, never
+  ranked on.
+- Budget (open question 2): orderings and cumulative orders run in full
+  up to 24 (`DEFAULT_ORDERING_CAP`) and are sampled with seed 0 above
+  that, with a note; seeds are the caller's choice.
+
+`cargo run --release -p navette --example fit_tournament` ranks seven
+strategies on four truths of a 20-layer chirped edge filter (22 free
+parameters) in about 4 s and checks a second run gives the same bits.
+Freeing the group factors first recovers the truth best (mean relative
+error 2e-3); freeing everything at once lands in a wrong minimum on one
+of the four truths.
+
+In phase 5 the request became a program document. A program with a `fit`
+section (schema v4) is what Python sends to Rust, what `FitProblem.save`
+writes, and what `fit::fit_program` runs, so a request and its saved fit
+use one format. Choices made here:
+
+- Program structures load as films only. A measured sample (ambient,
+  substrate, stack) is therefore declared under `fit.environments`, and
+  data with no `env` goes to the first declared environment.
+- A `select` declaration expands over `FitModel::addresses` when the
+  request is read. Addresses declared explicitly elsewhere in the list
+  are skipped, so an explicit declaration wins.
+- The doors (`fit::doors`) take JSON text and return JSON, with NaN and
+  Inf written as null. Python only wraps them in dataclasses, and their
+  shapes are tested in Rust.
+- Progress is a `Watcher` with three events: stage start, χ² improved,
+  and stage end. When its callback errs, the watcher refuses further
+  trial points and the fit ends with that error. Python raises it as a
+  `ValueError`.
+- `serde_json` `float_roundtrip` is on, so a saved fit reloads
+  bit-exactly. Without it, the last ulp moved.
+
+`examples/fit_coating.py` and `examples/fit_optical_constants.py` run in
+the battery. The second shows that a six-term Sellmeier fitted over
+250–2000 nm reproduces n to 5e-5 RMS, while B1 alone has an error of
+±0.19. Assert on the curve, not on the coefficients.
+
+Phase 6 gave the fit its own Jacobian source (`fit::jacobian`); the old
+path stays as `lsq.jacobian = "fd"`. What it does and what it found:
+
+- **Block skipping.** A column recomputes only the environments and nk
+  datasets its parameter (or the followers it drives) can reach; reach is
+  read from the expansion, so gradients and anything `expand` asks the
+  provider for count. Differenced entries are bit-identical to the old
+  Jacobian, unreached rows exactly zero (a test checks the bits).
+- **Thickness columns, analytically.** Not via `simulate_with_deposits`
+  or `SmatrixContext` (§3.7's two options): a column is classified per
+  environment by expanding at u±h without solving. If only slot
+  thicknesses moved, the column is `Σ ∂X/∂d_slot · ∂d_slot/∂u`, the first
+  factor read from `needle_operator`'s `thickness_slopes_ddz` on one
+  dual field build per point for all slots, the second the (linear)
+  expansion differenced. This covers films, `thick_factor`,
+  `thick_summand`, graded and sliced layers with no per-kind code. It
+  needs a coherent interior and R/T/A channels; Psi/Delta and phases fall
+  back to block differences. All thickness columns of an environment cost
+  about three evaluations together.
+- **Dispersion columns** on nk data are closed form for Konstant, Cauchy,
+  Sellmeier and Drude top-level numbers. Urbach and Lorentz were left:
+  Lorentz oscillators live in arrays (pointer addresses), and nk-only fits
+  are microseconds per evaluation already.
+- **Index perturbation** (index columns on spectra) was not done. They
+  are the largest remaining cost: in `coat20` the two Cauchy `A` columns
+  take four of the Jacobian's ~8 evaluations. The needle function's depth
+  integral over a layer is the route, for a later phase.
+- **Exact columns beat the oracle where the oracle is noisy.** Central
+  differences with the default scale step a summand that starts at 0 by
+  6e-9 nm, and an `A_avg` of a lossless stack read 1e-8 of rounding noise
+  where the true slope is 0. Tests compare analytic and FD at 1e-5 of each
+  column's scale, with parameters whose FD step is sane.
+- `examples/fit_perf.rs` runs every case both ways. Best of three on
+  this machine (32 threads): coat20 (22 free, 453 residuals) 53 → 18 ms,
+  2.9×; coat20 with witness samples 54 → 25 ms, 2.2×; coat20 with an nk
+  table 37 → 20 ms, 1.9×; same iterations and χ² in each. Single-threaded,
+  a coat20 Jacobian is 9.9 evaluations instead of 44. Fits on nk data
+  alone (0.2 ms) are unchanged within 10 %. The Sellmeier nk case still
+  hits the iteration cap with exact derivatives: it is ill-conditioned
+  (B/C trade-off), not an FD-accuracy problem.
+- **`global` stage** (`fit::global`, `opt-basin`): basin's `De`,
+  `DeInject` (Nelder-Mead polish) or `BoundedCmaEs` over the stage's box
+  scaled to [0, 1]ⁿ, χ² compiled once, then the stage's LSQ from the best
+  point. `tests/fit_global.rs`: on the phase-4 coating from six random
+  starts in a 0.5–1.8× thickness, ±10 % index box, all three methods end
+  at or below χ²(truth); plain LSQ does too there. On the same design
+  four times thicker, read through one curve, LSQ is caught on all six
+  starts (χ² thousands of times χ²(truth)) and DE on none.
+- Found on the way: a strategy's final report re-applied the declared
+  start values over the fitted model when a parameter had an explicit
+  `value`. Fixed; phase-4 problems never set one, so it had not shown.
+
+Phase 7 finished the plan's three remaining items:
+
+- **Native DE** in `lsq::de` (not `lsq::global::de`: one module was
+  enough): `DE/rand/1/bin` (`de`, now the default `GlobalMethod`) and
+  `DE/best/1/bin` (`de_best`), F dithered in [0.5, 1) per generation, CR
+  0.9, population max(10n, 8), reinit-per-coordinate repair, a seeded
+  `StdRng`, generations evaluated in parallel and collected in order
+  (same bits on any thread count), the start as member 0. It stops on the
+  budget or a collapsed population. The polish is the stage's own LSQ,
+  not an LM inside DE. basin's DE is now `basin_de`. A global stage
+  reports `Progress::Searched` (Python `"searched"`), so its evaluations
+  are counted apart from the polish's.
+- **Checked against basin** (`tests/fit_global.rs`, 16 seeds each). On
+  the phase-4 coating, budget 3000, both solve 16/16; the median number
+  of evaluations to reach 10× χ²(truth) is 2305 for native DE, against
+  basin's 3000 (it reaches the target only at the cap). On the rugged
+  case (4× thicker, one curve, budget 4000) native DE solves 11/16 and
+  basin 10/16; the median best χ² is 35.5× χ²(truth) for native DE and
+  46.7× for basin.
+- **Instrument parameters**: each dataset carries an `instrument`
+  (`angle_offset` rad, `wavelength_shift` nm, `scale`, `offset`,
+  `bandwidth` nm FWHM), addressed as `data[id].field`. The selector kind
+  is `instrument`, with the built-in sets `instruments` and `data[id]`.
+  The model reads `scale·v + offset`. A shift or an angle offset moves the
+  grid or angle the dataset is solved at, so a dataset whose geometry is
+  fitted, or departs from the identity, gets a solve of its own.
+  Bandwidth averages a Gaussian slit with 7-point Gauss-Hermite, on
+  intensity channels only. Its slope is zero at zero, so start it
+  positive. In the Jacobian, the thickness chain is multiplied by the
+  scale; own solves are differenced. `tests/fit_instrument.rs` recovers
+  each field within 2.5σ.
+  - Found on the way: seeding every dataset's instrument into the model
+    made reports carry identity entries; they are pruned when the data
+    agree. Duplicate dataset ids are now refused.
+- **Free-form nk** (§4.6), three new `MaterialSpec` models (26 in all,
+  Python mirrored):
+  - `PointWise` (linear, held at the ends);
+  - `Spline` (pchip, makima or linear through `UniInterpolator`);
+  - `BSplineEps`: ε₂ as a cubic B-spline in eV with one coefficient per
+    energy (not-a-knot placement), ε₁ from `kk_fft`. `kk.rs` needed no
+    further work.
+
+  Knot values are addresses (`material[X].n[3]`) and part of
+  `FitModel::addresses()`, so selectors expand them. Per-knot bounds are
+  n > 0, k ≥ 0 and ε₂ ≥ 0. The smoothness prior (§3.5.4) is
+  `FitProblem.smoothness` (the program section `smoothness`): rows after
+  the priors, reported as dataset `smoothness`.
+  - Found on the way: FD probes a k knot sitting on its zero bound just
+    below it, and the solver refuses negative k (gain). The fit stalled
+    at the iteration cap with no covariance. The kernels now read k and ε₂
+    as max(·, 0); after the fix, the same fit converged in 9 iterations.
+  - Recovery, `tests/fit_freeform.rs`:
+    - a 7-knot spline (n, k) and the thickness, within 3σ;
+    - 25 point-wise n, k with smoothness priors, max error 0.02 in n and
+      0.01 in k;
+    - three ε₂ coefficients, ε∞ and the thickness, within 3σ.
+  - `examples/fit_freeform.py` does the spline fit and a λ shift from
+    Python; the worst deviation is 2.4σ.
 
 ## 0. Decisions (review of 2026-11-07)
 
@@ -46,14 +273,15 @@ the synthesis one), **measurement residuals** (incl. ellipsometry), a
 | Basin adapters | `smatrix/synthesis/optimizer/basin_backends.rs` | Basin LM-QR / TRF | **yes** |
 | Parameter list | `evaluator.rs` `Param`, `build_params`, `apply_params` | `Row(i)` thickness or `Span` total thickness | thickness only |
 | Bounds | `evaluator.rs:466-488` | one global `[0 or clamp_min, clamp_max]` | thickness only |
-| Analytic Jacobian | `jacobian.rs`, `evaluator.rs` `DepositJacobian`, `simulate_with_deposits` | ∂(curve)/∂d via the needle operator | thickness only, coherent only |
-| Forward model | `SmatrixContext::simulate` | one coherent block, R/T/phase per (angle, λ) | coherent only, no Psi/Delta |
-| Merit | `merit.rs` `MeritSpec` | design targets: kinds e/a/b/r/c, transforms, weights, colour, phase, multi-environment | R/T/A/phase only (`CurveId`, 18 ids) |
+| Analytic Jacobian | `jacobian.rs`, `evaluator.rs` `DepositJacobian`, `simulate_with_deposits` | ∂(curve)/∂d via the needle operator, through the incoherent cascade since W6 | thickness only |
+| Forward model | `SmatrixContext::simulate` | coherent blocks joined by the engine's intensity cascade (fixed incoherent plates, W6); R/T/A per polarization, front and back, complex r/t rows (phase only where no plate intervenes) | design stacks only: `LayerSpec` rows, no groups, materials or grading parameters as inputs |
+| Merit | `merit.rs` `MeritSpec` | design targets: kinds e/a/b/r/c, transforms, point weights, colour, phase, differential phase, retardance, s/p ratios, Ψ, GD…FOD, Stokes/DOP for an input state (W8), multi-environment | 18 `CurveId` rows plus quantities derived from them in the merit |
 | Thread pool sizing | `evaluator.rs` `in_lm_pool`, `lm_threads_for` | per-run rayon pool sized by work | **yes** |
 | Post-run sweep | `DesignStack::clamp_all_policy` | removes/clamps thin films | thickness only |
 
 So **only thicknesses** are reachable (per film, or one total per graded
-span), and only on a **fully coherent** stack scored on **R/T/A/phase**.
+span). The scoring side is now broad (every W8 target, plates, several
+environments); the parameter side is not.
 
 ### 1.2 Declared but unreachable
 
@@ -76,17 +304,21 @@ span), and only on a **fully coherent** stack scored on **R/T/A/phase**.
 
 ### 1.3 What a measurement fit needs that synthesis does not have
 
-| Need | Synthesis path | General path (`smatrix/solver.rs`) |
+| Need | Synthesis path (0.9.0) | General path (`smatrix/solver.rs`) |
 |---|---|---|
-| Thick incoherent substrate (back-side reflection) | no (one coherent block) | yes: `incoherent_flags`, `coherence_mode` |
-| Ellipsometry Psi/Delta | no | yes: `Psi_R/T`, `Delta_R/T` (`REQ_PSI_*`, `REQ_DELTA_*`) |
-| Stokes, DOP, retardance, amplitudes, GD/GDD | no | yes (45 output maps) |
+| Thick incoherent substrate (back-side reflection) | fixed plates only, intensity cascade (W6) | yes: `incoherent_flags`, `coherence_mode` |
+| Ellipsometry Psi/Delta | Ψ and Δ (`PsiR/T`, `DeltaR/T`) as design targets, front, coherent for Δ | yes: `Psi_R/T`, `Delta_R/T` (`REQ_PSI_*`, `REQ_DELTA_*`) |
+| Stokes, DOP, retardance, amplitudes, GD/GDD | front elements as design targets (W8); none through a plate when they read phase | yes (45 output maps), every coherence mode |
+| Partial coherence modes (`COHERENCY_MATRIX`) | no | yes |
 | Graded films, interfaces, roughness, groups | via `from_design` spans | via `structure::expansion::expand` |
 | Monte-Carlo error draws | no | `ExpandOptions { apply_errors, seed }` |
 
 **Decision: the fit engine's stack forward model is
 `expand` → `solve_arrays`, not `SmatrixContext`.** The synthesis path stays
-the design engine.
+the design engine. W6-W8 narrowed the channel gap, not the reason for the
+decision: a fit varies groups, grading, materials and EMA fractions, which
+only `expand` turns into solver rows, and it needs every coherence mode and
+the back elements, which the synthesis evaluator does not carry.
 
 ---
 
@@ -203,7 +435,7 @@ by configs, reports and selectors):
 | Gradient | `layer[...].gradient.f_start`, `.f_end`, `.rate`, `.f_min`, `.f_max` | `GradientSpec.mode` |
 | Group | `group[TiO2].n_factor`, `.k_factor`, `.thick_factor`, `.thick_summand`, `.inh_delta_summand`, `.roughness_summand`, `.interface_summand` | `Group` |
 | Material | `material[TiO2].A`, `material[TiO2].osc[1][0]`, `material[porous].fraction`, `material[porous].host.B1` | JSON pointer into `MaterialSpec.params`, recursive through `host` / `inclusion` / `bottom` / `top` |
-| Instrument (phase 6) | `data[ell1].angle_offset`, `.wavelength_shift`, `.scale`, `.offset`, `.bandwidth` | the dataset's measurement config |
+| Instrument (phase 7) | `data[ell1].angle_offset`, `.wavelength_shift`, `.scale`, `.offset`, `.bandwidth` | the dataset's measurement config |
 
 Layer addresses resolve through `Architect::map_global` / per-structure
 indices; shared structures are one address (editing a shared `Structure`
@@ -350,7 +582,7 @@ pub struct SpectrumData {
   always holds solver-convention values; anything an instrument wrote is
   converted on load (§3.5.5), never inside the residual.
 - Optional instrument response: absolute scale/offset per dataset
-  (fittable, phase 6), bandwidth averaging (phase 6).
+  (fittable, phase 7), bandwidth averaging (phase 7).
 
 #### 3.5.2 Dispersion data (new, §4)
 
@@ -366,13 +598,15 @@ A `MeritSpec` (compiled from a `TargetSet` by the existing
 optimisation of non-thickness parameters** for free: tune `inh_delta`, an
 EMA fraction or a group factor against spectral, colour and phase targets
 with every constraint kind (e/a/b/r/c), weight and count normalisation the
-synthesis merit has. Multi-environment specs map env names one to one.
+synthesis merit has, including the W8 types (s/p ratios, Ψ, retardance,
+GD…FOD, Stokes/DOP for an input state). Multi-environment specs map env
+names one to one.
 
 #### 3.5.4 Priors and regularisation (new)
 
 - Prior per parameter: `(p − p0)/σ_p`. Stabilises reverse engineering when
   thickness and index are correlated.
-- Smoothness for point-wise or spline materials (phase 5): second
+- Smoothness for point-wise or spline materials (phase 7): second
   differences of n(λ), k(λ).
 - These are ordinary residual rows, so every solver handles them.
 
@@ -428,14 +662,14 @@ engine fits **one parameter vector against all of them**:
 | Columns | Phase 1 | Later |
 |---|---|---|
 | any parameter | central differences in normalised coordinates, column-parallel (existing `lsq::lm` FD path; pool sizing from `lsq::pool`) | — |
-| dispersion parameters on nk data | FD | analytic ∂n/∂p for closed forms (Cauchy, Sellmeier, Urbach, Lorentz, Drude) — trivial derivatives, phase 5 |
-| thickness on coherent R/T/phase datasets | FD | reuse the needle-operator deposits (`simulate_with_deposits`) by running those datasets through `SmatrixContext` when they are fully coherent; or port the deposit read-off onto `solve_arrays` (phase 5) |
-| index of one layer (→ material params, group n/k factors) | FD | first-order perturbation: ∂r/∂ε of a layer is the depth integral of the needle function over that layer; chain with ∂ε/∂p. Research item, phase 5+ |
+| dispersion parameters on nk data | FD | analytic ∂n/∂p for closed forms (Cauchy, Sellmeier, Urbach, Lorentz, Drude) — trivial derivatives, phase 6 |
+| thickness on coherent R/T/phase datasets | FD | reuse the needle-operator deposits (`simulate_with_deposits`) by running those datasets through `SmatrixContext` when they are fully coherent; or port the deposit read-off onto `solve_arrays` (phase 6) |
+| index of one layer (→ material params, group n/k factors) | FD | first-order perturbation: ∂r/∂ε of a layer is the depth integral of the needle function over that layer; chain with ∂ε/∂p. Research item, phase 6+ |
 
 **Sparsity worth exploiting early**: a material parameter only changes the
 datasets whose environments contain that material; a dispersion-data block
 depends only on its material's parameters. Phase 1 evaluates all blocks
-per column (simple, correct); phase 5 skips unaffected blocks per column.
+per column (simple, correct); phase 6 skips unaffected blocks per column.
 
 ### 3.8 Strategies (staged fitting)
 
@@ -544,10 +778,10 @@ Two implementations of one `GlobalMethod` stage, in this order:
      `Direct`, `SimulatedAnnealing` as further references.
    The stage maps the normalised fit box straight onto basin's box and
    uses the χ² of the residual vector as the cost.
-2. **Hand-rolled DE in the default build** (phase 7, `lsq::global::de`):
+2. **Hand-rolled DE in the default build** (phase 7, `lsq::de`; done):
    `DE/rand/1/bin` and `DE/best/1/bin`, dithering, reinit-per-coordinate
    bound repair (basin's choice), synchronous generations evaluated in
-   parallel with ordered collection, an optional LM polish of the best
+   parallel with ordered collection; the stage's LSQ polishes the best
    member. No new dependency (uses the crate's existing RNG).
    - **Checked against the reference**: same benchmark functions and the
      phase-4 fit problems, compared on success rate and evaluations to a
@@ -724,7 +958,7 @@ phase 7 and stays out of the default strategies until then.
 | `MeritSpec` / `TargetSet` / `compile_merit_spec` | `Solution` → `SimCurves` conversion so design targets become a residual block (§3.5.3) |
 | `environments.rs` vocabulary (`EnvironmentCfg`, rosters) | fit environments reuse names and validation rules; not the `CompiledEnvironments` routing (that is design-segment specific) |
 | `optimization_mask` / `OptMask` | default selectors (§3.3.4) |
-| Thickness deposits (`simulate_with_deposits`, `thickness_jacobian`) | analytic thickness columns for coherent R/T/phase datasets (phase 5) |
+| Thickness deposits (`simulate_with_deposits`, `thickness_jacobian`) | analytic thickness columns for coherent R/T/phase datasets (phase 6) |
 | LM's QR factorisation | covariance at the solution (§3.9) |
 | `pyo3` patterns in `navette-py/src/synthesis_pipeline.rs` | template for `navette-py/src/fit.rs` |
 | Golden forward baseline (`validation/regression/forward`) | its cases double as synthetic fit problems (known truth) |
@@ -741,9 +975,12 @@ phase 7 and stays out of the default strategies until then.
 
 ### 5.4 Deliberately not reused
 
-- `SmatrixContext` / `DesignStack` as the fit forward model: coherent only,
-  R/T/phase only, and its mutation operators (needles, merge, clamp
-  sweeps) are design operations, not fit operations.
+- `SmatrixContext` / `DesignStack` as the fit forward model: its inputs
+  are design rows (`LayerSpec`), not the model a fit varies (groups,
+  grading, materials, EMA); it has fixed plates but no coherence modes;
+  and its mutation operators (needles, merge, clamp sweeps) are design
+  operations, not fit operations. Its *merit* is reused (§3.5.3), and
+  since W8 that brings every design target type with it.
 - The thin-film clamp/remove sweep: a fit must not delete layers; bounds do
   the job. (A structural "drop a layer and refit" step can be a later
   explore stage if wanted.)
@@ -758,7 +995,7 @@ model or the synthesis path).
 
 | Phase | Scope | Done when |
 |---|---|---|
-| **0** | §2 rename: `lsq` module, `thickness_refine`, `thickness_jacobian`, `eigenmodes`, Python `backend=` / `available_lsq_backends()` | pure moves; fingerprint and needle digests unchanged; CHANGELOG "Changed (breaking)" |
+| **0** | §2 rename: `lsq` module, `thickness_refine`, `thickness_jacobian`, `eigenmodes`, Python `backend=` / `available_lsq_backends()` | pure moves; fingerprint and needle digests unchanged; CHANGELOG "Changed (breaking)" under 0.10.0 |
 | **1** | `fit::params` (thickness, grading, roughness, interface, group, material JSON-pointer addresses; bounds, scale, log transform), `StackForward` on `expand` + `solve_arrays`, `SpectrumData` incl. Psi/Delta, single `Lsq` stage, FD Jacobian, χ² + covariance report | recovery tests: a 3-layer stack with known truth + noise is recovered within 2σ for thickness, `n_factor`, and a Cauchy `A`; Psi/Delta fit of a SiO2 film on Si |
 | **2** | `DispersionForward`, `NkData` (n/k, ε₁/ε₂, n-only), EMA nested addresses, default bounds per model, `fit_dispersion`, `table_to_model`, AIC/BIC | Sellmeier/Cauchy/Tauc-Lorentz recover their own synthetic data; Bruggeman fraction recovered; FD-step stability test for Bruggeman |
 | **3** | `Strategy` / `Stage` / selectors / parameter sets / `Repeat` / `Accept`, `Scan`, `MultiStart`, ties, priors, environments (several samples), instrument converter with presets | the four example strategies in §3.8 run from JSON; multi-sample fit (coating + bare substrate) shares the substrate parameters; converter round trips pass for every preset |
@@ -813,5 +1050,5 @@ decide when the phase gets there:
 
 1. **Converter presets** (phase 3): which instruments / file conventions
    to ship presets for first.
-2. **Generated-strategy budget** (phase 4): default cap on orderings and
-   seeds per tournament, given the run time of a 20-layer fit.
+2. ~~**Generated-strategy budget** (phase 4)~~: settled in phase 4, 24
+   orders before sampling, seeds left to the caller (see the status notes).

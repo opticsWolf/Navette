@@ -23,6 +23,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyAny, PyDict};
 
+use navette::lsq::backends::LsqBackend;
+use navette::lsq::lm::{JacobianMode, LmConfig, LmDamping};
 use navette::smatrix::synthesis::config::PipelineConfig;
 use navette::smatrix::synthesis::context::DesignContext;
 use navette::smatrix::synthesis::cycle::{
@@ -31,10 +33,8 @@ use navette::smatrix::synthesis::cycle::{
 };
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
-use navette::smatrix::synthesis::optimizer::OptimizerBackend;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
 use navette::smatrix::synthesis::structure::{ClampReport, DesignStack, LayerSpec};
-use navette::smatrix::synthesis::thick_opt::{JacobianMode, LmConfig, LmDamping};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
 
@@ -935,14 +935,14 @@ fn wrap_layer(l: LayerSpec) -> PyLayerSpec {
 // Configs
 // ---------------------------------------------------------------------------
 
-/// Names ``LmConfig(optimizer=...)`` accepts in *this* build.
+/// Names ``LmConfig(backend=...)`` accepts in *this* build.
 ///
 /// The optional backends are cargo features, so what a wheel can run is a
 /// property of how it was built. Ask rather than guess: naming a backend this
 /// build lacks raises ``ValueError`` with the rebuild command.
 #[pyfunction]
-pub fn available_optimizers() -> Vec<&'static str> {
-    navette::smatrix::synthesis::optimizer::available_backends()
+pub fn available_lsq_backends() -> Vec<&'static str> {
+    navette::lsq::backends::available_backends()
 }
 
 #[pyclass(name = "LmConfig", from_py_object)]
@@ -958,7 +958,7 @@ pub fn available_optimizers() -> Vec<&'static str> {
 /// ``lambda_up`` still governs both modes' error ladder (a failed step solve
 /// or a failed residual evaluation); ``lambda_down`` applies to ``"fixed"``.
 ///
-/// ``optimizer`` selects the solver itself:
+/// ``backend`` selects the solver itself:
 ///
 /// * ``"builtin"`` (default) -- this crate's bounded LM. A thickness may end
 ///   up exactly on a bound, which is how the synthesis loop learns a film
@@ -1031,7 +1031,7 @@ impl PyLmConfig {
     #[pyo3(signature = (max_iterations=200, max_evals=100_000, ftol=1e-12, xtol=1e-12,
                         gtol=1e-10, lambda_init=1e-3, lambda_up=5.0, lambda_down=3.0,
                         damping="gain_ratio", gtol_scale_invariant=true,
-                        jacobian="analytic", optimizer="builtin"))]
+                        jacobian="analytic", backend="builtin"))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         max_iterations: usize,
@@ -1045,7 +1045,7 @@ impl PyLmConfig {
         damping: &str,
         gtol_scale_invariant: bool,
         jacobian: &str,
-        optimizer: &str,
+        backend: &str,
     ) -> PyResult<Self> {
         for (name, v) in [
             ("ftol", ftol),
@@ -1084,15 +1084,16 @@ impl PyLmConfig {
                 )))
             }
         };
-        let backend = OptimizerBackend::parse(optimizer).map_err(PyValueError::new_err)?;
+        let name = backend;
+        let backend = LsqBackend::parse(name).map_err(PyValueError::new_err)?;
         if !backend.is_available() {
             return Err(PyValueError::new_err(format!(
                 concat!(
-                    "optimizer {:?} is not available in this build — the wheel ",
+                    "backend {:?} is not available in this build — the wheel ",
                     "was compiled without its cargo feature; rebuild with ",
                     "`maturin develop --release --features {}`"
                 ),
-                optimizer,
+                name,
                 backend.feature().unwrap_or("")
             )));
         }
@@ -1118,7 +1119,7 @@ impl PyLmConfig {
         format!(
             concat!(
                 "LmConfig(max_iterations={}, ftol={:.1e}, damping={:?}, ",
-                "jacobian={:?}, optimizer={:?})"
+                "jacobian={:?}, backend={:?})"
             ),
             self.inner.max_iterations,
             self.inner.ftol,
@@ -1277,7 +1278,7 @@ impl PyNeedleCycleConfig {
 #[pyclass(name = "SmatrixContext")]
 /// Solver + merit context: the pipeline's numeric machinery (see
 /// `SmatrixContext` in the core). Usable standalone — `simulate` /
-/// `evaluate_merit` / `optimize_thicknesses` on any `DesignStack`.
+/// `evaluate_merit` / `refine_thicknesses` on any `DesignStack`.
 pub struct PySmatrixContext {
     inner: SmatrixContext,
 }
@@ -1356,16 +1357,16 @@ impl PySmatrixContext {
 
     /// Bounded LM over optimize-flagged films, in place; sub-min films
     /// removed, above-max capped. Returns the post-optimization merit.
-    fn optimize_thicknesses(&mut self, py: Python<'_>, stack: &mut PyDesignStack) -> PyResult<f64> {
+    fn refine_thicknesses(&mut self, py: Python<'_>, stack: &mut PyDesignStack) -> PyResult<f64> {
         py.detach({
             let inner = &mut self.inner;
             let st = &mut stack.inner;
-            move || inner.optimize_thicknesses(st)
+            move || inner.refine_thicknesses(st)
         })
         .map_err(PyValueError::new_err)
     }
 
-    /// `optimize_thicknesses`, plus the solver's own account of the run.
+    /// `refine_thicknesses`, plus the solver's own account of the run.
     ///
     /// Returns `(merit, report)`. `report` is `None` when the stack had no
     /// optimize-flagged films (nothing was solved). Otherwise a dict:
@@ -1376,7 +1377,7 @@ impl PySmatrixContext {
     /// analytic chain rather than central differences. Zero means the run was
     /// differenced throughout, whether by configuration (`jacobian="fd"`) or
     /// because the spec has rows the analytic chain cannot express.
-    fn optimize_thicknesses_report(
+    fn refine_thicknesses_report(
         &mut self,
         py: Python<'_>,
         stack: &mut PyDesignStack,
@@ -1385,7 +1386,7 @@ impl PySmatrixContext {
             .detach({
                 let inner = &mut self.inner;
                 let st = &mut stack.inner;
-                move || inner.optimize_thicknesses_report(st)
+                move || inner.refine_thicknesses_report(st)
             })
             .map_err(PyValueError::new_err)?;
         let Some(r) = rep else {

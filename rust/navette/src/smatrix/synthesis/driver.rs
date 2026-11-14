@@ -21,7 +21,7 @@ use super::merit::{MeritSpec, Radians};
 use super::pipeline::SpectralInputs;
 use super::pipeline::{NeedlePipeline, PipelineResult};
 use super::structure::{ClampReport, DesignStack, LayerSpec};
-use super::thick_opt::LmConfig;
+use crate::lsq::lm::LmConfig;
 use crate::structure::{Group, Layer, LayerType};
 
 // ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ pub fn run_design(
 /// sweep, and an elimination is a removal whoever ordered it. Joint runs
 /// take `clamp_up_final` — the documented default for needle runs anyway —
 /// and the context pins the floor as an LM bound for the duration
-/// ([`SmatrixContext::optimize_thicknesses`]), so the span layout moves
+/// ([`SmatrixContext::refine_thicknesses`]), so the span layout moves
 /// only through `insert_seed`.
 ///
 /// **Demands an environment cannot answer are dropped, once.** A phase

@@ -5089,7 +5089,7 @@ mod tests {
         // Thick-opt consumes color residuals with zero further changes: a
         // 1-param uniform-reflector problem (Y(R) = R by k-normalization)
         // converges from 0.2 to the 0.5 target.
-        use crate::smatrix::synthesis::thick_opt::{LmConfig, levenberg_marquardt};
+        use crate::lsq::lm::{LmConfig, levenberg_marquardt};
         let spec = color_spec_xyy(0.5);
         let r0 = {
             let mut out = Vec::new();

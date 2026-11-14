@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// All known models, in canonical order (mirrors Python `MODELS`).
-pub const MODELS: [&str; 23] = [
+pub const MODELS: [&str; 26] = [
     "Konstant",
     "Table",
     "Cauchy",
@@ -41,6 +41,9 @@ pub const MODELS: [&str; 23] = [
     "MoriTanaka",
     "PowerLaw",
     "Roughness",
+    "PointWise",
+    "Spline",
+    "BSplineEps",
 ];
 
 /// A material as data: model name plus plain params.
@@ -239,6 +242,34 @@ impl MaterialSpec {
                 let eps = crate::materials::ema::roughness_interface(bottom_a.view(), top_a.view());
                 crate::materials::ema::eps_to_nk(eps.view())
             }
+            "PointWise" | "Spline" => {
+                let x = req_vec(p, m, "wavelengths")?;
+                let n = req_vec(p, m, "n")?;
+                let k = match p.get("k") {
+                    None => None,
+                    Some(_) => Some(req_vec(p, m, "k")?),
+                };
+                if m == "PointWise" {
+                    crate::materials::freeform::point_wise_nk(w, &x, &n, k.as_deref())?
+                } else {
+                    let method = match p.get("method") {
+                        None => "pchip",
+                        Some(Value::String(s)) => s.as_str(),
+                        Some(_) => return Err("Spline method must be a string".into()),
+                    };
+                    crate::materials::freeform::spline_nk(w, &x, &n, k.as_deref(), method)?
+                }
+            }
+            "BSplineEps" => {
+                let e = req_vec(p, m, "energies")?;
+                let c = req_vec(p, m, "eps2")?;
+                crate::materials::freeform::bspline_eps_nk(
+                    w,
+                    &e,
+                    &c,
+                    opt_float(p, "epsilon_inf", 1.0),
+                )?
+            }
             other => {
                 return Err(format!(
                     "Unknown material model {other:?}. Available: {MODELS:?}"
@@ -288,6 +319,16 @@ fn opt_alias(p: &BTreeMap<String, Value>, names: &[&str], default: f64) -> f64 {
 
 fn as_num_vec(v: &Value) -> Option<Vec<f64>> {
     v.as_array()?.iter().map(|x| x.as_f64()).collect()
+}
+
+/// A list of numbers under `name`.
+fn req_vec(p: &BTreeMap<String, Value>, model: &str, name: &str) -> Result<Vec<f64>, String> {
+    match p.get(name) {
+        None => Err(missing_err(model, &[name])),
+        Some(v) => {
+            as_num_vec(v).ok_or_else(|| format!("{model} param '{name}' must be a list of numbers"))
+        }
+    }
 }
 
 /// `(wavelengths, values)` pair (mirrors the `(wavelengths, values)` tuples).
@@ -426,7 +467,7 @@ mod tests {
     /// captured live from Python on WL; same kernels, same inputs).
     #[test]
     fn all_models_match_python() {
-        assert_eq!(MODELS.len(), 23);
+        assert_eq!(MODELS.len(), 26);
         let table = |w: Vec<f64>, v: Vec<f64>| serde_json::json!([w, v]);
         let cases: &[(&str, Value, [[f64; 2]; 3])] = &[
             (

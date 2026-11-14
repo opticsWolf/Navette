@@ -5,7 +5,220 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
-## [Unreleased]
+## [0.10.0] - the general fit engine
+
+`navette.fit` fits any scalar of a model to measured data: film
+thicknesses, group factors, the numbers of any dispersion model and the
+instrument's own departures, against spectra and optical-constant tables
+in one residual vector. Fits run as staged strategies (LSQ, scans,
+multi-starts, a native differential-evolution global stage), compare in a
+tournament or a recovery benchmark, report covariance and correlation, and
+save as a program `fit` section (schema v4). Three free-form nk models
+(`PointWise`, `Spline`, `BSplineEps`) join the material library. The plan
+is `docs/plans/general_fit_plan.md`.
+
+Phase 0 renames public names without aliases: see "Changed (breaking)".
+
+### Added
+
+- **`navette::fit`: fit any model scalar against measured spectra**
+  (fit plan phase 1, Rust; the Python door is phase 5). A `FitProblem`
+  holds a `FitModel` (an architect, one structure or a loaded program,
+  mirrored as owned data so the Jacobian columns run in parallel), the
+  measured `SpectrumData` curves, and `Parameter`s named by address:
+  `layer[main:2].thickness`, `layer[main:#TiO2_1].inh_delta`,
+  `layer[...].gradient.f_end`, `group[SiO2].n_factor`,
+  `material[TiO2].A`, `material[porous].host.B1`. A material parameter is
+  any number in the spec's params, so every model is fittable with no
+  per-model code. Each parameter has bounds (defaulting to the gates
+  `Layer` and `Group` enforce), a scale, and an optional log transform;
+  the solver works in normalised coordinates, so FD steps suit a 1e-2
+  Sellmeier `C1` as well as a 100 nm thickness.
+- One evaluation runs `expand` and `solve_arrays` (every coherence mode,
+  groups, grading, gradients, roughness, inversion), once per evaluation
+  on the union of the datasets' wavelengths and angles. Any of the
+  solver's 37 scalar output maps can be a dataset channel (R, T, A, Psi,
+  Delta, Stokes, DOP, retardance, phases); Delta and phase residuals
+  wrap into (-pi, pi]. Materials no parameter reaches are evaluated once.
+- `fit()` runs one least-squares stage on any `LsqBackend` and returns a
+  `FitReport`: chi2, reduced chi2, per-dataset chi2 and RMS, the
+  covariance `(JᵀJ)⁻¹·chi2_red` from a QR of J, standard errors, the
+  correlation matrix, parameters at bounds, and the fitted model.
+- `SpecProvider::entries()` reads a provider's library.
+- **Dispersion-model fitting** (fit plan phase 2, Rust). `NkData` holds
+  measured optical constants of one material (n and k, ε₁ and ε₂, or any
+  one of them, each with its σ); `DispersionForward` evaluates the spec on
+  those wavelengths and feeds the same residual vector as the stack, so a
+  `FitProblem` with `nk_data` fits a material alone or **jointly** with
+  spectra (a film's thickness from R, its Cauchy `A` from an nk table, in
+  one fit). `FitModel::from_materials` builds a model with no stack.
+- Material parameters get per-model default bounds: EMA `fraction` and
+  Mori-Tanaka `L` in `[0, 1]`, power-law `alpha` in `[-1, 1]`, oscillator
+  entries, Urbach `Eu` and `lambda_g` strictly positive, Sellmeier terms,
+  gaps, `alpha0` and Drude terms non-negative; the rest stays open.
+- `fit_dispersion(spec, data, parameters, lsq)` fits one spec (by default
+  every number in it; a mixer's constituents stay held) and returns the
+  fitted spec with the report; write it back with `SpecProvider::upsert`.
+  `table_to_model(table, candidates, lsq)` fits each candidate model to a
+  `Table` material and ranks them by BIC.
+- `FitReport` gains `aic` and `bic` (Gaussian, noise scale estimated, so a
+  ranking does not depend on how σ was set).
+- A trial step the forward model refuses (a Sellmeier pole moved into the
+  range) is a rejected step, not a failed fit; the start and the solution
+  are still evaluated strictly.
+- **Staged strategies** (fit plan phase 3, Rust). A `Strategy` is an
+  ordered list of `Stage`s, plain data that round-trips through JSON:
+  each frees a selection of the declared parameters (`*`, `kind=thickness`,
+  `tag=H`, `set:dispersion_H`, or a glob such as `group[*].n_factor`),
+  may restrict the scored datasets, rescale their weights, window the
+  wavelengths and override the solver settings, and runs as `lsq`,
+  `scan` (a 1-D grid over one parameter, best point kept, then `lsq`) or
+  `multi_start` (seeded uniform or Latin-hypercube starts, run in
+  parallel). `repeat: until_no_gain` reruns a stage while χ² drops;
+  `accept: if_better` rolls a stage back when it did not help.
+  `run_strategy` returns each stage's report and a final report with the
+  covariance of every parameter a stage freed. `ParamSet`s name unions of
+  selectors; built-in sets cover each kind and each material and group.
+- **Several samples in one fit.** `FitModel::add_environment` adds a
+  sample configuration built from the model's structures and fixed rows
+  (a bare substrate is ambient, substrate); a dataset names its sample
+  with `SpectrumData::on(env)`. Materials and groups are shared, so a
+  coating and its bare substrate fit one substrate. One solve per sample
+  per evaluation.
+- **Ties and priors.** A `Tie` makes scalars follow a driver
+  (`target = factor · driver + offset`), rewritten after every step; a
+  `Parameter::prior(value, sigma)` adds the row `(x − value)/σ`, reported
+  as the `prior` dataset. `fit::evaluate` reports a problem at its start
+  values without solving.
+- **The instrument converter** (`fit::convert`, decision 3). `to_solver`
+  reads a `RawDataset` written in an `InstrumentConvention` (wavelengths
+  in nm, µm, Å, eV or cm⁻¹; angles in degrees or radians; R/T as
+  fractions or percent; Δ in (−180°, 180°] or [0°, 360°) and either sign;
+  Ψ/Δ, tan Ψ/cos Δ or N/C/S) into solver-convention `SpectrumData`,
+  propagating σ through the map; `from_solver` is its inverse. Twelve
+  named presets live in `conventions.json`. Each converted dataset
+  records how it was read (`SpectrumData::source`), and the fit report
+  carries it (`DatasetFit::source`). tan Ψ/cos Δ cannot carry Δ's sign.
+- **Which strategy works best** (fit plan phase 4, `fit::explore`).
+  `generate` turns parameter sets into strategies: every ordering of the
+  sets (sampled with a note above 24 orders), regroupings into blocks, or
+  cumulative release, each named after its arrangement
+  (`groups > thicknesses | polish`). `tournament` runs strategies on one
+  problem in parallel and ranks them by χ². `draw_truth` draws a known
+  truth from the groups' own error laws (a layer's thickness, roughness,
+  interface or grading as `expand` draws it; group factors and summands
+  from the law's relative and absolute parts) and simulates the datasets
+  with noise; `benchmark` runs every strategy on a truth per seed and
+  ranks them by recovery of the truth. Deterministic per seed. The
+  `fit_tournament` example ranks seven strategies on a 20-layer coating.
+  Stage and strategy reports count their model evaluations (`evals`).
+- **Python: `navette.fit`** (fit plan phase 5). The fit engine is now
+  available from Python:
+  - The dataclasses `Parameter`, `Tie`, `Environment`, `Dataset`,
+    `NkDataset`, `Stage`, `Strategy` and `FitProblem` describe a fit.
+  - `fit` and `evaluate` return a `FitReport` with the parameters, the
+    covariance and correlation, the stage reports, and the measured and
+    simulated curves. `plot_fit` draws the curves.
+  - The strategy tools are `orderings`, `groupings`, `cumulative`,
+    `generate`, `tournament`, `benchmark` and `draw_truth`.
+  - `to_solver`, `from_solver` and `conventions` convert instrument data.
+  - `fit_dispersion` and `table_to_model` fit dispersion models.
+
+  The engine runs in Rust with the GIL released. Python sends the request
+  as JSON and gets JSON back, through the doors in `navette::fit::doors`.
+  The guide is `docs/fitting.md`. There are two new examples:
+  `fit_coating.py` and `fit_optical_constants.py`.
+- **Progress and stopping.** `fit(problem, progress=cb)` calls `cb` when a
+  stage starts, each time χ² improves, and when a stage ends. If the
+  callback raises, the fit stops with a `ValueError` naming the exception.
+  In Rust the same works through a `Watcher` passed to `fit_watched` or
+  `run_strategy_watched`.
+- **Program schema version 4: the `fit` section.** A fit request is a
+  program document whose `fit` section holds the samples, the data, the
+  parameter declarations, ties, sets, the strategy and the solver
+  settings. `fit::fit_program` runs it, and `FitProblem.save` / `load`
+  write and read it. A `select` declaration expands a selector over every
+  address in the model (`FitModel::addresses`). `LoadedProgram.fit`
+  (Rust and Python) carries the section; documents of version 3 and
+  earlier still load.
+- Program JSON parses floats exactly (`serde_json` `float_roundtrip`), so
+  a saved fit reproduces its χ² bit for bit.
+- **The fit's own Jacobian** (fit plan phase 6), now the default
+  (`lsq.jacobian = "analytic"`; `"fd"` keeps central differences
+  everywhere):
+  - a column is recomputed only on the samples and nk datasets its
+    parameter can reach. Those entries are bit-identical to the old
+    ones, and the rest are exactly zero;
+  - columns that only move layer thicknesses (films, `thick_factor`,
+    `thick_summand`, graded and sliced layers) are exact on coherent
+    stacks read through R, T or A. They come from the needle operator's
+    thickness slopes, so all of them together cost about three
+    evaluations;
+  - dispersion parameters on nk data use closed forms for Konstant,
+    Cauchy, Sellmeier and Drude.
+
+  `examples/fit_perf.rs` measures both modes: a 20-layer coating fit
+  (22 free) runs 2.9× faster, and the same with witness samples or an
+  nk table runs 2.2× and 1.9× faster, with the same iterations and χ².
+- **`global` strategy stage**: `{"global": {"method": m, "budget": n}}`
+  searches the stage's box, then polishes with least squares. `de` (the
+  default) and `de_best` are native differential evolution (`lsq::de`,
+  fit plan phase 7) in every build; `basin_de`, `de_inject` (memetic DE)
+  and `cma_es` are basin's, behind `opt-basin`, and without the feature
+  the stage asks for a rebuild. From random starts it solves the phase-4
+  coating, and a thick variant where least squares alone is caught every
+  time. Over 16 seeds native DE matches or beats basin's DE: it reaches
+  10× χ²(truth) in a median 2305 evaluations where basin needs the whole
+  3000, and solves 11/16 thick cases to basin's 10/16. A global stage
+  reports `"searched"` progress events, apart from the polish's
+  `"improved"`.
+- **Instrument parameters** (fit plan phase 7). A dataset's `instrument`
+  holds `angle_offset` (rad), `wavelength_shift` (nm), `scale`, `offset`
+  and `bandwidth` (nm FWHM, a Gaussian slit on intensity channels), each
+  a fit parameter `data[<id>].<field>` (kind `instrument`, sets
+  `instruments` and `data[<id>]`). Python: `Dataset(instrument={...})`.
+  Bandwidth's slope is zero at zero, so start it positive.
+- **Free-form optical constants** (fit plan phase 7, §4.6): material
+  models `PointWise` (n, k at given wavelengths), `Spline` (n, k on
+  knots, pchip / makima / linear) and `BSplineEps` (ε₂ as a cubic
+  B-spline in eV, ε₁ by Kramers-Kronig). Every knot value is a fit
+  parameter (`material[X].n[3]`, bounded n > 0, k ≥ 0, ε₂ ≥ 0) and
+  expands under selectors. k and ε₂ read as max(value, 0). A smoothness
+  prior (`FitProblem.smoothness`, program `smoothness`: material, param,
+  sigma) adds second-difference rows, reported as dataset `smoothness`.
+  `examples/fit_freeform.py` fits a spline film and a wavelength shift.
+
+### Fixed
+
+- A strategy whose parameters declared explicit start values reported
+  the starts, not the fit: the final report wrote them back over the
+  fitted model.
+- Two datasets with the same id in one fit are refused; before, the
+  second shadowed the first in the report.
+
+### Changed (breaking)
+
+- **The least-squares solvers move out of synthesis, into `navette::lsq`**
+  (fit plan phase 0). They never knew what a parameter means, and the fit
+  engine will drive them too. No behaviour changes: the bench fingerprint
+  and the needle digests are unchanged. No aliases are kept.
+
+  | Before | After |
+  |---|---|
+  | `smatrix::synthesis::thick_opt` | `lsq::lm` |
+  | `smatrix::synthesis::trf` | `lsq::trf` |
+  | `smatrix::synthesis::optimizer` | `lsq::backends` |
+  | `OptimizerBackend`, `OptimizerResult`, `run_optimizer` | `LsqBackend`, `LsqResult`, `solve_least_squares` |
+  | the LM thread pool in `evaluator` | `lsq::pool` |
+  | `evaluator::{Param, build_params, apply_params, DepositJacobian}` | `synthesis::thickness_refine::{ThicknessParam, thickness_params, apply_thickness_params, ThicknessJacobian}` |
+  | `smatrix::synthesis::jacobian` | `smatrix::synthesis::thickness_jacobian` |
+  | `SmatrixContext::optimize_thicknesses[_report]` | `refine_thicknesses[_report]` |
+  | `smatrix::optimizer` (eigenmode landscape) | `smatrix::eigenmodes` |
+
+  Python: `SmatrixContext.optimize_thicknesses[_report]` is
+  `refine_thicknesses[_report]`, `LmConfig(optimizer=...)` is
+  `LmConfig(backend=...)` (its repr follows), and `available_optimizers()`
+  is `available_lsq_backends()`.
 
 ## [0.9.0] - synthesis targets belong to the whole design
 

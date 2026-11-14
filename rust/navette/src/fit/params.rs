@@ -1,0 +1,679 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//! fit::params — what a fit varies: addresses, bounds, scales, transforms.
+//!
+//! A [`ParamAddr`] names one scalar in a [`FitModel`](super::FitModel) and
+//! has a textual form (configs, reports, selectors):
+//!
+//! | Kind | Address |
+//! |---|---|
+//! | thickness | `layer[main:3].thickness`, `layer[main:#TiO2_2].thickness` |
+//! | grading | `layer[...].inh_delta`, `.inh_rate`, `.inh_cap` |
+//! | roughness / interface | `layer[...].roughness`, `.interface_thickness` |
+//! | gradient | `layer[...].gradient.f_start`, `.f_end`, `.rate`, `.f_min`, `.f_max` |
+//! | group | `group[TiO2].n_factor`, `.k_factor`, `.thick_factor`, `.thick_summand`, `.inh_delta_summand`, `.roughness_summand`, `.interface_summand` |
+//! | material | `material[TiO2].A`, `material[TiO2].osc[1][0]`, `material[porous].host.B1` |
+//! | instrument | `data[R8].angle_offset`, `.wavelength_shift`, `.scale`, `.offset`, `.bandwidth` |
+//!
+//! `layer[S:i]` is row `i` (0-based, ambient included) of structure `S`;
+//! `layer[S:#M_k]` is the `k`-th (1-based) row of material `M` in it. A
+//! material address walks the spec's plain-JSON params; a nested spec
+//! (`host`, `inclusion`, `bottom`, `top`) is entered by its own keys, so
+//! `host.B1` reaches `params.host.params.B1`.
+//!
+//! The solver never sees a parameter's own value: it sees
+//! `u = (t(x) - t(x0)) / scale`, `t` the identity or `ln`. FD steps, damping
+//! and tolerances then mean the same thing for a 100 nm thickness, a 0.01
+//! Sellmeier `C1` and a 1e3 Urbach `alpha0`.
+
+use std::fmt;
+
+/// Which row of a structure a layer address names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerRef {
+    /// Row index, 0-based, ambient row included.
+    Index(usize),
+    /// The `nth` (1-based) row whose material is `material`.
+    Material { material: String, nth: usize },
+}
+
+/// A writable scalar on a [`Layer`](crate::structure::Layer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerField {
+    Thickness,
+    InhDelta,
+    InhRate,
+    InhCap,
+    Roughness,
+    InterfaceThickness,
+    GradientFStart,
+    GradientFEnd,
+    GradientRate,
+    GradientFMin,
+    GradientFMax,
+}
+
+const LAYER_FIELDS: [(&str, LayerField); 11] = [
+    ("thickness", LayerField::Thickness),
+    ("inh_delta", LayerField::InhDelta),
+    ("inh_rate", LayerField::InhRate),
+    ("inh_cap", LayerField::InhCap),
+    ("roughness", LayerField::Roughness),
+    ("interface_thickness", LayerField::InterfaceThickness),
+    ("gradient.f_start", LayerField::GradientFStart),
+    ("gradient.f_end", LayerField::GradientFEnd),
+    ("gradient.rate", LayerField::GradientRate),
+    ("gradient.f_min", LayerField::GradientFMin),
+    ("gradient.f_max", LayerField::GradientFMax),
+];
+
+/// A writable scalar on a [`Group`](crate::structure::Group).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupField {
+    NFactor,
+    KFactor,
+    ThickFactor,
+    ThickSummand,
+    InhDeltaSummand,
+    RoughnessSummand,
+    InterfaceSummand,
+}
+
+const GROUP_FIELDS: [(&str, GroupField); 7] = [
+    ("n_factor", GroupField::NFactor),
+    ("k_factor", GroupField::KFactor),
+    ("thick_factor", GroupField::ThickFactor),
+    ("thick_summand", GroupField::ThickSummand),
+    ("inh_delta_summand", GroupField::InhDeltaSummand),
+    ("roughness_summand", GroupField::RoughnessSummand),
+    ("interface_summand", GroupField::InterfaceSummand),
+];
+
+/// A writable scalar of a dataset's [`Instrument`](super::data::Instrument).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstrumentField {
+    AngleOffset,
+    WavelengthShift,
+    Scale,
+    Offset,
+    Bandwidth,
+}
+
+const INSTRUMENT_FIELDS: [(&str, InstrumentField); 5] = [
+    ("angle_offset", InstrumentField::AngleOffset),
+    ("wavelength_shift", InstrumentField::WavelengthShift),
+    ("scale", InstrumentField::Scale),
+    ("offset", InstrumentField::Offset),
+    ("bandwidth", InstrumentField::Bandwidth),
+];
+
+impl InstrumentField {
+    /// Whether the field moves the solve grid or angle (not only the
+    /// reading of the result).
+    pub(crate) fn moves_geometry(self) -> bool {
+        matches!(
+            self,
+            InstrumentField::AngleOffset
+                | InstrumentField::WavelengthShift
+                | InstrumentField::Bandwidth
+        )
+    }
+
+    /// Default `[lb, ub]`: an angle off by up to 3 degrees, a wavelength
+    /// scale off by up to 5 nm, a scale within 20 %, an offset of up to
+    /// 0.1, a slit of up to 20 nm.
+    pub(crate) fn bounds(self) -> (f64, f64) {
+        match self {
+            InstrumentField::AngleOffset => (-0.0524, 0.0524),
+            InstrumentField::WavelengthShift => (-5.0, 5.0),
+            InstrumentField::Scale => (0.8, 1.2),
+            InstrumentField::Offset => (-0.1, 0.1),
+            InstrumentField::Bandwidth => (0.0, 20.0),
+        }
+    }
+
+    /// Default scale (solver step unit), whatever the start.
+    pub(crate) fn scale(self) -> f64 {
+        match self {
+            InstrumentField::AngleOffset => 1e-3,
+            InstrumentField::WavelengthShift => 0.1,
+            InstrumentField::Scale => 1e-2,
+            InstrumentField::Offset => 1e-3,
+            InstrumentField::Bandwidth => 0.5,
+        }
+    }
+}
+
+/// One step of a material address below the material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathSeg {
+    Key(String),
+    Index(usize),
+}
+
+/// One scalar in a fit model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParamAddr {
+    Layer {
+        structure: String,
+        layer: LayerRef,
+        field: LayerField,
+    },
+    Group {
+        group: String,
+        field: GroupField,
+    },
+    Material {
+        material: String,
+        path: Vec<PathSeg>,
+    },
+    /// A dataset's instrument.
+    Data {
+        dataset: String,
+        field: InstrumentField,
+    },
+}
+
+/// What kind of quantity an address names (default bounds, selectors).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    Thickness,
+    Grading,
+    Roughness,
+    Interface,
+    Gradient,
+    Group,
+    Material,
+    Instrument,
+}
+
+impl ParamAddr {
+    /// Parse the textual form (module docs).
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let bad = |why: &str| format!("parameter address {text:?}: {why}");
+        let (head, rest) = text
+            .split_once('[')
+            .ok_or_else(|| bad("expected layer[...], group[...], material[...] or data[...]"))?;
+        let (inner, tail) = rest.split_once(']').ok_or_else(|| bad("unclosed '['"))?;
+        if inner.is_empty() {
+            return Err(bad("empty name in brackets"));
+        }
+        let field = tail.strip_prefix('.');
+        match head {
+            "layer" => {
+                let (structure, row) = inner
+                    .split_once(':')
+                    .ok_or_else(|| bad("a layer is named as layer[structure:row]"))?;
+                let layer = if let Some(spec) = row.strip_prefix('#') {
+                    let (material, nth) = spec
+                        .rsplit_once('_')
+                        .ok_or_else(|| bad("a material row is named as #Material_k"))?;
+                    let nth: usize = nth
+                        .parse()
+                        .ok()
+                        .filter(|k| *k >= 1)
+                        .ok_or_else(|| bad("the k in #Material_k counts from 1"))?;
+                    LayerRef::Material {
+                        material: material.to_string(),
+                        nth,
+                    }
+                } else {
+                    LayerRef::Index(row.parse().map_err(|_| bad("row is not an index"))?)
+                };
+                let field = field.ok_or_else(|| bad("missing .field"))?;
+                let field = LAYER_FIELDS
+                    .iter()
+                    .find(|(name, _)| *name == field)
+                    .map(|(_, f)| *f)
+                    .ok_or_else(|| {
+                        bad(&format!(
+                            "unknown layer field; known: {}",
+                            LAYER_FIELDS.map(|(n, _)| n).join(", ")
+                        ))
+                    })?;
+                Ok(ParamAddr::Layer {
+                    structure: structure.to_string(),
+                    layer,
+                    field,
+                })
+            }
+            "group" => {
+                let field = field.ok_or_else(|| bad("missing .field"))?;
+                let field = GROUP_FIELDS
+                    .iter()
+                    .find(|(name, _)| *name == field)
+                    .map(|(_, f)| *f)
+                    .ok_or_else(|| {
+                        bad(&format!(
+                            "unknown group field; known: {}",
+                            GROUP_FIELDS.map(|(n, _)| n).join(", ")
+                        ))
+                    })?;
+                Ok(ParamAddr::Group {
+                    group: inner.to_string(),
+                    field,
+                })
+            }
+            "material" => {
+                let path = parse_path(tail).map_err(|e| bad(&e))?;
+                if path.is_empty() {
+                    return Err(bad("missing .param"));
+                }
+                if !matches!(path[0], PathSeg::Key(_)) {
+                    return Err(bad("a material path starts with a parameter name"));
+                }
+                Ok(ParamAddr::Material {
+                    material: inner.to_string(),
+                    path,
+                })
+            }
+            "data" => {
+                let field = field.ok_or_else(|| bad("missing .field"))?;
+                let field = INSTRUMENT_FIELDS
+                    .iter()
+                    .find(|(name, _)| *name == field)
+                    .map(|(_, f)| *f)
+                    .ok_or_else(|| {
+                        bad(&format!(
+                            "unknown instrument field; known: {}",
+                            INSTRUMENT_FIELDS.map(|(n, _)| n).join(", ")
+                        ))
+                    })?;
+                Ok(ParamAddr::Data {
+                    dataset: inner.to_string(),
+                    field,
+                })
+            }
+            _ => Err(bad(
+                "expected layer[...], group[...], material[...] or data[...]",
+            )),
+        }
+    }
+
+    pub fn kind(&self) -> ParamKind {
+        match self {
+            ParamAddr::Layer { field, .. } => match field {
+                LayerField::Thickness => ParamKind::Thickness,
+                LayerField::InhDelta | LayerField::InhRate | LayerField::InhCap => {
+                    ParamKind::Grading
+                }
+                LayerField::Roughness => ParamKind::Roughness,
+                LayerField::InterfaceThickness => ParamKind::Interface,
+                _ => ParamKind::Gradient,
+            },
+            ParamAddr::Group { .. } => ParamKind::Group,
+            ParamAddr::Material { .. } => ParamKind::Material,
+            ParamAddr::Data { .. } => ParamKind::Instrument,
+        }
+    }
+}
+
+/// `.a.b[1][0]` → segments; empty input → empty path.
+fn parse_path(mut s: &str) -> Result<Vec<PathSeg>, String> {
+    let mut out = Vec::new();
+    while !s.is_empty() {
+        if let Some(rest) = s.strip_prefix('.') {
+            let end = rest.find(['.', '[']).unwrap_or(rest.len());
+            if end == 0 {
+                return Err("empty name in path".into());
+            }
+            out.push(PathSeg::Key(rest[..end].to_string()));
+            s = &rest[end..];
+        } else if let Some(rest) = s.strip_prefix('[') {
+            let (idx, after) = rest.split_once(']').ok_or("unclosed '[' in path")?;
+            out.push(PathSeg::Index(
+                idx.parse()
+                    .map_err(|_| format!("{idx:?} is not an index"))?,
+            ));
+            s = after;
+        } else {
+            return Err(format!("unexpected {s:?} in path"));
+        }
+    }
+    Ok(out)
+}
+
+impl fmt::Display for ParamAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParamAddr::Layer {
+                structure,
+                layer,
+                field,
+            } => {
+                let name = LAYER_FIELDS.iter().find(|(_, x)| x == field).unwrap().0;
+                match layer {
+                    LayerRef::Index(i) => write!(f, "layer[{structure}:{i}].{name}"),
+                    LayerRef::Material { material, nth } => {
+                        write!(f, "layer[{structure}:#{material}_{nth}].{name}")
+                    }
+                }
+            }
+            ParamAddr::Group { group, field } => {
+                let name = GROUP_FIELDS.iter().find(|(_, x)| x == field).unwrap().0;
+                write!(f, "group[{group}].{name}")
+            }
+            ParamAddr::Material { material, path } => {
+                write!(f, "material[{material}]")?;
+                for seg in path {
+                    match seg {
+                        PathSeg::Key(k) => write!(f, ".{k}")?,
+                        PathSeg::Index(i) => write!(f, "[{i}]")?,
+                    }
+                }
+                Ok(())
+            }
+            ParamAddr::Data { dataset, field } => {
+                let name = INSTRUMENT_FIELDS
+                    .iter()
+                    .find(|(_, x)| x == field)
+                    .unwrap()
+                    .0;
+                write!(f, "data[{dataset}].{name}")
+            }
+        }
+    }
+}
+
+/// How the solver coordinate relates to the parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Transform {
+    #[default]
+    Linear,
+    /// `t(x) = ln x`: for strictly positive quantities spanning decades
+    /// (oscillator widths, `alpha0`, group factors).
+    Log,
+}
+
+impl Transform {
+    pub fn forward(self, x: f64) -> f64 {
+        match self {
+            Transform::Linear => x,
+            Transform::Log => x.ln(),
+        }
+    }
+
+    pub fn inverse(self, t: f64) -> f64 {
+        match self {
+            Transform::Linear => t,
+            Transform::Log => t.exp(),
+        }
+    }
+
+    /// `dx/dt` at `x`.
+    pub fn slope(self, x: f64) -> f64 {
+        match self {
+            Transform::Linear => 1.0,
+            Transform::Log => x,
+        }
+    }
+}
+
+/// One fitted (or held) scalar. Unset fields take the defaults of its
+/// kind when the problem is built; an unset start reads the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parameter {
+    pub addr: ParamAddr,
+    /// Start value; `None` reads the model.
+    pub value: Option<f64>,
+    pub lb: Option<f64>,
+    pub ub: Option<f64>,
+    /// Typical size of a change, in the transformed coordinate.
+    pub scale: Option<f64>,
+    pub transform: Transform,
+    /// Written once, never varied.
+    pub fixed: bool,
+    /// Labels for selectors (`tag=H`).
+    pub tags: Vec<String>,
+    /// `(p0, sigma)`: a residual row `(x - p0) / sigma` while the
+    /// parameter is free (plan §3.5.4), what stabilises a thickness ↔
+    /// index trade-off with outside knowledge.
+    pub prior: Option<(f64, f64)>,
+}
+
+impl Parameter {
+    pub fn new(addr: ParamAddr) -> Self {
+        Self {
+            addr,
+            value: None,
+            lb: None,
+            ub: None,
+            scale: None,
+            transform: Transform::Linear,
+            fixed: false,
+            tags: Vec::new(),
+            prior: None,
+        }
+    }
+
+    /// [`Parameter::new`] from the textual address.
+    pub fn parse(addr: &str) -> Result<Self, String> {
+        ParamAddr::parse(addr).map(Self::new)
+    }
+
+    pub fn start(mut self, value: f64) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    pub fn bounds(mut self, lb: f64, ub: f64) -> Self {
+        self.lb = Some(lb);
+        self.ub = Some(ub);
+        self
+    }
+
+    pub fn scale(mut self, scale: f64) -> Self {
+        self.scale = Some(scale);
+        self
+    }
+
+    pub fn log(mut self) -> Self {
+        self.transform = Transform::Log;
+        self
+    }
+
+    pub fn fixed(mut self) -> Self {
+        self.fixed = true;
+        self
+    }
+
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tags.push(tag.into());
+        self
+    }
+
+    pub fn prior(mut self, value: f64, sigma: f64) -> Self {
+        self.prior = Some((value, sigma));
+        self
+    }
+}
+
+/// `target = factor * driver + offset`, written after every parameter
+/// write (plan §3.3.3): the same thickness in two structures, one sample's
+/// substrate equal to another's. "All layers of a material scale
+/// together" is a group factor, not a tie.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tie {
+    pub driver: ParamAddr,
+    /// `(target, factor, offset)`.
+    pub targets: Vec<(ParamAddr, f64, f64)>,
+}
+
+impl Tie {
+    pub fn new(driver: ParamAddr) -> Self {
+        Self {
+            driver,
+            targets: Vec::new(),
+        }
+    }
+
+    /// [`Tie::new`] from the textual address.
+    pub fn parse(driver: &str) -> Result<Self, String> {
+        ParamAddr::parse(driver).map(Self::new)
+    }
+
+    /// `target = driver`.
+    pub fn equal(self, target: &str) -> Result<Self, String> {
+        self.follow(target, 1.0, 0.0)
+    }
+
+    /// `target = factor * driver + offset`.
+    pub fn follow(mut self, target: &str, factor: f64, offset: f64) -> Result<Self, String> {
+        self.targets
+            .push((ParamAddr::parse(target)?, factor, offset));
+        Ok(self)
+    }
+}
+
+/// Default `[lb, ub]` of an address's kind: the gates `Layer::validate`,
+/// `InhMode::issues`, `GradientSpec::issues` and `Group::validate` enforce.
+/// A material parameter's bounds depend on its spec's model: the fit asks
+/// [`material_bounds`] for those, and this arm is only the fallback.
+pub(crate) fn default_bounds(addr: &ParamAddr, x0: f64) -> (f64, f64) {
+    const OPEN: f64 = 1e-9;
+    match addr {
+        ParamAddr::Layer { field, .. } => match field {
+            LayerField::Thickness => (0.0, (10.0 * x0).max(1000.0)),
+            LayerField::InhDelta => (-2.0 + OPEN, 2.0 - OPEN),
+            LayerField::InhCap
+            | LayerField::GradientFStart
+            | LayerField::GradientFEnd
+            | LayerField::GradientFMin
+            | LayerField::GradientFMax => (0.0, 1.0),
+            LayerField::Roughness | LayerField::InterfaceThickness => (0.0, f64::INFINITY),
+            LayerField::InhRate | LayerField::GradientRate => (f64::NEG_INFINITY, f64::INFINITY),
+        },
+        ParamAddr::Group { field, .. } => match field {
+            GroupField::NFactor | GroupField::KFactor | GroupField::ThickFactor => {
+                (f64::MIN_POSITIVE, f64::INFINITY)
+            }
+            _ => (f64::NEG_INFINITY, f64::INFINITY),
+        },
+        ParamAddr::Material { .. } => (f64::NEG_INFINITY, f64::INFINITY),
+        ParamAddr::Data { field, .. } => field.bounds(),
+    }
+}
+
+/// Default `[lb, ub]` of a material parameter: `leaf` is the last key on
+/// its path in a spec of `model` (`fraction`, `C1`, `osc` for any entry of
+/// an oscillator table). Physical sign constraints only: mixing fractions
+/// and depolarisation in `[0, 1]`, Sellmeier terms, Urbach tails, gaps and
+/// Drude terms non-negative, oscillator entries (energies, widths,
+/// strengths) and Urbach energies strictly positive, so a width never
+/// reaches the pole at zero. Anything else (Cauchy `B`/`C`, `epsilon_inf`,
+/// `n_inf`) is unbounded. A model that needs a negative oscillator
+/// strength sets that parameter's bounds itself.
+pub(crate) fn material_bounds(model: &str, leaf: &str) -> (f64, f64) {
+    const POS: (f64, f64) = (f64::MIN_POSITIVE, f64::INFINITY);
+    const NONNEG: (f64, f64) = (0.0, f64::INFINITY);
+    const OPEN: (f64, f64) = (f64::NEG_INFINITY, f64::INFINITY);
+    let ema = matches!(
+        model,
+        "Bruggeman" | "MaxwellGarnett" | "Looyenga" | "Lichtenecker" | "MoriTanaka" | "PowerLaw"
+    );
+    match leaf {
+        "fraction" | "L" if ema => (0.0, 1.0),
+        "alpha" if ema => (-1.0, 1.0),
+        "osc" | "ib" | "Eu" | "lambda_g" | "n_factor" => POS,
+        "A" if model == "Cauchy" || model == "CauchyUrbach" => POS,
+        "n" if matches!(model, "Konstant" | "PointWise" | "Spline") => POS,
+        // Free-form models: per knot, k and the ε₂ coefficients.
+        "eps2" if model == "BSplineEps" => NONNEG,
+        "k" | "k_factor" | "alpha0" | "Eg" | "Et" | "omega_p" | "wp" | "gamma" | "gamma_drude"
+        | "B1" | "B2" | "B3" | "C1" | "C2" | "C3" => NONNEG,
+        // UBF oscillators are dicts, so their entries arrive by name.
+        "Ec" | "Gamma" | "A" if model == "UBF" => POS,
+        _ => OPEN,
+    }
+}
+
+/// Default scale: 1 % of the start in the linear coordinate (at least
+/// 1e-3, so a zero start still moves), 0.01 in the log coordinate.
+pub(crate) fn default_scale(transform: Transform, x0: f64) -> f64 {
+    match transform {
+        Transform::Linear => (0.01 * x0.abs()).max(1e-3),
+        Transform::Log => 0.01,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn material_bounds_follow_the_model() {
+        let pos = (f64::MIN_POSITIVE, f64::INFINITY);
+        assert_eq!(material_bounds("Bruggeman", "fraction"), (0.0, 1.0));
+        assert_eq!(material_bounds("MoriTanaka", "L"), (0.0, 1.0));
+        assert_eq!(material_bounds("PowerLaw", "alpha"), (-1.0, 1.0));
+        assert_eq!(material_bounds("TaucLorentz", "osc"), pos);
+        assert_eq!(material_bounds("UBF", "Gamma"), pos);
+        assert_eq!(material_bounds("Cauchy", "A"), pos);
+        assert_eq!(material_bounds("Sellmeier", "C3"), (0.0, f64::INFINITY));
+        assert_eq!(material_bounds("Spline", "n"), pos);
+        assert_eq!(material_bounds("PointWise", "k"), (0.0, f64::INFINITY));
+        assert_eq!(material_bounds("BSplineEps", "eps2"), (0.0, f64::INFINITY));
+        let open = (f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(material_bounds("Cauchy", "B"), open);
+        assert_eq!(material_bounds("Lorentz", "epsilon_inf"), open);
+        // `fraction` outside a mixer means nothing in particular.
+        assert_eq!(material_bounds("Konstant", "fraction"), open);
+    }
+
+    #[test]
+    fn addresses_round_trip_through_text() {
+        for text in [
+            "layer[main:3].thickness",
+            "layer[main:#TiO2_2].thickness",
+            "layer[coat:1].gradient.f_end",
+            "layer[coat:0].inh_cap",
+            "group[TiO2].n_factor",
+            "group[SiO2].interface_summand",
+            "material[TiO2].A",
+            "material[TiO2].osc[1][0]",
+            "material[porous].host.B1",
+        ] {
+            let addr = ParamAddr::parse(text).unwrap();
+            assert_eq!(addr.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn material_row_names_keep_underscores() {
+        let addr = ParamAddr::parse("layer[s:#Ta2O5_hi_3].thickness").unwrap();
+        let ParamAddr::Layer { layer, .. } = addr else {
+            panic!()
+        };
+        assert_eq!(
+            layer,
+            LayerRef::Material {
+                material: "Ta2O5_hi".into(),
+                nth: 3
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_addresses_name_themselves() {
+        for (text, why) in [
+            ("layer[main].thickness", "layer[structure:row]"),
+            ("layer[main:x].thickness", "not an index"),
+            ("layer[main:#TiO2_0].thickness", "counts from 1"),
+            ("layer[main:1].colour", "unknown layer field"),
+            ("group[H].n", "unknown group field"),
+            ("material[TiO2]", "missing .param"),
+            ("material[TiO2].osc[x]", "not an index"),
+            ("stack[1].thickness", "expected layer"),
+            ("layer[main:1", "unclosed"),
+        ] {
+            let err = ParamAddr::parse(text).unwrap_err();
+            assert!(err.contains(text) && err.contains(why), "{err}");
+        }
+    }
+
+    #[test]
+    fn log_transform_inverts() {
+        let t = Transform::Log;
+        assert!((t.inverse(t.forward(37.5)) - 37.5).abs() < 1e-12);
+        assert_eq!(t.slope(2.0), 2.0);
+    }
+}

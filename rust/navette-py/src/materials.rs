@@ -421,6 +421,83 @@ fn table_nk<'py>(
     to_py(py, out)
 }
 
+fn value_error<'py>(
+    py: Python<'py>,
+    res: Result<Array1<Complex64>, String>,
+) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
+    res.map(|out| to_py(py, out)).map_err(PyValueError::new_err)
+}
+
+/// Free-form n, k at given wavelengths, linear in between, held at the ends.
+#[pyfunction]
+#[pyo3(signature = (wavelength_nm, points, n, k=None))]
+fn point_wise_nk<'py>(
+    py: Python<'py>,
+    wavelength_nm: PyReadonlyArray1<'py, f64>,
+    points: PyReadonlyArray1<'py, f64>,
+    n: PyReadonlyArray1<'py, f64>,
+    k: Option<PyReadonlyArray1<'py, f64>>,
+) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
+    let (wl, x, n) = (owned1(wavelength_nm), owned1(points), owned1(n));
+    let k = k.map(owned1);
+    let res = py.detach(move || {
+        core::freeform::point_wise_nk(
+            wl.view(),
+            x.as_slice().unwrap(),
+            n.as_slice().unwrap(),
+            k.as_ref().map(|k| k.as_slice().unwrap()),
+        )
+    });
+    value_error(py, res)
+}
+
+/// Free-form n, k on knots by pchip, makima or linear interpolation.
+#[pyfunction]
+#[pyo3(signature = (wavelength_nm, knots, n, k=None, method="pchip"))]
+fn spline_nk<'py>(
+    py: Python<'py>,
+    wavelength_nm: PyReadonlyArray1<'py, f64>,
+    knots: PyReadonlyArray1<'py, f64>,
+    n: PyReadonlyArray1<'py, f64>,
+    k: Option<PyReadonlyArray1<'py, f64>>,
+    method: &str,
+) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
+    let (wl, x, n) = (owned1(wavelength_nm), owned1(knots), owned1(n));
+    let k = k.map(owned1);
+    let method = method.to_string();
+    let res = py.detach(move || {
+        core::freeform::spline_nk(
+            wl.view(),
+            x.as_slice().unwrap(),
+            n.as_slice().unwrap(),
+            k.as_ref().map(|k| k.as_slice().unwrap()),
+            &method,
+        )
+    });
+    value_error(py, res)
+}
+
+/// eps2 as a cubic B-spline in energy (eV), eps1 by FFT Kramers-Kronig.
+#[pyfunction]
+fn bspline_eps_nk<'py>(
+    py: Python<'py>,
+    wavelength_nm: PyReadonlyArray1<'py, f64>,
+    energies: PyReadonlyArray1<'py, f64>,
+    eps2: PyReadonlyArray1<'py, f64>,
+    eps_inf: f64,
+) -> PyResult<Bound<'py, PyArray1<Complex64>>> {
+    let (wl, e, c) = (owned1(wavelength_nm), owned1(energies), owned1(eps2));
+    let res = py.detach(move || {
+        core::freeform::bspline_eps_nk(
+            wl.view(),
+            e.as_slice().unwrap(),
+            c.as_slice().unwrap(),
+            eps_inf,
+        )
+    });
+    value_error(py, res)
+}
+
 /// Register the dispersion-models submodule (`navette._navette._materials`).
 #[pymodule]
 pub fn _materials(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -446,5 +523,8 @@ pub fn _materials(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tauc_lorentz_nk, m)?)?;
     m.add_function(wrap_pyfunction!(konstant_nk, m)?)?;
     m.add_function(wrap_pyfunction!(table_nk, m)?)?;
+    m.add_function(wrap_pyfunction!(point_wise_nk, m)?)?;
+    m.add_function(wrap_pyfunction!(spline_nk, m)?)?;
+    m.add_function(wrap_pyfunction!(bspline_eps_nk, m)?)?;
     Ok(())
 }

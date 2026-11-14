@@ -1,7 +1,7 @@
 # Basin optimizer backends
 
 Build with `maturin develop --release --features opt-basin`, then select
-`LmConfig(optimizer="basin_lm_qr")` or `LmConfig(optimizer="basin_trf")`. Both
+`LmConfig(backend="basin_lm_qr")` or `LmConfig(backend="basin_trf")`. Both
 use Basin 1.15's `Vec<f64>` and `DenseMatrix` implementations, with default
 features disabled. The default Navette backend remains `builtin`.
 
@@ -75,7 +75,7 @@ with the backend name. Non-finite trial residuals remain available to Basin's
 rejection logic.
 
 `basin_lm_qr` is additionally subject to the check every interval-mapped
-backend gets in `run_optimizer`: after a convergence reason, each coordinate
+backend gets in `solve_least_squares`: after a convergence reason, each coordinate
 within `1e-8` of the box width of a bound is probed once, `√ε` of the width
 back inside. If the cost falls there, the bound is not a constrained optimum
 and the reason becomes `StuckAtBound`. The probes count towards `evals`; `x`
@@ -128,7 +128,7 @@ modes. Times include fresh context and stack construction; they measure
 end-to-end optimization rather than the linear solve alone.
 
 Each cell is median wall time in ms, the interquartile range in brackets, and
-residual calls. QR LM's calls include the inward probe `run_optimizer` adds
+residual calls. QR LM's calls include the inward probe `solve_least_squares` adds
 for each coordinate it leaves saturated at a bound.
 
 | Case, analytic Jacobian | Built-in TRF | Basin full TRF | Basin QR LM |

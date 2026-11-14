@@ -1,0 +1,50 @@
+{
+  "solver": {
+    "wavelength_unit": "nm", "angle_unit": "rad", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "nm_deg": {
+    "wavelength_unit": "nm", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "nm_deg_delta360": {
+    "wavelength_unit": "nm", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "positive", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "nm_deg_opposite_delta": {
+    "wavelength_unit": "nm", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "positive", "delta_sign": "opposite", "ell_form": "psi_delta"
+  },
+  "nm_deg_percent": {
+    "wavelength_unit": "nm", "angle_unit": "deg", "value_scale": "percent",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "um_deg": {
+    "wavelength_unit": "um", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "angstrom_deg_percent": {
+    "wavelength_unit": "angstrom", "angle_unit": "deg", "value_scale": "percent",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "ev_deg": {
+    "wavelength_unit": "ev", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "wavenumber_deg_percent": {
+    "wavelength_unit": "wavenumber", "angle_unit": "deg", "value_scale": "percent",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "psi_delta"
+  },
+  "nm_deg_tan_cos": {
+    "wavelength_unit": "nm", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "tan_psi_cos_delta"
+  },
+  "ev_deg_ncs": {
+    "wavelength_unit": "ev", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "solver", "ell_form": "ncs"
+  },
+  "ev_deg_ncs_opposite_delta": {
+    "wavelength_unit": "ev", "angle_unit": "deg", "value_scale": "fraction",
+    "delta_range": "symmetric", "delta_sign": "opposite", "ell_form": "ncs"
+  }
+}

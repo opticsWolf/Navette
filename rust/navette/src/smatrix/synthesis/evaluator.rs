@@ -7,18 +7,20 @@
 //!   * coherent_block::solve_coherent_block_fields_dual  — one dual-pol
 //!     interface sweep per spectral point (rayon over angle×λ grid)
 //!   * MeritSpec::merit / ::residuals                    — targets engine
-//!   * thick_opt::levenberg_marquardt                    — bounded LM
+//!   * lsq::lm::levenberg_marquardt                      — bounded LM
 //!
-//! optimize_thicknesses mirrors ClampedNeedleSynthesizer.optimize_thicknesses:
+//! refine_thicknesses mirrors ClampedNeedleSynthesizer.refine_thicknesses:
 //! LM over optimize-flagged films with bounds [0, clamp_max], then a
 //! clamp_all(clamp_min, clamp_max) sweep that REMOVES sub-min layers.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+use crate::lsq::backends::{LsqResult, solve_least_squares};
+use crate::lsq::lm::{JacobianMode, LmConfig, NoJacobian};
+use crate::lsq::pool::in_lm_pool;
 use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
     CascadeTrack, block_flux_factors, block_intensities, build_stack_fields_range_dual,
@@ -28,12 +30,12 @@ use crate::smatrix::needle_operator::{
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::smatrix::synthesis::context::DesignContext;
 use crate::smatrix::synthesis::environments::CompiledEnvironments;
-use crate::smatrix::synthesis::jacobian::assemble_jacobian_mapped;
-use crate::smatrix::synthesis::jacobian::{ALL_SLOTS, BACK_SLOT, CurveDeposits};
 use crate::smatrix::synthesis::merit::{CurveId, CurveSet, MeritSpec, Radians, SimCurves};
-use crate::smatrix::synthesis::optimizer::{OptimizerResult, run_optimizer};
 use crate::smatrix::synthesis::structure::{ClampReport, DesignStack, SolverArrays};
-use crate::smatrix::synthesis::thick_opt::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
+use crate::smatrix::synthesis::thickness_jacobian::{ALL_SLOTS, BACK_SLOT, CurveDeposits};
+use crate::smatrix::synthesis::thickness_refine::{
+    ThicknessJacobian, apply_thickness_params, thickness_params,
+};
 
 /// Largest exit-medium extinction coefficient a back-incidence demand
 /// accepts. Glass data with residual k ≈ 1e-7…1e-5 passes; coloured glass
@@ -53,7 +55,7 @@ pub struct SmatrixContext {
     /// bound to `clamp_min_nm` (see the limit-cycle argument on the enum).
     pub thin_layer_policy: ThinLayerPolicy,
     pub lm: LmConfig,
-    /// F0.2: clamp reports from every `optimize_thicknesses` sweep since
+    /// F0.2: clamp reports from every `refine_thicknesses` sweep since
     /// the last drain. The pipeline drains it into the phase result and
     /// the accumulator resets; the residual closures' clones carry a
     /// snapshot that is never read back.
@@ -721,8 +723,8 @@ impl DesignContext for SmatrixContext {
         true
     }
 
-    fn optimize_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
-        self.optimize_thicknesses_report(stack).map(|(mf, _)| mf)
+    fn refine_thicknesses(&mut self, stack: &mut DesignStack) -> Result<f64, String> {
+        self.refine_thicknesses_report(stack).map(|(mf, _)| mf)
     }
 
     fn take_clamp_report(&mut self) -> Option<ClampReport> {
@@ -769,24 +771,24 @@ impl SmatrixContext {
         }
     }
 
-    /// `optimize_thicknesses`, plus the solver's own account of the run.
+    /// `refine_thicknesses`, plus the solver's own account of the run.
     ///
     /// The report is `None` when there was nothing to optimize (no
     /// optimize-flagged films), which is not a solve and has no diagnostics.
-    /// Otherwise it is the solver's `OptimizerResult` — `backend` says which
+    /// Otherwise it is the solver's `LsqResult` — `backend` says which
     /// solver ran, `analytic_jacobians` which Jacobian path it took, and
     /// `gain_ratio` / `termination` how the run ended. The trait method drops
     /// it; callers that want to know keep it.
-    pub fn optimize_thicknesses_report(
+    pub fn refine_thicknesses_report(
         &mut self,
         stack: &mut DesignStack,
-    ) -> Result<(f64, Option<OptimizerResult>), String> {
+    ) -> Result<(f64, Option<LsqResult>), String> {
         // F1.6 (U2/B5): the parameter list stops being a row list. A
         // profiled carrier's span is ONE physical layer, so its total
         // thickness is one parameter, distributed over the span's bulk
         // rows by the frozen fractions. Everything else is today's row
         // parameter, and the list is the same list it is today.
-        let params = build_params(stack);
+        let params = thickness_params(stack);
         if params.is_empty() {
             return self.evaluate_merit(stack).map(|mf| (mf, None));
         }
@@ -803,7 +805,7 @@ impl SmatrixContext {
         let multi = self.envs.is_some();
         let residuals = move |x: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
             let mut st = base_stack.clone();
-            apply_params(&mut st, &params_owned, x)?;
+            apply_thickness_params(&mut st, &params_owned, x)?;
             if multi {
                 // Every environment sees the same parameter vector: the
                 // design object is shared, and `expand` is what writes one
@@ -855,7 +857,7 @@ impl SmatrixContext {
         // preference, not a promise.
         //
         // Which *solver* consumes them is `self.lm.backend`'s business, and
-        // `run_optimizer`'s: the built-in LM is the default and the only one
+        // `solve_least_squares`'s: the built-in LM is the default and the only one
         // with bounds semantics of its own (R4.4c).
         //
         // The pool is sized by the work one parallel call spreads: grid
@@ -870,16 +872,16 @@ impl SmatrixContext {
             * self.envs.as_ref().map_or(1, |e| e.names().len());
         let res = in_lm_pool(work, || match self.lm.jacobian {
             JacobianMode::Analytic => {
-                let src = DepositJacobian::new(
+                let src = ThicknessJacobian::new(
                     self.clone(),
                     stack.clone(),
                     params.clone(),
                     self.wavls.len(),
                 );
-                run_optimizer(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)
+                solve_least_squares(&residuals, Some(&src), &x0, &lb, &ub, &self.lm)
             }
             JacobianMode::Fd => {
-                run_optimizer(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)
+                solve_least_squares(&residuals, None::<&NoJacobian>, &x0, &lb, &ub, &self.lm)
             }
         })?;
 
@@ -888,7 +890,7 @@ impl SmatrixContext {
         // pipeline drains it into the phase result at record time - a
         // per-call message here would be noise (this fires after every
         // thickness optimization, dozens of times per cycle).
-        apply_params(stack, &params, &res.x)?;
+        apply_thickness_params(stack, &params, &res.x)?;
         // During the run: F0.3's pass structure (only ClampUpAlways
         // clamps up mid-run; the pipeline's final pass carries
         // ClampUpFinal). F1.6: scalable spans follow the same structure.
@@ -913,268 +915,19 @@ impl SmatrixContext {
     }
 }
 
-/// F1.6 (U2/B5): one LM parameter.
-///
-/// - `Row(i)` is film i's own thickness — today's parameter, and the only
-///   kind a stack with no scalable span produces, in the same order.
-/// - `Span` is one profiled carrier's TOTAL thickness `D`, distributed over
-///   the span's bulk rows by fractions frozen at build time
-///   (`phi_r = d_r / D0`). The interface slice is not in `rows` and is not
-///   scaled: it is an interface property, not part of the layer's
-///   thickness. Scalable = the span has at least two bulk rows and every
-///   one of them is optimize-flagged — the shape `from_design` gives a
-///   profiled (`inhomogen` or `gradient`) carrier with `optimize = true`
-///   whose mode scales exactly (`InhMode::Fixed`, `GradientMode::FixedSpan`).
-///   The RATE modes read absolute depth, so scaling one thickness moves
-///   every row's `f` — those spans are scalable too since F1.7, and
-///   `refresh_profiles` (at the construction points) rebuilds the profile
-///   at the new depth before anything reads it: the rebuild is what makes
-///   "one thickness per span" sound for every mode, not just the
-///   scale-exact ones.
-#[derive(Clone, Debug)]
-pub(crate) enum Param {
-    Row(usize),
-    Span {
-        rows: Vec<usize>,
-        fractions: Vec<f64>,
-    },
-}
-
-impl Param {
-    /// The parameter's starting value: the row's thickness, or the span
-    /// total D0 the fractions were frozen at.
-    fn value0(&self, stack: &DesignStack) -> f64 {
-        match self {
-            Param::Row(i) => stack.films()[*i].d_nm,
-            Param::Span { rows, .. } => rows.iter().map(|&r| stack.films()[r].d_nm).sum(),
-        }
-    }
-}
-
-/// Threads for one optimizer run up to [`LM_BASE_WORK`]; the pool doubles at
-/// every further 16× of work. Measured on 32 logical CPUs, ms per LM
-/// iteration at 8 / 16 / 32 threads (work = points × layers × columns):
-///
-/// | case                         | work  | 8     | 16    | 32    |
-/// |------------------------------|-------|-------|-------|-------|
-/// | 16 films, 61 λ               | 1.1k  | 0.14  | 0.19  | 0.24  |
-/// | 80 films, 61 λ               | 5.0k  | 1.36  | 1.46  | 1.66  |
-/// | 16 graded films, 61 λ        | 8.4k  | 0.60  | 0.54  | 0.54  |
-/// | 80 films, 401 λ              | 33k   | 6.34  | 5.81  | 6.10  |
-/// | 32 graded films (1196), 61 λ | 73k   | 5.10  | 3.87  | 3.81  |
-/// | 80 graded films (2990), 61 λ | 183k  | 17.3  | 22.4  | 13.8  |
-/// | 16 films, 1001 λ × 30 angles | 541k  | 63.0  | 49.1  | 45.5  |
-/// | 32 graded films, 201 λ × 30  | 7.3M  | 587   | 381   | 313   |
-///
-/// A small sweep loses to the cost of waking and coordinating threads that
-/// get a few points each; a large one is throughput-bound and takes every
-/// thread there is.
-const LM_THREADS: usize = 8;
-
-/// Work below which [`LM_THREADS`] is the pool: the 16-film case on 601
-/// wavelengths (10.8k) sits at the crossover, a tie between 8 and 16.
-const LM_BASE_WORK: usize = 8192;
-
-/// The pool for `work`: [`LM_THREADS`], doubled per 16× of work above
-/// [`LM_BASE_WORK`] (8k → 16, 131k → 32, 2.1M → 64), before the cap.
-fn lm_threads_for(work: usize) -> usize {
-    let mut threads = LM_THREADS;
-    let mut bound = LM_BASE_WORK;
-    while work >= bound && threads < 1 << 16 {
-        threads *= 2;
-        bound = bound.saturating_mul(16);
-    }
-    threads
-}
-
-/// Run `f` (one optimizer run) on a rayon worker of a small pool.
-///
-/// Two costs this avoids, both per parallel call and both paid hundreds of
-/// times per run. Called from outside a pool, every sweep is injected into
-/// the global queue while the caller sleeps on an OS latch; on a worker it
-/// is pushed locally. And a big pool on a small sweep wakes threads that
-/// cost more to coordinate than their share saves. The pool has
-/// [`lm_threads_for`]`(work)` threads, or `NAVETTE_LM_THREADS` rounded up
-/// to a power of two, capped at the global
-/// pool's size (so `RAYON_NUM_THREADS` still bounds it); the pools are
-/// built once and kept. Results do not depend on the thread count: every
-/// sweep collects in index order.
-///
-/// Already on a worker (a caller that parallelizes over runs), `f` runs
-/// where it is, so the caller's own parallelism is left alone.
-fn in_lm_pool<R: Send>(work: usize, f: impl FnOnce() -> R + Send) -> R {
-    use std::sync::OnceLock;
-    const N_POOLS: usize = usize::BITS as usize;
-    static POOLS: [OnceLock<Option<rayon::ThreadPool>>; N_POOLS] =
-        [const { OnceLock::new() }; N_POOLS];
-
-    if rayon::current_thread_index().is_some() {
-        return f();
-    }
-    let global = rayon::current_num_threads();
-    let want = std::env::var("NAVETTE_LM_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or_else(|| lm_threads_for(work))
-        .max(1)
-        .next_power_of_two();
-    if want >= global {
-        return rayon::scope(|_| f());
-    }
-    let pool = POOLS[want.trailing_zeros() as usize].get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(want)
-            .thread_name(move |i| format!("navette-lm{want}-{i}"))
-            .build()
-            .ok()
-    });
-    match pool {
-        Some(p) => p.install(f),
-        None => rayon::scope(|_| f()),
-    }
-}
-
-/// The parameter list for one `optimize_thicknesses` call.
-///
-/// Span parameters first-class: each scalable span contributes ONE
-/// parameter (its bulk rows in row order, fractions frozen from the
-/// current row thicknesses). Every other optimize-flagged row is a `Row`
-/// parameter. A stack with no scalable span produces exactly today's
-/// `opt_indices` list, as `Row` params.
-pub(crate) fn build_params(stack: &DesignStack) -> Vec<Param> {
-    let films = stack.films();
-    let mut params = Vec::new();
-    for sp in stack.spans() {
-        if stack.span_is_scalable(sp) {
-            let rows: Vec<usize> = (sp.bulk_start..sp.end).collect();
-            let d0: f64 = rows.iter().map(|&r| films[r].d_nm).sum();
-            let fractions: Vec<f64> = rows.iter().map(|&r| films[r].d_nm / d0).collect();
-            params.push(Param::Span { rows, fractions });
-        } else {
-            for r in sp.bulk_start..sp.end {
-                if films[r].optimize {
-                    params.push(Param::Row(r));
-                }
-            }
-        }
-    }
-    params
-}
-
-/// Write one parameter vector into a stack. `Row` writes its row; a span
-/// writes `phi_r * D` per bulk row (frozen fractions, moving total). At
-/// `x[j] == D0` the rebuild agrees with the original stack to the
-/// multiply-divide rounding (~1 ulp per row) — the one place this path is
-/// not bitwise, and no fingerprint touches a span stack.
-pub(crate) fn apply_params(
-    stack: &mut DesignStack,
-    params: &[Param],
-    x: &[f64],
-) -> Result<(), String> {
-    for (j, p) in params.iter().enumerate() {
-        match p {
-            Param::Row(i) => stack.set_thickness(*i, x[j])?,
-            Param::Span { rows, fractions } => {
-                for (&r, &f) in rows.iter().zip(fractions.iter()) {
-                    stack.set_thickness(r, f * x[j])?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The analytic Jacobian of one `optimize_thicknesses` problem: rebuild the
-/// stack at `x`, take one sweep with deposits, and multiply the two halves.
-///
-/// Declines (`Ok(None)`) when the merit spec has rows whose dependence the
-/// sensitivity pass does not carry — color demands. That is
-/// a property of the spec, not of `x`, so a declining source declines every
-/// iteration and the run is simply the finite-difference run. The first
-/// decline is remembered, so the later calls skip the deposits sweep whose
-/// answer they already know.
-struct DepositJacobian {
-    ctx: SmatrixContext,
-    base_stack: DesignStack,
-    params: Vec<Param>,
-    n_wav: usize,
-    declined: AtomicBool,
-}
-
-impl DepositJacobian {
-    fn new(ctx: SmatrixContext, base_stack: DesignStack, params: Vec<Param>, n_wav: usize) -> Self {
-        Self {
-            ctx,
-            base_stack,
-            params,
-            n_wav,
-            declined: AtomicBool::new(false),
-        }
-    }
-}
-
-impl JacobianSource for DepositJacobian {
-    fn fill(&self, x: &[f64], jac: &mut Vec<f64>) -> Result<Option<usize>, String> {
-        // F2.2: a multi-environment spec is an uncovered spec for now.
-        // `curve_sensitivity` walks the targets of ONE simulation and
-        // knows nothing about `env_idx`; routing the deposits by design
-        // -film name and summing them across environments is F2.3. Until
-        // then the joint run is a finite-difference run, which is the
-        // documented decline, not a silent single-environment Jacobian.
-        // A stack with an incoherent film is covered: its deposits go
-        // through the cascade's adjoint weights (W6).
-        if self.ctx.envs.is_some() || self.declined.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        let mut st = self.base_stack.clone();
-        apply_params(&mut st, &self.params, x)?;
-        // The deposits are per FILM ROW (the flat list: each parameter's
-        // rows in parameter order), then the mapped assembly contracts
-        // row columns into parameter columns with the frozen weights.
-        let mut flat_rows = Vec::new();
-        for p in &self.params {
-            match p {
-                Param::Row(i) => flat_rows.push(*i),
-                Param::Span { rows, .. } => flat_rows.extend_from_slice(rows),
-            }
-        }
-        let (sim, dep) = self.ctx.simulate_with_deposits(&st, &flat_rows)?;
-        let sens = self
-            .ctx
-            .spec
-            .curve_sensitivity(&sim)
-            .map_err(|c| format!("missing curve {c:?}"))?;
-        // Uncovered rows (colour), or rows whose curves the sweep has no
-        // deposits for: difference instead.
-        if !sens.is_complete() || !dep.covers(&sens) {
-            self.declined.store(true, Ordering::Relaxed);
-            return Ok(None);
-        }
-        assemble_jacobian_mapped(&sens, &dep, self.n_wav, &self.params, jac)?;
-        Ok(Some(sens.rows.len()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsq::lm::JacobianSource;
     #[allow(unused_imports)]
     use crate::smatrix::angle::{Radians, deg, degs};
     use crate::smatrix::synthesis::merit::{
         ConstraintKind, IntensityRatio, MeritKey, MeritTarget, SimTransform,
     };
     use crate::smatrix::synthesis::structure::LayerSpec;
-
-    #[test]
-    fn lm_pool_doubles_per_sixteenfold_work() {
-        assert_eq!(lm_threads_for(0), 8);
-        assert_eq!(lm_threads_for(8191), 8);
-        assert_eq!(lm_threads_for(8192), 16);
-        assert_eq!(lm_threads_for(131_071), 16);
-        assert_eq!(lm_threads_for(131_072), 32);
-        assert_eq!(lm_threads_for(2_097_152), 64);
-        assert!(lm_threads_for(usize::MAX) <= 1 << 16);
-    }
+    use crate::smatrix::synthesis::thickness_jacobian::assemble_jacobian_mapped;
+    use crate::smatrix::synthesis::thickness_refine::ThicknessParam;
+    use std::sync::atomic::Ordering;
 
     fn ar_spec(angle: f64, wl: f64) -> MeritSpec {
         let mut spec = MeritSpec::new();
@@ -1333,7 +1086,7 @@ mod tests {
         let mut ctx = ar_ctx(1000.0);
         let mut stack = ar_stack(350.0);
 
-        let mf = ctx.optimize_thicknesses(&mut stack).unwrap();
+        let mf = ctx.refine_thicknesses(&mut stack).unwrap();
         assert!(mf < 1e-6, "mf={mf}");
         let d_final = stack.films()[0].d_nm;
         // FD-Jacobian LM lands within a fraction of a nm here (smooth 1-D).
@@ -1569,7 +1322,7 @@ mod tests {
         let mut ctx = ar_ctx(1000.0);
         ctx.spec = spec;
         let mut stack = ar_stack(350.0);
-        let mf = ctx.optimize_thicknesses(&mut stack).unwrap();
+        let mf = ctx.refine_thicknesses(&mut stack).unwrap();
         assert!(mf < 1e-6, "mf={mf}");
     }
 
@@ -1578,7 +1331,7 @@ mod tests {
         use super::*;
         #[allow(unused_imports)]
         use crate::smatrix::angle::{Radians, deg, degs};
-        use crate::smatrix::synthesis::jacobian::{
+        use crate::smatrix::synthesis::thickness_jacobian::{
             ALL_SLOTS, BACK_DEPOSIT_CHANNELS, BACK_SLOT, CurveDeposits, DEPOSIT_CHANNELS,
             assemble_jacobian, deposit_channel,
         };
@@ -2011,10 +1764,14 @@ mod tests {
             let m = sens.rows.len();
             assert_eq!(m, WLS.len() + WLS.len() + 4 + 1);
 
-            let src = DepositJacobian::new(
+            let src = ThicknessJacobian::new(
                 ctx.clone(),
                 stack.clone(),
-                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                vec![
+                    ThicknessParam::Row(0),
+                    ThicknessParam::Row(1),
+                    ThicknessParam::Row(2),
+                ],
                 WLS.len(),
             );
             let mut mapped = Vec::new();
@@ -2420,10 +2177,14 @@ mod tests {
             let m = sens.rows.len();
             assert_eq!(m, 4 * WLS.len() + WLS.len() + 4 + 1);
 
-            let src = DepositJacobian::new(
+            let src = ThicknessJacobian::new(
                 ctx.clone(),
                 stack.clone(),
-                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                vec![
+                    ThicknessParam::Row(0),
+                    ThicknessParam::Row(1),
+                    ThicknessParam::Row(2),
+                ],
                 WLS.len(),
             );
             let mut mapped = Vec::new();
@@ -2974,10 +2735,14 @@ mod tests {
             assemble_jacobian(&sens, &dep, WLS.len(), &mut jac).unwrap();
             let m = sens.rows.len();
             assert_eq!(m, 2 * WLS.len() + 4 + 1);
-            let src = DepositJacobian::new(
+            let src = ThicknessJacobian::new(
                 ctx.clone(),
                 stack.clone(),
-                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                vec![
+                    ThicknessParam::Row(0),
+                    ThicknessParam::Row(1),
+                    ThicknessParam::Row(2),
+                ],
                 WLS.len(),
             );
             let mut mapped = Vec::new();
@@ -3116,7 +2881,7 @@ mod tests {
             let mut stack = ar_stack(10.0);
             let mut merits: Vec<f64> = Vec::new();
             for _ in 0..5 {
-                let mf = ctx.optimize_thicknesses(&mut stack).unwrap();
+                let mf = ctx.refine_thicknesses(&mut stack).unwrap();
                 merits.push(mf);
             }
             for w in merits.windows(2) {
@@ -3147,7 +2912,7 @@ mod tests {
                 envs: None,
             };
             let mut stack = ar_stack(10.0);
-            ctx.optimize_thicknesses(&mut stack).unwrap();
+            ctx.refine_thicknesses(&mut stack).unwrap();
             assert!(
                 stack.films().is_empty(),
                 "the default must keep elimination"
@@ -3264,7 +3029,7 @@ mod tests {
 
             let mut merits: Vec<f64> = Vec::new();
             for _ in 0..5 {
-                let mf = ctx.optimize_thicknesses(&mut stack).unwrap();
+                let mf = ctx.refine_thicknesses(&mut stack).unwrap();
                 merits.push(mf);
             }
             for w in merits.windows(2) {
@@ -3325,7 +3090,7 @@ mod tests {
                 &HashSet::new(),
             )
             .unwrap();
-            ctx2.optimize_thicknesses(&mut stack).unwrap();
+            ctx2.refine_thicknesses(&mut stack).unwrap();
             assert_eq!(
                 stack.films().len(),
                 1,
@@ -3343,7 +3108,7 @@ mod tests {
             let mut ctx = ar_ctx(1000.0);
             let mut stack = ar_stack(200.0);
             stack.set_row_optimize(0, false);
-            ctx.optimize_thicknesses(&mut stack).unwrap();
+            ctx.refine_thicknesses(&mut stack).unwrap();
             assert!(ctx.take_clamp_report().is_none());
 
             ctx.clamp_accumulator
@@ -3379,10 +3144,14 @@ mod tests {
             let mut spec = MeritSpec::new();
             demand(&mut spec, angle_of(SINS[0]), CurveId::Rs, 0.0);
             demand(&mut spec, angle_of(SINS[1]), CurveId::As, 0.0);
-            let covered = DepositJacobian::new(
+            let covered = ThicknessJacobian::new(
                 ctx3(spec),
                 stack.clone(),
-                vec![Param::Row(0), Param::Row(1), Param::Row(2)],
+                vec![
+                    ThicknessParam::Row(0),
+                    ThicknessParam::Row(1),
+                    ThicknessParam::Row(2),
+                ],
                 WLS.len(),
             );
             let mut jac = Vec::new();
@@ -3406,16 +3175,24 @@ mod tests {
                 Some(1.0),
                 false,
             );
-            let phase =
-                DepositJacobian::new(ctx3(pspec), stack.clone(), vec![Param::Row(0)], WLS.len());
+            let phase = ThicknessJacobian::new(
+                ctx3(pspec),
+                stack.clone(),
+                vec![ThicknessParam::Row(0)],
+                WLS.len(),
+            );
             assert_eq!(phase.fill(&[118.0], &mut jac).unwrap(), Some(WLS.len()));
             assert!(
                 jac.iter().any(|v| v.abs() > 1e-9),
                 "a phase spec gave a flat J"
             );
 
-            let color =
-                DepositJacobian::new(ctx3(color_spec()), stack, vec![Param::Row(0)], WLS.len());
+            let color = ThicknessJacobian::new(
+                ctx3(color_spec()),
+                stack,
+                vec![ThicknessParam::Row(0)],
+                WLS.len(),
+            );
             assert!(
                 color.fill(&[118.0], &mut jac).unwrap().is_none(),
                 "a color spec must decline, not answer"
@@ -3481,8 +3258,8 @@ mod tests {
             // diverge here — and the analytic run finds the better minimum.)
             let mut sa = stack3(122.0, 198.0, 67.0);
             let mut sb = sa.clone();
-            let ma = analytic.optimize_thicknesses(&mut sa).unwrap();
-            let mb = differenced.optimize_thicknesses(&mut sb).unwrap();
+            let ma = analytic.refine_thicknesses(&mut sa).unwrap();
+            let mb = differenced.refine_thicknesses(&mut sb).unwrap();
 
             assert_eq!(sa.films().len(), sb.films().len(), "one run dropped a film");
             assert!(
@@ -3537,8 +3314,8 @@ mod tests {
 
             let mut sa = stack3(122.0, 198.0, 67.0);
             let mut sb = sa.clone();
-            let ma = analytic.optimize_thicknesses(&mut sa).unwrap();
-            let mb = differenced.optimize_thicknesses(&mut sb).unwrap();
+            let ma = analytic.refine_thicknesses(&mut sa).unwrap();
+            let mb = differenced.refine_thicknesses(&mut sb).unwrap();
 
             assert_eq!(sa.films().len(), sb.films().len(), "one run dropped a film");
             assert!(
@@ -3623,14 +3400,14 @@ mod tests {
         /// The span param's (rows, fractions, D0) for a stack with
         /// exactly one span parameter.
         fn span_param(stack: &DesignStack) -> (Vec<usize>, Vec<f64>, f64) {
-            let params = build_params(stack);
+            let params = thickness_params(stack);
             assert_eq!(params.len(), 1, "one span, one parameter");
             match &params[0] {
-                Param::Span { rows, fractions } => {
+                ThicknessParam::Span { rows, fractions } => {
                     let d0: f64 = rows.iter().map(|&r| stack.films()[r].d_nm).sum();
                     (rows.clone(), fractions.clone(), d0)
                 }
-                Param::Row(_) => panic!("expected a span parameter"),
+                ThicknessParam::Row(_) => panic!("expected a span parameter"),
             }
         }
 
@@ -3641,13 +3418,13 @@ mod tests {
         #[test]
         fn f16_no_span_jacobian_is_bitwise_the_row_assembly() {
             let stack = span_stack(None, 118.0);
-            let params = build_params(&stack);
+            let params = thickness_params(&stack);
             assert_eq!(params.len(), 1);
-            assert!(matches!(params[0], Param::Row(0)));
+            assert!(matches!(params[0], ThicknessParam::Row(0)));
             let ctx = ar_ctx(1000.0);
             let mut flat_rows = Vec::new();
             for p in &params {
-                if let Param::Row(i) = p {
+                if let ThicknessParam::Row(i) = p {
                     flat_rows.push(*i);
                 }
             }
@@ -3671,7 +3448,7 @@ mod tests {
             let (rows, fractions, _) = span_param(&stack);
             assert!(rows.len() >= 2);
             let ctx = ar_ctx(1000.0);
-            let params = build_params(&stack);
+            let params = thickness_params(&stack);
             let (sim, dep) = ctx.simulate_with_deposits(&stack, &rows).unwrap();
             let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
             assert!(sens.is_complete());
@@ -3704,7 +3481,7 @@ mod tests {
             let stack = span_stack(Some(0.2), 200.0);
             let (rows, fractions, d0) = span_param(&stack);
             let ctx = ar_ctx(1000.0);
-            let params = build_params(&stack);
+            let params = thickness_params(&stack);
             let (sim, dep) = ctx.simulate_with_deposits(&stack, &rows).unwrap();
             let sens = ctx.spec.curve_sensitivity(&sim).unwrap();
             let mut mapped = Vec::new();
@@ -3741,9 +3518,9 @@ mod tests {
         #[test]
         fn f16_build_params_no_span_is_todays_list() {
             let stack = ar_stack(118.0);
-            let ps = build_params(&stack);
+            let ps = thickness_params(&stack);
             assert_eq!(ps.len(), 1);
-            assert!(matches!(ps[0], Param::Row(0)));
+            assert!(matches!(ps[0], ThicknessParam::Row(0)));
             // A pinned span (background carrier: no optimize rows)
             // contributes NOTHING, and neighboring free rows still do.
             let nw = WLS.len();
@@ -3760,10 +3537,10 @@ mod tests {
             let mut c = LayerSpec::constant("C", 2.0, 0.0, 50.0, nw);
             c.optimize = true;
             let stack = DesignStack::with_films(ambient, substrate, vec![a, b, c]).unwrap();
-            let ps = build_params(&stack);
+            let ps = thickness_params(&stack);
             assert_eq!(ps.len(), 2);
-            assert!(matches!(ps[0], Param::Row(0)));
-            assert!(matches!(ps[1], Param::Row(2)));
+            assert!(matches!(ps[0], ThicknessParam::Row(0)));
+            assert!(matches!(ps[1], ThicknessParam::Row(2)));
         }
 
         /// P - the profile-preservation twin: after an LM solve that
@@ -3786,11 +3563,11 @@ mod tests {
             // operation the residual closure and the post-solve writeback
             // run. The LM's own move size is design-dependent (here the
             // Rs=0 attractor is local), so the fixed-ratio move is
-            // asserted through apply_params; part 2 checks a real solve.
+            // asserted through apply_thickness_params; part 2 checks a real solve.
             let d_moved = 1.4 * d0;
             {
                 let mut st = stack.clone();
-                apply_params(&mut st, &build_params(&stack), &[d_moved]).unwrap();
+                apply_thickness_params(&mut st, &thickness_params(&stack), &[d_moved]).unwrap();
                 for (&r, &f) in rows.iter().zip(&fractions) {
                     assert_eq!(
                         st.films()[r].d_nm,
@@ -3808,7 +3585,7 @@ mod tests {
             // Part 2 - a real LM solve: whatever move it makes, every
             // row is bitwise the frozen-fraction writeback of the
             // parameter it returned, and the profile is undeformed.
-            let (mf, res) = ctx.optimize_thicknesses_report(&mut stack).unwrap();
+            let (mf, res) = ctx.refine_thicknesses_report(&mut stack).unwrap();
             let res = res.expect("there is a span to optimize");
             let d_new = res.x[0];
             assert!(
@@ -3850,7 +3627,7 @@ mod tests {
             assert_eq!(stack.films().len(), 57, "the plan's measured row count");
             // The LM runs, respects the ceiling, and the clamp caps the
             // span (fractions preserved) rather than refusing.
-            let (_mf, res) = ctx.optimize_thicknesses_report(&mut stack).unwrap();
+            let (_mf, res) = ctx.refine_thicknesses_report(&mut stack).unwrap();
             let res = res.expect("there is a span to optimize");
             assert!(res.x[0] <= 300.0, "D above the ceiling: {}", res.x[0]);
             let total: f64 = (0..stack.films().len())
@@ -3922,7 +3699,7 @@ mod tests {
         stack
     }
 
-    /// Row-count-frozen twin: across one real `optimize_thicknesses`
+    /// Row-count-frozen twin: across one real `refine_thicknesses`
     /// call the span's row count is FROZEN, even though the solve moves
     /// the span's total across the count rule's ceil() boundaries (the
     /// U4 requirement: the residual must not change length mid-solve,
@@ -3942,7 +3719,7 @@ mod tests {
         assert_eq!(sp0.end - sp0.start, 12, "count(221 nm) = 12 rows");
         let d0: f64 = stack.films().iter().map(|l| l.d_nm).sum();
         let mut ctx = ar_ctx(1000.0);
-        let (mf, res) = ctx.optimize_thicknesses_report(&mut stack).unwrap();
+        let (mf, res) = ctx.refine_thicknesses_report(&mut stack).unwrap();
         let res = res.expect("there is a span to optimize");
         let d_new = res.x[0];
         assert!(
@@ -4105,10 +3882,10 @@ mod tests {
             envs: None,
             thin_layer_policy: ThinLayerPolicy::Remove,
         };
-        let params = build_params(&stack);
+        let params = thickness_params(&stack);
         let x: Vec<f64> = params.iter().map(|p| p.value0(&stack)).collect();
         let rows: Vec<usize> = (0..n_films).collect();
-        let src = DepositJacobian::new(ctx.clone(), stack.clone(), params.clone(), nw);
+        let src = ThicknessJacobian::new(ctx.clone(), stack.clone(), params.clone(), nw);
 
         fn time<T>(reps: usize, mut f: impl FnMut() -> T) -> f64 {
             for _ in 0..reps / 10 + 1 {
@@ -4128,10 +3905,10 @@ mod tests {
         let mut jac = Vec::new();
         let parts = [
             (
-                "clone + apply_params",
+                "clone + apply_thickness_params",
                 time(reps, || {
                     let mut st = stack.clone();
-                    apply_params(&mut st, &params, &x).unwrap();
+                    apply_thickness_params(&mut st, &params, &x).unwrap();
                     st
                 }),
             ),
@@ -4159,7 +3936,7 @@ mod tests {
                 }),
             ),
             (
-                "DepositJacobian::fill",
+                "ThicknessJacobian::fill",
                 time(reps, || src.fill(&x, &mut jac).unwrap()),
             ),
         ];
@@ -4267,10 +4044,10 @@ mod tests {
         let mut c = ctx.clone();
         let lm_us = time(5, || {
             let mut st = stack.clone();
-            c.optimize_thicknesses_report(&mut st).unwrap()
+            c.refine_thicknesses_report(&mut st).unwrap()
         });
         let mut st = stack.clone();
-        let (_, rep) = c.optimize_thicknesses_report(&mut st).unwrap();
+        let (_, rep) = c.refine_thicknesses_report(&mut st).unwrap();
         let rep = rep.unwrap();
         eprintln!(
             "--- {n_films} films, {nw} wavelengths, {} threads ---",
@@ -5468,7 +5245,7 @@ mod needle_oracle {
         ids: &[CurveId],
         what: &str,
     ) {
-        use crate::smatrix::synthesis::jacobian::deposit_channel;
+        use crate::smatrix::synthesis::thickness_jacobian::deposit_channel;
         let h = 1e-4;
         let angle = c.sin_theta[0].asin().to_degrees();
         let (_, dep) = c.simulate_with_deposits(st, par).unwrap();
@@ -5655,7 +5432,7 @@ mod needle_oracle {
     /// decline) and lands where the differenced one does.
     #[test]
     fn lm_through_a_plate_is_analytic_and_agrees_with_differences() {
-        use crate::smatrix::synthesis::thick_opt::JacobianMode;
+        use crate::lsq::lm::JacobianMode;
         let angle = deg(30.0);
         let mut spec = MeritSpec::new();
         add(&mut spec, angle, d(CurveId::Ru, 0.1));
@@ -5665,8 +5442,8 @@ mod needle_oracle {
         let mut fd = ctx(spec, angle);
         fd.lm.jacobian = JacobianMode::Fd;
         let (mut sa, mut sb) = (plate(), plate());
-        let (ma, ra) = an.optimize_thicknesses_report(&mut sa).unwrap();
-        let (mb, _) = fd.optimize_thicknesses_report(&mut sb).unwrap();
+        let (ma, ra) = an.refine_thicknesses_report(&mut sa).unwrap();
+        let (mb, _) = fd.refine_thicknesses_report(&mut sb).unwrap();
         let ra = ra.unwrap();
         assert!(ra.analytic_jacobians > 0, "{ra:?}");
         assert!((ma - mb).abs() <= 1e-6 * mb.max(1e-9), "{ma} vs {mb}");
@@ -5735,7 +5512,7 @@ mod needle_oracle {
         let mut c = ctx(spec, Radians::ZERO);
         let mut st = plate();
         let m0 = c.evaluate_merit(&st).unwrap();
-        let m1 = c.optimize_thicknesses(&mut st).unwrap();
+        let m1 = c.refine_thicknesses(&mut st).unwrap();
         assert!(m1 < 0.5 * m0, "merit {m0} -> {m1}");
         let f = &st.films()[2];
         assert!(!f.coherent && f.d_nm == 200_000.0);

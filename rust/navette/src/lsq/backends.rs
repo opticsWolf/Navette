@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //! Navette -- Rust Rewrite of Numba-optimized thin-film optical solver
 //!
-//! synthesis::optimizer — which least-squares solver runs, and on what
+//! lsq::backends — which least-squares solver runs, and on what
 //! problem.
 //!
 //! The residual system is already solver-agnostic: `MeritSpec::residuals` is
@@ -22,7 +22,7 @@
 //!
 //! The reparametrization has one failure mode worth catching: at a bound the
 //! map's slope vanishes, so an unbounded backend can "converge" on a bound the
-//! physics would leave. [`run_optimizer`] probes inward at every saturated
+//! physics would leave. [`solve_least_squares`] probes inward at every saturated
 //! coordinate after such a run and reports [`LmTermination::StuckAtBound`]
 //! when the cost goes down there.
 //!
@@ -34,12 +34,7 @@
 //! not compiled in is an error with a rebuild hint, never a silent fallback
 //! to a different solver.
 
-use super::thick_opt::{
-    JacobianSource, LmConfig, LmResult, LmTermination, levenberg_marquardt_with,
-};
-
-#[cfg(feature = "opt-basin")]
-mod basin_backends;
+use super::lm::{JacobianSource, LmConfig, LmResult, LmTermination, levenberg_marquardt_with};
 
 // ---------------------------------------------------------------------------
 // Backend selection
@@ -52,8 +47,8 @@ mod basin_backends;
 /// `--features opt-minpack-lm`" is the useful answer to selecting one that is
 /// missing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum OptimizerBackend {
-    /// Navette's own bounded Levenberg-Marquardt (`thick_opt`): QR step
+pub enum LsqBackend {
+    /// Navette's own bounded Levenberg-Marquardt (`lsq::lm`): QR step
     /// solve, gain-ratio damping, veto+clamp bounds, analytic or differenced
     /// Jacobian. The default backend.
     #[default]
@@ -63,8 +58,8 @@ pub enum OptimizerBackend {
     /// on the interior reparametrization.
     MinpackLm,
     /// Trust-region reflective (Branch-Coleman-Li), the reference method for
-    /// *bounded* least squares and the one `thick_opt`'s docs have been
-    /// naming since the rewrite (`synthesis::trf`, R4.6). Hand-rolled, so it
+    /// *bounded* least squares and the one `lsq::lm`'s docs have been
+    /// naming since the rewrite (`lsq::trf`, R4.6). Hand-rolled, so it
     /// is always available; bounds enter the subproblem rather than clipping
     /// its answer.
     Trf,
@@ -83,7 +78,7 @@ pub enum OptimizerBackend {
     /// A general minimizer rather than a least-squares one: it takes a scalar
     /// cost with a gradient and a Hessian, which is why the least-squares
     /// structure has to be assembled into those by hand here. It also has **no
-    /// convergence test of its own** — see [`OptimizerBackend::runs_to_max_iterations`].
+    /// convergence test of its own** — see [`LsqBackend::runs_to_max_iterations`].
     ArgminTrustRegion,
     /// Basin's pivoted-QR Levenberg-Marquardt, behind `opt-basin`.
     /// Unbounded: runs on the interior reparametrization, so a far start can
@@ -110,21 +105,21 @@ pub enum OptimizerBackend {
     /// `gtol` tests the Coleman–Li scaled gradient, `ftol` the *observed*
     /// relative cost change (no predicted-reduction condition), `xtol` the
     /// observed relative step. Damping settings and `gtol_scale_invariant`
-    /// are unused. Budgets behave as for [`OptimizerBackend::BasinLmQr`].
+    /// are unused. Budgets behave as for [`LsqBackend::BasinLmQr`].
     BasinTrf,
 }
 
-impl OptimizerBackend {
+impl LsqBackend {
     /// The name this backend answers to on the Python surface and in configs.
     pub fn as_str(self) -> &'static str {
         match self {
-            OptimizerBackend::BuiltinLm => "builtin",
-            OptimizerBackend::MinpackLm => "minpack_lm",
-            OptimizerBackend::Trf => "trf",
-            OptimizerBackend::ArgminGaussNewton => "argmin_gauss_newton",
-            OptimizerBackend::ArgminTrustRegion => "argmin_trust_region",
-            OptimizerBackend::BasinLmQr => "basin_lm_qr",
-            OptimizerBackend::BasinTrf => "basin_trf",
+            LsqBackend::BuiltinLm => "builtin",
+            LsqBackend::MinpackLm => "minpack_lm",
+            LsqBackend::Trf => "trf",
+            LsqBackend::ArgminGaussNewton => "argmin_gauss_newton",
+            LsqBackend::ArgminTrustRegion => "argmin_trust_region",
+            LsqBackend::BasinLmQr => "basin_lm_qr",
+            LsqBackend::BasinTrf => "basin_trf",
         }
     }
 
@@ -132,13 +127,13 @@ impl OptimizerBackend {
     /// caller that got this wrong is usually a user typing a string.
     pub fn parse(s: &str) -> Result<Self, String> {
         match s {
-            "builtin" => Ok(OptimizerBackend::BuiltinLm),
-            "minpack_lm" => Ok(OptimizerBackend::MinpackLm),
-            "trf" => Ok(OptimizerBackend::Trf),
-            "argmin_gauss_newton" => Ok(OptimizerBackend::ArgminGaussNewton),
-            "argmin_trust_region" => Ok(OptimizerBackend::ArgminTrustRegion),
-            "basin_lm_qr" => Ok(OptimizerBackend::BasinLmQr),
-            "basin_trf" => Ok(OptimizerBackend::BasinTrf),
+            "builtin" => Ok(LsqBackend::BuiltinLm),
+            "minpack_lm" => Ok(LsqBackend::MinpackLm),
+            "trf" => Ok(LsqBackend::Trf),
+            "argmin_gauss_newton" => Ok(LsqBackend::ArgminGaussNewton),
+            "argmin_trust_region" => Ok(LsqBackend::ArgminTrustRegion),
+            "basin_lm_qr" => Ok(LsqBackend::BasinLmQr),
+            "basin_trf" => Ok(LsqBackend::BasinTrf),
             other => Err(format!(
                 "unknown optimizer backend {other:?} (expected one of: builtin, \
                  minpack_lm, trf, argmin_gauss_newton, argmin_trust_region, basin_lm_qr, basin_trf)"
@@ -149,19 +144,19 @@ impl OptimizerBackend {
     /// Whether this build can actually run it.
     pub fn is_available(self) -> bool {
         match self {
-            OptimizerBackend::BuiltinLm => true,
-            OptimizerBackend::MinpackLm => cfg!(feature = "opt-minpack-lm"),
-            OptimizerBackend::Trf => true,
-            OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
+            LsqBackend::BuiltinLm => true,
+            LsqBackend::MinpackLm => cfg!(feature = "opt-minpack-lm"),
+            LsqBackend::Trf => true,
+            LsqBackend::ArgminGaussNewton | LsqBackend::ArgminTrustRegion => {
                 cfg!(feature = "opt-argmin")
             }
-            OptimizerBackend::BasinLmQr | OptimizerBackend::BasinTrf => cfg!(feature = "opt-basin"),
+            LsqBackend::BasinLmQr | LsqBackend::BasinTrf => cfg!(feature = "opt-basin"),
         }
     }
 
     /// Whether the backend stops only when it runs out of iterations.
     ///
-    /// True for [`OptimizerBackend::ArgminTrustRegion`] alone: argmin's
+    /// True for [`LsqBackend::ArgminTrustRegion`] alone: argmin's
     /// `TrustRegion` returns `NotTerminated` unconditionally, so the only
     /// exits are `max_iterations` and a target cost. Every other backend here
     /// has ftol/xtol/gtol tests. A caller reading `iterations` back to ask
@@ -169,7 +164,7 @@ impl OptimizerBackend {
     /// that reports `MaxIterations` from this backend is its normal exit, not
     /// a failure.
     pub fn runs_to_max_iterations(self) -> bool {
-        matches!(self, OptimizerBackend::ArgminTrustRegion)
+        matches!(self, LsqBackend::ArgminTrustRegion)
     }
 
     /// Whether the backend honours `lb`/`ub` natively, or has to be wrapped
@@ -177,7 +172,7 @@ impl OptimizerBackend {
     pub fn bounds_are_native(self) -> bool {
         matches!(
             self,
-            OptimizerBackend::BuiltinLm | OptimizerBackend::Trf | OptimizerBackend::BasinTrf
+            LsqBackend::BuiltinLm | LsqBackend::Trf | LsqBackend::BasinTrf
         )
     }
 
@@ -188,13 +183,11 @@ impl OptimizerBackend {
     /// second copy of this mapping is exactly the kind of pair that drifts.
     pub fn feature(self) -> Option<&'static str> {
         match self {
-            OptimizerBackend::BuiltinLm => None,
-            OptimizerBackend::MinpackLm => Some("opt-minpack-lm"),
-            OptimizerBackend::Trf => None,
-            OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
-                Some("opt-argmin")
-            }
-            OptimizerBackend::BasinLmQr | OptimizerBackend::BasinTrf => Some("opt-basin"),
+            LsqBackend::BuiltinLm => None,
+            LsqBackend::MinpackLm => Some("opt-minpack-lm"),
+            LsqBackend::Trf => None,
+            LsqBackend::ArgminGaussNewton | LsqBackend::ArgminTrustRegion => Some("opt-argmin"),
+            LsqBackend::BasinLmQr | LsqBackend::BasinTrf => Some("opt-basin"),
         }
     }
 
@@ -216,16 +209,16 @@ impl OptimizerBackend {
 /// Every backend this crate knows about, in declaration order.
 ///
 /// The list is the whole enum, not the compiled-in subset — pair it with
-/// [`OptimizerBackend::is_available`] to answer "what can this build run?",
+/// [`LsqBackend::is_available`] to answer "what can this build run?",
 /// which is the question a caller has before it picks one.
-pub const ALL_BACKENDS: [OptimizerBackend; 7] = [
-    OptimizerBackend::BuiltinLm,
-    OptimizerBackend::MinpackLm,
-    OptimizerBackend::Trf,
-    OptimizerBackend::ArgminGaussNewton,
-    OptimizerBackend::ArgminTrustRegion,
-    OptimizerBackend::BasinLmQr,
-    OptimizerBackend::BasinTrf,
+pub const ALL_BACKENDS: [LsqBackend; 7] = [
+    LsqBackend::BuiltinLm,
+    LsqBackend::MinpackLm,
+    LsqBackend::Trf,
+    LsqBackend::ArgminGaussNewton,
+    LsqBackend::ArgminTrustRegion,
+    LsqBackend::BasinLmQr,
+    LsqBackend::BasinTrf,
 ];
 
 /// The names this build can actually run. `["builtin", "trf"]` on a standard build.
@@ -246,7 +239,7 @@ pub fn available_backends() -> Vec<&'static str> {
 /// source on *any* backend, since that is a property of the problem, not the
 /// solver.
 #[derive(Clone, Debug)]
-pub struct OptimizerResult {
+pub struct LsqResult {
     pub x: Vec<f64>,
     pub cost: f64,
     pub iterations: usize,
@@ -256,12 +249,12 @@ pub struct OptimizerResult {
     pub analytic_jacobians: usize,
     /// Which backend produced this. The same struct comes back from all of
     /// them, so the answer has to travel with it.
-    pub backend: OptimizerBackend,
+    pub backend: LsqBackend,
 }
 
-impl OptimizerResult {
-    fn from_lm(r: LmResult, backend: OptimizerBackend) -> Self {
-        OptimizerResult {
+impl LsqResult {
+    fn from_lm(r: LmResult, backend: LsqBackend) -> Self {
+        LsqResult {
             x: r.x,
             cost: r.cost,
             iterations: r.iterations,
@@ -382,9 +375,9 @@ impl IntervalMap {
     feature = "opt-argmin",
     feature = "opt-basin"
 ))]
-struct MappedJacobian<'a, J: ?Sized> {
-    inner: &'a J,
-    map: &'a IntervalMap,
+pub(crate) struct MappedJacobian<'a, J: ?Sized> {
+    pub(crate) inner: &'a J,
+    pub(crate) map: &'a IntervalMap,
 }
 
 #[cfg(any(
@@ -423,14 +416,14 @@ impl<J: JacobianSource + ?Sized> JacobianSource for MappedJacobian<'_, J> {
 /// `residuals` and `jacobian` are the same pair [`levenberg_marquardt_with`]
 /// takes; a backend without bounds of its own receives them composed with
 /// [`IntervalMap`] and never sees an infeasible `x`.
-pub fn run_optimizer<F, J>(
+pub fn solve_least_squares<F, J>(
     residuals: &F,
     jacobian: Option<&J>,
     x0: &[f64],
     lb: &[f64],
     ub: &[f64],
     cfg: &LmConfig,
-) -> Result<OptimizerResult, String>
+) -> Result<LsqResult, String>
 where
     F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
     J: JacobianSource + ?Sized,
@@ -469,7 +462,7 @@ fn flag_stuck_at_bound<F>(
     residuals: &F,
     lb: &[f64],
     ub: &[f64],
-    result: &mut OptimizerResult,
+    result: &mut LsqResult,
 ) -> Result<(), String>
 where
     F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
@@ -515,32 +508,30 @@ fn run_backend<F, J>(
     lb: &[f64],
     ub: &[f64],
     cfg: &LmConfig,
-) -> Result<OptimizerResult, String>
+) -> Result<LsqResult, String>
 where
     F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
     J: JacobianSource + ?Sized,
 {
     let backend = cfg.backend;
     match backend {
-        OptimizerBackend::BuiltinLm => {
-            levenberg_marquardt_with(residuals, jacobian, x0, lb, ub, cfg)
-                .map(|r| OptimizerResult::from_lm(r, backend))
+        LsqBackend::BuiltinLm => levenberg_marquardt_with(residuals, jacobian, x0, lb, ub, cfg)
+            .map(|r| LsqResult::from_lm(r, backend)),
+        LsqBackend::Trf => {
+            crate::lsq::trf::trust_region_reflective(residuals, jacobian, x0, lb, ub, cfg)
+                .map(|r| LsqResult::from_lm(r, backend))
         }
-        OptimizerBackend::Trf => crate::smatrix::synthesis::trf::trust_region_reflective(
-            residuals, jacobian, x0, lb, ub, cfg,
-        )
-        .map(|r| OptimizerResult::from_lm(r, backend)),
-        OptimizerBackend::BasinLmQr | OptimizerBackend::BasinTrf => {
+        LsqBackend::BasinLmQr | LsqBackend::BasinTrf => {
             #[cfg(feature = "opt-basin")]
             {
-                basin_backends::run(residuals, jacobian, x0, lb, ub, cfg)
+                super::basin::run(residuals, jacobian, x0, lb, ub, cfg)
             }
             #[cfg(not(feature = "opt-basin"))]
             {
                 Err(backend.unavailable())
             }
         }
-        OptimizerBackend::MinpackLm => {
+        LsqBackend::MinpackLm => {
             #[cfg(feature = "opt-minpack-lm")]
             {
                 minpack::run(residuals, jacobian, x0, lb, ub, cfg)
@@ -551,7 +542,7 @@ where
                 Err(backend.unavailable())
             }
         }
-        OptimizerBackend::ArgminGaussNewton | OptimizerBackend::ArgminTrustRegion => {
+        LsqBackend::ArgminGaussNewton | LsqBackend::ArgminTrustRegion => {
             #[cfg(feature = "opt-argmin")]
             {
                 argmin_backends::run(backend, residuals, jacobian, x0, lb, ub, cfg)
@@ -571,7 +562,7 @@ where
 
 #[cfg(feature = "opt-minpack-lm")]
 mod minpack {
-    use super::super::thick_opt::build_jacobian;
+    use super::super::lm::build_jacobian;
     use super::*;
     use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt, TerminationReason};
     use nalgebra::storage::Owned;
@@ -691,7 +682,7 @@ mod minpack {
         lb: &[f64],
         ub: &[f64],
         cfg: &LmConfig,
-    ) -> Result<OptimizerResult, String>
+    ) -> Result<LsqResult, String>
     where
         F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
         J: JacobianSource + ?Sized,
@@ -736,7 +727,7 @@ mod minpack {
         }
         let termination = map_termination(report.termination)?;
         let (evals, iterations, analytic) = problem.counts.get();
-        Ok(OptimizerResult {
+        Ok(LsqResult {
             x: map.to_bounded(problem.x.as_slice()),
             // The crate reports ½‖r‖²; Navette's cost is ‖r‖².
             cost: 2.0 * report.objective_function,
@@ -748,7 +739,7 @@ mod minpack {
             termination,
             gain_ratio: f64::NAN,
             analytic_jacobians: analytic,
-            backend: OptimizerBackend::MinpackLm,
+            backend: LsqBackend::MinpackLm,
         })
     }
 }
@@ -759,7 +750,7 @@ mod minpack {
 
 #[cfg(feature = "opt-argmin")]
 mod argmin_backends {
-    use super::super::thick_opt::build_jacobian;
+    use super::super::lm::build_jacobian;
     use super::*;
     use argmin::core::{
         CostFunction, Error as ArgminError, Executor, Gradient, Hessian,
@@ -880,7 +871,7 @@ mod argmin_backends {
     /// whatever tolerance the chosen solver owns (`|Δcost| < tol` for
     /// Gauss-Newton), which is a cost test.
     fn map_termination(
-        backend: OptimizerBackend,
+        backend: LsqBackend,
         status: &TerminationStatus,
     ) -> Result<LmTermination, String> {
         let reason = match status {
@@ -907,10 +898,10 @@ mod argmin_backends {
     /// ordinary use: a parameter that stops moving the residual (a layer
     /// driven to zero thickness), or an interior reparametrization whose slope
     /// has flattened near a bound, both produce a zero column.
-    fn describe(backend: OptimizerBackend, e: impl std::fmt::Display) -> String {
+    fn describe(backend: LsqBackend, e: impl std::fmt::Display) -> String {
         let msg = e.to_string();
         let name = backend.as_str();
-        if backend == OptimizerBackend::ArgminGaussNewton && msg.contains("Non-invertible") {
+        if backend == LsqBackend::ArgminGaussNewton && msg.contains("Non-invertible") {
             // ASCII on purpose: this string reaches Python as a
             // `ValueError`, and a user printing it on a cp1252 console would
             // otherwise get a `UnicodeEncodeError` instead of the diagnosis.
@@ -927,14 +918,14 @@ mod argmin_backends {
     }
 
     pub(super) fn run<F, J>(
-        backend: OptimizerBackend,
+        backend: LsqBackend,
         residuals: &F,
         jacobian: Option<&J>,
         x0: &[f64],
         lb: &[f64],
         ub: &[f64],
         cfg: &LmConfig,
-    ) -> Result<OptimizerResult, String>
+    ) -> Result<LsqResult, String>
     where
         F: Fn(&[f64], &mut Vec<f64>) -> Result<(), String> + Sync,
         J: JacobianSource + ?Sized,
@@ -969,7 +960,7 @@ mod argmin_backends {
         let max_iters = cfg.max_iterations as u64;
 
         let (u, cost, iterations, status, counts) = match backend {
-            OptimizerBackend::ArgminGaussNewton => {
+            LsqBackend::ArgminGaussNewton => {
                 let solver = GaussNewton::new()
                     .with_tolerance(cfg.ftol)
                     .map_err(|e| format!("{name}: {e}"))?;
@@ -998,7 +989,7 @@ mod argmin_backends {
                     counts,
                 )
             }
-            OptimizerBackend::ArgminTrustRegion => {
+            LsqBackend::ArgminTrustRegion => {
                 // Steihaug's iteration cap is the subproblem's, not the
                 // solver's: it is the CG budget for one step. `n` is the
                 // dimension, and exact CG terminates in at most `n` steps.
@@ -1033,7 +1024,7 @@ mod argmin_backends {
 
         let termination = map_termination(backend, &status)?;
         let (evals, _builds, analytic) = counts;
-        Ok(OptimizerResult {
+        Ok(LsqResult {
             x: map.to_bounded(u.as_slice()),
             cost,
             iterations,
@@ -1055,11 +1046,11 @@ mod argmin_backends {
 
 #[cfg(test)]
 mod tests {
-    use super::super::thick_opt::{NoJacobian, build_jacobian};
+    use super::super::lm::{NoJacobian, build_jacobian};
     use super::*;
 
-    fn finished_at(x: f64, cost: f64, termination: LmTermination) -> OptimizerResult {
-        OptimizerResult {
+    fn finished_at(x: f64, cost: f64, termination: LmTermination) -> LsqResult {
+        LsqResult {
             x: vec![x],
             cost,
             iterations: 3,
@@ -1067,7 +1058,7 @@ mod tests {
             termination,
             gain_ratio: f64::NAN,
             analytic_jacobians: 0,
-            backend: OptimizerBackend::MinpackLm,
+            backend: LsqBackend::MinpackLm,
         }
     }
 
@@ -1162,7 +1153,7 @@ mod tests {
         // Over `ALL_BACKENDS`, not a hand-kept subset: a variant added
         // without a `parse` arm is exactly the drift this catches.
         for b in ALL_BACKENDS {
-            assert_eq!(OptimizerBackend::parse(b.as_str()), Ok(b));
+            assert_eq!(LsqBackend::parse(b.as_str()), Ok(b));
         }
         let mut names: Vec<&str> = ALL_BACKENDS.iter().map(|b| b.as_str()).collect();
         names.sort_unstable();
@@ -1188,10 +1179,7 @@ mod tests {
         let av = available_backends();
         assert!(av.contains(&"builtin"));
         for name in &av {
-            assert!(
-                OptimizerBackend::parse(name).unwrap().is_available(),
-                "{name}"
-            );
+            assert!(LsqBackend::parse(name).unwrap().is_available(), "{name}");
         }
         assert_eq!(av.contains(&"minpack_lm"), cfg!(feature = "opt-minpack-lm"));
         assert_eq!(
@@ -1206,7 +1194,7 @@ mod tests {
 
     #[test]
     fn an_unknown_backend_name_lists_the_known_ones() {
-        let e = OptimizerBackend::parse("scipy").unwrap_err();
+        let e = LsqBackend::parse("scipy").unwrap_err();
         assert!(
             e.contains("builtin") && e.contains("minpack_lm"),
             "got: {e}"
@@ -1217,7 +1205,7 @@ mod tests {
     fn a_missing_backend_says_how_to_get_it_rather_than_falling_back() {
         // The message is the whole point of declaring a variant the build
         // cannot run, so it is checked either way.
-        let b = OptimizerBackend::MinpackLm;
+        let b = LsqBackend::MinpackLm;
         let msg = b.unavailable();
         assert!(msg.contains("opt-minpack-lm"), "got: {msg}");
         // And on a build without it, the dispatcher refuses rather than
@@ -1227,7 +1215,7 @@ mod tests {
                 backend: b,
                 ..Default::default()
             };
-            let err = run_optimizer(
+            let err = solve_least_squares(
                 &linear,
                 None::<&NoJacobian>,
                 &[0.0, 0.0],
@@ -1334,14 +1322,14 @@ mod tests {
     #[test]
     fn the_builtin_backend_is_the_default_and_is_the_lm_itself() {
         let cfg = LmConfig::default();
-        assert_eq!(cfg.backend, OptimizerBackend::BuiltinLm);
+        assert_eq!(cfg.backend, LsqBackend::BuiltinLm);
         let x0 = [0.0, 0.0];
         let lb = [-5.0, -5.0];
         let ub = [5.0, 5.0];
         let direct =
             levenberg_marquardt_with(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg).unwrap();
-        let via = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg).unwrap();
-        assert_eq!(via.backend, OptimizerBackend::BuiltinLm);
+        let via = solve_least_squares(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg).unwrap();
+        assert_eq!(via.backend, LsqBackend::BuiltinLm);
         assert_eq!(via.x, direct.x);
         assert_eq!(via.cost, direct.cost);
         assert_eq!(via.evals, direct.evals);
@@ -1354,7 +1342,7 @@ mod tests {
 
         fn cfg() -> LmConfig {
             LmConfig {
-                backend: OptimizerBackend::MinpackLm,
+                backend: LsqBackend::MinpackLm,
                 ..Default::default()
             }
         }
@@ -1364,7 +1352,7 @@ mod tests {
             let x0 = [0.0, 0.0];
             let lb = [-5.0, -5.0];
             let ub = [5.0, 5.0];
-            let a = run_optimizer(
+            let a = solve_least_squares(
                 &linear,
                 Some(&LinearJac),
                 &x0,
@@ -1373,8 +1361,8 @@ mod tests {
                 &LmConfig::default(),
             )
             .unwrap();
-            let b = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg()).unwrap();
-            assert_eq!(b.backend, OptimizerBackend::MinpackLm);
+            let b = solve_least_squares(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg()).unwrap();
+            assert_eq!(b.backend, LsqBackend::MinpackLm);
             for (p, q) in a.x.iter().zip(b.x.iter()) {
                 assert!((p - q).abs() < 1e-7, "{a:?} vs {b:?}");
             }
@@ -1391,8 +1379,9 @@ mod tests {
             let x0 = [0.0, 0.0];
             let lb = [-5.0, -5.0];
             let ub = [5.0, 5.0];
-            let an = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg()).unwrap();
-            let fd = run_optimizer(&linear, None::<&NoJacobian>, &x0, &lb, &ub, &cfg()).unwrap();
+            let an = solve_least_squares(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg()).unwrap();
+            let fd =
+                solve_least_squares(&linear, None::<&NoJacobian>, &x0, &lb, &ub, &cfg()).unwrap();
             assert!(an.analytic_jacobians > 0, "{an:?}");
             assert_eq!(fd.analytic_jacobians, 0);
             assert_eq!(an.iterations, an.analytic_jacobians);
@@ -1408,8 +1397,8 @@ mod tests {
             // "arbitrarily close to the bound", never past it.
             let lb = [1.5, -1.0];
             let ub = [4.0, 3.0];
-            let r =
-                run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg()).unwrap();
+            let r = solve_least_squares(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg())
+                .unwrap();
             for (k, &v) in r.x.iter().enumerate() {
                 assert!(
                     v > lb[k] && v < ub[k],
@@ -1430,8 +1419,9 @@ mod tests {
             let boom = |_x: &[f64], _o: &mut Vec<f64>| -> Result<(), String> {
                 Err("missing curve Rs".into())
             };
-            let e = run_optimizer(&boom, None::<&NoJacobian>, &[0.0], &[-1.0], &[1.0], &cfg())
-                .unwrap_err();
+            let e =
+                solve_least_squares(&boom, None::<&NoJacobian>, &[0.0], &[-1.0], &[1.0], &cfg())
+                    .unwrap_err();
             assert!(e.contains("missing curve Rs"), "got: {e}");
         }
 
@@ -1446,8 +1436,8 @@ mod tests {
                 out.push(4.0);
                 Ok(())
             };
-            let r =
-                run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg()).unwrap();
+            let r = solve_least_squares(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg())
+                .unwrap();
             assert!((r.cost - 25.0).abs() < 1e-9, "cost {}", r.cost);
         }
     }
@@ -1456,17 +1446,15 @@ mod tests {
     mod argmin_backend {
         use super::*;
 
-        fn cfg(b: OptimizerBackend) -> LmConfig {
+        fn cfg(b: LsqBackend) -> LmConfig {
             LmConfig {
                 backend: b,
                 ..Default::default()
             }
         }
 
-        const BOTH: [OptimizerBackend; 2] = [
-            OptimizerBackend::ArgminGaussNewton,
-            OptimizerBackend::ArgminTrustRegion,
-        ];
+        const BOTH: [LsqBackend; 2] =
+            [LsqBackend::ArgminGaussNewton, LsqBackend::ArgminTrustRegion];
 
         #[test]
         fn both_find_the_interior_optimum_the_builtin_finds() {
@@ -1478,7 +1466,8 @@ mod tests {
             let lb = [-5.0, -5.0];
             let ub = [5.0, 5.0];
             for b in BOTH {
-                let r = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
+                let r =
+                    solve_least_squares(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
                 assert_eq!(r.backend, b);
                 assert!(
                     (r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] + 2.0).abs() < 1e-6,
@@ -1497,9 +1486,9 @@ mod tests {
             // optimum (1, -2) is outside this box on both axes.
             let lb = [1.5, -1.0];
             let ub = [4.0, 3.0];
-            let b = OptimizerBackend::ArgminTrustRegion;
-            let r =
-                run_optimizer(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg(b)).unwrap();
+            let b = LsqBackend::ArgminTrustRegion;
+            let r = solve_least_squares(&linear, Some(&LinearJac), &[2.0, 0.0], &lb, &ub, &cfg(b))
+                .unwrap();
             for (k, &v) in r.x.iter().enumerate() {
                 assert!(
                     v > lb[k] && v < ub[k],
@@ -1526,13 +1515,13 @@ mod tests {
             // undefined. That is the algorithm, not a bug in the adapter --
             // but the message has to say so, or the user reads "non-invertible
             // matrix" and goes looking for a broken stack.
-            let e = run_optimizer(
+            let e = solve_least_squares(
                 &linear,
                 Some(&LinearJac),
                 &[2.0, 0.0],
                 &[1.5, -1.0],
                 &[4.0, 3.0],
-                &cfg(OptimizerBackend::ArgminGaussNewton),
+                &cfg(LsqBackend::ArgminGaussNewton),
             )
             .unwrap_err();
             assert!(e.contains("singular"), "got: {e}");
@@ -1554,20 +1543,27 @@ mod tests {
                 out.push(4.0);
                 Ok(())
             };
-            let e = run_optimizer(
+            let e = solve_least_squares(
                 &flat,
                 None::<&NoJacobian>,
                 &[0.5],
                 &[0.0],
                 &[1.0],
-                &cfg(OptimizerBackend::ArgminGaussNewton),
+                &cfg(LsqBackend::ArgminGaussNewton),
             )
             .unwrap_err();
             assert!(e.contains("singular"), "got: {e}");
             // The damped backends do not blink at it.
-            for b in [OptimizerBackend::BuiltinLm, OptimizerBackend::Trf] {
-                let r = run_optimizer(&flat, None::<&NoJacobian>, &[0.5], &[0.0], &[1.0], &cfg(b))
-                    .unwrap();
+            for b in [LsqBackend::BuiltinLm, LsqBackend::Trf] {
+                let r = solve_least_squares(
+                    &flat,
+                    None::<&NoJacobian>,
+                    &[0.5],
+                    &[0.0],
+                    &[1.0],
+                    &cfg(b),
+                )
+                .unwrap();
                 assert!(
                     (r.cost - 25.0).abs() < 1e-9,
                     "{}: cost {}",
@@ -1591,7 +1587,7 @@ mod tests {
                 Ok(())
             };
             for b in BOTH {
-                let r = run_optimizer(
+                let r = solve_least_squares(
                     &offset,
                     None::<&NoJacobian>,
                     &[0.5],
@@ -1616,8 +1612,15 @@ mod tests {
                 Err("missing curve Rs".into())
             };
             for b in BOTH {
-                let e = run_optimizer(&boom, None::<&NoJacobian>, &[0.0], &[-1.0], &[1.0], &cfg(b))
-                    .unwrap_err();
+                let e = solve_least_squares(
+                    &boom,
+                    None::<&NoJacobian>,
+                    &[0.0],
+                    &[-1.0],
+                    &[1.0],
+                    &cfg(b),
+                )
+                .unwrap_err();
                 assert!(e.contains("missing curve Rs"), "{}: {e}", b.as_str());
             }
         }
@@ -1628,9 +1631,10 @@ mod tests {
             let lb = [-5.0, -5.0];
             let ub = [5.0, 5.0];
             for b in BOTH {
-                let an = run_optimizer(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
-                let fd =
-                    run_optimizer(&linear, None::<&NoJacobian>, &x0, &lb, &ub, &cfg(b)).unwrap();
+                let an =
+                    solve_least_squares(&linear, Some(&LinearJac), &x0, &lb, &ub, &cfg(b)).unwrap();
+                let fd = solve_least_squares(&linear, None::<&NoJacobian>, &x0, &lb, &ub, &cfg(b))
+                    .unwrap();
                 assert!(an.analytic_jacobians > 0, "{}: {an:?}", b.as_str());
                 assert_eq!(fd.analytic_jacobians, 0, "{}", b.as_str());
                 // Differencing costs 2n evaluations per Jacobian; the analytic
@@ -1652,17 +1656,17 @@ mod tests {
             // it sat on the optimum for most of them. That is a property of
             // the backend, and callers reading `termination` need it declared
             // rather than inferred from a suspiciously round iteration count.
-            assert!(OptimizerBackend::ArgminTrustRegion.runs_to_max_iterations());
-            assert!(!OptimizerBackend::ArgminGaussNewton.runs_to_max_iterations());
-            for b in [OptimizerBackend::BuiltinLm, OptimizerBackend::Trf] {
+            assert!(LsqBackend::ArgminTrustRegion.runs_to_max_iterations());
+            assert!(!LsqBackend::ArgminGaussNewton.runs_to_max_iterations());
+            for b in [LsqBackend::BuiltinLm, LsqBackend::Trf] {
                 assert!(!b.runs_to_max_iterations());
             }
 
             let cfg = LmConfig {
                 max_iterations: 7,
-                ..cfg(OptimizerBackend::ArgminTrustRegion)
+                ..cfg(LsqBackend::ArgminTrustRegion)
             };
-            let r = run_optimizer(
+            let r = solve_least_squares(
                 &linear,
                 Some(&LinearJac),
                 &[0.0, 0.0],
@@ -1684,9 +1688,9 @@ mod tests {
             // iteration cap.
             let cfg = LmConfig {
                 max_iterations: 500,
-                ..cfg(OptimizerBackend::ArgminGaussNewton)
+                ..cfg(LsqBackend::ArgminGaussNewton)
             };
-            let r = run_optimizer(
+            let r = solve_least_squares(
                 &linear,
                 Some(&LinearJac),
                 &[0.0, 0.0],

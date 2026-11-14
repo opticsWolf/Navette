@@ -42,7 +42,7 @@ from .models import (
     NamedStructureConfig,
 )
 
-PROGRAM_SCHEMA_VERSION = 3
+PROGRAM_SCHEMA_VERSION = 4
 """The program envelope version this build WRITES (mirrors ``config.rs``).
 
 F2.4 bumped it to 2 for the ``design:`` / ``environments:`` sections. A v1
@@ -54,6 +54,10 @@ v3 flips the grading sign to the literature's (``+inh_delta`` raises the
 index toward the outer surface). A v1/v2 document's ``inh_delta``,
 ``inh_delta_summand`` and ``inh_delta_error_params`` offsets are negated on
 read, so it describes the same films.
+
+v4 adds the ``fit`` section: what to fit against which data
+(``navette.fit``). A v3 build refuses it as an unknown section; the bump
+makes the refusal say the document is newer than the build.
 """
 
 MIN_READABLE_PROGRAM_SCHEMA_VERSION = 1
@@ -215,6 +219,9 @@ class LoadedProgram:
     #: F2.4: the environment roster, in evaluation order. Empty is the
     #: flat case and is what every pre-F2.4 program document is.
     environments: list = field(default_factory=list)
+    #: v4: the ``fit`` section (``navette.fit``), request data carried
+    #: verbatim; ``None`` when the program has none.
+    fit: Optional[Dict[str, Any]] = None
 
 
 def load_program(
@@ -290,6 +297,8 @@ def load_program(
         prog.design = dict(sections["design"])
     if sections.get("environments"):
         prog.environments = list(sections["environments"])
+    if sections.get("fit") is not None:
+        prog.fit = dict(sections["fit"])
     if prog.design and not prog.environments:
         raise ValueError(
             "program section 'design' is defined but 'environments' is not - "
@@ -350,4 +359,6 @@ def _load_program_native(wavelength, prefix, kind, name, payload):
         prog.design = _json.loads(parts["design"])
     if parts.get("environments") is not None:
         prog.environments = _json.loads(parts["environments"])
+    if parts.get("fit") is not None:
+        prog.fit = _json.loads(parts["fit"])
     return prog

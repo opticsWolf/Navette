@@ -48,7 +48,7 @@ Since the pipeline binding, `pipeline` (7) and `config` (2) run through
 runs end-to-end. Remaining unexposed units:
 
 - Optimizer sub-units (45): `cleanup` (6), `inflate` (8), `stagnation`
-  (11), `structure` (11), `thick_opt` (10) — exercised only via pipeline
+  (11), `structure` (11), `lsq::lm` (10) — exercised only via pipeline
   runs, not unit-mirrored.
 - `cycle` (3 Rust tests): static-fold R/T discriminator (mock ctx, also
   covers the simulate-failure fallback) + live re-fold masking with the

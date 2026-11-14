@@ -118,7 +118,7 @@ def test_primitives():
     oracle = sim_curves_from_arrays(WL, {"Rs": np.atleast_2d(sm.compute(Request.RS)["Rs"])}, angles_deg=ANGS)
     check("context_matches_solver",
           abs(m0 - spec.merit(oracle, 1e6)) < 1e-9 * max(1.0, m0), f"mf={m0:.4f}")
-    m1 = ctx.optimize_thicknesses(st)
+    m1 = ctx.refine_thicknesses(st)
     check("optimize_improves", m1 <= m0 + 1e-9, f"{m0:.4f} -> {m1:.4f}")
 
 
