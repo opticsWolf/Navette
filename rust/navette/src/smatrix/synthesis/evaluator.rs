@@ -841,6 +841,47 @@ impl SmatrixContext {
         Ok(Some((values, rows, cols, film_rows)))
     }
 
+    /// A2 introspection: the merit gradient with respect to the free
+    /// thickness parameters, `2 Jᵀr`, or `None` when the analytic residual
+    /// Jacobian declines the spec.
+    ///
+    /// The gradient is useful to a DQD loop as a local descriptor direction;
+    /// it still prices thickness moves only, not insertion positions.
+    #[cfg(feature = "ga-introspect")]
+    pub fn merit_thickness_gradient(
+        &self,
+        stack: &DesignStack,
+    ) -> Result<Option<(Vec<f64>, Vec<usize>)>, String> {
+        let Some((values, rows, cols, film_rows)) = self.thickness_residual_jacobian(stack)? else {
+            return Ok(None);
+        };
+        let sims = match &self.envs {
+            None => vec![self.simulate(stack)?],
+            Some(_) => self.simulate_all(stack)?,
+        };
+        let mut residuals = Vec::new();
+        self.spec
+            .residuals_multi(&sims, &mut residuals)
+            .map_err(|curve| format!("merit gradient: missing curve {curve:?}"))?;
+        if residuals.len() != rows {
+            return Err(format!(
+                "merit gradient: {} residuals for a {rows}-row Jacobian",
+                residuals.len()
+            ));
+        }
+        let mut gradient = vec![0.0; cols];
+        for row in 0..rows {
+            let residual = residuals[row];
+            for col in 0..cols {
+                gradient[col] += values[row * cols + col] * residual;
+            }
+        }
+        for value in &mut gradient {
+            *value *= 2.0;
+        }
+        Ok(Some((gradient, film_rows)))
+    }
+
     /// A3: evaluate a batch of designs on the context's grid, in parallel.
     ///
     /// The GA bridge sees one call per generation instead of one call per
