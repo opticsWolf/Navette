@@ -156,7 +156,7 @@ pub struct Insertion {
 /// roughness it sits on. Returns `None` for a smooth boundary. `b` is the
 /// boundary above row `b` (`films.len()`: the substrate side); its
 /// interface is solver slot `b + 1`, read from the capped arrays.
-fn rough_boundary_start_nm(
+pub(crate) fn rough_boundary_start_nm(
     sa: &crate::smatrix::synthesis::structure::SolverArrays,
     b: usize,
     seed_nm: f64,
@@ -358,7 +358,7 @@ impl MaterialPool {
 
     /// The `sites` of `stack` that accept a needle of entry `m`. Filtering
     /// whole rows keeps each surviving row's steps intact.
-    fn sites_for(
+    pub(crate) fn sites_for(
         &self,
         m: usize,
         stack: &DesignStack,
@@ -374,7 +374,12 @@ impl MaterialPool {
     }
 
     /// Does site `s` of `stack` accept a needle of entry `m`?
-    fn accepts_site(&self, m: usize, stack: &DesignStack, s: &ScanSite) -> Result<bool, String> {
+    pub(crate) fn accepts_site(
+        &self,
+        m: usize,
+        stack: &DesignStack,
+        s: &ScanSite,
+    ) -> Result<bool, String> {
         if s.boundary {
             self.boundary_accepts(stack, s.film_idx, m)
         } else {

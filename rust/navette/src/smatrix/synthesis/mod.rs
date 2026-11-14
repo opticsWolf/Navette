@@ -34,6 +34,7 @@ pub mod inflate;
 pub mod merit;
 pub mod needle_pass;
 pub mod pipeline;
+pub mod staged;
 pub mod stagnation;
 pub mod structure;
 pub mod targets;
