@@ -19,7 +19,9 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use crate::lsq::backends::{LsqResult, solve_least_squares};
-use crate::lsq::lm::{JacobianMode, JacobianSource, LmConfig, NoJacobian};
+#[cfg(feature = "ga-introspect")]
+use crate::lsq::lm::JacobianSource;
+use crate::lsq::lm::{JacobianMode, LmConfig, NoJacobian};
 use crate::lsq::pool::in_lm_pool;
 use crate::smatrix::coherent_block::{BlockResult, solve_coherent_block_fields_dual};
 use crate::smatrix::needle_operator::{
