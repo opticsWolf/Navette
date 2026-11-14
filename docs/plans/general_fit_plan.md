@@ -1,6 +1,7 @@
 # General fit engine: thin films, groups and dispersion models together
 
-Status: **reviewed** (2026-11-07); decisions in §0. Refreshed
+Status: **done**, released in 0.10.0 (2026-11-14); reviewed 2026-11-07,
+decisions in §0. Refreshed
 2026-11-13 against 0.9.0 (synthesis now runs through incoherent plates and
 scores ratio, Ψ, retardance, GD…FOD and Stokes/DOP targets; §1, §5.4).
 Target release: **0.10.0** (phase 0 renames public names, a breaking

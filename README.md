@@ -113,10 +113,11 @@ Navette goes beyond simple Fresnel equations to provide research-grade accuracy:
 - **Ellipsometric Rigor**: Outputs (Ψ,Δ) parameters that strictly follow the **Azzam & Bashara** convention, ensuring direct compatibility with commercial ellipsometers (e.g., Woollam, Horiba).
 
 - **Dispersion Models as Data**: A material is a `model` name plus plain
-  params — sixteen of them, from `Konstant` and `Table` (measured nk) through
+  params — nineteen of them, from `Konstant` and `Table` (measured nk) through
   `Cauchy` / `Sellmeier` (each with an Urbach tail), `Lorentz`, `Drude`,
   `DrudeLorentz`, `CodyLorentz`, four `ForouhiBloomer` variants,
-  `TaucLorentz` and `UBF`. Six EMA mixing rules (Bruggeman, Maxwell-Garnett, Looyenga,
+  `TaucLorentz` and `UBF`, to the free-form `PointWise`, `Spline` and
+  `BSplineEps` (a Kramers-Kronig-consistent B-spline in ε₂). Six EMA mixing rules (Bruggeman, Maxwell-Garnett, Looyenga,
   Lichtenecker, Mori-Tanaka, power-law) compose them, and EMA specs nest, so a
   rough oxide on a mixed host is one spec rather than a preprocessing step.
   Oscillator models derive ε₁ from ε₂ by Kramers-Kronig, validated in
@@ -187,6 +188,40 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 
 - **Saved Designs Stay Readable**: state files carry a schema version and the reader accepts a *range* (`[1, 2]`), not a point. A state written by an older build is reconstructed from its defaults rather than refused; one written by a *newer* build is refused with a message that says so, because the remedy there is upgrading, not hand-editing the file.
 
+### 6. Fitting Measured Data
+
+The same engine runs backwards: `navette.fit` fits any scalar of a model to
+measured data — film thicknesses, group factors, the numbers of any
+dispersion model, and the instrument's own departures. Guide:
+[docs/fitting.md](docs/fitting.md).
+
+- **One Residual Vector**: spectra (any synthesis channel, Ψ/Δ included, at
+  several angles and over several measured samples) and optical-constant
+  tables share one χ², so a film's thickness and its dispersion are fitted
+  together. Parameters are addressed (`layer[ar:2].thickness`,
+  `group[H].n_factor`, `material[TiO2].A`) or selected
+  (`kind=thickness`, `tag=H`), with bounds, log scaling, Gaussian priors and
+  ties.
+- **Staged Strategies**: a fit is a list of stages, each freeing a set of
+  parameters — LSQ, a scan, Latin-hypercube multi-starts, or a global search
+  (native differential evolution in every build) polished by LSQ. Generated
+  strategy families run in a tournament on your data, or in a recovery
+  benchmark that draws "true" models from the program's error laws and
+  scores which strategy finds them.
+- **The Instrument as Parameters**: angle offset, wavelength shift, scale and
+  offset, and a Gaussian slit bandwidth per dataset (`data[R].angle_offset`).
+  Instrument files in their own units, percent and Ψ/Δ conventions convert in
+  and back out losslessly.
+- **Free-Form Optical Constants**: `PointWise`, `Spline` and `BSplineEps`
+  make the knot values themselves the parameters, with a smoothness prior on
+  their second differences.
+- **Honest Reports**: χ², AIC/BIC, standard errors, covariance and
+  correlation, which bound a parameter sits at, and the fitted curves. The
+  Jacobian is exact for thickness columns on coherent stacks and closed form
+  for the common dispersion models on nk data; the rest is differenced only
+  where a parameter can act. A fit is a program document (`fit` section) that
+  saves and reloads bit-exactly, and a progress callback can stop it.
+
 ### Technical Specifications
 
 |**Feature**|**Implementation & Engineering Benefit**|
@@ -197,7 +232,8 @@ Navette doesn't just simulate — it synthesizes, with the classic **needle meth
 |**Incoherent Blocks**|**Stokes-Mueller / Intensity Redheffer**: Prevents unphysical interference artifacts in macroscopic substrates by utilizing intensity-based propagation.|
 |**Coherence Modes**|**Three, with a refusal instead of a guess**: `FRONT_BLOCK` (default, exact intensities), `COHERENCY_MATRIX` (adds the cascaded p–s coherency channel), `FULLY_COHERENT`. The twelve cross-channel observables are refused under the default on a flagged stack rather than answered from the front block alone.|
 |**Multi-Environment Design**|**One set of films, K surroundings**: a named design segment is defined once and optimized against every environment's demands at the same time, so a coating measured bare and then laminated cannot drift into two designs. K environments means K assemblies and K solves per evaluation — honest and linear.|
-|**Material Models**|**Sixteen dispersion models + six EMA mixing rules**, composable and nestable, with Kramers-Kronig ε₁ for the oscillator families and independently validated quadrature.|
+|**Fitting**|**Staged least squares with a global stage**: thickness, group, dispersion and instrument parameters against spectra and nk tables in one χ², analytic Jacobian, covariance and correlation in the report, strategies compared by tournament or recovery benchmark.|
+|**Material Models**|**Nineteen dispersion models (three of them free-form) + six EMA mixing rules**, composable and nestable, with Kramers-Kronig ε₁ for the oscillator families and independently validated quadrature.|
 |**Guided Modes**|**Complex eigenmode search**: landscape scan → coarse minima → Nelder-Mead refinement over complex `n_eff`, plus normalised `\|E(z)\|` field profiles. Solves the stack as one coherent block by construction.|
 |**Fabrication Tolerances**|**Six channels × four laws**: thickness, `n`, `k`, grading amplitude, roughness and interface width, each drawn from `Gaussian`, `Uniform`, `Combined` or `Cascaded` — the last composing the relative stages as factors rather than summing them. Per-channel defaults in the unit of the quantity perturbed; floors on the result, never on the error; all-zero mask until a channel is switched on.|
 |**Roughness Model**|**Névot-Croce (Exact Wavevector)**: Achieves research-grade accuracy for X-ray and UV interfaces by modeling exact wavevector correlations across boundaries.|
@@ -312,7 +348,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.9.0-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.10.0-*.whl (single wheel, all engines)
 ```
 
 There is a seventh site the gate does not see: the wheel filename in the
@@ -350,7 +386,7 @@ Off by default, so a standard wheel pulls no extra dependencies.
 |---|---|
 | `opt-minpack-lm` | `LmConfig(backend="minpack_lm")` — the `levenberg-marquardt` crate (MINPACK `lmdif`-derived, MIT), as a reference to compare the built-in LM against. Unbounded, so it runs on an interior reparametrization: its optima are strictly inside the thickness box, where the built-in's may sit exactly on it. |
 | `opt-argmin` | `LmConfig(backend="argmin_gauss_newton")` and `"argmin_trust_region"` — two solvers from the argmin ecosystem (MIT/Apache-2.0), as **baselines**, not as candidates. Both unbounded. The Gauss-Newton one is undamped, so it raises as soon as `JᵀJ` is singular — a film driven toward zero thickness is enough — and it refuses two of the three refold starts in `validation/review/lm_check.py`. The trust region finds the right optimum but has no convergence test of its own, so it always runs the full `max_iterations`: 218–393 residual evaluations where `"trf"` takes 8–32. Shares `nalgebra` with `opt-minpack-lm`. |
-| `opt-basin` | `LmConfig(backend="basin_lm_qr")` and `"basin_trf"` — Basin's pivoted-QR LM and full trust-region reflective solver (MIT/Apache-2.0), using its plain `Vec` backend. LM uses the interior reparametrization, so a far start can saturate at a bound — reported as `StuckAtBound` rather than as convergence; full TRF handles bounds and fixed coordinates natively. See the [tolerance mappings, evaluation budgets, and comparisons](docs/basin-backends.md). |
+| `opt-basin` | `LmConfig(backend="basin_lm_qr")` and `"basin_trf"` — Basin's pivoted-QR LM and full trust-region reflective solver (MIT/Apache-2.0), using its plain `Vec` backend. LM uses the interior reparametrization, so a far start can saturate at a bound — reported as `StuckAtBound` rather than as convergence; full TRF handles bounds and fixed coordinates natively. It also adds basin's global methods to the fit engine's global stages: `"basin_de"`, `"de_inject"` and `"cma_es"` (the native `"de"` and `"de_best"` are in every build). See the [tolerance mappings, evaluation budgets, and comparisons](docs/basin-backends.md). |
 
 ```powershell
 maturin develop --release --features opt-minpack-lm
@@ -367,7 +403,7 @@ that checkout. The crate on crates.io has the same defaults; a Rust user
 switches a backend on in `Cargo.toml`:
 
 ```toml
-navette = { version = "0.8", features = ["opt-basin"] }
+navette = { version = "0.10", features = ["opt-basin"] }
 ```
 
 Manual fallback: `cargo publish -p navette`;

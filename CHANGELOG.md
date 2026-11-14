@@ -5,9 +5,19 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
-## [Unreleased]
+## [0.10.0] - the general fit engine
 
-Target: 0.10.0, the general fit engine (`docs/plans/general_fit_plan.md`).
+`navette.fit` fits any scalar of a model to measured data: film
+thicknesses, group factors, the numbers of any dispersion model and the
+instrument's own departures, against spectra and optical-constant tables
+in one residual vector. Fits run as staged strategies (LSQ, scans,
+multi-starts, a native differential-evolution global stage), compare in a
+tournament or a recovery benchmark, report covariance and correlation, and
+save as a program `fit` section (schema v4). Three free-form nk models
+(`PointWise`, `Spline`, `BSplineEps`) join the material library. The plan
+is `docs/plans/general_fit_plan.md`.
+
+Phase 0 renames public names without aliases: see "Changed (breaking)".
 
 ### Added
 

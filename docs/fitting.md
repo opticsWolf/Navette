@@ -148,11 +148,13 @@ accepted.
 
 ### Progress and stopping
 
-`fit(problem, progress=cb)` calls `cb(event)` with one of three events:
+`fit(problem, progress=cb)` calls `cb(event)` with one of four events:
 
 - `{"event": "stage_start", "stage", "name", "free"}` when a stage begins;
 - `{"event": "improved", "stage", "evals", "chi2"}` each time χ² drops
   within a stage;
+- `{"event": "searched", "stage", "evals", "chi2"}` each time a global
+  stage's search finds a lower χ², before its LSQ polish;
 - `{"event": "stage_end", "stage", "name", "chi2", "accepted"}` when a
   stage ends.
 
