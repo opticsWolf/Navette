@@ -778,7 +778,7 @@ impl CompiledEnvironments {
 
     /// Every boundary locus of the design, segment by segment, top to
     /// bottom in forward order.
-    pub(crate) fn gaps(&self) -> Vec<Gap> {
+    pub fn gaps(&self) -> Vec<Gap> {
         self.segments()
             .iter()
             .enumerate()
@@ -3318,8 +3318,18 @@ mod tests {
                 .enumerate()
                 .map(|(e, st)| envs.gap_places(e, st.spans(), st.films().len(), gap))
                 .collect();
-            (0..pool.len())
+            let internal: Vec<usize> = (0..pool.len())
                 .filter(|&m| pool.gap_accepts(&envs, &stacks, gap, &places, m).unwrap())
+                .collect();
+            let public: Vec<usize> = (0..pool.len())
+                .filter(|&m| pool.gap_accepts_needle(&envs, &stacks, gap, m).unwrap())
+                .collect();
+            assert_eq!(
+                public, internal,
+                "public gap door must match the joint rule"
+            );
+            public
+                .into_iter()
                 .map(|m| pool[m].material.to_string())
                 .collect()
         };

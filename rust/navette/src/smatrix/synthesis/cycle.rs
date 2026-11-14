@@ -314,6 +314,42 @@ impl MaterialPool {
         Ok(self)
     }
 
+    /// May a needle of entry `m` go on boundary locus `gap` of the shared
+    /// design? `stacks` are the K expanded assemblies, as returned by
+    /// [`CompiledEnvironments::expand`].
+    ///
+    /// This is the public door to the joint rule used by the needle
+    /// sweep: it computes each environment's placement of the locus and
+    /// applies the same host, neighbour, edge, and interface-slice checks.
+    /// The query never moves a film; it is read-only.
+    pub fn gap_accepts_needle(
+        &self,
+        envs: &CompiledEnvironments,
+        stacks: &[DesignStack],
+        gap: Gap,
+        m: usize,
+    ) -> Result<bool, String> {
+        if m >= self.materials.len() {
+            return Err(format!(
+                "gap acceptance: material index {m} is outside the pool of {} entries",
+                self.materials.len()
+            ));
+        }
+        if stacks.len() != envs.n_envs() {
+            return Err(format!(
+                "gap acceptance: got {} expanded stack(s), the design has {} environment(s)",
+                stacks.len(),
+                envs.n_envs()
+            ));
+        }
+        let places: Vec<Vec<GapPlace>> = stacks
+            .iter()
+            .enumerate()
+            .map(|(e, st)| envs.gap_places(e, st.spans(), st.films().len(), gap))
+            .collect();
+        self.gap_accepts(envs, stacks, gap, &places, m)
+    }
+
     /// The edge materials named by `outer` and `inner` (pool labels).
     pub fn edge_materials(
         &self,
