@@ -487,7 +487,7 @@ dependencies = [
  "lru",
  "mimalloc",
  "nalgebra",
- "ndarray 0.15.6",
+ "ndarray 0.16.1",
  "ndarray 0.17.2",
  "ndarray-npy",
  "num-complex",
@@ -509,7 +509,7 @@ dependencies = [
  "ahash",
  "mimalloc",
  "navette",
- "ndarray 0.15.6",
+ "ndarray 0.16.1",
  "ndarray 0.17.2",
  "num-complex",
  "numpy",
@@ -522,14 +522,16 @@ dependencies = [
 
 [[package]]
 name = "ndarray"
-version = "0.15.6"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb12d4e967ec485a5f71c6311fe28158e9d6f4bc4a447b474184d0f91a8fa32"
+checksum = "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
 dependencies = [
  "matrixmultiply",
  "num-complex",
  "num-integer",
  "num-traits",
+ "portable-atomic",
+ "portable-atomic-util",
  "rawpointer",
 ]
 
@@ -550,12 +552,12 @@ dependencies = [
 
 [[package]]
 name = "ndarray-npy"
-version = "0.8.1"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f85776816e34becd8bd9540818d7dc77bf28307f3b3dcc51cc82403c6931680c"
+checksum = "7b313788c468c49141a9d9b6131fc15f403e6ef4e8446a0b2e18f664ddb278a9"
 dependencies = [
  "byteorder",
- "ndarray 0.15.6",
+ "ndarray 0.16.1",
  "num-traits",
  "py_literal",
 ]

@@ -24,7 +24,7 @@ pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
 num-complex = "0.4"
 rayon = "1"
-ndarray = "0.15"
+ndarray = "0.16"
 # Single Rust crate (pure engine + modules); bindings take it by path.
 navette = { version = "0.10.0", path = "rust/navette" }
 
