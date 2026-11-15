@@ -946,10 +946,6 @@ impl SmatrixContext {
             }
         };
 
-        let x0: Vec<f64> = params
-            .iter()
-            .map(|p| p.value0(stack).clamp(0.0, self.clamp_max_nm))
-            .collect();
         // F0.3 (U1): the lower bound moves with the policy. Under
         // `ClampUpAlways` the floor is a hard bound - without it, LM drives
         // a film to 0.5 nm, the clamp puts it back to 2.0, and the pair
@@ -974,6 +970,15 @@ impl SmatrixContext {
         } else {
             0.0
         };
+        // The starting point must satisfy the same bounds as the solve.
+        // A stack can arrive below the floor when a needle pass has just
+        // inserted a thin seed; under `ClampUpAlways` (or a joint solve) the
+        // LM lower bound is `clamp_min_nm`, so an unclamped x0 would be
+        // rejected before the first iteration.
+        let x0: Vec<f64> = params
+            .iter()
+            .map(|p| p.value0(stack).clamp(lb_floor, self.clamp_max_nm))
+            .collect();
         let lb = vec![lb_floor; x0.len()];
         let ub = vec![self.clamp_max_nm; x0.len()];
 
@@ -3042,6 +3047,31 @@ mod tests {
             assert!(
                 stack.films().is_empty(),
                 "the default must keep elimination"
+            );
+        }
+
+        #[test]
+        fn clamp_up_always_clamps_a_sub_floor_start_into_bounds() {
+            let mut ctx = SmatrixContext {
+                wavls: vec![900.0],
+                sin_theta: vec![0.0],
+                spec: ar_spec(0.0, 900.0),
+                clamp_min_nm: 10.0,
+                clamp_max_nm: 1000.0,
+                thin_layer_policy: ThinLayerPolicy::ClampUpAlways,
+                lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
+                envs: None,
+            };
+            // A needle or a seeded design can put a film below the floor
+            // before the refine call. The bounded solve must clamp x0 up to
+            // the floor instead of rejecting the start as out of bounds.
+            let mut stack = ar_stack(5.0);
+            ctx.refine_thicknesses(&mut stack).unwrap();
+            let d = stack.films()[0].d_nm;
+            assert!(
+                (10.0..=1000.0).contains(&d),
+                "refined film at {d} nm is outside the ClampUpAlways bounds"
             );
         }
 
