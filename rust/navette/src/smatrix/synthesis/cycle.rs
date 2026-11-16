@@ -327,7 +327,7 @@ impl MaterialPool {
                 .into_iter()
                 .flatten()
             {
-                if host.is_needle() || !host.needle {
+                if !host.needle {
                     continue;
                 }
                 host_seen = true;
@@ -360,9 +360,25 @@ impl MaterialPool {
                 false
             };
             if !edge_ok {
+                let adjacent: Vec<String> = [i.checked_sub(1).map(|j| &films[j]), films.get(i + 1)]
+                    .into_iter()
+                    .flatten()
+                    .map(|f| {
+                        format!(
+                            "{:?}(needle={}, optimize={}, label={:?}, is_needle={})",
+                            f.material,
+                            f.needle,
+                            f.optimize,
+                            f.label,
+                            f.is_needle()
+                        )
+                    })
+                    .collect();
                 return Err(format!(
-                    "needle {:?} ({:?}) has no adjacent host and is not on an allowed edge",
-                    film.material, label
+                    "needle {:?} ({:?}) has no adjacent host and is not on an allowed edge; adjacent: [{}]",
+                    film.material,
+                    label,
+                    adjacent.join(", ")
                 ));
             }
         }
