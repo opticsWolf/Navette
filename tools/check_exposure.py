@@ -159,6 +159,13 @@ ALLOWLIST = {
     "solve_coherent_block_fields_dual",
     # structure plumbing (via expansion/snapshot paths)
     "next_table_name", "shared_group",
+    # A4 Rust consumer API (navette-ga drives the synthesis core from
+    # Rust): per-material evaluation with bounds, the bounded pool label,
+    # the joint scan and the staged polish. Python reaches the same work
+    # through the pipeline and design-config doors, so there is nothing
+    # separate to bind.
+    "evaluate_library", "evaluate_library_with_bounds", "evaluate_material",
+    "label_pool_with_bounds", "joint_needle_scan", "polish",
 }
 
 # Feature-level entry points: bound under a different name or reached

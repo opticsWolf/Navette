@@ -599,8 +599,29 @@ impl MaterialPool {
         if s.boundary {
             self.boundary_accepts(stack, s.film_idx, m)
         } else {
-            self.accepts(&stack.films()[s.film_idx], m)
+            Ok(self.accepts(&stack.films()[s.film_idx], m)?
+                && self.split_keeps_host_legal(stack, s)?)
         }
+    }
+
+    /// A4: does splitting the host at interior site `s` leave both host
+    /// pieces inside the host's material interval? A split keeps `depth`
+    /// above the needle and `d - depth` below it; a piece under the host's
+    /// minimum would be an illegal film, so the site is not a candidate
+    /// (rather than a candidate the insertion then refuses). Both interval
+    /// sources are honoured: the stack's (what the LM reads) and the pool
+    /// entry's (what [`Self::validate_grammar`] reads). A host without an
+    /// interval keeps every site, bit for bit the pre-A4 set.
+    fn split_keeps_host_legal(&self, stack: &DesignStack, s: &ScanSite) -> Result<bool, String> {
+        let host = &stack.films()[s.film_idx];
+        let top = s.depth_into_layer_nm;
+        let bottom = host.d_nm - s.depth_into_layer_nm;
+        let legal =
+            |b: Option<ThicknessBounds>| b.is_none_or(|b| top >= b.min_nm && bottom >= b.min_nm);
+        let pool_bounds = self
+            .host_entry(host)?
+            .and_then(|e| self.thickness_bounds_for(e));
+        Ok(legal(stack.bounds_for(host)) && legal(pool_bounds))
     }
 
     /// May a needle of entry `m` go on the boundary above row `b` (`b ==
@@ -1446,7 +1467,9 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                             depth_into_layer_nm: site.depth_into_layer_nm,
                             material: mat.material.clone(),
                             boundary: site.boundary,
-                            seed_nm: cfg.needle_seed_thickness_nm,
+                            // A4: the seed goes in at the nearest
+                            // thickness its material allows.
+                            seed_nm: pool.clamp_seed_thickness(m, cfg.needle_seed_thickness_nm),
                         },
                         mat,
                         p,
@@ -1470,26 +1493,22 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
         // (insertion, material, P if scored by P, improvement it promises)
         let mut best: Option<(Insertion, &LayerSpec, Option<f64>, f64)> =
             best.map(|(ins, mat, p)| {
-                (
-                    ins,
-                    mat,
-                    Some(p),
-                    -(p + gtot) * cfg.needle_seed_thickness_nm,
-                )
+                let seed_nm = ins.seed_nm;
+                (ins, mat, Some(p), -(p + gtot) * seed_nm)
             });
 
         // Rough boundary sites: the merit with the needle in place, at its
         // start thickness. The trials count to the scan's time.
         let t0 = tick(cfg.record_timing);
-        for (mat, mat_sites) in pool.iter().zip(&rough_per_material) {
+        for (m, (mat, mat_sites)) in pool.iter().zip(&rough_per_material).enumerate() {
             for site in mat_sites {
-                let d0 = rough_boundary_start_nm(
-                    &sa,
-                    site.film_idx,
-                    cfg.needle_seed_thickness_nm,
-                    stack.roughness_cap(),
-                )
-                .expect("rough sites were picked by the same test");
+                let seed_nm = pool.clamp_seed_thickness(m, cfg.needle_seed_thickness_nm);
+                let d0 =
+                    rough_boundary_start_nm(&sa, site.film_idx, seed_nm, stack.roughness_cap())
+                        .expect("rough sites were picked by the same test");
+                // A4: the roughness lift may not carry the start past the
+                // material's ceiling.
+                let d0 = pool.clamp_seed_thickness(m, d0);
                 let mut trial = stack.clone();
                 trial.insert_film_at_boundary(site.film_idx, new_needle(stack.films(), mat, d0))?;
                 let gain = current_mf - ctx.evaluate_merit(&trial)?;
@@ -1623,14 +1642,10 @@ fn joint_cycle<C: DesignContext + ?Sized>(
     // reference, and the joint merit charges all of them.
     // (site, material, P if scored by P, seed thickness, improvement it promises)
     let mut best: Option<(JointSite, usize, Option<f64>, f64, f64)> = sweep.best.map(|c| {
-        let predicted = -(c.p + sweep.gtot) * cfg.needle_seed_thickness_nm;
-        (
-            c.site,
-            c.material,
-            Some(c.p),
-            cfg.needle_seed_thickness_nm,
-            predicted,
-        )
+        // A4: the seed goes in at the nearest thickness its material allows.
+        let seed_nm = pool.clamp_seed_thickness(c.material, cfg.needle_seed_thickness_nm);
+        let predicted = -(c.p + sweep.gtot) * seed_nm;
+        (c.site, c.material, Some(c.p), seed_nm, predicted)
     });
 
     // Rough boundary loci: the joint merit with the needle in place in
@@ -1639,6 +1654,7 @@ fn joint_cycle<C: DesignContext + ?Sized>(
     // count to the scan's time.
     let t0 = tick(cfg.record_timing);
     for &(gap, m, d0) in &sweep.rough {
+        let d0 = pool.clamp_seed_thickness(m, d0);
         let lost = || "joint needle: the context lost its environments".to_string();
         let film = new_needle(stack.films(), &pool[m], d0);
         let mut trial = stack.clone();

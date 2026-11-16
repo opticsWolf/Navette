@@ -219,6 +219,9 @@ pub fn scan<C: DesignContext + ?Sized>(
         for site in rough_material_sites {
             let d0 = rough_boundary_start_nm(&sa, site.film_idx, seed_nm, stack.roughness_cap())
                 .ok_or_else(|| "staged::scan: rough site without a rough boundary".to_string())?;
+            // A4: the roughness lift may not carry the start past the
+            // material's ceiling.
+            let d0 = pool.clamp_seed_thickness(material_index, d0);
             let mut trial = stack.clone();
             trial
                 .insert_film_at_boundary(site.film_idx, new_needle(stack.films(), material, d0))?;
@@ -632,6 +635,139 @@ mod tests {
 
         assert_eq!(report.result.layers_before, before);
         assert!(report.result.layers_after < before, "{report:?}");
+    }
+
+    /// A broadband AR demand over 21 wavelengths, which wants needles.
+    fn broadband() -> (MeritSpec, Vec<f64>) {
+        let wl: Vec<f64> = (0..21).map(|i| 450.0 + 10.0 * i as f64).collect();
+        let mut spec = MeritSpec::new();
+        let key = spec.add_key(MeritKey {
+            angle: Radians::ZERO,
+            curve: CurveId::Rs,
+        });
+        spec.add_target(MeritTarget {
+            key_idx: key as u32,
+            env_idx: 0,
+            wavelengths: wl.clone().into(),
+            kind: ConstraintKind::Exact,
+            transform: SimTransform::Linear,
+            norm_factor: 1.0,
+            normalized_targets: vec![0.0; wl.len()].into(),
+            tolerances: vec![1e-3; wl.len()].into(),
+            band: Vec::new().into(),
+            phase: false,
+            differential_passes: None,
+            retardance: false,
+            ratio: None,
+            dispersion: None,
+            stokes: None,
+            point_weights: Vec::new().into(),
+            integral: false,
+            weight: 1.0,
+            count_norm: None,
+        })
+        .unwrap();
+        (spec, wl)
+    }
+
+    /// L | H | L on glass, with H and L bounded as given, in the pool and
+    /// on the stack alike.
+    fn bounded(
+        h: Option<(f64, f64)>,
+        l: Option<(f64, f64)>,
+    ) -> (MaterialPool, DesignStack, SmatrixContext, SpectralInputs) {
+        use crate::smatrix::synthesis::structure::ThicknessBounds;
+
+        let (spec, wl) = broadband();
+        let nw = wl.len();
+        let c = |name: &str, n: f64, d: f64| LayerSpec::constant(name, n, 0.0, d, nw);
+        let tb = |b: Option<(f64, f64)>| b.map(|(lo, hi)| ThicknessBounds::new(lo, hi).unwrap());
+        let pool = MaterialPool::from(vec![c("H", 2.2, 0.0), c("L", 1.46, 0.0)])
+            .with_thickness_bounds(vec![tb(h), tb(l)])
+            .unwrap();
+        let mut air = c("air", 1.0, 0.0);
+        air.optimize = false;
+        air.needle = false;
+        let mut sub = c("substrate", 1.52, 0.0);
+        sub.optimize = false;
+        sub.needle = false;
+        let mut st = DesignStack::with_films(
+            air,
+            sub,
+            vec![c("L", 1.46, 300.0), c("H", 2.2, 90.0), c("L", 1.46, 300.0)],
+        )
+        .unwrap();
+        let named = [("H", tb(h)), ("L", tb(l))];
+        st.set_material_bounds(
+            named
+                .iter()
+                .filter_map(|(name, b)| b.map(|b| (Arc::from(*name), b))),
+        )
+        .unwrap();
+        let mut context = ctx(&spec);
+        context.wavls = wl.clone();
+        let sp = SpectralInputs::from_spec(&spec, &[Radians::ZERO], &wl).unwrap();
+        (pool, st, context, sp)
+    }
+
+    fn assert_legal(st: &DesignStack) {
+        st.validate_bounds().unwrap();
+    }
+
+    /// A4 regression: a pool material whose minimum exceeds the configured
+    /// seed (5 nm) is inserted at its minimum, so the macro loop runs
+    /// instead of refusing its own first insertion.
+    #[test]
+    fn the_needle_loop_seeds_a_bounded_material_at_its_minimum() {
+        use crate::smatrix::synthesis::cycle::run_needle_cycles;
+
+        let (pool, mut st, mut c, sp) = bounded(Some((20.0, 400.0)), None);
+        let cfg = NeedleCycleConfig {
+            scan_step_nm: 10.0,
+            max_needles: 4,
+            ..NeedleCycleConfig::default()
+        };
+        let history = run_needle_cycles(&mut c, &mut st, &sp, &pool, &cfg).unwrap();
+        assert!(history.iter().any(|h| h.insertion.is_some()), "{history:?}");
+        assert_legal(&st);
+    }
+
+    /// A4 regression: a split that would leave a host piece under the
+    /// host's minimum is not a candidate, so the macro loop never inserts
+    /// it and never refuses its own choice.
+    #[test]
+    fn the_needle_loop_never_splits_a_host_below_its_minimum() {
+        use crate::smatrix::synthesis::cycle::run_needle_cycles;
+
+        let (pool, mut st, mut c, sp) = bounded(None, Some((50.0, 1000.0)));
+        let cfg = NeedleCycleConfig {
+            scan_step_nm: 10.0,
+            max_needles: 4,
+            ..NeedleCycleConfig::default()
+        };
+        run_needle_cycles(&mut c, &mut st, &sp, &pool, &cfg).unwrap();
+        assert_legal(&st);
+    }
+
+    /// A4 regression: every candidate the staged scan offers is one the
+    /// staged insert accepts.
+    #[test]
+    fn every_scanned_candidate_can_be_inserted() {
+        for (h, l) in [
+            (Some((20.0, 400.0)), None),
+            (None, Some((50.0, 1000.0))),
+            (Some((20.0, 400.0)), Some((50.0, 1000.0))),
+        ] {
+            let (pool, st, c, sp) = bounded(h, l);
+            let s = scan(&c, &st, &sp, &pool, &cfg()).unwrap();
+            assert!(!s.candidates.is_empty(), "{h:?} {l:?}");
+            for cand in &s.candidates {
+                let mut trial = st.clone();
+                insert(&mut trial, &pool, cand)
+                    .unwrap_or_else(|e| panic!("{h:?} {l:?}: {cand:?} refused: {e}"));
+                assert_legal(&trial);
+            }
+        }
     }
 
     #[test]

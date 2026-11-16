@@ -348,7 +348,7 @@ builds wheels (Linux/Windows/macOS) and publishes to PyPI (trusted
 publisher) + crates.io (token), leaf crates first.
 
 ```powershell
-maturin build --release   # -> target/wheels/navette-0.10.0-*.whl (single wheel, all engines)
+maturin build --release   # -> target/wheels/navette-0.11.0-*.whl (single wheel, all engines)
 ```
 
 There is a seventh site the gate does not see: the wheel filename in the
@@ -403,7 +403,7 @@ that checkout. The crate on crates.io has the same defaults; a Rust user
 switches a backend on in `Cargo.toml`:
 
 ```toml
-navette = { version = "0.10", features = ["opt-basin"] }
+navette = { version = "0.11", features = ["opt-basin"] }
 ```
 
 Manual fallback: `cargo publish -p navette`;

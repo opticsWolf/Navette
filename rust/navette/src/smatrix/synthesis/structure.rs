@@ -547,12 +547,16 @@ impl DesignStack {
     }
 
     /// The interval for a film: its explicit material label first, then its
-    /// emitted material name. `None` means the historical global clamps.
+    /// emitted material name, then - for an unlabelled needle, which the
+    /// needle loops name `<material>#<n>` - the material it was cut from.
+    /// `None` means the historical global clamps.
     pub fn bounds_for(&self, film: &LayerSpec) -> Option<ThicknessBounds> {
+        let by_name = |name: &str| self.material_bounds.get(name).copied();
         film.label
             .as_deref()
-            .and_then(|label| self.material_bounds.get(label).copied())
-            .or_else(|| self.material_bounds.get(&film.material).copied())
+            .and_then(by_name)
+            .or_else(|| by_name(&film.material))
+            .or_else(|| needle_base_name(&film.material).and_then(by_name))
     }
 
     /// [`Self::bounds_for`] by row index.
@@ -1262,12 +1266,13 @@ impl DesignStack {
         if let Some(msg) = self.needle_host_refusal(film_idx) {
             return Err(msg);
         }
-        // A4: a pinned film (optimize = false) is not a host even when its
-        // legacy `needle` flag is still set; the split would move a pinned
+        // A4: a pinned film (optimize = false and needle = false, see
+        // `is_pinned_row`) is not a host; the split would move a pinned
         // thickness, which is exactly what a pin forbids.
         if self.is_pinned_row(film_idx) {
             return Err(format!(
-                "insert_needle_seed: film {} ('{}') is pinned (optimize = false,                  needle = false) and cannot host a needle",
+                "insert_needle_seed: film {} ('{}') is pinned \
+                 (optimize = false, needle = false) and cannot host a needle",
                 film_idx, original.material
             ));
         }
@@ -2178,6 +2183,14 @@ pub(crate) fn span_index_of_row(spans: &[Span], row: usize) -> usize {
 pub(crate) fn span_is_scalable_rows(sp: &Span, films: &[LayerSpec]) -> bool {
     let bulk = sp.end - sp.bulk_start;
     bulk >= 2 && (sp.bulk_start..sp.end).all(|r| films[r].optimize)
+}
+
+/// A4: the material an unlabelled needle was cut from. The needle loops
+/// name a new needle `<material>#<n>` (`cycle::needle_name`); anything
+/// else is not a needle name.
+fn needle_base_name(name: &str) -> Option<&str> {
+    let (base, n) = name.rsplit_once('#')?;
+    (!base.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then_some(base)
 }
 
 /// D10: a span is pinned when no bulk row is optimize-flagged (the
@@ -3654,15 +3667,9 @@ mod tests {
         assert!(stack.films().is_empty());
     }
 
-    /// Licence item 2, measured: a 1000 nm graded span (delta = 0.5 ->
-    /// 57 rows) under a 300 nm ceiling refuses - message names the span
-    /// material and both numbers. F1.6 narrowed this to non-scalable
-    /// spans (a scalable span is capped instead,
-    /// f16_scalable_span_above_ceiling_is_capped_not_refused), and D10 to
-    /// non-pinned ones (a pinned span passes through), so the span here
-    /// is mixed.
-    /// A4: a material ceiling wins over the global one, and a material
-    /// floor keeps a film from being removed by the global `Remove` floor.
+    /// A4: a material interval replaces the global pair in the sweep. Its
+    /// ceiling caps a film, and under `Remove` a film below its material
+    /// floor is removed, even when it is above the global floor.
     #[test]
     fn material_bounds_override_the_global_clamp() {
         let mut s = stack(vec![h(100.0), l(50.0)]);
@@ -3684,6 +3691,13 @@ mod tests {
         assert_eq!(&*s.films()[0].material, "L");
     }
 
+    /// Licence item 2, measured: a 1000 nm graded span (delta = 0.5 ->
+    /// 57 rows) under a 300 nm ceiling refuses - message names the span
+    /// material and both numbers. F1.6 narrowed this to non-scalable
+    /// spans (a scalable span is capped instead,
+    /// f16_scalable_span_above_ceiling_is_capped_not_refused), and D10 to
+    /// non-pinned ones (a pinned span passes through), so the span here
+    /// is mixed.
     #[test]
     fn f02_cap_refuses_a_multirow_span_above_the_ceiling() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();

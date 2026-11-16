@@ -5,6 +5,77 @@ All notable changes to Navette are recorded here. Work items reference
 `docs/implementation_plan.md` (Fx.y), and `docs/implementation_plan_pd.md`
 (PD1–PD4).
 
+## [0.11.0] - native A4 material bounds
+
+A4 moves per-material thickness bounds, pin semantics and insertion grammar
+into the engine. `MaterialDef` carries an optional `thickness_bounds`
+interval; the configured stack, its thickness LM and the clamp sweep use it;
+a needle seed is clamped into its entry's interval before insertion; and a
+pinned film (`optimize = false`, `needle = false`) is neither an LM parameter
+nor a needle host. `MaterialPool` exposes the intervals and one native
+`validate_grammar` door for existing stacks. The release also carries A1
+staged needles, A2 `ga-introspect`, A3 `evaluate_many` and the LM x0-floor
+fix from the `dev_ga` line.
+
+### Added
+
+- `ThicknessBounds` (closed `[min_nm, max_nm]` interval) on
+  `structure`, with validation, clamping and containment.
+- `MaterialDef::thickness_bounds`, carried through
+  `evaluate_library_with_bounds` as `EvaluatedMaterial { label, nk, bounds }`.
+  The existing `evaluate_library` remains as a `(label, nk)` compatibility
+  wrapper.
+- `MaterialPool::thickness_bounds`, `thickness_bounds_for`,
+  `with_thickness_bounds`, `clamp_seed_thickness`, `validate_thickness` and
+  `validate_grammar`; `label_pool_with_bounds` preserves intervals through
+  duplicate-label folding.
+- `DesignStack::material_bounds`, `set_material_bounds`, `bounds_for`,
+  `bounds_for_film`, `validate_film_bounds`, `validate_bounds` and
+  `is_pinned_row`; the stack's intervals are copied through
+  `CompiledEnvironments::expand`.
+- `ThicknessParam::bounds`: row intervals bind the LM directly; a scalable
+  span's total interval is the intersection derived from its frozen row
+  fractions. The LM's `x0` and `ub` use those intervals, and so does its
+  `lb` under the clamp-up policies; the clamp sweep uses them for plain
+  one-row spans and scalable spans.
+- `ArrayMaterial::thickness_bounds` for the evaluated-array design door.
+
+### Changed
+
+- A needle seed outside its material interval is clamped to the nearest
+  legal thickness before it is scored and inserted.
+- A pinned film is excluded from the needle scan host set and from
+  `insert_needle_seed`; an inserted stack is checked by the native grammar
+  door before the next solve.
+- `staged::insert` is transactional: the pre-insertion stack is restored if
+  bounds or grammar refuse the result.
+- `DesignStack::insert_needle_seed` still allows a split at a derived
+  interface-slice row (the slice is not a user pin).
+- Under `Remove` (and mid-run under `ClampUpFinal`) a bounded film can
+  still be eliminated, as before material bounds: the LM's lower bound
+  stays 0, and the clamp sweep removes a film below its material minimum.
+  The legal thicknesses are {0} plus `[min_nm, max_nm]`. Under the
+  clamp-up policies the material minimum is the LM's floor.
+
+### Fixed
+
+- `run_needle_cycles` no longer refuses its own insertion when a pool
+  material's minimum is above the configured seed: the macro, rough-site
+  and joint paths all seed at the clamped thickness.
+- A site whose split would leave a host piece below the host's minimum is
+  no longer a needle candidate. The needle loop no longer aborts on it,
+  and every candidate `staged::scan` offers is one `staged::insert`
+  accepts.
+- An unlabelled needle (`H#2`) takes the interval of the material it was
+  cut from (`H`), so the stack's clamp sweep enforces it as the pool does.
+
+### Breaking (Rust)
+
+- `ArrayMaterial` gained a `thickness_bounds` field. Python's
+  `(label, nk)` material list keeps working with `None` bounds.
+- `MaterialPool` gained a private interval vector; `Default`, `From<
+  Vec<LayerSpec>>`, `new` and `Deref` keep their existing shapes.
+
 ## [0.10.0] - the general fit engine
 
 `navette.fit` fits any scalar of a model to measured data: film

@@ -965,15 +965,20 @@ impl SmatrixContext {
         // cost is F0.3's: a seed the optimizer wants to reject parks at
         // the floor instead of disappearing.
         let joint = self.envs.is_some();
-        let policy_floor = if joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
-            self.clamp_min_nm
-        } else {
-            0.0
-        };
+        let clamp_up = joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways;
+        let policy_floor = if clamp_up { self.clamp_min_nm } else { 0.0 };
         // A4: resolve each parameter's interval from its material(s). A
         // material interval is authoritative when present; the global
-        // clamp pair is the compatibility fallback and the policy floor
-        // still applies on top under `ClampUpAlways` / a joint run.
+        // clamp pair is the compatibility fallback.
+        //
+        // The lower bound follows the policy exactly as above. Under a
+        // clamp-up posture (`ClampUpAlways`, a joint run) the material
+        // minimum is a hard bound, raised to the global floor. Under
+        // `Remove`/`ClampUpFinal` the LM floor stays at 0 for bounded
+        // materials too, so elimination works as before: the LM may drive
+        // a film toward zero, and the sweep removes it because it is below
+        // its MATERIAL minimum (the sweep's threshold), the legal set being
+        // {0} U [min, max]. Only the ceiling binds the search.
         let mut lb = Vec::with_capacity(params.len());
         let mut ub = Vec::with_capacity(params.len());
         let mut x0 = Vec::with_capacity(params.len());
@@ -981,11 +986,7 @@ impl SmatrixContext {
             let (lo, hi) = p
                 .bounds(stack)
                 .map_or((0.0, self.clamp_max_nm), |(lo, hi)| (lo.max(0.0), hi));
-            let lo = if joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
-                lo.max(self.clamp_min_nm)
-            } else {
-                lo.max(policy_floor)
-            };
+            let lo = if clamp_up { lo.max(policy_floor) } else { 0.0 };
             if !(lo.is_finite() && hi.is_finite() && lo <= hi) {
                 return Err(format!(
                     "thickness bounds: parameter interval [{lo}, {hi}] nm is empty or non-finite (material bounds and the global clamps disagree)"
@@ -3069,9 +3070,10 @@ mod tests {
         }
 
         /// A4: a material interval is authoritative even under the
-        /// default `Remove` policy. The global floor is 2 nm, but this
-        /// material may not go below 50 nm, so the LM lower bound is 50
-        /// and the final sweep must not remove the film.
+        /// default `Remove` policy. The film wants its quarter wave
+        /// (~182 nm) but this material may not exceed 60 nm: the LM climbs
+        /// from 10 nm, stops on the material ceiling, and the film ends
+        /// inside [50, 60] rather than being removed.
         #[test]
         fn material_bounds_bind_the_lm_before_the_global_floor() {
             use crate::smatrix::synthesis::structure::ThicknessBounds;
@@ -3096,6 +3098,66 @@ mod tests {
             assert!(
                 (50.0..=60.0).contains(&d),
                 "refined film at {d} nm escaped its material bounds [50, 60]"
+            );
+        }
+
+        /// A4 under `Remove`: a bounded film keeps the pre-A4 elimination.
+        /// An H film on the AR demand only raises R below its half wave,
+        /// so the optimum is no film. The LM floor stays at 0, the film is
+        /// driven below its 20 nm material minimum, and the sweep removes
+        /// it. Under `ClampUpAlways` the same film parks on the material
+        /// minimum instead.
+        #[test]
+        fn a_bounded_film_is_still_eliminated_under_remove() {
+            use crate::smatrix::synthesis::structure::ThicknessBounds;
+
+            let run = |policy: ThinLayerPolicy| {
+                let mut ctx = SmatrixContext {
+                    wavls: vec![1000.0],
+                    sin_theta: vec![0.0],
+                    spec: ar_spec(0.0, 1000.0),
+                    clamp_min_nm: 2.0,
+                    clamp_max_nm: 1000.0,
+                    thin_layer_policy: policy,
+                    lm: LmConfig::default(),
+                    clamp_accumulator: ClampReport::default(),
+                    envs: None,
+                };
+                let mut ambient = LayerSpec::constant("air", 1.0, 0.0, 0.0, 1);
+                ambient.optimize = false;
+                ambient.needle = false;
+                let mut substrate = LayerSpec::constant("sub", 1.52, 0.0, 0.0, 1);
+                substrate.optimize = false;
+                substrate.needle = false;
+                let mut stack = DesignStack::with_films(
+                    ambient,
+                    substrate,
+                    vec![LayerSpec::constant("H", 2.3, 0.0, 40.0, 1)],
+                )
+                .unwrap();
+                stack
+                    .set_material_bounds([(
+                        Arc::from("H"),
+                        ThicknessBounds::new(20.0, 100.0).unwrap(),
+                    )])
+                    .unwrap();
+                ctx.refine_thicknesses_report(&mut stack).unwrap();
+                stack
+            };
+
+            let removed = run(ThinLayerPolicy::Remove);
+            assert!(
+                removed.films().is_empty(),
+                "Remove kept a film the merit wants gone: {:?}",
+                removed.films().iter().map(|f| f.d_nm).collect::<Vec<_>>()
+            );
+
+            let parked = run(ThinLayerPolicy::ClampUpAlways);
+            assert_eq!(parked.films().len(), 1);
+            let d = parked.films()[0].d_nm;
+            assert!(
+                (d - 20.0).abs() < 1e-6,
+                "ClampUpAlways should park the film on its 20 nm minimum, got {d}"
             );
         }
 
