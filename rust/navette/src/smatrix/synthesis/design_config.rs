@@ -610,18 +610,8 @@ fn fixed_spec(name: &str, nk: Vec<Complex64>) -> LayerSpec {
     }
 }
 
-/// Build the needle material pool from `materials` (library codes), each
-/// entry labelled by its code; a repeated code is one entry. `None` (no
-/// list given) answers `None`: the caller takes the default pool of its
-/// own layers.
-///
-/// W7: an entry's index is its code's library index under the code's
-/// group n/k factors, the index a film of that code is expanded with, so
-/// this pool and the default one agree. (A needle's thickness takes no
-/// group factor: it is grown, not specified.)
-///
-/// Shared by both doors so the pool cannot drift between them.
-/// A4: the library's label -> interval map, validated.
+/// A4: the library's label -> interval map, validated. A material is
+/// keyed by its code, or by its name when it has no code.
 pub(crate) fn library_thickness_bounds(
     library: &[MaterialDef],
 ) -> Result<BTreeMap<Arc<str>, ThicknessBounds>, String> {
@@ -640,6 +630,17 @@ pub(crate) fn library_thickness_bounds(
     Ok(bounds)
 }
 
+/// Build the needle material pool from `materials` (library codes), each
+/// entry labelled by its code; a repeated code is one entry. `None` (no
+/// list given) answers `None`: the caller takes the default pool of its
+/// own layers.
+///
+/// W7: an entry's index is its code's library index under the code's
+/// group n/k factors, the index a film of that code is expanded with, so
+/// this pool and the default one agree. (A needle's thickness takes no
+/// group factor: it is grown, not specified.)
+///
+/// Shared by both doors so the pool cannot drift between them.
 pub(crate) fn build_pool(
     materials: Option<&[String]>,
     nk: &HashMap<Arc<str>, Vec<Complex64>>,

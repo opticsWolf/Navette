@@ -126,6 +126,10 @@ impl NeedlePipeline {
                 cfg.needles_per_cycle
             ));
         }
+        // A4: a pool handed in without intervals (from Python, or built
+        // from the layers) takes the stack's, so seeds are clamped to what
+        // the stack will accept.
+        let pool = pool.inherit_stack_bounds(&stack);
         let detector = StagnationDetector::new(
             cfg.stagnation_window,
             cfg.stagnation_gradient_tol,

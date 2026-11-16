@@ -162,6 +162,41 @@ def test_gradient_row_typo_refuses_loudly():
         _film("H", 100.0, gradient=grad)
 
 
+def test_material_thickness_bounds_hold_through_a_needle_run():
+    """A4: a library entry's `thickness_bounds` reach the stack, and the
+    pool `pipeline_from_config` hands back (plain LayerSpecs) takes them
+    from the stack: a needle of a bounded material goes in at its minimum
+    instead of at the 5 nm default the stack would refuse, and every film
+    of that material ends inside its interval."""
+    from navette._smatrix import NeedlePipeline
+    from navette.spectralweave.target import SpectralTarget, TargetCollection
+    from navette.synthesis import build_merit_spec
+    from navette.synthesis.pipeline import PipelineConfig
+
+    wl = np.linspace(450.0, 650.0, 21)
+    h = MaterialDefinition(name="H", code="H", model="Konstant",
+                           params=KonstantParams(n=2.2),
+                           thickness_bounds={"min_nm": 20.0, "max_nm": 400.0})
+    lib = [_mat("air", 1.0), _mat("L", 1.46), h, _mat("sub", 1.52)]
+    air = LayerConfig(material_code="air", thickness_nm=1.0, layer_type=0,
+                      optimize=False, needle=False)
+    sub = LayerConfig(material_code="sub", thickness_nm=1.0, layer_type=2,
+                      optimize=False, needle=False)
+    s = NamedStructureConfig(label="t", layers=[air, _film("L", 300.0), _film("H", 90.0), sub])
+    stack, pool = pipeline_from_config(s, lib, wl)
+
+    tc = TargetCollection()
+    tc.add(SpectralTarget(wl, np.zeros_like(wl), np.full_like(wl, 1e-3), "s", "R",
+                          angle_deg=0.0))
+    cfg = PipelineConfig(max_macro_cycles=4, needles_per_cycle=2)
+    out = NeedlePipeline(stack, build_merit_spec(tc), wl, pool, cfg,
+                         angles_deg=np.array([0.0])).run()
+    films = out["stack"].to_dict()["films"]
+    hs = [f["thickness"] for f in films if f["material"].split("#")[0] == "H"]
+    assert len(films) > 2, films
+    assert all(20.0 - 1e-9 <= d <= 400.0 + 1e-9 for d in hs), hs
+
+
 def test_layer_config_roundtrips_gradient():
     cfg = _film("H", 100.0, gradient=_GRAD)
     d = cfg.model_dump()

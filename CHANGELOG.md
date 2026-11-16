@@ -39,6 +39,12 @@ fix from the `dev_ga` line.
   `lb` under the clamp-up policies; the clamp sweep uses them for plain
   one-row spans and scalable spans.
 - `ArrayMaterial::thickness_bounds` for the evaluated-array design door.
+- Python: `MaterialDefinition(..., thickness_bounds={"min_nm": ..., "max_nm":
+  ...})`, validated at construction, reaches the stack through
+  `pipeline_from_config`. The keyword `run_needle` surface and program
+  documents evaluate materials to plain nk and do not carry intervals yet.
+- `MaterialPool::inherit_stack_bounds`: an entry without an interval takes
+  the stack's interval for that material. `NeedlePipeline::new` applies it.
 
 ### Changed
 
@@ -68,6 +74,11 @@ fix from the `dev_ga` line.
   accepts.
 - An unlabelled needle (`H#2`) takes the interval of the material it was
   cut from (`H`), so the stack's clamp sweep enforces it as the pool does.
+- A Python `NeedlePipeline` over a stack from `pipeline_from_config` with a
+  bounded material no longer aborts on its first needle ("outside its
+  material bounds"). The pool it is handed is plain `LayerSpec`s with no
+  intervals, so the seed went in at the 5 nm default; the pool now takes
+  the stack's intervals.
 - `validate_grammar` reads adjacent films of a needle's own material as
   one layer and looks for the host beyond them. The clamp sweep can remove
   a needle from between two pieces of its split host, and the needle loop

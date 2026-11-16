@@ -70,9 +70,11 @@ pub struct ScanSite {
 /// Build the candidate list exactly like `compute_p_function`: interior
 /// multiples of `scan_step_nm` inside each admissible film.
 ///
-/// `films` are the film layers; host admissibility = `layer.needle`,
-/// `layer.optimize` (A4: a pinned film is not a host), AND
-/// (F0.1, §6 row 6) the row's span being singleton-bulk. `spans` is the
+/// `films` are the film layers; host admissibility = `layer.needle` AND
+/// (F0.1, §6 row 6) the row's span being singleton-bulk. `optimize` is
+/// not read: an A4 pin (`optimize = false`, `needle = false`) is already
+/// excluded by its needle flag, and a joint run's secondary design copy
+/// (`optimize = false`, `needle = true`) stays a host. `spans` is the
 /// stack's span partition; an unbooked row list (tests, hand-built film
 /// vecs) passes `&[]`, where the needle flag alone decides — the same
 /// rule the tree ran before spans were carried.

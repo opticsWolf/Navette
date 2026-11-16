@@ -111,7 +111,14 @@ class _NativeModel:
 
 
 class MaterialDefinition(_NativeModel):
-    """One named material: model selector plus params (natively validated)."""
+    """One named material: model selector plus params (natively validated).
+
+    ``thickness_bounds={"min_nm": ..., "max_nm": ...}`` (optional) is the
+    material's deposition interval: on the config route
+    (``pipeline_from_config``) it replaces the run's global
+    ``clamp_min_nm`` / ``clamp_max_nm`` for films of this material, and
+    needles of it are seeded inside it.
+    """
 
     _native_name = "MaterialDefinition"
 

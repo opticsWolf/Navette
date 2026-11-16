@@ -266,6 +266,26 @@ impl MaterialPool {
         Ok(self)
     }
 
+    /// A4: give every entry without an interval of its own the stack's
+    /// interval for that material ([`DesignStack::bounds_for`]). A pool
+    /// built from `LayerSpec`s (the Python `NeedlePipeline` door, or
+    /// [`pool_from_layers`]) carries no intervals, while the stack it runs
+    /// on may; without this the seed would go in unclamped and the stack
+    /// would refuse it. An entry's own interval wins, and a stack without
+    /// intervals leaves the pool unchanged.
+    pub fn inherit_stack_bounds(mut self, stack: &DesignStack) -> Self {
+        if stack.material_bounds().is_empty() {
+            return self;
+        }
+        self.bounds.resize(self.materials.len(), None);
+        for (b, entry) in self.bounds.iter_mut().zip(&self.materials) {
+            if b.is_none() {
+                *b = stack.bounds_for(entry);
+            }
+        }
+        self
+    }
+
     /// A4: clamp a needle seed thickness into entry `m`'s interval. No
     /// interval leaves the seed unchanged.
     pub fn clamp_seed_thickness(&self, m: usize, d_nm: f64) -> f64 {
