@@ -36,7 +36,7 @@ use serde::Deserialize;
 use super::cycle::{MaterialPool, new_needle, pool_entry, pool_from_layers};
 use super::design_config::{
     DesignRequest, LayerRow, RowAssembly, build_pool, d_inh_delta, d_layer_type, d_true,
-    eval_library, split_and_build_films,
+    eval_library, library_thickness_bounds, split_and_build_films,
 };
 use super::needle_pass::{ScanSite, span_admissible};
 use super::structure::{DesignStack, EdgeMaterials, LayerSpec, edge_allows, span_index_of_row};
@@ -1140,10 +1140,14 @@ impl CompiledEnvironments {
         let mut out = Vec::with_capacity(self.names.len());
         let mut first = design.clone();
         self.fill(0, &mut first, design)?;
+        first.set_material_bounds(design.material_bounds().clone())?;
         out.push(first);
         for e in 1..self.names.len() {
             let mut st = self.stacks[e].clone();
             self.fill(e, &mut st, design)?;
+            // A4: the design's material intervals travel with its
+            // thicknesses; a template clone otherwise predates the map.
+            st.set_material_bounds(design.material_bounds().clone())?;
             out.push(st);
         }
         Ok(out)
@@ -1622,7 +1626,8 @@ pub fn build_environments(
         }
     }
 
-    let pool = build_pool(req.materials.as_deref(), &nk, &groups)?;
+    let material_bounds = library_thickness_bounds(&req.library)?;
+    let pool = build_pool(req.materials.as_deref(), &nk, &groups, &material_bounds)?;
 
     let mut stacks: Vec<DesignStack> = Vec::with_capacity(req.environments.len());
     let mut inverted: Vec<Vec<bool>> = Vec::with_capacity(req.environments.len());
@@ -1677,6 +1682,9 @@ pub fn build_environments(
             &background,
         )
         .map_err(|e| format!("environment {:?}: {e}", env.name))?;
+        // A4: every assembly carries the same library bounds; expansion
+        // later copies this map forward.
+        stack.set_material_bounds(material_bounds.clone())?;
         // W7: a surrounding's auto-name is no material label.
         stack.unlabel_films(&per_env_fixed[e]);
         warnings.extend(warns.into_iter().map(|w| format!("{}: {w}", env.name)));
@@ -1991,6 +1999,7 @@ mod tests {
                 params: [("n".to_string(), Value::from(n))].into_iter().collect(),
                 n_data: None,
                 k_data: None,
+                thickness_bounds: None,
             })
             .collect()
     }

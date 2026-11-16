@@ -171,6 +171,9 @@ impl MaterialDef {
                 pos("lambda_g")?;
             }
         }
+        if let Some(b) = self.thickness_bounds {
+            b.validate().map_err(|e| format!("{}: {e}", self.name))?;
+        }
         Ok(())
     }
 }

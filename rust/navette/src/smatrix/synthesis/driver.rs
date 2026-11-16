@@ -7,14 +7,15 @@
 //! (`DesignRequest`) lives in `design_config`; both converge on
 //! `DesignStack::from_design` here through [`assemble_stack`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use num_complex::Complex64;
 
 use super::config::PipelineConfig;
 use super::cycle::{
-    MaterialPool, NeedleCycleConfig, NeedleRules, label_pool, pool_entry, pool_from_layers,
+    MaterialPool, NeedleCycleConfig, NeedleRules, label_pool_with_bounds, pool_entry,
+    pool_from_layers,
 };
 use super::evaluator::SmatrixContext;
 use super::merit::{MeritSpec, Radians};
@@ -54,6 +55,9 @@ pub struct ArrayFilm {
 pub struct ArrayMaterial {
     pub name: String,
     pub nk: Vec<Complex64>,
+    /// A4: the material's closed thickness interval. `None` keeps the
+    /// historical global clamp fallback.
+    pub thickness_bounds: Option<crate::smatrix::synthesis::structure::ThicknessBounds>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +238,7 @@ pub fn run_design(
         groups,
         wavelengths,
     )?;
+    let mut material_bounds = BTreeMap::new();
     let pool = match materials {
         None => pool_from_layers(&stack, |_| true)?,
         Some(ms) => {
@@ -246,14 +251,23 @@ pub fn run_design(
                         wavelengths.len()
                     ));
                 }
+                if let Some(b) = m.thickness_bounds {
+                    b.validate()
+                        .map_err(|e| format!("needle material '{}': {e}", m.name))?;
+                    material_bounds.insert(Arc::from(m.name.as_str()), b);
+                }
             }
-            label_pool(
-                ms.iter()
-                    .map(|m| pool_entry(&m.name, Arc::from(m.nk.clone()))),
-            )?
+            label_pool_with_bounds(ms.iter().map(|m| {
+                (
+                    pool_entry(&m.name, Arc::from(m.nk.clone())),
+                    m.thickness_bounds,
+                )
+            }))?
         }
     };
+    stack.set_material_bounds(material_bounds)?;
     let pool = rules.apply(&mut stack, pool)?;
+    pool.validate_grammar(&stack, Some(rules))?;
     let (spec, dropped) = drop_infeasible(
         "run_design",
         spec,

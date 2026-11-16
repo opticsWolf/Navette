@@ -26,7 +26,8 @@ use crate::smatrix::synthesis::needle_pass::{
 };
 use crate::smatrix::synthesis::pipeline::SpectralInputs;
 use crate::smatrix::synthesis::structure::{
-    DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec, edge_allows, is_edge_material,
+    DesignStack, EdgeMaterial, EdgeMaterials, LayerSpec, ThicknessBounds, edge_allows,
+    is_edge_material,
 };
 use crate::structure::Span;
 
@@ -188,6 +189,10 @@ pub(crate) fn rough_boundary_start_nm(
 #[derive(Clone, Debug, Default)]
 pub struct MaterialPool {
     materials: Vec<LayerSpec>,
+    /// A4: one optional interval per entry, index-aligned with `materials`.
+    /// Empty has the same meaning as one `None` per entry: the historical
+    /// global clamp fallback.
+    bounds: Vec<Option<ThicknessBounds>>,
     /// `allowed[h][m]`: may a film of entry `h` take a needle of entry
     /// `m`? `None`: every pair of different index.
     allowed: Option<Vec<Vec<bool>>>,
@@ -211,8 +216,10 @@ impl std::ops::Deref for MaterialPool {
 
 impl From<Vec<LayerSpec>> for MaterialPool {
     fn from(materials: Vec<LayerSpec>) -> Self {
+        let bounds = vec![None; materials.len()];
         MaterialPool {
             materials,
+            bounds,
             ..Default::default()
         }
     }
@@ -222,6 +229,163 @@ impl MaterialPool {
     /// The empty pool: the needle pass inserts nothing.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A4: the intervals index-aligned with the pool entries. An empty
+    /// slice means no entry has one.
+    pub fn thickness_bounds(&self) -> &[Option<ThicknessBounds>] {
+        &self.bounds
+    }
+
+    /// A4: the interval for entry `m`, if one was supplied.
+    pub fn thickness_bounds_for(&self, m: usize) -> Option<ThicknessBounds> {
+        self.bounds.get(m).copied().flatten()
+    }
+
+    /// A4: attach intervals to the entries. `bounds` must either be empty
+    /// (the compatibility case) or have one item per entry.
+    pub fn with_thickness_bounds(
+        mut self,
+        bounds: Vec<Option<ThicknessBounds>>,
+    ) -> Result<Self, String> {
+        if bounds.is_empty() {
+            self.bounds = vec![None; self.materials.len()];
+            return Ok(self);
+        }
+        if bounds.len() != self.materials.len() {
+            return Err(format!(
+                "material pool: {} thickness bounds for {} entries",
+                bounds.len(),
+                self.materials.len()
+            ));
+        }
+        for b in bounds.iter().flatten() {
+            b.validate()?;
+        }
+        self.bounds = bounds;
+        Ok(self)
+    }
+
+    /// A4: clamp a needle seed thickness into entry `m`'s interval. No
+    /// interval leaves the seed unchanged.
+    pub fn clamp_seed_thickness(&self, m: usize, d_nm: f64) -> f64 {
+        self.thickness_bounds_for(m).map_or(d_nm, |b| b.clamp(d_nm))
+    }
+
+    /// A4: refuse a film that is outside the interval of the entry it
+    /// matches. A film whose entry cannot be identified is left to the
+    /// stack's own bounds check.
+    pub fn validate_thickness(&self, film: &LayerSpec) -> Result<(), String> {
+        let Some(m) = self.host_entry(film)? else {
+            return Ok(());
+        };
+        if let Some(b) = self.thickness_bounds_for(m)
+            && !b.contains(film.d_nm)
+        {
+            return Err(format!(
+                "material {:?} is {:.6} nm, outside its thickness bounds [{:.6}, {:.6}] nm",
+                film.material, film.d_nm, b.min_nm, b.max_nm
+            ));
+        }
+        Ok(())
+    }
+
+    /// A4/B6: one native grammar check for a finished stack.
+    ///
+    /// Checks, in order:
+    ///  * every film is inside its material interval;
+    ///  * every needle has at least one adjacent host that accepts it under
+    ///    the insertion rules (the host may be on either side; a needle at
+    ///    an edge uses the one film beside it);
+    ///  * when `rules` are supplied, the stack's current edge layers comply
+    ///    with the outer/inner lists.
+    ///
+    /// This validates an existing stack; insertion itself remains
+    /// transactional in [`super::staged::insert`], which restores the stack
+    /// if this check refuses the result.
+    pub fn validate_grammar(
+        &self,
+        stack: &DesignStack,
+        rules: Option<&NeedleRules>,
+    ) -> Result<(), String> {
+        let films = stack.films();
+        for film in films {
+            self.validate_thickness(film)?;
+        }
+        for (i, film) in films.iter().enumerate() {
+            if !film.is_needle() {
+                continue;
+            }
+            let label = film
+                .label
+                .as_deref()
+                .ok_or_else(|| format!("needle {:?} has no material label", film.material))?;
+            let m = self.label_index(label, "stack needle")?;
+            let mut host_seen = false;
+            let mut accepted = false;
+            for host in [i.checked_sub(1).map(|j| &films[j]), films.get(i + 1)]
+                .into_iter()
+                .flatten()
+            {
+                if host.is_needle() || !host.needle {
+                    continue;
+                }
+                host_seen = true;
+                if self.accepts(host, m)? {
+                    accepted = true;
+                    break;
+                }
+            }
+            if host_seen && !accepted {
+                return Err(format!(
+                    "needle {:?} ({:?}) has no adjacent host that accepts it under the insertion rules",
+                    film.material, label
+                ));
+            }
+            if host_seen {
+                continue;
+            }
+            // A needle on an edge (or beside only needles) must be allowed
+            // by that edge's list; otherwise it has no host at all.
+            let edges = stack.edge_materials();
+            let listed = |list: &Option<Vec<EdgeMaterial>>| {
+                list.as_ref()
+                    .is_none_or(|l| l.iter().any(|e| is_edge_material(e, film)))
+            };
+            let edge_ok = if i == 0 {
+                listed(&edges.outer)
+            } else if i + 1 == films.len() {
+                listed(&edges.inner)
+            } else {
+                false
+            };
+            if !edge_ok {
+                return Err(format!(
+                    "needle {:?} ({:?}) has no adjacent host and is not on an allowed edge",
+                    film.material, label
+                ));
+            }
+        }
+        if let Some(rules) = rules {
+            let allowed = self.edge_materials(rules.outer.as_deref(), rules.inner.as_deref())?;
+            if let Some(first) = stack.spans().first()
+                && !edge_allows(&allowed.outer, films, first)
+            {
+                return Err(format!(
+                    "outer edge {:?} is not on the allowed edge list",
+                    films.first().map(|f| f.material.as_ref()).unwrap_or("")
+                ));
+            }
+            if let Some(last) = stack.spans().last()
+                && !edge_allows(&allowed.inner, films, last)
+            {
+                return Err(format!(
+                    "inner edge {:?} is not on the allowed edge list",
+                    films.last().map(|f| f.material.as_ref()).unwrap_or("")
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// W7: the entry `film` is made of. A labelled film is its label's
@@ -673,11 +837,30 @@ pub fn pool_entry(label: &str, nk: Arc<[Complex64]>) -> LayerSpec {
 /// an error. Two labels of one index stay two entries (see
 /// [`MaterialPool`]).
 pub fn label_pool(entries: impl IntoIterator<Item = LayerSpec>) -> Result<MaterialPool, String> {
+    label_pool_with_bounds(entries.into_iter().map(|e| (e, None)))
+}
+
+/// [`label_pool`] plus one optional A4 interval per source entry. A dropped
+/// duplicate keeps the first non-`None` interval.
+pub fn label_pool_with_bounds(
+    entries: impl IntoIterator<Item = (LayerSpec, Option<ThicknessBounds>)>,
+) -> Result<MaterialPool, String> {
     let mut out: Vec<LayerSpec> = Vec::new();
-    for e in entries {
-        match out.iter().find(|m| m.material == e.material) {
-            None => out.push(e),
-            Some(m) if m.nk == e.nk => {}
+    let mut bounds: Vec<Option<ThicknessBounds>> = Vec::new();
+    for (e, b) in entries {
+        if let Some(b) = b {
+            b.validate()?;
+        }
+        match out.iter().position(|m| m.material == e.material) {
+            None => {
+                out.push(e);
+                bounds.push(b);
+            }
+            Some(i) if out[i].nk == e.nk => {
+                if bounds[i].is_none() {
+                    bounds[i] = b;
+                }
+            }
             Some(_) => {
                 return Err(format!(
                     "needle pool: material {:?} is given two different indices",
@@ -686,7 +869,11 @@ pub fn label_pool(entries: impl IntoIterator<Item = LayerSpec>) -> Result<Materi
             }
         }
     }
-    Ok(out.into())
+    MaterialPool {
+        materials: out,
+        ..Default::default()
+    }
+    .with_thickness_bounds(bounds)
 }
 
 /// A fresh needle of pool entry `m`, `d_nm` thick, named apart from every
@@ -721,21 +908,21 @@ pub fn pool_from_layers(
     stack: &DesignStack,
     keep: impl Fn(usize) -> bool,
 ) -> Result<MaterialPool, String> {
-    let mut entries: Vec<LayerSpec> = Vec::new();
+    let mut entries: Vec<(LayerSpec, Option<ThicknessBounds>)> = Vec::new();
     for sp in stack.spans() {
         if !(sp.is_singleton_bulk() && keep(sp.bulk_start)) {
             continue;
         }
         let l = &stack.films()[sp.bulk_start];
         match &l.label {
-            Some(label) => entries.push(pool_entry(label, l.nk.clone())),
-            None if !entries.iter().any(|m| m.nk == l.nk) => {
-                entries.push(pool_entry(&l.material, l.nk.clone()))
+            Some(label) => entries.push((pool_entry(label, l.nk.clone()), stack.bounds_for(l))),
+            None if !entries.iter().any(|(m, _)| m.nk == l.nk) => {
+                entries.push((pool_entry(&l.material, l.nk.clone()), stack.bounds_for(l)))
             }
             None => {}
         }
     }
-    label_pool(entries)
+    label_pool_with_bounds(entries)
 }
 
 /// F2.3: one candidate locus, agreed on by every environment.
@@ -1350,6 +1537,9 @@ pub fn run_needle_cycles<C: DesignContext + ?Sized>(
                 } else {
                     stack.insert_needle_seed(ins.film_idx, ins.depth_into_layer_nm, seed)?;
                 }
+                // A4/B6: the inserted stack must still satisfy the pool's
+                // bounds and insertion grammar before it is optimized.
+                pool.validate_grammar(stack, None)?;
 
                 // 5. Re-optimize.
                 let t0 = tick(cfg.record_timing);
@@ -1603,6 +1793,48 @@ mod tests {
 
     fn pool_h() -> MaterialPool {
         vec![entry("H", 2.35)].into()
+    }
+
+    /// B6: an existing needle whose host refuses it under the insertion
+    /// rules is refused by the native grammar check.
+    #[test]
+    fn grammar_rejects_a_needle_its_host_does_not_accept() {
+        let l = entry("L", 1.45);
+        let h = entry("H", 2.35);
+        let rules = BTreeMap::from([("L".to_string(), Vec::<String>::new())]);
+        let pool = label_pool(vec![l, h.clone()])
+            .unwrap()
+            .with_insert_rules(&rules)
+            .unwrap();
+
+        let film = LayerSpec::constant("L", 1.45, 0.0, 60.0, 1);
+        let needle = new_needle(std::slice::from_ref(&film), &h, 10.0);
+        let stack = DesignStack::with_films(
+            LayerSpec::constant("air", 1.0, 0.0, 0.0, 1),
+            LayerSpec::constant("sub", 1.52, 0.0, 0.0, 1),
+            vec![film.clone(), needle, film],
+        )
+        .unwrap();
+        let err = pool.validate_grammar(&stack, None).unwrap_err();
+        assert!(err.contains("no adjacent host"), "{err}");
+    }
+
+    /// A4: the pool owns the interval of each entry; a seed is clamped into
+    /// it before insertion, and a film outside it is refused.
+    #[test]
+    fn pool_thickness_bounds_clamp_the_seed_and_reject_a_bad_film() {
+        let bounds = ThicknessBounds::new(10.0, 20.0).unwrap();
+        let pool = pool_h().with_thickness_bounds(vec![Some(bounds)]).unwrap();
+        assert_eq!(pool.clamp_seed_thickness(0, 2.0), 10.0);
+        assert_eq!(pool.clamp_seed_thickness(0, 50.0), 20.0);
+        assert_eq!(pool.clamp_seed_thickness(0, 15.0), 15.0);
+
+        let mut film = entry("H", 2.35);
+        film.d_nm = 5.0;
+        let err = pool.validate_thickness(&film).unwrap_err();
+        assert!(err.contains("outside its thickness bounds"), "{err}");
+        film.d_nm = 15.0;
+        pool.validate_thickness(&film).unwrap();
     }
 
     /// D1: a context with a simulator whose solve fails stops the cycle

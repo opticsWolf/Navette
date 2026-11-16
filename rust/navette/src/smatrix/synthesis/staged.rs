@@ -173,6 +173,10 @@ pub fn scan<C: DesignContext + ?Sized>(
     let mut sites_scanned = 0usize;
 
     for (material_index, material) in pool.iter().enumerate() {
+        // A4: a seed outside the material's interval is moved to the
+        // nearest legal thickness before it is scored. The prediction uses
+        // that same thickness, so a clamped candidate is not overstated.
+        let seed_nm = pool.clamp_seed_thickness(material_index, cfg.needle_seed_thickness_nm);
         let material_sites = pool.sites_for(material_index, stack, &sites)?;
         if !material_sites.is_empty() {
             let input = NeedlePassInput {
@@ -202,8 +206,8 @@ pub fn scan<C: DesignContext + ?Sized>(
                     material_index,
                     material: material.material.clone(),
                     p: Some(p),
-                    seed_nm: cfg.needle_seed_thickness_nm,
-                    predicted_delta_merit: (p + phi_gain_shift) * cfg.needle_seed_thickness_nm,
+                    seed_nm,
+                    predicted_delta_merit: (p + phi_gain_shift) * seed_nm,
                 });
             }
         }
@@ -213,13 +217,8 @@ pub fn scan<C: DesignContext + ?Sized>(
         // thickness. The trial is a stack clone; nothing is mutated.
         let rough_material_sites = pool.sites_for(material_index, stack, &rough_sites)?;
         for site in rough_material_sites {
-            let d0 = rough_boundary_start_nm(
-                &sa,
-                site.film_idx,
-                cfg.needle_seed_thickness_nm,
-                stack.roughness_cap(),
-            )
-            .ok_or_else(|| "staged::scan: rough site without a rough boundary".to_string())?;
+            let d0 = rough_boundary_start_nm(&sa, site.film_idx, seed_nm, stack.roughness_cap())
+                .ok_or_else(|| "staged::scan: rough site without a rough boundary".to_string())?;
             let mut trial = stack.clone();
             trial
                 .insert_film_at_boundary(site.film_idx, new_needle(stack.films(), material, d0))?;
@@ -264,14 +263,22 @@ pub fn insert(
         )
     })?;
     let seed = new_needle(stack.films(), material, candidate.seed_nm);
-    if candidate.site.boundary {
-        stack.insert_film_at_boundary(candidate.site.film_idx, seed)?;
+    // A4/B6: insertion is transactional. The stack is restored if the
+    // resulting needle is outside its material bounds or has no accepting
+    // host under the insertion rules.
+    let before = stack.clone();
+    let inserted = if candidate.site.boundary {
+        stack.insert_film_at_boundary(candidate.site.film_idx, seed)
     } else {
         stack.insert_needle_seed(
             candidate.site.film_idx,
             candidate.site.depth_into_layer_nm,
             seed,
-        )?;
+        )
+    };
+    if let Err(e) = inserted.and_then(|()| pool.validate_grammar(stack, None)) {
+        *stack = before;
+        return Err(e);
     }
     Ok(Insertion {
         film_idx: candidate.site.film_idx,

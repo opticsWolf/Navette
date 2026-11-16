@@ -19,7 +19,7 @@
 //!   thicknesses   — [n_layers] nm
 //!   incoherent_flags / rough_types / rough_vals — [n_layers]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use num_complex::Complex64;
@@ -27,6 +27,51 @@ use num_complex::Complex64;
 use crate::smatrix::optics_core::cplx;
 use crate::smatrix::synthesis::config::ThinLayerPolicy;
 use crate::structure::Span;
+
+// ---------------------------------------------------------------------------
+// Material thickness bounds (A4)
+// ---------------------------------------------------------------------------
+
+/// A closed per-material thickness interval, in nm.
+///
+/// A4: the material library owns the interval. A film of the material is
+/// legal only when its thickness is inside it; the LM and the clamp sweep
+/// read it through the stack, and a needle seed is clamped into it before
+/// insertion. Materials without an interval keep the historical global
+/// `clamp_min_nm`/`clamp_max_nm` behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThicknessBounds {
+    pub min_nm: f64,
+    pub max_nm: f64,
+}
+
+impl ThicknessBounds {
+    /// Validate and construct a closed interval.
+    pub fn new(min_nm: f64, max_nm: f64) -> Result<Self, String> {
+        if !min_nm.is_finite() || !max_nm.is_finite() || min_nm < 0.0 || max_nm < min_nm {
+            return Err(format!(
+                "invalid thickness bounds [{min_nm}, {max_nm}] nm: both must be finite, min_nm >= 0, and max_nm >= min_nm"
+            ));
+        }
+        Ok(Self { min_nm, max_nm })
+    }
+
+    /// Validate this interval in place.
+    pub fn validate(&self) -> Result<(), String> {
+        Self::new(self.min_nm, self.max_nm).map(|_| ())
+    }
+
+    /// The nearest legal thickness to `d_nm`.
+    pub fn clamp(&self, d_nm: f64) -> f64 {
+        d_nm.clamp(self.min_nm, self.max_nm)
+    }
+
+    /// Does `d_nm` lie inside the interval?
+    pub fn contains(&self, d_nm: f64) -> bool {
+        d_nm.is_finite() && d_nm >= self.min_nm && d_nm <= self.max_nm
+    }
+}
 
 // ---------------------------------------------------------------------------
 // LayerSpec
@@ -81,6 +126,18 @@ impl LayerSpec {
             needle: true,
             label: None,
         }
+    }
+
+    /// Is this film a needle grown from a pool entry?
+    ///
+    /// Needles are named `"<label>#<n>"` and carry the pool entry's label;
+    /// a design film's name and label agree. The marker is deliberately
+    /// local to the film, so a stack can be checked without knowing which
+    /// pool built it.
+    pub fn is_needle(&self) -> bool {
+        self.label
+            .as_deref()
+            .is_some_and(|label| label != &*self.material)
     }
 
     /// W7: are `self` and `other` one material? The same index, and labels
@@ -293,6 +350,9 @@ pub struct DesignStack {
     /// Ratio of the roughness cap `solver_arrays` applies
     /// (`effective_roughness`); 0 is off.
     roughness_cap: f64,
+    /// A4: per-material thickness intervals, keyed by material label. An
+    /// empty map is the pre-A4 behaviour (global clamps only).
+    material_bounds: BTreeMap<Arc<str>, ThicknessBounds>,
 }
 
 impl DesignStack {
@@ -384,6 +444,7 @@ impl DesignStack {
             num_wavs,
             edges: EdgeMaterials::default(),
             roughness_cap: crate::smatrix::optics_core::ROUGHNESS_CAP_RATIO,
+            material_bounds: BTreeMap::new(),
         };
         s.assert_spans_partition();
         Ok(s)
@@ -455,6 +516,122 @@ impl DesignStack {
     /// The film layers (excluding ambient and substrate).
     pub fn films(&self) -> &[LayerSpec] {
         &self.films
+    }
+
+    // -- A4 material thickness bounds --------------------------------------
+
+    /// The per-material thickness intervals carried by this stack.
+    pub fn material_bounds(&self) -> &BTreeMap<Arc<str>, ThicknessBounds> {
+        &self.material_bounds
+    }
+
+    /// Install per-material intervals. Every interval is validated before
+    /// the map is replaced, so a failed call leaves the stack unchanged.
+    pub fn set_material_bounds(
+        &mut self,
+        bounds: impl IntoIterator<Item = (Arc<str>, ThicknessBounds)>,
+    ) -> Result<(), String> {
+        let mut next = BTreeMap::new();
+        for (label, b) in bounds {
+            if label.is_empty() {
+                return Err("material bounds: empty material label".to_string());
+            }
+            if next.insert(label.clone(), b).is_some() {
+                return Err(format!(
+                    "material bounds: material {label:?} is given more than one interval"
+                ));
+            }
+        }
+        self.material_bounds = next;
+        Ok(())
+    }
+
+    /// The interval for a film: its explicit material label first, then its
+    /// emitted material name. `None` means the historical global clamps.
+    pub fn bounds_for(&self, film: &LayerSpec) -> Option<ThicknessBounds> {
+        film.label
+            .as_deref()
+            .and_then(|label| self.material_bounds.get(label).copied())
+            .or_else(|| self.material_bounds.get(&film.material).copied())
+    }
+
+    /// [`Self::bounds_for`] by row index.
+    pub fn bounds_for_film(&self, film_idx: usize) -> Option<ThicknessBounds> {
+        self.films.get(film_idx).and_then(|f| self.bounds_for(f))
+    }
+
+    /// A4: is this row a user pin?
+    ///
+    /// The contract is `optimize = false` AND `needle = false`. A joint
+    /// compile also sets `optimize = false` on the secondary copies of a
+    /// design film (the primary is the LM parameter), but those copies keep
+    /// `needle = true` and are scanned/inserted through their primary; they
+    /// are not pins. A derived interface-slice row is likewise not a pin:
+    /// the public split door has always allowed a split at the slice row.
+    pub fn is_pinned_row(&self, film_idx: usize) -> bool {
+        let Some(f) = self.films.get(film_idx) else {
+            return false;
+        };
+        let sp = self.span_of_row(film_idx);
+        !f.optimize && !f.needle && !(sp.slice && film_idx < sp.bulk_start)
+    }
+
+    /// Refuse a film outside its material's interval. Unknown materials are
+    /// left to the global clamps (the compatibility path).
+    pub fn validate_film_bounds(&self, film: &LayerSpec) -> Result<(), String> {
+        if let Some(b) = self.bounds_for(film)
+            && !b.contains(film.d_nm)
+        {
+            return Err(format!(
+                "film {:?} is {:.6} nm, outside its material bounds [{:.6}, {:.6}] nm",
+                film.material, film.d_nm, b.min_nm, b.max_nm
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate every film against its material's interval.
+    pub fn validate_bounds(&self) -> Result<(), String> {
+        for film in &self.films {
+            self.validate_film_bounds(film)?;
+        }
+        Ok(())
+    }
+
+    /// A4: the interval for a span's TOTAL thickness, when it can be derived
+    /// without ambiguity.
+    ///
+    /// - a plain one-row span: the material's interval;
+    /// - a scalable multi-row span: the intersection derived from every
+    ///   bulk row and its frozen fraction (see
+    ///   [`super::thickness_refine::ThicknessParam`]);
+    /// - anything else (a slice-carrying singleton, a pinned profile):
+    ///   `None`, so the historical global clamp remains in charge.
+    pub(crate) fn span_material_bounds(&self, sp: &Span) -> Option<(f64, f64)> {
+        if sp.is_singleton_bulk() && !sp.slice {
+            return self
+                .bounds_for_film(sp.bulk_start)
+                .map(|b| (b.min_nm, b.max_nm));
+        }
+        if sp.end - sp.start > 1 && self.span_is_scalable(sp) {
+            let d0: f64 = (sp.bulk_start..sp.end).map(|r| self.films[r].d_nm).sum();
+            if !(d0.is_finite() && d0 > 0.0) {
+                return None;
+            }
+            let mut lo = f64::NEG_INFINITY;
+            let mut hi = f64::INFINITY;
+            for r in sp.bulk_start..sp.end {
+                let phi = self.films[r].d_nm / d0;
+                if !(phi.is_finite() && phi > 0.0) {
+                    return None;
+                }
+                let b = self.bounds_for_film(r)?;
+                lo = lo.max(b.min_nm / phi);
+                hi = hi.min(b.max_nm / phi);
+            }
+            return (lo <= hi).then_some((lo, hi));
+        }
+        None
     }
 
     /// W6: does any film propagate incoherently (a fixed spacer)?
@@ -1085,6 +1262,16 @@ impl DesignStack {
         if let Some(msg) = self.needle_host_refusal(film_idx) {
             return Err(msg);
         }
+        // A4: a pinned film (optimize = false) is not a host even when its
+        // legacy `needle` flag is still set; the split would move a pinned
+        // thickness, which is exactly what a pin forbids.
+        if self.is_pinned_row(film_idx) {
+            return Err(format!(
+                "insert_needle_seed: film {} ('{}') is pinned (optimize = false,                  needle = false) and cannot host a needle",
+                film_idx, original.material
+            ));
+        }
+        self.validate_film_bounds(&seed)?;
         let d_total = original.d_nm;
         let d_bot = d_total - depth_into_layer_nm;
 
@@ -1526,6 +1713,23 @@ impl DesignStack {
         } else {
             policy == ThinLayerPolicy::ClampUpAlways
         };
+        // A4: per-material intervals, where they can be applied to a span
+        // total without ambiguity. `None` (or a missing interval) keeps the
+        // global pair for that span, so a stack with no material bounds is
+        // bit-identical to the pre-A4 sweep.
+        let span_material_bounds: Vec<Option<(f64, f64)>> = self
+            .spans
+            .iter()
+            .map(|sp| self.span_material_bounds(sp))
+            .collect();
+        let span_lo: Vec<f64> = span_material_bounds
+            .iter()
+            .map(|b| b.map_or(min_nm, |(lo, _)| lo))
+            .collect();
+        let span_hi: Vec<f64> = span_material_bounds
+            .iter()
+            .map(|b| b.map_or(max_nm, |(_, hi)| hi))
+            .collect();
         // Refusals are checked BEFORE any mutation, so the stack is never
         // left half-clamped behind an error. Scalable spans are exempt:
         // their total is an LM bound (ub), not an authoring error, and
@@ -1541,7 +1745,7 @@ impl DesignStack {
         //
         // D10: a pinned span is exempt from the whole sweep - floor,
         // ceiling and this refusal alike. The sweep passes it through.
-        for sp in &self.spans {
+        for (sid, sp) in self.spans.iter().enumerate() {
             if sp.end - sp.start <= 1
                 || self.span_is_scalable(sp)
                 || span_is_pinned_rows(sp, &self.films)
@@ -1549,11 +1753,10 @@ impl DesignStack {
                 continue;
             }
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
-            if d > max_nm {
+            if d > span_hi[sid] {
                 return Err(format!(
-                    "clamp_all: span '{}' is {:.1} nm thick, above the {:.1} nm ceiling - \
-                     refusing rather than rescaling a profile",
-                    self.films[sp.start].material, d, max_nm
+                    "clamp_all: span '{}' is {:.1} nm thick, above the {:.1} nm ceiling - refusing rather than rescaling a profile",
+                    self.films[sp.start].material, d, span_hi[sid]
                 ));
             }
         }
@@ -1562,9 +1765,10 @@ impl DesignStack {
         // the floor instead when the first survivor behind it is not an
         // allowed edge. The edge itself complies (the constraint is held
         // from `set_edge_materials` on), so holding it keeps it complying.
-        let removed = |sp: &Span| {
+        let removed = |sid: usize| {
+            let sp = &self.spans[sid];
             let d: f64 = self.films[sp.start..sp.end].iter().map(|l| l.d_nm).sum();
-            d < min_nm
+            d < span_lo[sid]
                 && !span_is_pinned_rows(sp, &self.films)
                 && !(clamp_up_rows
                     && (sp.is_singleton_bulk()
@@ -1577,10 +1781,10 @@ impl DesignStack {
             .enumerate()
         {
             let edge = if k == 0 { 0 } else { n_spans.wrapping_sub(1) };
-            if list.is_none() || n_spans == 0 || !removed(&self.spans[edge]) {
+            if list.is_none() || n_spans == 0 || !removed(edge) {
                 continue;
             }
-            let survives = |&j: &usize| !removed(&self.spans[j]);
+            let survives = |&j: &usize| !removed(j);
             let survivor = if k == 0 {
                 (0..n_spans).find(survives)
             } else {
@@ -1616,7 +1820,9 @@ impl DesignStack {
             // preserves per output row).
             let scalable = span_is_scalable_rows(sp, &old);
             let pinned = span_is_pinned_rows(sp, &old);
-            if d < min_nm && !pinned {
+            let lo = span_lo[sid];
+            let hi = span_hi[sid];
+            if d < lo && !pinned {
                 // F0.3 + F1.6: a scalable multi-row span under an active
                 // clamp-up posture is SCALED to the floor, fractions
                 // preserved (the profile survives; this is the deferral
@@ -1629,7 +1835,7 @@ impl DesignStack {
                 // to the authored thickness) and the bulk row takes the
                 // rest, so the film is clamped instead of deleted.
                 if scalable && sp.end - sp.start > 1 && clamp_up_rows {
-                    let f = min_nm / d;
+                    let f = lo / d;
                     let mut rows = old[sp.start..sp.end].to_vec();
                     for r in rows.iter_mut() {
                         r.d_nm *= f;
@@ -1666,7 +1872,7 @@ impl DesignStack {
                     // bulk row takes the remainder. A one-row span is
                     // the slice_rows == 0 case of this, bitwise the old
                     // `thin[0].d_nm = min_nm`.
-                    thin[slice_rows].d_nm = min_nm - slice_total;
+                    thin[slice_rows].d_nm = lo - slice_total;
                     let e = p + thin.len();
                     surviving.extend(thin);
                     new_spans.push(Span {
@@ -1691,15 +1897,15 @@ impl DesignStack {
             // its authored thickness; the ceiling is not its bound. (A
             // scalable span is never pinned, so the second arm needs no
             // guard.)
-            if !pinned && rows.len() == 1 && rows[0].d_nm > max_nm {
+            if !pinned && rows.len() == 1 && rows[0].d_nm > hi {
                 // One-row span: D == d, so this is today's row cap.
-                rows[0].d_nm = max_nm;
+                rows[0].d_nm = hi;
                 report.spans_capped += 1;
-            } else if rows.len() > 1 && scalable && d > max_nm {
+            } else if rows.len() > 1 && scalable && d > hi {
                 // F1.6: a scalable span above the ceiling is capped as a
                 // bound (fractions preserved), not refused - the refusal
                 // above fired only for pinned spans.
-                let f = max_nm / d;
+                let f = hi / d;
                 for r in rows.iter_mut() {
                     r.d_nm *= f;
                 }
@@ -2456,6 +2662,29 @@ mod tests {
         let mut bad = h(10.0);
         bad.nk = vec![cplx(2.35, 0.0); NW - 1].into();
         assert!(DesignStack::with_films(air(0.0), sub(0.0), vec![bad]).is_err());
+    }
+
+    /// A4: a pinned film (`optimize = false`, `needle = false`) is not a
+    /// scan host and cannot be split; the public split door refuses it.
+    #[test]
+    fn a_pinned_film_is_not_a_needle_host() {
+        use crate::smatrix::synthesis::needle_pass::build_scan_sites;
+
+        let mut s = stack(vec![h(80.0), l(60.0)]);
+        s.films[0].optimize = false;
+        s.films[0].needle = false;
+        assert!(s.is_pinned_row(0));
+        let sites = build_scan_sites(s.films(), s.spans(), 10.0);
+        assert!(
+            sites.iter().all(|site| site.film_idx != 0),
+            "a pinned film produced scan sites: {sites:?}"
+        );
+        let err = s.insert_needle_seed(0, 10.0, l(5.0)).unwrap_err();
+        assert!(err.contains("pinned"), "{err}");
+
+        // The free neighbour remains a host.
+        assert!(!s.is_pinned_row(1));
+        assert!(sites.iter().any(|site| site.film_idx == 1));
     }
 
     #[test]
@@ -3432,6 +3661,29 @@ mod tests {
     /// f16_scalable_span_above_ceiling_is_capped_not_refused), and D10 to
     /// non-pinned ones (a pinned span passes through), so the span here
     /// is mixed.
+    /// A4: a material ceiling wins over the global one, and a material
+    /// floor keeps a film from being removed by the global `Remove` floor.
+    #[test]
+    fn material_bounds_override_the_global_clamp() {
+        let mut s = stack(vec![h(100.0), l(50.0)]);
+        s.set_material_bounds([
+            (Arc::from("H"), ThicknessBounds::new(20.0, 40.0).unwrap()),
+            (Arc::from("L"), ThicknessBounds::new(30.0, 300.0).unwrap()),
+        ])
+        .unwrap();
+        let rep = s.clamp_all(2.0, 300.0, false).unwrap();
+        assert_eq!(rep.spans_capped, 1);
+        assert!((s.films()[0].d_nm - 40.0).abs() < 1e-12);
+
+        let mut s = stack(vec![h(5.0), l(50.0)]);
+        s.set_material_bounds([(Arc::from("H"), ThicknessBounds::new(20.0, 40.0).unwrap())])
+            .unwrap();
+        let rep = s.clamp_all(2.0, 300.0, false).unwrap();
+        assert_eq!(rep.rows_removed, 1);
+        assert_eq!(s.films().len(), 1);
+        assert_eq!(&*s.films()[0].material, "L");
+    }
+
     #[test]
     fn f02_cap_refuses_a_multirow_span_above_the_ceiling() {
         let wl: Vec<f64> = (0..NW).map(|i| 400.0 + i as f64 * 50.0).collect();

@@ -16,9 +16,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::cycle::{
-    InsertRules, MaterialPool, NeedleRules, label_pool, pool_entry, pool_from_layers,
+    InsertRules, MaterialPool, NeedleRules, label_pool_with_bounds, pool_entry, pool_from_layers,
 };
-use super::structure::{DesignStack, LayerSpec};
+use super::structure::{DesignStack, LayerSpec, ThicknessBounds};
 use crate::structure::{
     ErrorParams, ErrorType, Group, Layer, LayerType, MaterialSpec, RoughnessType,
 };
@@ -69,6 +69,10 @@ pub struct MaterialDef {
     pub n_data: Option<TabData>,
     #[serde(default)]
     pub k_data: Option<TabData>,
+    /// A4: the material's closed thickness interval. Absent keeps the
+    /// historical global clamp fallback.
+    #[serde(default)]
+    pub thickness_bounds: Option<ThicknessBounds>,
 }
 
 /// One stack row: film (`layer_type` 1), ambient (0), substrate (2).
@@ -617,10 +621,30 @@ fn fixed_spec(name: &str, nk: Vec<Complex64>) -> LayerSpec {
 /// group factor: it is grown, not specified.)
 ///
 /// Shared by both doors so the pool cannot drift between them.
+/// A4: the library's label -> interval map, validated.
+pub(crate) fn library_thickness_bounds(
+    library: &[MaterialDef],
+) -> Result<BTreeMap<Arc<str>, ThicknessBounds>, String> {
+    let mut bounds = BTreeMap::new();
+    for def in library {
+        let label = def.code.as_deref().unwrap_or(&def.name);
+        if label.is_empty() {
+            return Err("material library: a material has an empty code and name".to_string());
+        }
+        if let Some(b) = def.thickness_bounds {
+            b.validate()
+                .map_err(|e| format!("material {label:?}: {e}"))?;
+            bounds.insert(Arc::from(label), b);
+        }
+    }
+    Ok(bounds)
+}
+
 pub(crate) fn build_pool(
     materials: Option<&[String]>,
     nk: &HashMap<Arc<str>, Vec<Complex64>>,
     groups: &HashMap<String, Group>,
+    bounds: &BTreeMap<Arc<str>, ThicknessBounds>,
 ) -> Result<Option<MaterialPool>, String> {
     let Some(codes) = materials else {
         return Ok(None);
@@ -638,9 +662,12 @@ pub(crate) fn build_pool(
                 *z = Complex64::new(z.re * g.n_factor, z.im * g.k_factor);
             }
         }
-        entries.push(pool_entry(code, Arc::from(spectrum)));
+        entries.push((
+            pool_entry(code, Arc::from(spectrum)),
+            bounds.get(code.as_str()).copied(),
+        ));
     }
-    label_pool(entries).map(Some)
+    label_pool_with_bounds(entries).map(Some)
 }
 
 /// Everything [`split_and_build_films`] needs besides the rows themselves.
@@ -815,15 +842,23 @@ pub fn evaluate_material(def: &MaterialDef, wavelengths: &[f64]) -> Result<Vec<C
     eval_material(def, wavelengths)
 }
 
-/// Evaluate an ordered material library, keyed by code (else name).
+/// One evaluated material entry, preserving its label and A4 bounds.
+#[derive(Clone, Debug)]
+pub struct EvaluatedMaterial {
+    pub label: String,
+    pub nk: Vec<Complex64>,
+    pub bounds: Option<ThicknessBounds>,
+}
+
+/// Evaluate an ordered material library, keeping each entry's A4 bounds.
 ///
-/// Unlike the internal `eval_library` map, this preserves the request order
-/// and returns the label with each spectrum. A caller can therefore build a
-/// decoder pool and a matching stack template without re-deriving labels.
-pub fn evaluate_library(
+/// The returned order is the request order. A caller can therefore build a
+/// decoder pool, a material-bound table and a matching stack template from
+/// one evaluation without re-deriving labels.
+pub fn evaluate_library_with_bounds(
     library: &[MaterialDef],
     wavelengths: &[f64],
-) -> Result<Vec<(String, Vec<Complex64>)>, String> {
+) -> Result<Vec<EvaluatedMaterial>, String> {
     let mut evaluated = Vec::with_capacity(library.len());
     let mut seen = std::collections::HashSet::new();
     for def in library {
@@ -836,9 +871,27 @@ pub fn evaluate_library(
                 "material library: duplicate material label {label:?}"
             ));
         }
-        evaluated.push((label, evaluate_material(def, wavelengths)?));
+        evaluated.push(EvaluatedMaterial {
+            label,
+            nk: evaluate_material(def, wavelengths)?,
+            bounds: def.thickness_bounds,
+        });
     }
     Ok(evaluated)
+}
+
+/// Evaluate an ordered material library, keyed by code (else name).
+///
+/// Compatibility wrapper around [`evaluate_library_with_bounds`]; consumers
+/// that need A4 bounds use that function instead.
+pub fn evaluate_library(
+    library: &[MaterialDef],
+    wavelengths: &[f64],
+) -> Result<Vec<(String, Vec<Complex64>)>, String> {
+    Ok(evaluate_library_with_bounds(library, wavelengths)?
+        .into_iter()
+        .map(|m| (m.label, m.nk))
+        .collect())
 }
 
 /// Assemble a design: evaluate the library, build films + groups, expand
@@ -849,8 +902,9 @@ pub fn build_design(
     req: &DesignRequest,
     wavelengths: &[f64],
 ) -> Result<(DesignStack, MaterialPool, Vec<String>), String> {
-    // Library → nk on the grid, keyed by code (else name).
+    // Library → nk on the grid, keyed by code (else name), plus A4 bounds.
     let nk_table = eval_library(&req.library, wavelengths)?;
+    let material_bounds = library_thickness_bounds(&req.library)?;
     // Split + build through the shared assembler. The flat door names
     // every film by its material code - which is what has keyed the nk
     // table since F1.5 - so `named` is the identity mapping here and
@@ -887,7 +941,12 @@ pub fn build_design(
         groups.insert(row.name.clone(), build_group(row)?);
     }
 
-    let pool = build_pool(req.materials.as_deref(), &nk_table, &groups)?;
+    let pool = build_pool(
+        req.materials.as_deref(),
+        &nk_table,
+        &groups,
+        &material_bounds,
+    )?;
 
     // Background is implied, not declared (mirrors the Python driver).
     // A4: a gradient carrier is a profiled film for this rule too.
@@ -906,11 +965,14 @@ pub fn build_design(
         wavelengths,
         &background,
     )?;
+    stack.set_material_bounds(material_bounds)?;
     let pool = match pool {
         Some(p) => p,
         None => pool_from_layers(&stack, |_| true)?,
     };
-    let pool = req.needle_rules().apply(&mut stack, pool)?;
+    let rules = req.needle_rules();
+    let pool = rules.apply(&mut stack, pool)?;
+    pool.validate_grammar(&stack, Some(&rules))?;
     Ok((stack, pool, warnings))
 }
 
@@ -1066,6 +1128,7 @@ mod tests {
                 params: [("n".to_string(), Value::from(1.45))].into_iter().collect(),
                 n_data: None,
                 k_data: None,
+                thickness_bounds: None,
             },
             MaterialDef {
                 name: "H".to_string(),
@@ -1074,6 +1137,7 @@ mod tests {
                 params: [("n".to_string(), Value::from(2.1))].into_iter().collect(),
                 n_data: None,
                 k_data: None,
+                thickness_bounds: None,
             },
         ]
     }
@@ -1141,6 +1205,30 @@ mod tests {
         }
     }
 
+    /// A4: library bounds survive evaluation, reach the stack and the
+    /// needle pool, and a film outside them is refused at construction.
+    #[test]
+    fn material_bounds_reach_the_stack_and_are_enforced_at_construction() {
+        let wl = vec![500.0, 600.0];
+        let mut r = req(vec![film("L", 60.0), film("H", 60.0)]);
+        r.library[0].thickness_bounds = Some(ThicknessBounds::new(20.0, 80.0).unwrap());
+        r.library[1].thickness_bounds = Some(ThicknessBounds::new(10.0, 70.0).unwrap());
+        r.materials = Some(vec!["L".into(), "H".into()]);
+
+        let evaluated = evaluate_library_with_bounds(&r.library, &wl).unwrap();
+        assert_eq!(evaluated[0].bounds.unwrap().max_nm, 80.0);
+
+        let (stack, pool, _) = build_design(&r, &wl).unwrap();
+        assert_eq!(stack.bounds_for_film(0).unwrap().max_nm, 80.0);
+        assert_eq!(pool.thickness_bounds_for(0).unwrap().min_nm, 20.0);
+        assert_eq!(pool.clamp_seed_thickness(1, 1.0), 10.0);
+
+        let mut bad = req(vec![film("L", 5.0)]);
+        bad.library[0].thickness_bounds = Some(ThicknessBounds::new(20.0, 80.0).unwrap());
+        let err = build_design(&bad, &wl).unwrap_err();
+        assert!(err.contains("outside its"), "{err}");
+    }
+
     #[test]
     fn builds_flat_stack_standalone() {
         let wl = vec![500.0, 600.0];
@@ -1175,7 +1263,7 @@ mod tests {
     #[test]
     fn given_and_default_pools_agree_under_groups() {
         let wl = vec![500.0, 600.0];
-        let mut r = req(vec![film("L", 100.0), film("H", 60.0)]);
+        let mut r = req(vec![film("L", 60.0), film("H", 60.0)]);
         r.structure.groups =
             vec![serde_json::from_str(r#"{"name": "H", "n_factor": 1.1}"#).unwrap()];
         let (stack, default, _) = build_design(&r, &wl).unwrap();

@@ -49,6 +49,33 @@ impl ThicknessParam {
             ThicknessParam::Span { rows, .. } => rows.iter().map(|&r| stack.films()[r].d_nm).sum(),
         }
     }
+
+    /// A4: the parameter's closed interval, when every contributing row has
+    /// a material interval.
+    ///
+    /// A span's rows share one total `D` with frozen fractions
+    /// `phi_r = d_r / D0`; each row's interval `[lo_r, hi_r]` therefore
+    /// gives `D >= lo_r / phi_r` and `D <= hi_r / phi_r`. The span's
+    /// interval is the intersection. An empty or degenerate intersection
+    /// is refused by the caller, never silently clamped away.
+    pub(crate) fn bounds(&self, stack: &DesignStack) -> Option<(f64, f64)> {
+        match self {
+            ThicknessParam::Row(i) => stack.bounds_for_film(*i).map(|b| (b.min_nm, b.max_nm)),
+            ThicknessParam::Span { rows, fractions } => {
+                let mut lo = f64::NEG_INFINITY;
+                let mut hi = f64::INFINITY;
+                for (&r, &phi) in rows.iter().zip(fractions.iter()) {
+                    if !(phi.is_finite() && phi > 0.0) {
+                        return None;
+                    }
+                    let b = stack.bounds_for_film(r)?;
+                    lo = lo.max(b.min_nm / phi);
+                    hi = hi.min(b.max_nm / phi);
+                }
+                (lo <= hi).then_some((lo, hi))
+            }
+        }
+    }
 }
 
 /// The parameter list for one `refine_thicknesses` call.

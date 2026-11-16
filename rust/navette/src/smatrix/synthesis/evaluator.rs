@@ -965,22 +965,40 @@ impl SmatrixContext {
         // cost is F0.3's: a seed the optimizer wants to reject parks at
         // the floor instead of disappearing.
         let joint = self.envs.is_some();
-        let lb_floor = if joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
+        let policy_floor = if joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
             self.clamp_min_nm
         } else {
             0.0
         };
-        // The starting point must satisfy the same bounds as the solve.
-        // A stack can arrive below the floor when a needle pass has just
-        // inserted a thin seed; under `ClampUpAlways` (or a joint solve) the
-        // LM lower bound is `clamp_min_nm`, so an unclamped x0 would be
-        // rejected before the first iteration.
-        let x0: Vec<f64> = params
-            .iter()
-            .map(|p| p.value0(stack).clamp(lb_floor, self.clamp_max_nm))
-            .collect();
-        let lb = vec![lb_floor; x0.len()];
-        let ub = vec![self.clamp_max_nm; x0.len()];
+        // A4: resolve each parameter's interval from its material(s). A
+        // material interval is authoritative when present; the global
+        // clamp pair is the compatibility fallback and the policy floor
+        // still applies on top under `ClampUpAlways` / a joint run.
+        let mut lb = Vec::with_capacity(params.len());
+        let mut ub = Vec::with_capacity(params.len());
+        let mut x0 = Vec::with_capacity(params.len());
+        for p in &params {
+            let (lo, hi) = p
+                .bounds(stack)
+                .map_or((0.0, self.clamp_max_nm), |(lo, hi)| (lo.max(0.0), hi));
+            let lo = if joint || self.thin_layer_policy == ThinLayerPolicy::ClampUpAlways {
+                lo.max(self.clamp_min_nm)
+            } else {
+                lo.max(policy_floor)
+            };
+            if !(lo.is_finite() && hi.is_finite() && lo <= hi) {
+                return Err(format!(
+                    "thickness bounds: parameter interval [{lo}, {hi}] nm is empty or non-finite (material bounds and the global clamps disagree)"
+                ));
+            }
+            lb.push(lo);
+            ub.push(hi);
+            // The starting point must satisfy the same bounds as the solve.
+            // A stack can arrive below the floor when a needle pass has just
+            // inserted a thin seed; an unclamped x0 would be rejected before
+            // the first iteration.
+            x0.push(p.value0(stack).clamp(lo, hi));
+        }
 
         // The analytic Jacobian, when the spec is fully covered by it. The
         // source decides per call: a spec with a color demand declines and
@@ -3047,6 +3065,37 @@ mod tests {
             assert!(
                 stack.films().is_empty(),
                 "the default must keep elimination"
+            );
+        }
+
+        /// A4: a material interval is authoritative even under the
+        /// default `Remove` policy. The global floor is 2 nm, but this
+        /// material may not go below 50 nm, so the LM lower bound is 50
+        /// and the final sweep must not remove the film.
+        #[test]
+        fn material_bounds_bind_the_lm_before_the_global_floor() {
+            use crate::smatrix::synthesis::structure::ThicknessBounds;
+
+            let mut ctx = SmatrixContext {
+                wavls: vec![900.0],
+                sin_theta: vec![0.0],
+                spec: ar_spec(0.0, 900.0),
+                clamp_min_nm: 2.0,
+                clamp_max_nm: 1000.0,
+                thin_layer_policy: ThinLayerPolicy::Remove,
+                lm: LmConfig::default(),
+                clamp_accumulator: ClampReport::default(),
+                envs: None,
+            };
+            let mut stack = ar_stack(10.0);
+            stack
+                .set_material_bounds([(Arc::from("L"), ThicknessBounds::new(50.0, 60.0).unwrap())])
+                .unwrap();
+            ctx.refine_thicknesses_report(&mut stack).unwrap();
+            let d = stack.films()[0].d_nm;
+            assert!(
+                (50.0..=60.0).contains(&d),
+                "refined film at {d} nm escaped its material bounds [50, 60]"
             );
         }
 

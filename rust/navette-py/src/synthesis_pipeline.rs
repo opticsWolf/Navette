@@ -538,7 +538,11 @@ pub(crate) fn run_design(
         .collect();
     let pool: Option<Vec<ArrayMaterial>> = materials.map(|ms| {
         ms.into_iter()
-            .map(|(name, nk)| ArrayMaterial { name, nk })
+            .map(|(name, nk)| ArrayMaterial {
+                name,
+                nk,
+                thickness_bounds: None,
+            })
             .collect()
     });
     let (res, stack, warnings) = py
