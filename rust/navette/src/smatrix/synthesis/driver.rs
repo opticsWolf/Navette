@@ -21,7 +21,7 @@ use super::evaluator::SmatrixContext;
 use super::merit::{MeritSpec, Radians};
 use super::pipeline::SpectralInputs;
 use super::pipeline::{NeedlePipeline, PipelineResult};
-use super::structure::{ClampReport, DesignStack, LayerSpec};
+use super::structure::{ClampReport, DesignStack, LayerSpec, ThicknessBounds};
 use crate::lsq::lm::LmConfig;
 use crate::structure::{Group, Layer, LayerType};
 
@@ -226,6 +226,53 @@ pub fn run_design(
     cfg: PipelineConfig,
     needle_cfg: NeedleCycleConfig,
     lm: LmConfig,
+    callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
+) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
+    run_design_with_bounds(
+        ambient_name,
+        ambient_nk,
+        substrate_name,
+        substrate_nk,
+        films,
+        groups,
+        materials,
+        &BTreeMap::new(),
+        rules,
+        wavelengths,
+        angles,
+        spec,
+        cfg,
+        needle_cfg,
+        lm,
+        callback,
+    )
+}
+
+/// [`run_design`] with per-label thickness intervals (A4).
+///
+/// `bounds` is keyed by label: a film's name or a pool material's label,
+/// the names `rules` use. Each interval replaces the global clamps for the
+/// films of that label and the needles of that pool entry. It is added to
+/// the intervals the pool's [`ArrayMaterial`]s carry; a label given two
+/// different intervals, or naming neither a film nor a pool material, is
+/// refused.
+#[allow(clippy::too_many_arguments)]
+pub fn run_design_with_bounds(
+    ambient_name: &str,
+    ambient_nk: Vec<Complex64>,
+    substrate_name: &str,
+    substrate_nk: Vec<Complex64>,
+    films: &[ArrayFilm],
+    groups: &HashMap<String, Group>,
+    materials: Option<&[ArrayMaterial]>,
+    bounds: &BTreeMap<Arc<str>, ThicknessBounds>,
+    rules: &NeedleRules,
+    wavelengths: &[f64],
+    angles: &[Radians],
+    spec: &MeritSpec,
+    cfg: PipelineConfig,
+    needle_cfg: NeedleCycleConfig,
+    lm: LmConfig,
     mut callback: impl FnMut(usize, &super::pipeline::PipelinePhaseResult) -> Result<(), String>,
 ) -> Result<(PipelineResult, DesignStack, Vec<String>), String> {
     SmatrixContext::check_spec(spec)?;
@@ -239,6 +286,21 @@ pub fn run_design(
         wavelengths,
     )?;
     let mut material_bounds = BTreeMap::new();
+    for (label, b) in bounds {
+        let named = stack
+            .films()
+            .iter()
+            .any(|f| f.label.as_deref() == Some(&**label) || f.material == *label)
+            || materials.is_some_and(|ms| ms.iter().any(|m| m.name == **label));
+        if !named {
+            return Err(format!(
+                "thickness bounds: {label:?} names no film and no needle material"
+            ));
+        }
+        b.validate()
+            .map_err(|e| format!("thickness bounds for {label:?}: {e}"))?;
+        material_bounds.insert(label.clone(), *b);
+    }
     let pool = match materials {
         None => pool_from_layers(&stack, |_| true)?,
         Some(ms) => {
@@ -254,7 +316,15 @@ pub fn run_design(
                 if let Some(b) = m.thickness_bounds {
                     b.validate()
                         .map_err(|e| format!("needle material '{}': {e}", m.name))?;
-                    material_bounds.insert(Arc::from(m.name.as_str()), b);
+                    if let Some(given) = material_bounds.insert(Arc::from(m.name.as_str()), b)
+                        && given != b
+                    {
+                        return Err(format!(
+                            "thickness bounds: needle material '{}' is given two \
+                             different intervals",
+                            m.name
+                        ));
+                    }
                 }
             }
             label_pool_with_bounds(ms.iter().map(|m| {

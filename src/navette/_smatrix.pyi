@@ -695,6 +695,7 @@ def run_design(
     *,
     angles_deg: FloatArray | None = ...,
     angles_rad: FloatArray | None = ...,
+    thickness_bounds: Mapping[str, tuple[float, float]] | None = ...,
 ) -> dict[str, Any]: ...
 def run_design_environments(
     request_json: str,

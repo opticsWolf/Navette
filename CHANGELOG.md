@@ -41,10 +41,18 @@ fix from the `dev_ga` line.
 - `ArrayMaterial::thickness_bounds` for the evaluated-array design door.
 - Python: `MaterialDefinition(..., thickness_bounds={"min_nm": ..., "max_nm":
   ...})`, validated at construction, reaches the stack through
-  `pipeline_from_config`. The keyword `run_needle` surface and program
-  documents evaluate materials to plain nk and do not carry intervals yet.
+  `pipeline_from_config`.
 - `MaterialPool::inherit_stack_bounds`: an entry without an interval takes
   the stack's interval for that material. `NeedlePipeline::new` applies it.
+- `run_needle(..., thickness_bounds={label: (min_nm, max_nm)})` on both
+  arms. Labels are film names and pool labels, as for `insert_rules`. A
+  mapping material can also carry `thickness_bounds` itself. An unknown
+  label refuses, and so do two different intervals for one label.
+- `driver::run_design_with_bounds` (`run_design` is now a wrapper with no
+  intervals). The `_smatrix.run_design` binding takes a keyword-only
+  `thickness_bounds`.
+- `LoadedProgram.material_bounds`: the materials section's intervals,
+  filled on both load paths.
 
 ### Changed
 
@@ -79,6 +87,11 @@ fix from the `dev_ga` line.
   material bounds"). The pool it is handed is plain `LayerSpec`s with no
   intervals, so the seed went in at the 5 nm default; the pool now takes
   the stack's intervals.
+- A program document's material `thickness_bounds` now reach a run through
+  `design_from_program`. They were dropped when materials were tabulated
+  for the request, so a needle run from a document ignored them silently.
+  Without bounds, H films in the regression design end at 15-33 nm against
+  a [60, 400] interval.
 - `validate_grammar` reads adjacent films of a needle's own material as
   one layer and looks for the host beyond them. The clamp sweep can remove
   a needle from between two pieces of its split host, and the needle loop

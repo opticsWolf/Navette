@@ -34,7 +34,9 @@ use navette::smatrix::synthesis::cycle::{
 use navette::smatrix::synthesis::design_config::{build_design, DesignRequest};
 use navette::smatrix::synthesis::evaluator::SmatrixContext;
 use navette::smatrix::synthesis::pipeline::{NeedlePipeline, PipelinePhaseResult, SpectralInputs};
-use navette::smatrix::synthesis::structure::{ClampReport, DesignStack, LayerSpec};
+use navette::smatrix::synthesis::structure::{
+    ClampReport, DesignStack, LayerSpec, ThicknessBounds,
+};
 
 use crate::synthesis_merit::{PyMeritSpec, PySimCurves};
 
@@ -467,12 +469,16 @@ pub(crate) fn assemble_design(
 /// `materials` is the needle pool as (label, nk); `None` takes the layers'
 /// own materials. `insert_rules` ({host label: [needle labels]}), `outer`
 /// and `inner` (allowed edge materials) are the `NeedleRules`, in pool
-/// labels; `seed_edges` (nm) seeds an edge off its list. Returns the
+/// labels; `seed_edges` (nm) seeds an edge off its list.
+/// `thickness_bounds` ({label: (min_nm, max_nm)}) gives a film name or a
+/// pool label its own deposition interval (it replaces the run's clamp for
+/// those films and seeds needles inside it); an unknown label is refused.
+/// Returns the
 /// full report dict including the final
 /// `stack`; assembly warnings (dropped ambient absorption, homogenized
 /// graded film) re-emit as Python warnings.
 #[pyfunction]
-#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None, *, angles_deg=None, angles_rad=None))]
+#[pyo3(signature = (ambient_nk, ambient_name, substrate_nk, substrate_name, films, groups, materials, wavelengths, spec, pipeline_config=None, needle_config=None, lm=None, callback=None, insert_rules=None, outer=None, inner=None, seed_edges=None, *, angles_deg=None, angles_rad=None, thickness_bounds=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design(
     py: Python<'_>,
@@ -495,8 +501,17 @@ pub(crate) fn run_design(
     seed_edges: Option<f64>,
     angles_deg: Option<PyReadonlyArray1<'_, f64>>,
     angles_rad: Option<PyReadonlyArray1<'_, f64>>,
+    thickness_bounds: Option<std::collections::HashMap<String, (f64, f64)>>,
 ) -> PyResult<Py<PyDict>> {
-    use navette::smatrix::synthesis::driver::{run_design as core_run, ArrayFilm, ArrayMaterial};
+    use navette::smatrix::synthesis::driver::{
+        run_design_with_bounds as core_run, ArrayFilm, ArrayMaterial,
+    };
+    let mut bounds = std::collections::BTreeMap::new();
+    for (label, (lo, hi)) in thickness_bounds.unwrap_or_default() {
+        let b = ThicknessBounds::new(lo, hi)
+            .map_err(|e| PyValueError::new_err(format!("thickness_bounds[{label:?}]: {e}")))?;
+        bounds.insert(std::sync::Arc::<str>::from(label), b);
+    }
     let rules = NeedleRules {
         insert: insert_rules,
         outer,
@@ -557,6 +572,7 @@ pub(crate) fn run_design(
                     &af,
                     &gm,
                     pool.as_deref(),
+                    &bounds,
                     &rules,
                     &w,
                     &a,

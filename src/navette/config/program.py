@@ -222,6 +222,23 @@ class LoadedProgram:
     #: v4: the ``fit`` section (``navette.fit``), request data carried
     #: verbatim; ``None`` when the program has none.
     fit: Optional[Dict[str, Any]] = None
+    #: ``{material code: (min_nm, max_nm)}`` from the ``materials``
+    #: section's ``thickness_bounds``. ``design_from_program`` hands them
+    #: on, so a design run from this document keeps the intervals.
+    material_bounds: Dict[str, Any] = field(default_factory=dict)
+
+
+def _section_bounds(items, prefix: Optional[str]) -> Dict[str, Any]:
+    """``{code: (min_nm, max_nm)}`` for the bounded entries of a materials
+    section, keyed as the provider keys them (the prefixed code)."""
+    out = {}
+    for m in items or ():
+        b = m.get("thickness_bounds")
+        if b is None:
+            continue
+        code = _px(m.get("code") or m["name"], prefix)
+        out[code] = (float(b["min_nm"]), float(b["max_nm"]))
+    return out
 
 
 def load_program(
@@ -251,6 +268,7 @@ def load_program(
 
     if "materials" in sections:
         prog.materials = load_materials(sections["materials"], wavelength, prefix)
+        prog.material_bounds = _section_bounds(sections["materials"], prefix)
     elif "materials" in context:
         prog.materials = context["materials"]
 
@@ -344,6 +362,7 @@ def _load_program_native(wavelength, prefix, kind, name, payload):
         mats._native = parts["materials"]
         mats._memo = {}
         prog.materials = mats
+        prog.material_bounds = _section_bounds(raw_sections.get("materials"), prefix)
     prog.groups = dict(parts["groups"])
     for label, st in parts["structures"].items():
         prog.structures[label] = Navette_Structure._from_native(st, prog.materials)

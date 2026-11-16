@@ -241,6 +241,49 @@ def _film_dicts(layers, names, wl, film_flags=None, per_film_flags=None):
     return out
 
 
+def _bounds_of(material):
+    """A mapping material's ``thickness_bounds`` as ``(min_nm, max_nm)``.
+
+    Spelled as in a materials document (``{"min_nm": .., "max_nm": ..}``)
+    or as a pair. Anything that is not a mapping, or has no interval, has
+    none (``None``).
+    """
+    if not isinstance(material, Mapping):
+        return None
+    raw = material.get("thickness_bounds")
+    if raw is None:
+        return None
+    return _bounds_pair(raw, "thickness_bounds")
+
+
+def _bounds_pair(raw, where: str):
+    """``{"min_nm", "max_nm"}`` or ``(min_nm, max_nm)`` -> a float pair."""
+    if isinstance(raw, Mapping):
+        unknown = set(raw) - {"min_nm", "max_nm"}
+        if unknown or not {"min_nm", "max_nm"} <= set(raw):
+            raise ValueError(
+                f"{where}: an interval is {{'min_nm': .., 'max_nm': ..}} or "
+                f"(min_nm, max_nm) - got keys {sorted(raw)}."
+            )
+        return float(raw["min_nm"]), float(raw["max_nm"])
+    pair = tuple(raw)
+    if len(pair) != 2:
+        raise ValueError(
+            f"{where}: an interval is (min_nm, max_nm) - got {len(pair)} values."
+        )
+    return float(pair[0]), float(pair[1])
+
+
+def _merge_bounds(into: Dict[str, Any], label: str, pair, where: str) -> None:
+    """Add one interval; the same label given two different ones refuses."""
+    old = into.setdefault(label, pair)
+    if old != pair:
+        raise ValueError(
+            f"{where}: {label!r} is given two different intervals, "
+            f"{old} and {pair}."
+        )
+
+
 def _half_nk(value, wl):
     """Half-space nk: constant indices broadcast (mirrors old ``fixed``)."""
     if isinstance(value, (int, float, complex)):
@@ -338,11 +381,17 @@ def _tab(code: str, material: Any, wl: np.ndarray) -> Dict[str, Any]:
     # makes `(1.52, "sub")` mean the same thing in both.
     nk = _half_nk(material, wl)
     wls = [float(x) for x in wl]
-    return {
+    tab = {
         "name": code, "code": code, "model": "TableMaterial", "params": {},
         "n_data": {"wavelengths": wls, "values": [float(z.real) for z in nk]},
         "k_data": {"wavelengths": wls, "values": [float(z.imag) for z in nk]},
     }
+    # The material's deposition interval travels with its table: the core
+    # reads `library[].thickness_bounds` as the film's own clamp.
+    bounds = _bounds_of(material)
+    if bounds is not None:
+        tab["thickness_bounds"] = {"min_nm": bounds[0], "max_nm": bounds[1]}
+    return tab
 
 
 def _entry_parts(entry, default_name: str):
@@ -412,7 +461,31 @@ def _program_material(materials, code: str, where: str):
     )
 
 
-def _program_rows(rows, materials, where: str):
+def _with_bounds(material, pair):
+    """The material, carrying ``thickness_bounds`` when it has an interval.
+
+    A spec becomes the equivalent mapping (``_eval_nk`` evaluates both the
+    same way); a mapping that already says its interval is left alone.
+    """
+    if pair is None or _bounds_of(material) is not None:
+        return material
+    if isinstance(material, MaterialSpec):
+        material = {"model": material.model, "params": dict(material.params)}
+    elif not isinstance(material, Mapping):
+        # An evaluated curve (a provider without a spec shelf): there is
+        # nowhere to put the interval, and dropping it silently is the bug
+        # this exists to close.
+        raise ValueError(
+            "a bounded material reached the design path as an evaluated "
+            "curve - pass its spec, or give the interval as "
+            "run_needle(thickness_bounds=...)."
+        )
+    out = dict(material)
+    out["thickness_bounds"] = {"min_nm": pair[0], "max_nm": pair[1]}
+    return out
+
+
+def _program_rows(rows, materials, where: str, bounds=None):
     """`[LayerRow]` from a document -> `[mapping]` for `_entry_parts`.
 
     `material_code` is the film NAME as well as the material: on this
@@ -440,7 +513,9 @@ def _program_rows(rows, materials, where: str):
                 f"{where}: layer {code!r} has unknown row keys "
                 f"{sorted(unknown)} (one of {', '.join(_ROW_KEYS)})."
             )
-        out.append({"material": _program_material(materials, code, where),
+        material = _with_bounds(_program_material(materials, code, where),
+                                (bounds or {}).get(code))
+        out.append({"material": material,
                     "thickness_nm": float(thickness), "name": code, **flags})
     return out
 
@@ -457,8 +532,14 @@ def design_from_program(program, materials=None):
 
     ``materials`` overrides the program's own provider (the ``context=``
     case, where the library was supplied rather than parsed).
+
+    A material's ``thickness_bounds`` from the program's materials section
+    ride along on its rows, so the run clamps those films to it.
     """
     mats = materials if materials is not None else getattr(program, "materials", None)
+    # The section's intervals belong to the section's provider; a supplied
+    # provider speaks for itself (its spec mappings may carry their own).
+    bounds = (getattr(program, "material_bounds", None) or {}) if materials is None else {}
     design_doc = getattr(program, "design", None) or {}
     env_doc = getattr(program, "environments", None) or []
     if not design_doc:
@@ -468,7 +549,8 @@ def design_from_program(program, materials=None):
         )
     design = {}
     for seg, body in design_doc.items():
-        rows = _program_rows(body.get("layers"), mats, f"design segment {seg!r}")
+        rows = _program_rows(body.get("layers"), mats, f"design segment {seg!r}",
+                             bounds)
         edges = {k: body[k] for k in ("outer", "inner") if body.get(k) is not None}
         design[str(seg)] = {"layers": rows, **edges} if edges else rows
     environments = []
@@ -491,7 +573,7 @@ def design_from_program(program, materials=None):
                 stack.append(entry)
             elif rows is not None:
                 stack.append({"layers": _program_rows(
-                    rows, mats, f"environment {name!r} segment {j}")})
+                    rows, mats, f"environment {name!r} segment {j}", bounds)})
             else:
                 raise ValueError(
                     f"environment {name!r}: stack entry {j} gives neither "
@@ -503,7 +585,7 @@ def design_from_program(program, materials=None):
 
 def _environments_request(design, environments, materials, wl,
                           ambient, substrate, film_flags, per_film_flags,
-                          groups) -> Dict[str, Any]:
+                          groups, thickness_bounds=None) -> Dict[str, Any]:
     """The `DesignRequest` a multi-environment run is, as plain JSON data.
 
     This is the whole of F2.4's surface: `run_needle(design=...,
@@ -673,6 +755,28 @@ def _environments_request(design, environments, materials, wl,
                 )
             pool.append(code)
 
+    # Keyword intervals land on the library entry of their label. Every
+    # film name and pool label is a library code here, so an unknown label
+    # is a typo; an entry whose material already says a different interval
+    # is a contradiction, and both refuse rather than pick one.
+    for label, raw in (thickness_bounds or {}).items():
+        code = str(label)
+        pair = _bounds_pair(raw, f"thickness_bounds[{code!r}]")
+        if code not in library:
+            raise ValueError(
+                f"thickness_bounds: {code!r} names no film and no needle "
+                "material of this run."
+            )
+        entry = library[code]
+        old = entry.get("thickness_bounds")
+        new = {"min_nm": pair[0], "max_nm": pair[1]}
+        if old is not None and old != new:
+            raise ValueError(
+                f"thickness_bounds: {code!r} is given two different intervals, "
+                f"({old['min_nm']}, {old['max_nm']}) and {pair}."
+            )
+        entry["thickness_bounds"] = new
+
     return {
         "structure": {"label": "design", "layers": [], "groups": list(groups or ())},
         "library": list(library.values()),
@@ -731,6 +835,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
                seed_edges: Optional[float] = None,
                angles_deg=None,
                angles_rad=None,
+               thickness_bounds: Optional[Mapping[str, Any]] = None,
                **stack_kwargs) -> Dict[str, Any]:
     """Design a coating with the needle pipeline, end to end.
 
@@ -783,6 +888,18 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         behind it. The clamp floor (``clamp_min_nm``) is the natural
         value. With ``environments`` it seeds a segment's edge in every
         copy.
+    thickness_bounds : {label: (min_nm, max_nm)}, optional — a material's
+        own deposition interval. Films of that label are clamped into it
+        instead of into the run's ``clamp_min_nm`` / ``clamp_max_nm``
+        (a film under the minimum is still removed: the legal set is
+        ``{0} ∪ [min, max]``), and its needles go in at no less than the
+        minimum. Labels are film names and pool labels, as for
+        ``insert_rules``; a needle ``"<label>#<n>"`` takes its label's
+        interval. A mapping material may say the same thing itself
+        (``{"model": .., "params": .., "thickness_bounds": {"min_nm": ..,
+        "max_nm": ..}}``), as a program document's materials section does.
+        An unknown label, or two different intervals for one label,
+        refuses.
     pipeline_config / needle_config / lm_config : native configs (or None).
     callback : ``(macro_cycle, phase_dict)``; raising aborts (USER_ABORT).
     stack_kwargs : ambient, substrate, per-film flags (see
@@ -864,7 +981,7 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         return _run_needle_environments(
             design, environments, targets, angles_deg, angles_rad, wavelengths,
             materials, pipeline_config, needle_config, lm_config, callback,
-            stack_kwargs, rules, outer, inner, seed_edges)
+            stack_kwargs, rules, outer, inner, seed_edges, thickness_bounds)
     if environments is not None:
         raise ValueError(
             "run_needle: `environments` needs `design` - a flat film list has "
@@ -893,6 +1010,21 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
     amb_nk = _half_nk(ambient[0], wl)
     sub_nk = _half_nk(substrate[0], wl)
     gmap = _group_map(groups)
+    # Intervals: a film's (mapping) material, then a pool entry, then the
+    # keyword - all by label, and one label never gets two intervals.
+    bounds: Dict[str, Any] = {}
+    for (mat, _d), nm in zip(layers, names):
+        pair = _bounds_of(mat)
+        if pair is not None:
+            _merge_bounds(bounds, str(nm), pair, "layers")
+    for label, mat in (materials or {}).items() if isinstance(materials, Mapping) else ():
+        pair = _bounds_of(mat)
+        if pair is not None:
+            _merge_bounds(bounds, str(label), pair, "materials")
+    for label, raw in (thickness_bounds or {}).items():
+        _merge_bounds(bounds, str(label),
+                      _bounds_pair(raw, f"thickness_bounds[{str(label)!r}]"),
+                      "thickness_bounds")
     return _run_design(
         amb_nk, str(ambient[1] if len(ambient) > 1 else "air"),
         sub_nk, str(substrate[1] if len(substrate) > 1 else "sub"),
@@ -900,7 +1032,8 @@ def run_needle(layers: Optional[Sequence[Tuple[Any, float]]] = None,
         pipeline_config=pipeline_config, needle_config=needle_config,
         lm=lm_config, callback=callback,
         insert_rules=rules, outer=outer, inner=inner, seed_edges=seed_edges,
-        angles_deg=_grid(angles_deg), angles_rad=_grid(angles_rad))
+        angles_deg=_grid(angles_deg), angles_rad=_grid(angles_rad),
+        thickness_bounds=bounds or None)
 
 
 def _run_needle_environments(design, environments, targets, angles_deg,
@@ -908,7 +1041,8 @@ def _run_needle_environments(design, environments, targets, angles_deg,
                              pipeline_config, needle_config, lm_config,
                              callback, stack_kwargs, insert_rules=None,
                              outer=None, inner=None,
-                             seed_edges=None) -> Dict[str, Any]:
+                             seed_edges=None,
+                             thickness_bounds=None) -> Dict[str, Any]:
     """The `design=`/`environments=` arm of :func:`run_needle` (F2.4).
 
     Shapes the request document and hands it to the core in one call. The
@@ -933,7 +1067,7 @@ def _run_needle_environments(design, environments, targets, angles_deg,
         raise TypeError(f"run_needle: unknown stack options {sorted(stack_kwargs)}.")
     request = _environments_request(
         design, environments, materials, wl, ambient, substrate,
-        film_flags, per_film_flags, groups)
+        film_flags, per_film_flags, groups, thickness_bounds)
     request.update(insert_rules=insert_rules, outer=outer, inner=inner,
                    seed_edges=seed_edges)
     roster = [e["name"] for e in request["environments"]]
