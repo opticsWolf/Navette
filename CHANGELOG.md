@@ -68,6 +68,11 @@ fix from the `dev_ga` line.
   accepts.
 - An unlabelled needle (`H#2`) takes the interval of the material it was
   cut from (`H`), so the stack's clamp sweep enforces it as the pool does.
+- `validate_grammar` reads adjacent films of a needle's own material as
+  one layer and looks for the host beyond them. The clamp sweep can remove
+  a needle from between two pieces of its split host, and the needle loop
+  used to abort on the next insertion with "no adjacent host that accepts
+  it" (the broadband retarder smoke test on Linux CI).
 
 ### Breaking (Rust)
 

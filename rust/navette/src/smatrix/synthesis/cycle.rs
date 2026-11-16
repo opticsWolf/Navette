@@ -296,7 +296,9 @@ impl MaterialPool {
     ///  * every film is inside its material interval;
     ///  * every needle has at least one adjacent host that accepts it under
     ///    the insertion rules (the host may be on either side; a needle at
-    ///    an edge uses the one film beside it);
+    ///    an edge uses the one film beside it). Adjacent films of the
+    ///    needle's own material count as one layer with it, so the host is
+    ///    looked for beyond them;
     ///  * when `rules` are supplied, the stack's current edge layers comply
     ///    with the outer/inner lists.
     ///
@@ -321,12 +323,22 @@ impl MaterialPool {
                 .as_deref()
                 .ok_or_else(|| format!("needle {:?} has no material label", film.material))?;
             let m = self.label_index(label, "stack needle")?;
+            // Adjacent films of one material are one physical layer: the
+            // clamp sweep can remove a needle from between two pieces of
+            // its host, leaving them side by side. The needle's hosts are
+            // the films beyond that run, and so are its edges.
+            let mut a = i;
+            while a > 0 && films[a - 1].same_material(film) {
+                a -= 1;
+            }
+            let mut b = i;
+            while b + 1 < films.len() && films[b + 1].same_material(film) {
+                b += 1;
+            }
+            let beside = [a.checked_sub(1).map(|j| &films[j]), films.get(b + 1)];
             let mut host_seen = false;
             let mut accepted = false;
-            for host in [i.checked_sub(1).map(|j| &films[j]), films.get(i + 1)]
-                .into_iter()
-                .flatten()
-            {
+            for host in beside.into_iter().flatten() {
                 if !host.needle {
                     continue;
                 }
@@ -352,15 +364,15 @@ impl MaterialPool {
                 list.as_ref()
                     .is_none_or(|l| l.iter().any(|e| is_edge_material(e, film)))
             };
-            let edge_ok = if i == 0 {
+            let edge_ok = if a == 0 {
                 listed(&edges.outer)
-            } else if i + 1 == films.len() {
+            } else if b + 1 == films.len() {
                 listed(&edges.inner)
             } else {
                 false
             };
             if !edge_ok {
-                let adjacent: Vec<String> = [i.checked_sub(1).map(|j| &films[j]), films.get(i + 1)]
+                let adjacent: Vec<String> = beside
                     .into_iter()
                     .flatten()
                     .map(|f| {
@@ -1848,6 +1860,35 @@ mod tests {
         )
         .unwrap();
         let err = pool.validate_grammar(&stack, None).unwrap_err();
+        assert!(err.contains("no adjacent host"), "{err}");
+    }
+
+    /// The clamp sweep can remove a needle from between two pieces of its
+    /// split host needle, leaving `L#1 | L#1 | H` at the outer edge. The
+    /// two pieces are one layer, and its host is the H beyond them (CI:
+    /// the broadband retarder smoke test aborted on exactly this stack).
+    #[test]
+    fn grammar_reads_adjacent_pieces_of_one_material_as_one_layer() {
+        let l = entry("L", 1.45);
+        let h = entry("H", 2.35);
+        let pool = label_pool(vec![l.clone(), h.clone()]).unwrap();
+        let host = LayerSpec::constant("H", 2.35, 0.0, 100.0, 1);
+        let piece = new_needle(std::slice::from_ref(&host), &l, 20.0);
+        let stack = DesignStack::with_films(
+            LayerSpec::constant("air", 1.0, 0.0, 0.0, 1),
+            LayerSpec::constant("sub", 1.52, 0.0, 0.0, 1),
+            vec![piece.clone(), piece.clone(), host.clone()],
+        )
+        .unwrap();
+        pool.validate_grammar(&stack, None).unwrap();
+
+        // A run with no accepting host beyond it is still refused.
+        let rules = BTreeMap::from([("H".to_string(), Vec::<String>::new())]);
+        let strict = label_pool(vec![l, h])
+            .unwrap()
+            .with_insert_rules(&rules)
+            .unwrap();
+        let err = strict.validate_grammar(&stack, None).unwrap_err();
         assert!(err.contains("no adjacent host"), "{err}");
     }
 
